@@ -1,0 +1,93 @@
+{
+    "title": "Gitlab Runner with Kubernetes Executor",
+    "sys_title": "gitlab-runner-with-kubernetes-executor",
+    "published": true,
+    "content": {
+      "author": "Shoney Arickathil",
+      "content": {
+        "codes": [
+          {
+            "language": "yaml",
+            "paragraphIndex": 1,
+            "sectionIndex": 1,
+            "snippet": "deploy/gitlab-runner-with-kubernetes-executor",
+            "title": "Apply the gitlab runner deployment defination."
+          },
+          {
+            "language": "yaml",
+            "paragraphIndex": 0,
+            "sectionIndex": 2,
+            "snippet": "permission/gitlab-runner-with-kubernetes-executor",
+            "title": "gitlab runner deploy"
+          },
+          {
+            "language": "yaml",
+            "paragraphIndex": 0,
+            "sectionIndex": 2,
+            "snippet": "role-binding/gitlab-runner-with-kubernetes-executor",
+            "title": "gitlab runner deploy"
+          },
+          {
+            "language": "yaml",
+            "paragraphIndex": 0,
+            "sectionIndex": 2,
+            "snippet": "role-defination/gitlab-runner-with-kubernetes-executor",
+            "title": "gitlab runner deploy"
+          },
+          {
+            "language": "yaml",
+            "paragraphIndex": 0,
+            "sectionIndex": 1,
+            "snippet": "gitlab-runnergitlab-runner-deploy/gitlab-runner-with-kubernetes-executor",
+            "title": "Running Gitlab Runner container pod in gitlab namespace"
+          }
+        ],
+        "images": [
+          {}
+        ],
+        "img": {
+          "caption": "Gitlab runner with kubernetes executor. Test",
+          "path": "https://writeonce-filecloud-bucket.s3.eu-central-1.amazonaws.com/images/kubernetes.png"
+        },
+        "sections": [
+          {
+            "heading": "Introduction",
+            "paragraphs": [
+              "Deploying a Gitlab runner using kubernetes is a great option to overcome the limitations of other gitlab runner executor such as docker and docker machine."
+            ]
+          },
+          {
+            "heading": "Running Gitlab Runner container pod in gitlab namespace",
+            "paragraphs": [
+              "Copy the deployment definition in file named gitlab-runner-deploy.yaml file. Replace the environment variable name CI_SERVER_URL, REGISTRATION_TOKEN. The key value in registration-token is an base64 value of the runner registration token. ",
+              "Execute below command to create the gitlab runner container pod."
+            ]
+          },
+          {
+            "heading": "Authorization",
+            "paragraphs": [
+              "Executing the pipeline now would fail, as the pod would require permissions to create the pipeline container within the gitlab name space. The gitlab document provides the role based authorization definition.  "
+            ]
+          }
+        ]
+      },
+      "publishedOn": 1737414886,
+      "references": [
+        {
+          "dateAccessed": 1737414886,
+          "title": "Gitlab Kubernetes executor",
+          "url": "https://docs.gitlab.com/runner/executors/kubernetes/"
+        }
+      ],
+      "systitle": "gitlab-runner-with-kubernetes-executor",
+      "tags": [
+        "Kubernetes",
+        "Gitlab Runner Test",
+        "K8s - deployments",
+        "K8s - Authorization"
+      ],
+      "title": "Gitlab Runner with Kubernetes Executor Test"
+    },
+    "do_aws_sync": false,
+    "published_on": 1740950884
+  }

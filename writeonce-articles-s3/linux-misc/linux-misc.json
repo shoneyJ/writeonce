@@ -1,0 +1,55 @@
+{
+    "title": "Linux Miscellaneous",
+    "sys_title": "linux-misc",
+    "published": true,
+    "content": {
+      "author": "Shoney Arickathil",
+      "content": {
+        "codes": [
+          {
+            "language": "bash",
+            "paragraphIndex": 0,
+            "sectionIndex": 0,
+            "snippet": "wireguard/linux-misc",
+            "title": ""
+          },
+          {
+            "language": "bash",
+            "paragraphIndex": 0,
+            "sectionIndex": 1,
+            "snippet": "troubleshoot/linux-misc",
+            "title": ""
+          }
+         
+        ],
+        "images": [
+          {}
+        ],
+        "img": {
+          "caption": "",
+          "path": ""
+        },
+        "sections": [
+          {
+            "heading": "Wireguard setup",
+            "paragraphs": [""]
+          },
+          {
+            "heading": "Troubleshoting",
+            "paragraphs": [""]
+          }
+         
+        ]
+      },
+      "publishedOn": 1737414886,
+      "references": [
+        
+      ],
+     
+      "tags": [
+        "Linux"
+      ]
+    },
+    "do_aws_sync": false,
+    "published_on": 1740950884
+  }

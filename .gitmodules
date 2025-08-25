@@ -4,14 +4,17 @@
 
 
 [submodule "aws-infra"]
-	  path = aws-infra
-	  url = https://git.writeonce.de/shoney/aws-infra.git
+	path = aws-infra
+	url = https://git.writeonce.de/shoney/aws-infra.git
 
 [submodule "writeonce-app"]
-	  path = writeonce-app
-    url = https://git.writeonce.de/shoney/writeonce-app.git
+	path = writeonce-app
+	url = https://git.writeonce.de/shoney/writeonce-app.git
 
 
 [submodule "writeonce-api"]
-	  path = writeonce-api
-    url = https://git.writeonce.de/shoney/writeonce-manage-article-api.git
+	path = writeonce-api
+	url = https://git.writeonce.de/shoney/writeonce-manage-article-api.git
+[submodule "lambda-function"]
+	path = lambda-function
+	url = https://git.writeonce.de/shoney/writeonce-function.git
