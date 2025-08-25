@@ -19,7 +19,15 @@
             "sectionIndex": 1,
             "snippet": "troubleshoot/linux-misc",
             "title": ""
+          },
+        {
+            "language": "bash",
+            "paragraphIndex": 0,
+            "sectionIndex": 2,
+            "snippet": "ffmpeg/linux-misc",
+            "title": ""
           }
+
          
         ],
         "images": [
@@ -37,7 +45,12 @@
           {
             "heading": "Troubleshoting",
             "paragraphs": [""]
+          },
+        {
+            "heading": "ffmpeg",
+            "paragraphs": [""]
           }
+
          
         ]
       },
