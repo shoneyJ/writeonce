@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swagger UI</title>
+    <link rel="stylesheet" type="text/css"
+        href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/4.5.0/swagger-ui.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/4.5.0/swagger-ui-bundle.js"></script>
+</head>
+
+<body>
+    <div id="swagger-ui"></div>
+    <script>
+        const ui = SwaggerUIBundle({
+            url: "./open-api-spec",  // Path to the OpenAPI spec
+            dom_id: '#swagger-ui',
+            deepLinking: true,
+            presets: [
+                SwaggerUIBundle.presets.apis,
+                SwaggerUIBundle.presets.topbar
+            ],
+            layout: "BaseLayout",
+            requestInterceptor: (request) => {
+                const token = localStorage.getItem("auth_token");  // Optionally save token in localStorage
+                if (token) {
+                    request.headers['Authorization'] = 'Bearer ' + token;
+                }
+                return request;
+            },
+            // Add an "Authorize" button to handle token input
+            authActions: {
+                authorize: (authorize) => {
+                    // You can handle custom logic for the "Authorize" button here if needed
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

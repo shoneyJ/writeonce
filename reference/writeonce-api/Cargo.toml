@@ -1,0 +1,51 @@
+
+#[target.aarch64-unknown-linux-gnu]
+#image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+#dockerfile = "Dockerfile.cross"
+#linker = "aarch64-linux-gnu-gcc"
+
+[env]
+#OPENSSL_STATIC = "1"
+#OPENSSL_DIR = "/usr/aarch64-linux-gnu/"
+[package]
+name = "writeonce-manage-article-api"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "writeonce-manage-article-api"
+path = "src/main.rs"
+
+[[bin]]
+name = "lambda-post-article"
+path = "src/lambda/post_article.rs"
+
+[dependencies]
+actix-web = "4.0"
+warp = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenv = "0.15"
+reqwest = { version = "0.11", default-features = false,  features = ["json","rustls-tls"] }
+url = "2"
+chrono = "0.4"
+actix-files = "0.6"
+############ Diesel #################
+diesel = { version = "2.2.0", default-features = false,  features = ["postgres","serde_json","r2d2"] }
+diesel_migrations = "2.2.0"
+r2d2 = "0.8"
+thiserror = "1.0"
+lazy_static = "1.4"
+#openssl = { version = "0.10", features = ["vendored"] }
+##### Lambda ##########
+tokio = "1.43.0"
+lambda_runtime = "0.13.0"
+
+#### AWS ####
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-sdk-ec2 = "1"
+aws-smithy-types = "1"
+
+
+

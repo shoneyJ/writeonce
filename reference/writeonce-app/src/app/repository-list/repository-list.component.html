@@ -1,0 +1,25 @@
+<div class="container mx-auto p-6">
+  <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+   
+    <!-- Start of each repository card -->
+    <div *ngFor="let repo of repositories" class="bg-white shadow-lg rounded-lg p-6 max-w-sm">
+      <!-- Language Icons -->
+      <div class="flex items-center space-x-4 mb-4">
+        <div *ngFor="let entry of repo.languages | keyvalue" class="flex items-center">
+          <h3 class="text-xl font-semibold mb-2">{{ entry.key }}</h3>
+        </div>
+      </div>
+      <!-- Repository Name -->
+      <h2 class="text-xl font-semibold mb-2">{{ repo.name }}</h2>
+
+      <!-- Repository Description -->
+      <p class="text-gray-700 mb-4">{{ repo.description || 'No description available.' }}</p>
+
+
+      <!-- View Repository Link -->
+      <a [href]="repo.web_url" class="text-indigo-600 hover:text-indigo-800">View Repository</a>
+
+    </div>
+    <!-- End of each repository card -->
+  </div>
+</div>

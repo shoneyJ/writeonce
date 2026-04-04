@@ -1,0 +1,5 @@
+<article>
+  <h1 data-bind="article.title">{{article.title}}</h1>
+  <p class="meta">by {{article.author}} &middot; {{article.tags}}</p>
+  {{article.content_html}}
+</article>

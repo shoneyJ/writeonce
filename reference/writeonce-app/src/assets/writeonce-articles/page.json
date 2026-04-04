@@ -1,0 +1,73 @@
+[
+   
+    {
+        "id": 2,
+        "title": "Gitlab Runner with Kubernetes Executor",
+        "sys_title": "gitlab-runner-with-kubernetes-executor",
+        "content": {
+            "author": "Shoney Arickathil",
+            "content": {
+                "codes": [
+                    {
+                        "language": "yaml",
+                        "paragraphIndex": 0,
+                        "sectionIndex": 1,
+                        "snippet": "gitlab-runnergitlab-runner-deploy/gitlab-runner-with-kubernetes-executor",
+                        "title": "gitlab runner deploy"
+                    }
+                    
+                ],
+                "images": [],
+                "img": {
+                    "caption": "Gitlab runner with kubernetes executor.",
+                    "path": "https://writeonce-filecloud-bucket.s3.eu-central-1.amazonaws.com/images/kubernetes.png"
+                },
+                "sections": [
+                    {
+                        "heading": "Introduction",
+                        "paragraphs": [
+                            "Deploying a Gitlab runner using kubernetes is a great option to overcome the limitations of other gitlab runner executor such as docker and docker machine. Follow the article once you have docker and minikube installed on a local linux or WSL environment."
+                        ]
+                    },
+                    {
+                        "heading": "Deploying gitlab runner pod using kubernetes",
+                        "paragraphs": [
+                            "Copy the content to a yaml file and replace with the gitlab runner registration token base 64 value. Execute 'Apply deploy configuration' command to deploy the gitlab runner pod in the namespace gitlab."
+                        ]
+                    },
+                    {
+                        "heading": "Using RBAC Authorization",
+                        "paragraphs": [
+                            "If you now try to run a pipeline it will fail due to lack of authorization for create pods in your local kubernetes environment. You can check whether the service account has permission to create pods by executing below command.",
+                            "If the reponse is 'No' then copy the below role defination apply it bind the roles to service account."
+                        ]
+                    }
+                ]
+            },
+            "publishedOn": 1737414886,
+            "references": [
+                {
+                    "dateAccessed": 1737414886,
+                    "title": "Gitlab Kubernetes executor",
+                    "url": "https://docs.gitlab.com/runner/executors/kubernetes/"
+                },
+                {
+                    "dateAccessed": 1737414886,
+                    "title": "kubernetes Gitlab runner deployment and role defination yaml files ",
+                    "url": "https://git.writeonce.de/shoney/kubernetes_clusters/-/tree/main/gitlab-runner?ref_type=heads"
+                },
+                {
+                    "dateAccessed": 1737414886,
+                    "title": "Minikube installation",
+                    "url": "https://minikube.sigs.k8s.io/docs/start/"
+                }
+            ],
+            "systitle": "gitlab-runner-with-kubernetes-executor",
+            "tags": [
+                "Kubernetes",
+                "Gitlab runner"
+            ],
+            "title": "Gitlab Runner with Kubernetes Executor"
+        }
+    }
+]

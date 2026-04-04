@@ -1,0 +1,520 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Manage Articles API",
+    "termsOfService": "",
+    "contact": {
+      "email": "shoney.john@outlook.com"
+    },
+    "host": "api.writeonce.de",
+    "version": "0.0.1",
+    "summary": "Blog manage API",
+    "description": "🚀 **WriteOnce API Server**\n\nSource code available on [GitLab](https://git.writeonce.de/shoney/writeonce-manage-article-api).\n\n🔐 **Authorization:**\nYou can use the API key `4gX0kZ7hLqF3cW9s7TjD4vH8kB3vY8Qd` to test the authorization filters (except for POST requests).\n\n📦 **S3 + AWS Lambda Integration:**\nWhen JSON documents are saved to an S3 bucket, an AWS Lambda function is triggered automatically. This function then makes a POST request to this API endpoint to create a new article.\n\n💡 View the [AWS Lambda function code](https://git.writeonce.de/shoney/writeonce-function)."
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/article/title/{sys_title}": {
+      "get": {
+        "summary": "Fetch Articles by page route blog title name",
+        "operationId": "getArticleByTitle",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sys_title",
+            "in": "path",
+            "required": true,
+            "description": "Specify the system title of the article",
+            "schema": {
+              "type": "string",
+              "example": "gitlab-runner-with-kubernetes-executor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Articles found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Article not found",
+            "content": {
+              "text/plain": {
+                "example": "Article not found"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "example": "Unauthorized"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/{skip}/{limit}": {
+      "get": {
+        "summary": "Fetch Articles Pagination",
+        "operationId": "getArticleByPage",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "path",
+            "required": true,
+            "description": "The lower range of Article pages",
+            "schema": {
+              "type": "integer",
+              "example": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "description": "The limit range of Article pages",
+            "schema": {
+              "type": "integer",
+              "example": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Articles found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Article not found",
+            "content": {
+              "text/plain": {
+                "example": "Article not found"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "example": "Unauthorized"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/article/{id}": {
+      "get": {
+        "summary": "Get article by ID",
+        "operationId": "getArticleById",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the article to retrieve.",
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Article found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Article not found",
+            "content": {
+              "text/plain": {
+                "example": "Article not found"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "example": "Unauthorized"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/article/": {
+      "post": {
+        "summary": "Create a new Article",
+        "operationId": "saveArticle",
+        "requestBody": {
+          "description": "Save a new article",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "example": "Gitlab Runner with Kubernetes Executor"
+                  },
+                  "sys_title": {
+                    "type": "string",
+                    "example": "gitlab-runner-with-kubernetes-executor"
+                  },
+                  "published": {
+                    "type": "boolean",
+                    "example": true
+                  },
+                  "content": {
+                    "type": "object",
+                    "properties": {
+                      "author": {
+                        "type": "string",
+                        "example": "Shoney Arickathil"
+                      },
+                      "content": {
+                        "type": "object",
+                        "properties": {
+                          "codes": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "language": {
+                                  "type": "string",
+                                  "example": "yaml"
+                                },
+                                "paragraphIndex": {
+                                  "type": "integer",
+                                  "example": 0
+                                },
+                                "sectionIndex": {
+                                  "type": "integer",
+                                  "example": 1
+                                },
+                                "snippet": {
+                                  "type": "string",
+                                  "example": "gitlab-runnergitlab-runner-deploy/gitlab-runner-with-kubernetes-executor"
+                                },
+                                "title": {
+                                  "type": "string",
+                                  "example": "gitlab runner deploy"
+                                }
+                              }
+                            }
+                          },
+                          "images": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {}
+                            }
+                          },
+                          "img": {
+                            "type": "object",
+                            "properties": {
+                              "caption": {
+                                "type": "string",
+                                "example": "Gitlab runner with kubernetes executor."
+                              },
+                              "path": {
+                                "type": "string",
+                                "example": "https://writeonce-filecloud-bucket.s3.eu-central-1.amazonaws.com/images/kubernetes.png"
+                              }
+                            }
+                          },
+                          "sections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "heading": {
+                                  "type": "string",
+                                  "example": "Introduction"
+                                },
+                                "paragraphs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "example": "Deploying a Gitlab runner using kubernetes is a great option to overcome the limitations of other gitlab runner executor such as docker and docker machine."
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "publishedOn": {
+                        "type": "integer",
+                        "example": 1737414886
+                      },
+                      "references": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "dateAccessed": {
+                              "type": "integer",
+                              "example": 1737414886
+                            },
+                            "title": {
+                              "type": "string",
+                              "example": "Gitlab Kubernetes executor"
+                            },
+                            "url": {
+                              "type": "string",
+                              "example": "https://docs.gitlab.com/runner/executors/kubernetes/"
+                            }
+                          }
+                        }
+                      },
+                      "systitle": {
+                        "type": "string",
+                        "example": "gitlab-runner-with-kubernetes-executor"
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "example": ["Kubernetes", "Gitlab runner"]
+                        }
+                      },
+                      "title": {
+                        "type": "string",
+                        "example": "Gitlab Runner with Kubernetes Executor"
+                      }
+                    }
+                  },
+                  "do_aws_sync": {
+                    "type": "boolean",
+                    "example": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": ""
+                    },
+                    "articleId": {
+                      "type": "integer",
+                      "example": "2"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Article": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Gitlab Runner with Kubernetes Executor"
+          },
+          "sys_title": {
+            "type": "string",
+            "example": "gitlab-runner-with-kubernetes-executor"
+          },
+          "published": {
+            "type": "boolean",
+            "example": true
+          },
+          "content": {
+            "type": "object",
+            "properties": {
+              "author": {
+                "type": "string",
+                "example": "Shoney Arickathil"
+              },
+              "content": {
+                "type": "object",
+                "properties": {
+                  "codes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "language": {
+                          "type": "string",
+                          "example": "yaml"
+                        },
+                        "paragraphIndex": {
+                          "type": "integer",
+                          "example": 0
+                        },
+                        "sectionIndex": {
+                          "type": "integer",
+                          "example": 1
+                        },
+                        "snippet": {
+                          "type": "string",
+                          "example": "gitlab-runnergitlab-runner-deploy/gitlab-runner-with-kubernetes-executor"
+                        },
+                        "title": {
+                          "type": "string",
+                          "example": "gitlab runner deploy"
+                        }
+                      }
+                    }
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  },
+                  "img": {
+                    "type": "object",
+                    "properties": {
+                      "caption": {
+                        "type": "string",
+                        "example": "Gitlab runner with kubernetes executor."
+                      },
+                      "path": {
+                        "type": "string",
+                        "example": "https://writeonce-filecloud-bucket.s3.eu-central-1.amazonaws.com/images/kubernetes.png"
+                      }
+                    }
+                  },
+                  "sections": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "heading": {
+                          "type": "string",
+                          "example": "Introduction"
+                        },
+                        "paragraphs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "example": "Deploying a Gitlab runner using kubernetes is a great option to overcome the limitations of other gitlab runner executor such as docker and docker machine."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "publishedOn": {
+                "type": "integer",
+                "example": 1737414886
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "dateAccessed": {
+                      "type": "integer",
+                      "example": 1737414886
+                    },
+                    "title": {
+                      "type": "string",
+                      "example": "Gitlab Kubernetes executor"
+                    },
+                    "url": {
+                      "type": "string",
+                      "example": "https://docs.gitlab.com/runner/executors/kubernetes/"
+                    }
+                  }
+                }
+              },
+              "systitle": {
+                "type": "string",
+                "example": "gitlab-runner-with-kubernetes-executor"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "example": ["Kubernetes", "Gitlab runner"]
+                }
+              },
+              "title": {
+                "type": "string",
+                "example": "Gitlab Runner with Kubernetes Executor"
+              }
+            }
+          },
+          "do_aws_sync": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      }
+    }
+  }
+}
+

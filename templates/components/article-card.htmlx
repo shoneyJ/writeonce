@@ -1,0 +1,4 @@
+<div class="article-card">
+  <h2><a href="/blog/{{article.sys_title}}">{{article.title}}</a></h2>
+  <p class="tags">{{article.tags}}</p>
+</div>

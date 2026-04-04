@@ -1,0 +1,44 @@
+stages:
+  - build
+  - push
+  - deploy
+ 
+build:
+  stage: build
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - echo "Global setup before script"
+    - chmod +x ./infra/00-build-image.sh
+  script:
+    - ./infra/00-build-image.sh
+
+push:
+  stage: push
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - chmod +x ./infra/02-docker-login.sh
+    - chmod +x ./infra/03-upload-image.sh
+  script:
+    - infra/02-docker-login.sh
+    - infra/03-upload-image.sh
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - chmod +x ./infra/04-ssh-setup.sh
+    - chmod +x ./infra/05-deploy.sh
+  script:
+    - echo "Docker set docker auth config"
+    - infra/04-ssh-setup.sh
+    - infra/05-deploy.sh
+  only:
+    - main

@@ -1,0 +1,12 @@
+<div class="bg-slate-50 dark:bg-slate-700 rounded-lg p-6 mt-8">
+    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-4">References</h3>
+    
+    <ul class="space-y-2">
+      <li *ngFor="let reference of references">
+        <a [href]="reference.url" target="_blank" class="text-teal-600 dark:text-teal-400 hover:underline">
+          {{ reference.title }}
+        </a>
+      </li>
+    </ul>
+</div>
+

@@ -1,0 +1,18 @@
+<article class="bg-white dark:bg-slate-800 rounded-xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-200 dark:border-slate-700">
+    <a [routerLink]="router" class="block p-6">
+        <h3 class="text-xl font-bold text-slate-800 dark:text-white hover:text-teal-600 dark:hover:text-teal-400 transition-colors mb-2">
+            {{ title }}
+        </h3>
+        <p class="text-slate-600 dark:text-slate-400 text-sm mb-4 line-clamp-3">
+            {{ introduction }}
+        </p>
+        <div class="flex flex-wrap gap-2">
+            <span 
+                *ngFor="let tag of tags" 
+                class="px-3 py-1 text-xs font-medium rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300">
+                {{ tag }}
+            </span>
+        </div>
+    </a>
+</article>
+    

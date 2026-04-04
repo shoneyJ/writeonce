@@ -1,0 +1,53 @@
+services:
+  writeonce-postgress-db:
+    image: postgres:17.0
+
+    container_name: writeonce-postgress-db
+    restart: always
+  # set shared memory limit when using docker-compose
+    shm_size: 128mb
+  # or set shared memory limit when deploy via swarm stack
+  #volumes:
+  #  - type: tmpfs
+  #    target: /dev/shm
+  #    tmpfs:
+  #      size: 134217728 # 128*2^20 bytes = 128Mb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}   
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   
+      POSTGRES_DB: ${POSTGRES_DB}
+      DB_USER: ${DB_USER}   
+      DB_PASSWORD: ${DB_PASSWORD}   
+      DB_NAME: ${DB_NAME}
+    volumes:
+      - ./postgress/:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - writeonce-network
+ 
+  writeonce-manage-article-api:
+    image: registry.writeonce.de/shoney/writeonce-manage-article-api
+
+    container_name: writeonce-manage-article-api
+    ports:
+      - ${PORT}:${PORT}
+    depends_on:
+      writeonce-postgress-db:
+        condition: service_healthy    
+    environment:
+      - AWS_INFRA_BASE_URL=${AWS_INFRA_BASE_URL}    
+      - PORT=${PORT}
+      - API_ACCESS_TOKEN=${API_ACCESS_TOKEN}
+      - API_ACCESS_ADMIN_TOKEN=${API_ACCESS_ADMIN_TOKEN}
+      - DATABASE_URL=${DATABASE_URL}  
+    restart: always 
+    networks:
+      - writeonce-network
+
+networks:
+  writeonce-network:
+    external: true

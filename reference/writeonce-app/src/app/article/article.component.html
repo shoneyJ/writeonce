@@ -1,0 +1,22 @@
+<div *ngIf="article" class="container mx-auto px-4 py-8 max-w-4xl">
+  <article class="bg-white dark:bg-slate-800 rounded-xl shadow-lg p-6 md:p-10 transition-colors duration-300">
+    <header class="mb-8">
+      <h1 class="text-3xl md:text-4xl font-bold text-slate-800 dark:text-white mb-4">{{ article.title | titlecase }}</h1>
+      <div class="flex items-center text-sm text-slate-600 dark:text-slate-400">
+        <span class="mr-4">By {{ article.author }}</span>
+        <span>{{ article.publishedOn | date:'mediumDate' }}</span>
+      </div>
+    </header>
+
+    <article-img-caption [imgSrc]="article.content.img.path" [caption]="article.content.img.caption"> </article-img-caption>
+
+    <div class="prose prose-lg dark:prose-invert max-w-none mt-8">
+      <app-article-section *ngFor="let section of article.content.sections; let i = index" [heading]="section.heading"
+        [paragraphs]="section.paragraphs" [sectionIndex]="i" [codeSnippets]="article.content.codes" [images]="article.content.images"></app-article-section>
+    </div>
+
+    <app-article-references [references]="article.references"></app-article-references>
+
+    <app-article-signature [authorName]="article.author" [publishedTimestamp]="article.publishedOn"></app-article-signature>
+  </article>
+</div>

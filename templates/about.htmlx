@@ -1,0 +1,2 @@
+<h1>about</h1>
+<p>writeonce is a content platform built as a single Rust binary with embedded storage, no external database, and kernel-level subscriptions.</p>

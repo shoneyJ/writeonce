@@ -1,0 +1,50 @@
+# Ignore target directory (generated build files)
+target/
+
+# Ignore intermediate files from rustc compiler
+*.rs.bk
+
+# Cargo-specific files
+Cargo.lock
+/.cargo/
+
+# Output files and logs from Cargo
+**/*.log
+
+# Ignore binaries and libraries (compiled executables or libraries)
+*.exe
+*.exe~
+*.out
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Ignore dependency build artifacts
+/.rustup/
+/.git/target/
+/.git/target/**
+
+# macOS specific files
+.DS_Store
+
+# Windows specific files
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux specific files
+*~
+
+# IDE/editor specific files (optional)
+/.idea/
+/.vscode/
+/*.iml
+
+# Other tooling-specific files (optional)
+/node_modules/
+
+.env
+!.env.sample

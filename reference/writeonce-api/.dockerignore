@@ -1,0 +1,38 @@
+# Ignore target directory (where build artifacts are stored)
+target/
+
+# Ignore Cargo.lock if you want to use the latest dependencies
+# Uncomment the line below if you want to ignore it
+# Cargo.lock
+
+# Ignore build files
+**/*.rs.bk
+**/*.rlib
+
+# Ignore any local configuration files
+*.env
+*.local
+
+# Ignore any files that are not part of the Rust project
+*.md
+*.txt
+
+# Ignore version control directories
+.git/
+.gitignore
+
+# Ignore IDE/editor configuration files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.DS_Store
+
+# Ignore any backup files
+*~
+
+
+# Diesel CLI generated schema.rs
+diesel.toml
+**/migrations/**/diesel_schema.lock

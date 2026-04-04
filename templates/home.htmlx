@@ -1,0 +1,4 @@
+<h1>articles</h1>
+{{#each articles}}
+  {{> article-card article=this}}
+{{/each}}

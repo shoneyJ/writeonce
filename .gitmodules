@@ -1,0 +1,6 @@
+[submodule "reference/writeonce-app"]
+	path = reference/writeonce-app
+	url = https://github.com/shoneyJ/writeonce-app
+[submodule "reference/writeonce-api"]
+	path = reference/writeonce-api
+	url = https://github.com/shoneyJ/writeonce-api

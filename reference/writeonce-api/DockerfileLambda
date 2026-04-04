@@ -1,0 +1,38 @@
+# Stage 1: Build the Rust application using the official Rust image
+FROM rust:bullseye AS builder
+
+# Install required dependencies for cargo-lambda and Zig (if needed)
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    gcc \
+    libc-dev \
+    pkg-config \
+    libssl-dev \
+    gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig (only if needed for cross-compiling or complex setups)
+RUN curl -sSf https://ziglang.org/builds/zig-linux-x86_64-0.15.0-dev.377+f01833e03.tar.xz | tar -xJf - -C /usr/local/bin --strip-components=1
+
+RUN rustup target add aarch64-unknown-linux-gnu
+# Install cargo-lambda via cargo for building AWS Lambda-compatible binaries
+RUN cargo install cargo-lambda
+
+# Create a working directory for the project
+WORKDIR /app
+
+# Copy the entire Rust project into the container
+COPY . .
+
+# Build the Rust application with cargo-lambda, targeting Lambda-compatible format
+RUN cargo lambda build --release --bin lambda-post-article --arm64
+
+# Copy the Lambda-compatible binary from the build stage into the Lambda runtime directory
+RUN cd target/lambda/lambda-post-article && zip function.zip bootstrap
+
+# Stage 2: Extract just the zip artifact
+FROM alpine:latest AS artifact
+
+# Copy only the zip file out of the builder
+COPY --from=builder /app/target/lambda/lambda-post-article/function.zip /function.zip

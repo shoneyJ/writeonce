@@ -1,0 +1,51 @@
+{
+    "content": {
+      "author": "Shoney Arickathil",
+      "content": {
+        "codes": [
+          {
+            "language": "yaml",
+            "paragraphIndex": 0,
+            "sectionIndex": 1,
+            "snippet": "gitlab-runnergitlab-runner-deploy/gitlab-runner-with-kubernetes-executor",
+            "title": "gitlab runner deploy"
+          }
+        ],
+        "images": [
+          {}
+        ],
+        "img": {
+          "caption": "Gitlab runner with kubernetes executor.",
+          "path": "https://writeonce-filecloud-bucket.s3.eu-central-1.amazonaws.com/images/kubernetes.png"
+        },
+        "sections": [
+          {
+            "heading": "Introduction",
+            "paragraphs": [
+              "Deploying a Gitlab runner using kubernetes is a great option to overcome the limitations of other gitlab runner executor such as docker and docker machine."
+            ]
+          }
+        ]
+      },
+      "publishedOn": 1737414886,
+      "references": [
+        {
+          "dateAccessed": 1737414886,
+          "title": "Gitlab Kubernetes executor",
+          "url": "https://docs.gitlab.com/runner/executors/kubernetes/"
+        }
+      ],
+      "systitle": "gitlab-runner-with-kubernetes-executor",
+      "tags": [
+        [
+          "Kubernetes",
+          "Gitlab runner"
+        ]
+      ],
+      "title": "Gitlab Runner with Kubernetes Executor"
+    },
+    "do_aws_sync": false,
+    "published": true,
+    "sys_title": "gitlab-runner-with-kubernetes-executor",
+    "title": "Gitlab Runner with Kubernetes Executor"
+  }

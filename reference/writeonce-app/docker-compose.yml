@@ -1,0 +1,13 @@
+services:
+  writeonce-frontend-dev:
+    build: 
+      context: .
+      dockerfile: Dockerfile-Dev
+    image: writeonce-frontend:dev
+    container_name: writeonce-frontend-dev
+    ports:
+      - 4200:4200
+    
+    volumes:
+      - .:/app
+      - /app/node_modules

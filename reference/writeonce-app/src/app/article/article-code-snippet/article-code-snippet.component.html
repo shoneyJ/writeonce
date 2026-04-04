@@ -1,0 +1,22 @@
+<div class="max-w-2xl mx-auto bg-white shadow-lg rounded-lg overflow-hidden">
+  <div class="px-6 py-4">
+    <!-- Title with Copy Button aligned horizontally -->
+    <div class="flex items-center justify-between">
+      <div class="font-bold text-xl mb-2">{{ title }}</div>
+      <button (click)="copyCode()" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded flex items-center space-x-2">
+        <fa-icon [icon]="faCopy"></fa-icon>
+        <span>{{copyText}}</span>
+      </button>
+    </div>
+    
+    <!-- Code Snippet Block -->
+    <!-- <pre class="text-left bg-gray-100 p-4 rounded text-sm overflow-x-auto">
+      <code>{{ codeSnippet }}</code>
+    </pre> -->
+    
+    <!-- <div [innerHTML]="markdownContent"></div> -->
+
+    <markdown [data]="markdownContent"></markdown>
+
+  </div>
+</div>

@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wo-model",
+    "crates/wo-seg",
+    "crates/wo-index",
+    "crates/wo-store",
+    "crates/wo-watch",
+    "crates/wo-event",
+    "crates/wo-sub",
+    "crates/wo-rt",
+    "crates/wo-http",
+    "crates/wo-route",
+    "crates/wo-htmlx",
+    "crates/wo-md",
+    "crates/wo-serve",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+libc = "0.2"

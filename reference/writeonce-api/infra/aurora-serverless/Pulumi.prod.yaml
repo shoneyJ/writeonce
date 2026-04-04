@@ -1,0 +1,4 @@
+encryptionsalt: v1:whjKntLcNLo=:v1:0Sj2AsnGmgeoQI/N:9qEbPRTmbfQ6NDhuJAM7PIA6YX2r5A==
+config:
+  aws:region: eu-central-1
+  aws:profile: writeonce-iac

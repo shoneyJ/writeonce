@@ -1,0 +1,47 @@
+stages:
+  - build
+  - push
+  - deploy
+variables: 
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+
+build:
+  stage: build
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - echo "Setting up Docker environment"  
+  script:
+    - docker info  # Verify Docker is running
+    - docker build -t ${IMAGE_NAME} .
+
+push:
+  stage: push
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - echo "Logging into Docker registry"  
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker push ${IMAGE_NAME}
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: docker:20.10.7
+  services:
+    - docker:20.10.7-dind
+  before_script:
+    - echo "Deploy artifacts on web server"  
+  script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker pull ${IMAGE_NAME}
+    - docker run --rm ${IMAGE_NAME} sh -c "tar -czf - -C browser . " | ssh -o StrictHostKeyChecking=no deployer@writeonce.de 'docker exec -i writeonce-webserver tar -xzf - -C /usr/share/nginx/html/'
+    - ssh-agent -k
+  only:
+    - main

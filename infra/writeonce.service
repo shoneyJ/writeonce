@@ -1,0 +1,24 @@
+[Unit]
+Description=writeonce content platform
+After=network.target
+
+[Service]
+Type=simple
+User=writeonce
+Group=writeonce
+WorkingDirectory=/opt/writeonce
+ExecStart=/opt/writeonce/writeonce
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/writeonce/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

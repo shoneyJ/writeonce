@@ -1,0 +1,42 @@
+.git
+.editorconfig
+/.vscode/*
+/node_modules
+/e2e
+/docs
+.gitignore
+*.zip
+/dist
+Dockerfile.build
+
+# Node.js dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build output
+dist
+build
+out
+*.log
+
+# Development files
+src/**/*.spec.ts
+src/**/*.test.ts
+
+# IDE and OS-specific files
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Temporary files
+temp
+tmp
+*.tmp
+
+# Docker-related files
+Dockerfile*
+.dockerignore

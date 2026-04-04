@@ -1,0 +1,49 @@
+<main class="flex-1">
+  <section class="bg-gradient-to-r from-teal-600 to-teal-800 dark:from-slate-800 dark:to-slate-900 text-white py-16">
+    <div class="container mx-auto px-4 text-center">
+      <h1 class="text-4xl md:text-5xl font-bold mb-4">Welcome to WriteOnce</h1>
+      <p class="text-lg md:text-xl text-teal-100 dark:text-slate-300 max-w-2xl mx-auto">
+        Sharing insights on technology, development, and innovation. 
+        Explore our articles and learn something new.
+      </p>
+    </div>
+  </section>
+
+  <section class="container mx-auto px-4 py-12">
+    <div class="mb-8">
+      <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-6">Latest Articles</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <app-summary-card 
+        *ngFor="let article of articles" 
+        [routerLink]="article.router"
+        [title]="article.title"
+        [introduction]="article.introduction"
+        [tags]="article.tags">
+      </app-summary-card>
+    </div>
+
+    <div *ngIf="articles.length === 0" class="text-center py-12">
+      <p class="text-slate-600 dark:text-slate-400">No articles found.</p>
+    </div>
+
+    <div class="flex justify-center items-center mt-8 space-x-4">
+      <button 
+          (click)="previousPage()" 
+          [disabled]="currentPage === 1" 
+          class="px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          Previous
+      </button>
+      
+      <span class="text-slate-600 dark:text-slate-400">Page {{ currentPage }} of {{ totalPages }}</span>
+      
+      <button 
+          (click)="nextPage()" 
+          [disabled]="currentPage === totalPages" 
+          class="px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          Next
+      </button>
+    </div>
+  </section>
+</main>

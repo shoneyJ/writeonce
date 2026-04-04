@@ -1,0 +1,28 @@
+[package]
+name = "wo-rt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wo-model = { path = "../wo-model" }
+wo-store = { path = "../wo-store" }
+wo-watch = { path = "../wo-watch" }
+wo-event = { path = "../wo-event" }
+wo-sub = { path = "../wo-sub" }
+wo-http = { path = "../wo-http" }
+wo-route = { path = "../wo-route" }
+wo-htmlx = { path = "../wo-htmlx" }
+wo-md = { path = "../wo-md" }
+wo-serve = { path = "../wo-serve" }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+
+[[bin]]
+name = "writeonce"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+bincode = { workspace = true }

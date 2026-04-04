@@ -1,0 +1,11 @@
+[package]
+name = "wo-watch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wo-store = { path = "../wo-store" }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
