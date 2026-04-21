@@ -1,0 +1,24 @@
+[package]
+name        = "rt"
+version = "0.1.0"
+edition = "2021"
+description = "writeonce runtime — the `.wo` language engine (v2, Phase 2+ design)"
+
+[lib]
+name = "rt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wo"
+path = "src/bin/wo.rs"
+
+[dependencies]
+anyhow     = "1"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio      = { version = "1", features = ["rt", "macros", "net", "signal", "sync", "time"] }
+axum       = "0.7"
+tower      = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,23 +1,41 @@
+# Root workspace — the new `.wo` runtime.
+#
+# Only `crates/rt` carries real code today (Stage 2 of the runtime); the
+# fourteen sibling crates are empty skeletons populated phase-by-phase per
+# docs/plan/done/01-scafolding-crates.md. They are commented out of the
+# workspace until their phase activates — uncomment each one as code lands.
+#
+# The v1 writeonce blog crates at `reference/crates/` are a separate nested
+# workspace, excluded here so the root build stays focused on the new runtime.
+
 [workspace]
 resolver = "2"
 members = [
-    "crates/wo-model",
-    "crates/wo-seg",
-    "crates/wo-index",
-    "crates/wo-store",
-    "crates/wo-watch",
-    "crates/wo-event",
-    "crates/wo-sub",
-    "crates/wo-rt",
-    "crates/wo-http",
-    "crates/wo-route",
-    "crates/wo-htmlx",
-    "crates/wo-md",
-    "crates/wo-serve",
+    "crates/rt",
+
+    # Uncomment as each phase extracts code from `rt/` into its target crate.
+    # See docs/plan/02..08 for the sequence.
+    #
+    # "crates/ql",       # phase 02 target — lexer / parser / AST
+    # "crates/value",    # phase 02 target — tagged Value + path helpers
+    # "crates/engine",   # phase 02 target — rel/doc/graph executor
+    # "crates/txn",      # phase 02 target — MVCC + RETURNING alias table
+    # "crates/db",       # phase 02 target — top-level facade
+    # "crates/wal",      # phase 03 target — io_uring + fsync WAL
+    # "crates/sub",      # phase 04 target — LIVE subscriptions
+    # "crates/http",     # phase 04 target — wire protocol + router
+    # "crates/gen",      # phase 05 target — client SDK codegen
+    # "crates/policy",   # phase 06 target — RBAC planner rewrites
+    # "crates/logic",    # phase 06 target — triggers + fn interpreter
+    # "crates/service",  # phase 06 target — endpoint dispatch
+    # "crates/ui",       # phase 06 target — ##ui SSR + client runtime
+    # "crates/app",      # phase 06 target — ##app manifest
+]
+exclude = [
+    "reference/crates",
 ]
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
-libc = "0.2"
+anyhow     = "1"
