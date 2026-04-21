@@ -43,7 +43,7 @@ Three deps gone. Four remaining: `anyhow`, `serde`, `serde_json`, `libc`.
 
 ### Files deleted
 
-- None. The phase-02 `event/` module and phase-03 `http/` module stay in place and now become the primary code path.
+- None. The phase-02 `runtime/` module and phase-03 `http/` module stay in place and now become the primary code path.
 
 ## Handler signature change
 
@@ -91,7 +91,7 @@ Twelve handlers total — one pair per `{list, get, create, update, delete}` × 
 - **No JSON replacement.** `serde` + `serde_json` are still imported and used. Phase 05 removes them.
 - **No inotify / sendfile.** Stage 3 capabilities. Phases 07 and 08.
 - **No `io_uring`.** The `EventLoop` keeps using `epoll` here; swapping is a later phase.
-- **No crate extraction.** `event/` and `http/` stay inside `crates/rt/src/`. The empty `crates/event/` and `crates/http/` sibling crates wait for second consumers.
+- **No crate extraction.** `runtime/` and `http/` stay inside `crates/rt/src/`. The empty `crates/http/` sibling crate waits for a second consumer; `runtime/` doesn't have a sibling slot (it's the binary's private kernel-primitive layer, analogous to Go's `src/runtime/` staying internal to the toolchain).
 
 ## Risk
 

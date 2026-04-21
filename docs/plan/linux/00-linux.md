@@ -140,3 +140,6 @@ register! {
 
 Each pattern resolves to a set of inotify watch descriptors. When the watched set changes (new article added that matches the filter), the subscription table updates automatically during re-indexing.
 
+## Related: the assembly policy
+
+Every primitive above is reached via `libc::<syscall>` or `libc::syscall(SYS_*, ...)` — no custom assembly. The reasoning lives in [`../assembly/`](../assembly/) — three files covering why runtimes use asm at all ([`00-overview.md`](../assembly/00-overview.md)), what Go's [`reference/go/src/runtime/*.s`](../../../reference/go/src/runtime/) actually contains ([`01-go-runtime-asm.md`](../assembly/01-go-runtime-asm.md)), and the writeonce policy that all of it is replaced by Rust stdlib + libc ([`02-writeonce-stance.md`](../assembly/02-writeonce-stance.md)).

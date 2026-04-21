@@ -12,7 +12,7 @@ A non-blocking HTTP/1.1 server module that accepts connections, parses requests,
 2. **Per-connection state machine.** Each accepted socket fd is registered on the event loop with its own `Connection { state: Reading | Writing | Idle, parser, pending_response }`. Edge-triggered `EPOLLIN`/`EPOLLOUT` drive state transitions. Matches [v1 wo-http](../../reference/crates/wo-http/src/connection.rs)'s model verbatim.
 3. **Router is pattern-matched at registration.** `Router::new().route("/api/articles/:id", Method::GET, handler)` resolves to a trie at boot. Per-request dispatch is a single trie walk — no axum-style type-erased layers.
 4. **Handlers are `fn(&Request, &Engine) -> Response`.** Synchronous. The single-threaded event loop means a handler blocking is a bug; each handler must be a pure transformation over engine state.
-5. **Module, not crate (yet).** Lives at `crates/rt/src/http/` with the same "extract when a second consumer shows up" rule as phase 02. The eventual home is the empty [`crates/http/`](../../crates/http/) sibling — but not in this phase.
+5. **Module, not crate (yet).** Lives at `crates/rt/src/http/` with the same "extract when a second consumer shows up" rule as phase 02. The eventual home is the empty [`crates/http/`](../../crates/http/) sibling — but not in this phase. Paired with [phase 02's `crates/rt/src/runtime/`](./02-event-loop-epoll.md) (Go-style naming — `netpoll_epoll.rs`, `eventfd.rs`, …) which this module depends on for the `EventLoop` + raw syscall shims. Go's `src/net/http/` and `src/runtime/` split is the layout precedent; see [`reference/go/src/net/http/`](../../reference/go/src/net/http/).
 
 ## Scope
 

@@ -26,7 +26,10 @@ The repo holds three cuts of the same project plus one research reference:
 1. **`crates/rt/`** — the **active Rust runtime** (Stage 2 shipped). Monolithic on purpose for now: lexer, parser, AST, in-memory engine, axum REST server all in one crate. The `wo` binary lives at `crates/rt/src/bin/wo.rs`.
 2. **`crates/{ql,value,engine,txn,db,wal,sub,http,gen,policy,logic,service,ui,app}/`** — 14 **empty sibling crates** scaffolded to match the 7-phase design. Each has a `Cargo.toml` + `src/lib.rs` with just a doc comment pointing at its phase spec. Real code moves in from `rt` as each phase activates; do NOT refactor `rt` to use these today — it would break Stage 2.
 3. **`reference/crates/`** — the **v1 writeonce blog** (13 crates: `wo-seg`, `wo-index`, `wo-store`, `wo-htmlx`, etc.). This is a **nested Cargo workspace**, deliberately excluded from the root workspace. The v1 crates keep their `wo-` prefix; the new runtime crates dropped theirs. `cd reference/crates && cargo build` builds v1 standalone. See `docs/runtime/database/07-wo-seg-migration.md` for the plan replacing v1 with the new runtime.
-4. **`reference/linux/`** — **symlink to the Linux kernel source tree** (`/home/shoney/projects/linux`). Not committed (see `.gitignore`). Research resource for the kernel-primitives work: read `io_uring/`, `fs/notify/inotify/`, `kernel/eventfd.c`, `include/uapi/linux/*.h` when designing the runtime's kernel-facing modules. Each contributor sets their own target via `ln -s <path-to-linux-src> reference/linux`.
+4. **`reference/linux/`** and **`reference/go/`** — **symlinks** to the Linux kernel source tree and the Go source tree respectively. Not committed (see `.gitignore`). Research resources:
+   - **`reference/linux/`** — grep `io_uring/`, `fs/notify/inotify/`, `kernel/eventfd.c`, `include/uapi/linux/*.h` when designing the kernel-primitive modules. Paired with per-primitive reference cards at [`docs/plan/linux/`](docs/plan/linux/).
+   - **`reference/go/`** — grep `src/runtime/netpoll_epoll.go`, `netpoll.go`, `os_linux*.go`, `asm_*.s`, `sys_linux_*.s` when designing the runtime layer. The `crates/rt/src/runtime/` module mirrors Go's `src/runtime/` file-per-flavour naming (`netpoll_epoll.rs` ↔ `netpoll_epoll.go`). The [`docs/plan/assembly/`](docs/plan/assembly/) docs cite this tree.
+   - Each contributor sets their own targets via `ln -s <path-to-src> reference/{linux,go}`.
 
 There is also **`prototypes/wo-db/`** — a ~2k-line **C++ prototype** of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). It keeps its `wo-db` directory name (C++ project, separate from the Rust crate `db`). It's the reference implementation the Rust port follows; `make test` still passes.
 
@@ -134,5 +137,7 @@ Stage-3 stubs (501) and policy-shaped 405/404 responses are **intentional and do
 - `prototypes/wo-db/README.md` — the C++ prototype that shows the query layer
 - `reference/rest/README.md` — how to exercise the running prototype
 - `reference/README.md` — what's in the v1 archive and why it's preserved
-- `reference/linux/` (symlink) — the Linux kernel source tree itself; grep `io_uring/`, `fs/notify/inotify/`, `include/uapi/linux/*.h` when designing kernel-facing modules
+- `reference/linux/` (symlink) — the Linux kernel source tree; grep `io_uring/`, `fs/notify/inotify/`, `include/uapi/linux/*.h` when designing kernel-facing modules
+- `reference/go/` (symlink) — the Go source tree; grep `src/runtime/netpoll_*.go`, `asm_*.s`, `sys_linux_*.s` when porting runtime-layer ideas (writeonce's `crates/rt/src/runtime/` mirrors this naming)
+- `docs/plan/assembly/00-overview.md` — role of assembly in a runtime; writeonce policy is "no custom asm, use Rust stdlib"
 - `crates/README.md` — inventory of all 15 crates with phase assignments
