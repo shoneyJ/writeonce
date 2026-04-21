@@ -1,0 +1,83 @@
+-- Tests live under tests/ and are picked up by `wo test`.
+-- Each `test` block runs in an isolated database sandbox that's rolled back
+-- at the end of the block — no cleanup code needed.
+
+test "create and fetch by slug" {
+    let a = insert Author {
+        email:   "alice@example.com",
+        handle:  "alice",
+        display: "Alice",
+        role:    Author
+    };
+
+    let art = insert Article {
+        slug:   "hello",
+        title:  "Hello, writeonce",
+        author: a,
+        meta: {
+            excerpt: "A first post.",
+            body_md: "# Hello\n\nThis is writeonce."
+        },
+        published: true
+    };
+
+    let fetched = select Article{ slug == "hello" };
+    assert fetched.id == art.id;
+    assert fetched.title == "Hello, writeonce";
+    assert fetched.published_at != null;       -- set by the on-update trigger
+    assert fetched.word_count > 0;             -- computed field
+}
+
+test "policy blocks public read of unpublished drafts" {
+    let a = insert Author { email: "bob@example.com", handle: "bob", display: "Bob", role: Author };
+    insert Article {
+        slug: "draft", title: "Draft", author: a,
+        meta: { excerpt: "", body_md: "" },
+        published: false
+    };
+
+    -- Anonymous session: the `anyone when published == true` policy applies.
+    as session anonymous {
+        let rows = select Article{ slug == "draft" };
+        assert len(rows) == 0;
+    }
+
+    -- As the author, the row is visible.
+    as session $a {
+        let rows = select Article{ slug == "draft" };
+        assert len(rows) == 1;
+    }
+}
+
+test "graph traversal: related articles" {
+    let a = insert Author { email: "c@x", handle: "carol", display: "Carol", role: Author };
+
+    let a1 = insert Article { slug: "one",   title: "One",   author: a, meta: { excerpt: "", body_md: "" }, published: true };
+    let a2 = insert Article { slug: "two",   title: "Two",   author: a, meta: { excerpt: "", body_md: "" }, published: true };
+    let a3 = insert Article { slug: "three", title: "Three", author: a, meta: { excerpt: "", body_md: "" }, published: true };
+
+    -- Create :RELATED_TO edges: one → two, one → three
+    link Article{ slug == "one" } -[:RELATED_TO]-> Article{ slug == "two"   };
+    link Article{ slug == "one" } -[:RELATED_TO]-> Article{ slug == "three" };
+
+    let related = Article{ slug == "one" }.related;
+    assert len(related) == 2;
+    assert contains(related, slug == "two");
+    assert contains(related, slug == "three");
+}
+
+test "live subscription receives delta on commit" {
+    let sub = subscribe live Article{ published == true };
+
+    let a = insert Author { email: "d@x", handle: "dave", display: "Dave", role: Author };
+    insert Article {
+        slug: "live-test", title: "Live", author: a,
+        meta: { excerpt: "", body_md: "" },
+        published: true
+    };
+
+    -- receive(sub) blocks until the next delta or the test-default timeout.
+    let delta = receive(sub);
+    assert delta.kind == Insert;
+    assert delta.row.slug == "live-test";
+}

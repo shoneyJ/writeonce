@@ -1,0 +1,41 @@
+-- Root manifest. Names the app, maps URL paths to UI screens, and configures
+-- project-wide concerns (theme, i18n). The compiler uses this to assemble the
+-- static route table and the SSR renderer.
+
+##app
+name:    "blog"
+version: 1
+theme:   "light"
+i18n:    [en]
+
+-- URL → UI screen binding. `:slug` is a dynamic path segment that binds to a
+-- parameter visible inside the screen as `$slug`.
+routes:
+    /                -> ui.article-list
+    /article/:slug   -> ui.article-detail { key: $slug }
+    /tag/:slug       -> ui.article-list   { filter: { tags.slug == $slug } }
+    /admin           -> ui.article-list   { role: Admin }
+
+-- Project-wide policies — applied on every query, AND-ed with any type-level
+-- policy. Useful for ops-level toggles like admin bypass.
+policy admin-bypass
+    applies_to: Article, Comment, Author, Tag
+    when: $session.role == Admin
+    effect: skip-row-filters
+
+-- Lifecycle hooks. `on startup` runs once before the HTTP server binds;
+-- convenient for idempotent seeding.
+on startup
+    do: seed_admin()
+
+-- Inline function — available to triggers and lifecycle hooks.
+fn seed_admin() {
+    if count(Author{ role == Admin }) == 0 {
+        insert Author {
+            email:   "admin@example.com",
+            handle:  "admin",
+            display: "Admin",
+            role:    Admin
+        };
+    }
+}

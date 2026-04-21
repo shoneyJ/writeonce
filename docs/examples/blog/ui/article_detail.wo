@@ -1,0 +1,36 @@
+-- Detail page: one article, its body, its comments, and a "related" section
+-- that traverses the :RELATED_TO graph edge. Every section can be live-bound.
+
+##ui
+#article-detail
+    title:  $article.title
+    source: Article
+    key:    slug
+    live:   true
+
+    sections:
+        - header:
+            fields: [title, author.display, published_at, tags]
+
+        - body:
+            renderer: markdown
+            source:   meta.body_md
+
+        -- Graph traversal: one hop along :RELATED_TO, rendered inline.
+        - related:
+            title:    "You might also like"
+            renderer: list
+            source:   Article{ slug == $key }.related
+            columns:  [title, meta.excerpt, published_at]
+            live:     true
+
+        -- Reader comments. Two-way live: new comments appear without refresh.
+        - comments:
+            title:    "Comments"
+            renderer: list
+            source:   Comment{ article.slug == $key }
+            columns:  [author.display, body, created_at]
+            sort:     { default: created_at asc }
+            live:     true
+            actions:
+                create: /api/comments    role: Author | Admin

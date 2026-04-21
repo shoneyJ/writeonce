@@ -1,0 +1,95 @@
+-- Three tests covering the cross-paradigm checkout and the live ops table.
+-- Each `test` runs against an isolated snapshot that rolls back at the end.
+
+test "checkout atomically reserves inventory, creates order, and creates graph edge" {
+    let c = insert Customer { email: "alice@shop.test", name: "Alice" };
+    let p = insert Product {
+        sku: "T-1", name: "T1", price: 999,
+        meta:      { description: "", images: [], attributes: {} },
+        inventory: { on_hand: 10, reserved: 0, reorder_at: 2 }
+    };
+
+    let o = checkout(c, p, 3);
+
+    -- relational: order exists with the right shape
+    assert o.status == Pending;
+    assert o.total == 2997;
+    assert len(o.line_items) == 1;
+    assert o.line_items[0].qty == 3;
+
+    -- document: inventory reserved, on_hand untouched (reservation only)
+    let refetched = select Product{ sku == "T-1" };
+    assert refetched.inventory.reserved == 3;
+    assert refetched.inventory.on_hand == 10;
+    assert refetched.available == 7;
+
+    -- graph: Purchase edge threads the new order id into the graph store
+    let edges = Customer{ id == c.id }.purchased;
+    assert len(edges) == 1;
+    assert edges[0].target.sku == "T-1";
+    assert edges[0].qty == 3;
+    assert edges[0].order == o.id;                -- cross-paradigm ref
+}
+
+
+test "checkout aborts without partial state when inventory is insufficient" {
+    let c = insert Customer { email: "bob@shop.test", name: "Bob" };
+    let p = insert Product {
+        sku: "T-2", name: "T2", price: 499,
+        meta:      { description: "", images: [], attributes: {} },
+        inventory: { on_hand: 2, reserved: 0, reorder_at: 0 }
+    };
+
+    expect_abort "insufficient" {
+        checkout(c, p, 5);
+    }
+
+    -- nothing was written: no order, no reservation, no edge
+    let still = select Product{ sku == "T-2" };
+    assert still.inventory.reserved == 0;
+
+    assert len(select Order{ customer == c.id }) == 0;
+    assert len(Customer{ id == c.id }.purchased) == 0;
+}
+
+
+test "admin live-orders subscription receives deltas across the order lifecycle" {
+    let c = insert Customer { email: "carol@shop.test", name: "Carol" };
+    let p = insert Product {
+        sku: "T-3", name: "T3", price: 1500,
+        meta:      { description: "", images: [], attributes: {} },
+        inventory: { on_hand: 5, reserved: 0, reorder_at: 0 }
+    };
+
+    -- Subscribe with the same predicate the admin UI uses.
+    let sub = subscribe live Order{ status != Cancelled };
+
+    -- Snapshot first (zero rows — test starts clean).
+    let snap = receive(sub);
+    assert snap.kind == Snapshot;
+    assert len(snap.rows) == 0;
+
+    -- Checkout → expect an Insert delta (status Pending, total set).
+    let o = checkout(c, p, 1);
+    let d1 = receive(sub);
+    assert d1.kind == Insert;
+    assert d1.row.id == o.id;
+    assert d1.row.status == Pending;
+    assert d1.row.total == 1500;
+
+    -- mark_paid flips status → expect an Update delta. paid_at is set by the
+    -- type-attached `on update` trigger inside the same transaction, so it
+    -- arrives in the same delta — never observable half-way.
+    mark_paid(o);
+    let d2 = receive(sub);
+    assert d2.kind == Update;
+    assert d2.row.status == Paid;
+    assert d2.row.paid_at != null;
+
+    -- mark_shipped → Update with shipped_at set.
+    mark_shipped(o);
+    let d3 = receive(sub);
+    assert d3.kind == Update;
+    assert d3.row.status == Shipped;
+    assert d3.row.shipped_at != null;
+}

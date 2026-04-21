@@ -1,0 +1,33 @@
+-- Customer is both the public-facing shopper and (via role) the ops/admin
+-- identity. Roles gate who sees the /admin/orders live table.
+
+type Customer {
+  id:         Id
+  email:      Email @unique
+  name:       Text
+  role:       Guest | Customer | Ops | Admin = Customer
+  addr: {
+    line1:    Text
+    city:     Text
+    postal:   Text
+    country:  Text
+  }?                                      -- optional shipping address
+  joined_at:  Timestamp = now()
+
+  -- Graph edge with properties: one PURCHASED edge per line item per order.
+  -- The `Purchase` link type lives in types/purchase.wo.
+  purchased:  multi Product via Purchase
+
+  -- Inverse of Order.customer — read-only, no storage column.
+  orders:     backlink Order.customer
+
+  policy read for role Admin
+  policy read for role Ops
+  policy read when self == $session.user
+
+  policy write for role Admin
+  policy write when self == $session.user
+
+  service rest "/api/customers"
+    expose get, me, update, subscribe
+}

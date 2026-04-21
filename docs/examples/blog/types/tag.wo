@@ -1,0 +1,20 @@
+-- Tags are a small taxonomy. A separate type (rather than a string array on
+-- Article) because we want to query by tag cheaply AND attach per-tag metadata
+-- (colour, description) later without a migration that rewrites articles.
+
+type Tag {
+  id:          Id
+  slug:        Slug @unique
+  label:       Text
+  description: Markdown?
+  colour:      Text = "#888"
+
+  -- Computed field: count of articles with this tag.
+  -- Re-evaluated on read; if it gets hot, flip to `@materialized` to cache.
+  article_count: Int = count(Article{ tags contains self })
+
+  policy read  anyone
+  policy write for role Admin
+
+  service rest "/api/tags" expose list, get, subscribe
+}

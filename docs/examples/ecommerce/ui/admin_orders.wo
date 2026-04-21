@@ -1,0 +1,54 @@
+-- THE live order-ops table. This is what an ops/fulfillment team watches all day.
+-- `live: true` + `source: Order` auto-registers a LIVE query matching the columns
+-- shown; every commit (checkout, status flip, trigger-updated timestamp) pushes
+-- a delta down the WebSocket and the client runtime swaps the row in place.
+-- No polling, no refresh button.
+
+##ui
+#admin-orders
+    title:   "Orders — Live"
+    source:  Order
+    live:    true
+    role:    Admin | Ops                       -- gated by role; customers can't reach /admin/orders
+
+    -- Sidebar filter controls bind to these predicates at render time.
+    filter:
+        status != Cancelled                    -- default view hides cancelled
+
+    -- Named predicate chips: operators click these to narrow the view.
+    quick-filters:
+        - "Needs payment":  status == Pending
+        - "Ready to ship":  status == Paid
+        - "In transit":     status == Shipped
+        - "Today":          placed_at >= today()
+        - "Above $100":     total > 10000      -- minor units (cents)
+
+    columns:
+        - id                       label: "#"            renderer: code
+        - status                   renderer: pill                       -- coloured by enum variant
+        - customer.name            label: "Customer"
+        - customer.email           label: "Email"
+        - total                    renderer: money
+        - len(line_items)          label: "Items"        computed
+        - placed_at                renderer: relative-date
+        - paid_at                  renderer: relative-date
+        - shipped_at               renderer: relative-date
+
+    sort:
+        default: placed_at desc
+
+    -- Single-row + bulk actions. Each one calls a `fn` from logic/checkout.wo
+    -- (or a stdlib action like `email`). The compiler wires them to endpoints.
+    actions:
+        row-click:           /admin/orders/:id
+        row-mark-paid:       mark_paid(self)        role: Admin | Ops
+        row-mark-shipped:    mark_shipped(self)     role: Admin | Ops
+        row-cancel:          update self set status = Cancelled   role: Admin
+        bulk-export-csv:     export_orders_csv      role: Admin | Ops
+
+    -- Delta behaviour: `instant` swaps cells in place on UPDATE deltas (no fade);
+    -- new rows slide in at their sort position; deleted rows fade out.
+    refresh:       instant
+    highlight-new: 2s
+
+    pagination: 100

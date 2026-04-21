@@ -1,0 +1,58 @@
+##app
+name:    "ecommerce"
+version: 1
+theme:   "light"
+i18n:    [en]
+
+routes:
+    /                     -> ui.storefront
+    /product/:sku         -> ui.product-detail  { key: $sku }
+    /cart                 -> ui.cart
+    /orders               -> ui.order-tracker
+    /admin/orders         -> ui.admin-orders                     role: Admin | Ops
+
+-- Cross-entity policy — Admin + Ops bypass row-level filters so they can see
+-- every customer's orders in the live ops table.
+policy admin-ops-bypass
+    applies_to: Order, Product, Customer, Purchase
+    when: $session.role == Admin or $session.role == Ops
+    effect: skip-row-filters
+
+-- Startup seed: idempotent demo data so `wo run` shows something useful.
+on startup
+    do: seed()
+
+fn seed() {
+    if count(Customer{ email == "admin@shop.test" }) == 0 {
+        insert Customer {
+            email: "admin@shop.test",
+            name:  "Ops Admin",
+            role:  Admin
+        };
+    }
+
+    if count(Product{ sku == "SKU-WIDGET" }) == 0 {
+        insert Product {
+            sku:   "SKU-WIDGET",
+            name:  "Widget",
+            price: 1999,
+            meta: {
+                description: "A classic widget.",
+                images:      ["/static/widget.jpg"],
+                attributes:  { colour: "blue", size: "M", material: "steel" }
+            },
+            inventory: { on_hand: 50, reserved: 0, reorder_at: 10 }
+        };
+        insert Product {
+            sku:   "SKU-GIZMO",
+            name:  "Gizmo",
+            price: 4999,
+            meta: {
+                description: "A premium gizmo.",
+                images:      ["/static/gizmo.jpg"],
+                attributes:  { colour: "black", size: "L", material: "aluminium" }
+            },
+            inventory: { on_hand: 12, reserved: 0, reorder_at: 3 }
+        };
+    }
+}

@@ -1,0 +1,28 @@
+-- Home page: list of published articles, newest first. The `live: true` flag
+-- makes the runtime auto-register a LIVE query matching the displayed columns;
+-- the rendered HTML ships with a small client that binds deltas to the DOM.
+
+##ui
+#article-list
+    title:  "Articles"
+    source: Article
+    live:   true
+
+    filter:
+        published == true
+
+    columns:
+        - slug            label: "Slug"           renderer: code
+        - title           label: "Title"          searchable
+        - author.display  label: "Author"
+        - published_at    label: "Published"      renderer: relative-date
+        - tags            label: "Tags"           renderer: tag-chips
+
+    sort:
+        default: published_at desc
+
+    actions:
+        row-click:  /article/:slug
+        create:     /article/new             role: Author | Admin
+
+    pagination: 20

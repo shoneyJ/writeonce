@@ -1,0 +1,31 @@
+-- Reader comments on an article. Kept small for the sample, but demonstrates
+-- cascading policies (a reader can only edit their own comment) and two-way
+-- live subscription (both articles and comments push deltas).
+
+type Comment {
+  id:         Id
+  article:    ref Article
+  author:     ref Author
+  body:       Markdown
+  created_at: Timestamp = now()
+  edited_at:  Timestamp?
+
+  -- Anyone can read a comment on a visible article. The engine threads the
+  -- Article.read policy through this relationship automatically because of
+  -- the `ref Article` above.
+  policy read  anyone
+
+  -- Writing is by role; the owner-check is the row-level rule.
+  policy write for role Author when author == $session.user
+  policy write for role Admin
+  policy delete for role Author when author == $session.user
+  policy delete for role Admin
+
+  -- Stamp edited_at whenever the body changes post-insert.
+  on update
+    when old.body != new.body
+    do set self.edited_at = now()
+
+  service rest "/api/comments"
+    expose list, get, create, update, delete, subscribe
+}

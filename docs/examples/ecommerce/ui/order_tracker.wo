@@ -1,0 +1,28 @@
+-- Customer-facing live order list. Same engine, same wire, same delta stream
+-- as the admin table — but the row-level policy on `Order` narrows the source
+-- to `customer == $session.user`, so a user only ever sees their own orders.
+
+##ui
+#order-tracker
+    title:  "Your Orders"
+    source: Order{ customer == $session.user }
+    live:   true
+
+    columns:
+        - id              label: "Order #"   renderer: code
+        - status          renderer: pill
+        - total           renderer: money
+        - placed_at       renderer: relative-date
+        - shipped_at      renderer: relative-date     label: "Shipped"
+        - delivered_at    renderer: relative-date     label: "Delivered"
+
+    sort:
+        default: placed_at desc
+
+    actions:
+        row-click:  /orders/:id
+        cancel:     update self set status = Cancelled      when status == Pending
+
+    empty-state:
+        message: "You haven't placed any orders yet."
+        cta:     { label: "Shop", link: "/" }

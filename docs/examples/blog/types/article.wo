@@ -1,0 +1,68 @@
+-- The heart of the app. Article combines all three paradigms in one type:
+--   * relational scalars (slug, title, published, published_at)
+--   * an embedded document (meta.body_md, meta.excerpt, meta.hero_image)
+--   * graph edges (tags, related, prerequisites)
+-- The compiler picks storage per field: scalars → relational row, meta → doc,
+-- multi/ref → graph edges + FK columns.
+
+type Article {
+  id:            Id
+  slug:          Slug @unique                  -- URL path component
+  title:         Text
+  author:        ref Author                    -- foreign key into Author
+  published:     Bool = false
+  published_at:  Timestamp?                    -- set by the trigger below
+  created_at:    Timestamp = now()
+  updated_at:    Timestamp = now()
+
+  -- Embedded document. All fields stored together; no join on read.
+  meta: {
+    excerpt:     Text
+    body_md:     Markdown
+    hero_image:  Url?
+    reading_min: Int?                          -- computed by a pre-commit hook
+  }
+
+  -- Tags: many-to-many graph edge with a label, no edge properties.
+  tags:          multi Tag @edge(:TAGGED_AS)
+
+  -- "You might also like" — directed graph edge between articles.
+  related:       multi Article @edge(:RELATED_TO)
+
+  -- Prerequisite reading, also a directed edge; distinct label so queries
+  -- can traverse tags vs prereqs independently.
+  prerequisites: multi Article @edge(:PREREQUISITE)
+
+  -- Inverse of Comment.article. Read-only from this side.
+  comments:      backlink Comment.article
+
+  -- Computed: word count, derived from the markdown body.
+  word_count:    Int = words(meta.body_md)
+
+  -- Policies — row-level access rules. The planner AND-s them into every
+  -- query so they can't be bypassed by a poorly-scoped handler.
+  policy read  anyone                          when published == true
+  policy read  for role Admin
+  policy read  for role Author                 when author == $session.user
+  policy write for role Admin
+  policy write for role Author                 when author == $session.user
+  policy delete for role Admin
+
+  -- Pre-commit trigger: set published_at when the article is first published.
+  -- Fires inside the transaction, so the set is atomic with the update.
+  on update
+    when old.published == false and new.published == true
+    do set self.published_at = now()
+    do emit "article.published"(self)
+    do enqueue "send-subscriber-emails" with { article_id: self.id }
+
+  -- Bump updated_at on every mutation — except the insert, where created_at
+  -- already covers it.
+  on update
+    do set self.updated_at = now()
+
+  -- REST surface. `subscribe` is the LIVE query endpoint — WebSocket that
+  -- pushes a delta on every commit matching the predicate.
+  service rest "/api/articles"
+    expose list, get, create, update, delete, subscribe
+}

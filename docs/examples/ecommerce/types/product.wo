@@ -1,0 +1,45 @@
+-- Product combines relational scalars (sku, price), an embedded document
+-- (meta: description/images/attributes), and a graph edge (similar_to).
+-- Inventory is an embedded doc so a checkout atomically updates it together
+-- with the order row inside one transaction.
+
+type Product {
+  id:         Id
+  sku:        SKU @unique
+  name:       Text
+  price:      Money                         -- minor units (cents); `Money` is a stdlib scalar
+
+  meta: {                                   -- embedded document
+    description: Markdown
+    images:      [Url]
+    attributes:  { colour: Text?, size: Text?, material: Text? }
+  }
+
+  inventory: {                              -- embedded document with constraints
+    on_hand:    Int = 0   @check(>= 0)      -- total units physically in stock
+    reserved:   Int = 0   @check(>= 0)      -- units held by pending orders
+    reorder_at: Int = 5
+  }
+
+  -- Computed read-only field: the inventory the storefront actually shows.
+  available:  Int = inventory.on_hand - inventory.reserved
+  in_stock:   Bool = available > 0
+
+  -- Graph edge — recommendation surface used by `/product/:sku` pages.
+  similar_to: multi Product @edge(:SIMILAR_TO)
+
+  policy read  anyone
+  policy write for role Admin
+  policy write for role Ops
+
+  -- Pre-commit trigger: fire a reorder job when inventory crosses the threshold.
+  -- `old` and `new` reference the row state before and after the current txn.
+  on update
+    when new.inventory.on_hand <= new.inventory.reorder_at
+     and old.inventory.on_hand >  new.inventory.reorder_at
+    do emit "inventory.low"(self)
+    do enqueue "reorder" with { product_id: self.id, current: new.inventory.on_hand }
+
+  service rest "/api/products"
+    expose list, get, subscribe
+}

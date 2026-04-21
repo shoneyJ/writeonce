@@ -1,0 +1,95 @@
+-- The canonical cross-paradigm transaction from the Phase 2 language spec.
+-- `checkout` touches three storage paradigms atomically:
+--   1. relational row — insert into Order
+--   2. document field — decrement Product.inventory (embedded doc)
+--   3. graph edge    — create a Purchase edge linking Customer → Product
+--
+-- The whole function runs inside `txn snapshot` (snapshot isolation). If any
+-- step fails, the transaction coordinator rolls back every partial write
+-- across all three engines. No partial orders, no phantom inventory drift.
+
+fn checkout(
+    customer: ref Customer,
+    product:  ref Product,
+    qty:      Int
+) -> Order in txn snapshot
+{
+    -- Load the current product row in-transaction (so we see a consistent
+    -- snapshot for the inventory check).
+    let p = select Product{ id == product.id };
+
+    -- Domain invariant. `otherwise abort` rolls the transaction back.
+    assert p.available >= qty
+        otherwise abort "insufficient inventory for " + p.sku;
+
+    -- Reserve inventory. Document path update inside the relational Product row.
+    update Product{ id == p.id }
+        set inventory.reserved = inventory.reserved + qty;
+
+    -- Create the order. `insert ... returning self` binds the inserted row to
+    -- the let-binding so downstream statements can refer to its id without
+    -- the legacy `LAST_INSERT_ID()` dance.
+    let o = insert Order {
+        customer:   customer,
+        status:     Pending,
+        line_items: [{
+            product:    p,
+            qty:        qty,
+            unit_price: p.price
+        }]
+    };
+
+    -- Graph edge: (customer)-[:PURCHASED {order, qty, unit_price}]->(product).
+    -- References the order id that was minted by the insert above — the
+    -- transaction-scoped alias table threads `o.id` through to the graph store
+    -- without a round-trip to the client.
+    link customer
+        -[Purchase { order: o, qty: qty, unit_price: p.price }]->
+        p;
+
+    return o;
+}
+
+
+-- Mark an order paid. Called by the payment-webhook handler. The inventory
+-- flip (reserved → on_hand-delta) runs atomically with the status change.
+fn mark_paid(o: ref Order) in txn snapshot
+{
+    update Order{ id == o.id }
+        set status = Paid;
+
+    -- Draw down on_hand for each line item; clear the reservation.
+    for line in Order{ id == o.id }.line_items {
+        update Product{ id == line.product.id }
+            set inventory.on_hand  = inventory.on_hand  - line.qty,
+                inventory.reserved = inventory.reserved - line.qty;
+    }
+}
+
+
+-- Cancellation or refund: release the inventory reservation.
+-- Called from the `on update when ... status == Cancelled` trigger in order.wo.
+fn release_inventory(o: ref Order) in txn snapshot
+{
+    for line in o.line_items {
+        if o.status == Paid or o.status == Shipped or o.status == Delivered {
+            -- Already decremented on_hand; put it back.
+            update Product{ id == line.product.id }
+                set inventory.on_hand = inventory.on_hand + line.qty;
+        } else {
+            -- Still reserved; release the reservation.
+            update Product{ id == line.product.id }
+                set inventory.reserved = inventory.reserved - line.qty;
+        }
+    }
+}
+
+
+-- Lifecycle advance: ship an order. Ops triggers this from the admin UI.
+fn mark_shipped(o: ref Order) in txn snapshot
+{
+    assert o.status == Paid
+        otherwise abort "can only ship paid orders (current: " + o.status + ")";
+    update Order{ id == o.id }
+        set status = Shipped;
+}

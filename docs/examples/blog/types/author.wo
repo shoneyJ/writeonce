@@ -1,0 +1,26 @@
+-- Authors write articles. Keeping the type small: one author is one writer
+-- with a session-bindable identity (role == "author" or "admin").
+
+type Author {
+  id:         Id
+  email:      Email @unique                 -- primary identity; uniqueness is planner-enforced
+  handle:     Slug  @unique                 -- URL-friendly (e.g. "alice")
+  display:    Text
+  bio:        Markdown?                     -- optional
+  avatar:     Url?
+  joined_at:  Timestamp = now()
+  role:       Reader | Author | Admin = Reader   -- tagged union, stored as enum
+
+  -- Inverse link: computed from Article.author. No storage column; resolved at query time.
+  articles:   backlink Article.author
+
+  -- Policies are expressed next to the type; the planner AND-s them into every query.
+  policy read  anyone
+  policy write for role Admin
+  policy write for role Author when self == $session.user   -- authors can edit their own profile
+
+  -- Expose a small REST surface. `me` is a virtual endpoint the runtime wires
+  -- to the current session user.
+  service rest "/api/authors"
+    expose list, get, me, subscribe
+}

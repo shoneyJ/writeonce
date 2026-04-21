@@ -1,0 +1,59 @@
+-- The Order type shows three advanced schema-layer features working together:
+--   * a tagged union for `status` (compiled to an enum column)
+--   * an array of inline structs for `line_items` (stored as a doc column)
+--   * a computed `total` field aggregating over the array
+-- Status transitions each fire their own `on update` trigger — the timestamp
+-- columns (paid_at, shipped_at, …) are set by those triggers, not the caller.
+
+type Order {
+  id:           Id
+  customer:     ref Customer
+  status:       Pending | Paid | Shipped | Delivered | Refunded | Cancelled = Pending
+
+  -- Array of embedded line-item objects. `product: ref Product` lets the
+  -- planner enforce FK integrity even inside the doc column.
+  line_items:   [{
+    product:    ref Product
+    qty:        Int @check(> 0)
+    unit_price: Money                           -- captured at checkout time
+  }]
+
+  -- Computed: re-evaluated on read. Flip to `@materialized` if it gets hot.
+  total:        Money = sum(line_items.*.qty * line_items.*.unit_price)
+
+  placed_at:    Timestamp = now()
+  paid_at:      Timestamp?
+  shipped_at:   Timestamp?
+  delivered_at: Timestamp?
+  cancelled_at: Timestamp?
+
+  -- Customers see their own orders. Ops + Admin see all.
+  policy read  for role Admin
+  policy read  for role Ops
+  policy read  when customer == $session.user
+
+  policy write for role Admin
+  policy write for role Ops
+
+  -- Lifecycle triggers. Each fires inside the committing transaction — the
+  -- timestamp update is atomic with the status change, never observable half-way.
+
+  on update when old.status != Paid      and new.status == Paid
+    do set self.paid_at = now()
+    do emit "order.paid"(self)
+    do enqueue "fulfill" with { order_id: self.id }
+
+  on update when old.status != Shipped   and new.status == Shipped
+    do set self.shipped_at = now()
+    do emit "order.shipped"(self)
+
+  on update when old.status != Delivered and new.status == Delivered
+    do set self.delivered_at = now()
+
+  on update when old.status != Cancelled and new.status == Cancelled
+    do set self.cancelled_at = now()
+    do call release_inventory(self)           -- defined in logic/checkout.wo
+
+  service rest "/api/orders"
+    expose list, get, subscribe
+}

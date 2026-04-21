@@ -1,0 +1,31 @@
+# Project manifest — the `wo.toml` is the .wo equivalent of Go's `go.mod`.
+# `wo run` and `wo build` both start by reading this file.
+
+name        = "blog"
+version     = "0.1.0"
+description = "A sample writeonce blogging app: DB + REST + live subscriptions in ~200 lines of .wo"
+
+# Runtime constraint — which wo toolchain this project targets.
+[runtime]
+wo = ">= 0.1"
+
+# HTTP server configuration.
+# Endpoints come from `service rest` blocks on types + routes in app.wo.
+[server]
+listen = ":8080"
+
+# Database configuration. For this sample the engine persists to ./data/
+# via the WAL + in-memory engine from Phase 3.
+[database]
+data_dir = "./data"
+isolation = "snapshot"   # default isolation for transactions
+
+# External .wo modules would go here, mirroring `go.mod`'s require block.
+# Locked versions land in `wo.lock` (not shown — auto-generated).
+[dependencies]
+# wo-stdlib = ">= 0.1"   # implicit, always imported
+
+# Commands `wo test` picks up. Each test file lives under tests/ and
+# matches `*_test.wo`.
+[test]
+parallel = true

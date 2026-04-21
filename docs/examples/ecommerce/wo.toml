@@ -1,0 +1,16 @@
+name        = "ecommerce"
+version     = "0.1.0"
+description = "A sample writeonce e-commerce app: cross-paradigm ACID checkout + live order-ops table"
+
+[runtime]
+wo = ">= 0.1"
+
+[server]
+listen = ":8080"
+
+[database]
+data_dir = "./data"
+isolation = "snapshot"        # snapshot isolation for the canonical checkout flow
+
+[test]
+parallel = false              # ordering tests touch the same rows; serialize

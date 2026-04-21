@@ -1,0 +1,20 @@
+-- Graph edge **with properties**: one record per line item per order.
+-- The `link Customer -> Product` form tells the compiler this is a directed
+-- graph edge type, stored in the graph engine but queryable in both directions
+-- (via Customer.purchased and the inverse relation).
+--
+-- Phase 2 calls this "link-with-properties" — it's the feature that makes
+-- graph recommendations queryable alongside relational order data without
+-- stitching two stores.
+
+type Purchase link Customer -> Product {
+  order:      ref Order                      -- FK so you can query
+                                             -- `Customer.purchased{ order.status == Paid }`
+  qty:        Int   @check(> 0)
+  unit_price: Money                          -- captured at checkout time
+  at:         Timestamp = now()
+
+  policy read for role Admin
+  policy read for role Ops
+  policy read when source == $session.user   -- `source` = the edge's from-node
+}
