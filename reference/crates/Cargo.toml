@@ -1,0 +1,40 @@
+# Nested workspace for the v1 writeonce blog crates.
+#
+# The root workspace at /Cargo.toml drives the new `.wo` runtime at crates/wo-rt.
+# These thirteen crates are the previous generation of writeonce — the flat-file
+# blog engine described in docs/runtime/database/07-wo-seg-migration.md. They
+# are preserved here for reference: source is readable, tests still run, and
+# the Phase 7 migration plan assumes a gradual trait-abstracted coexistence
+# rather than deletion.
+#
+# To build the v1 system standalone:
+#   cd reference/crates && cargo build
+#   cd reference/crates && cargo test
+#
+# The v1 crates are deliberately NOT members of the root workspace. Excluding
+# them avoids the `wo-rt` name collision (both v1 and v2 claim that name) and
+# keeps the root build fast while the new runtime is under active development.
+
+[workspace]
+resolver = "2"
+members = [
+    "wo-model",
+    "wo-seg",
+    "wo-index",
+    "wo-store",
+    "wo-watch",
+    "wo-event",
+    "wo-sub",
+    "wo-rt",
+    "wo-http",
+    "wo-route",
+    "wo-htmlx",
+    "wo-md",
+    "wo-serve",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+libc = "0.2"
