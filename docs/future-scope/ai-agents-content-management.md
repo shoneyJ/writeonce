@@ -46,13 +46,13 @@ Per [06-markdown-render.md](./06-markdown-render.md), the JSON metadata is minim
 
 ### Mapping Types
 
-| Type | Meaning | Agent Use |
-|------|---------|-----------|
-| `related` | Topically related articles | Agent loads these for cross-reference when editing |
-| `prerequisite` | Articles the reader should read first | Agent ensures no concept duplication, references prerequisites instead of re-explaining |
-| `series` | Articles that form an ordered sequence | Agent maintains narrative continuity across the series |
-| `supersedes` | This article replaces an older one | Agent can mark the old article as outdated or unpublished |
-| `references` | External articles or URLs the content builds on | Agent checks links are still valid, cites them properly |
+| Type           | Meaning                                         | Agent Use                                                                               |
+| -------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `related`      | Topically related articles                      | Agent loads these for cross-reference when editing                                      |
+| `prerequisite` | Articles the reader should read first           | Agent ensures no concept duplication, references prerequisites instead of re-explaining |
+| `series`       | Articles that form an ordered sequence          | Agent maintains narrative continuity across the series                                  |
+| `supersedes`   | This article replaces an older one              | Agent can mark the old article as outdated or unpublished                               |
+| `references`   | External articles or URLs the content builds on | Agent checks links are still valid, cites them properly                                 |
 
 ### Directory Structure with Mappings
 
@@ -76,6 +76,7 @@ content/
 The author asks an agent: "Write an article about deploying GitLab Runner on ECS."
 
 The agent:
+
 1. Scans the content directory for existing articles with tags `gitlab`, `ci-cd`, `aws`
 2. Finds `gitlab-runner-with-kubernetes-executor` and `auto-scale-gitlab-runner-using-aws-spot-instance`
 3. Reads their `.md` files to understand what's already covered
@@ -87,6 +88,7 @@ The agent:
 The author asks: "Update the Kubernetes executor article with the new runner token format."
 
 The agent:
+
 1. Reads the article's JSON metadata and `.md` content
 2. Reads the `mappings.related` articles to check for consistency
 3. Makes the update in the `.md` file
@@ -98,6 +100,7 @@ The agent:
 The author asks: "Which articles reference outdated AWS configurations?"
 
 The agent:
+
 1. Loads all article metadata (the Store already indexes everything)
 2. Follows `mappings` to build a dependency graph
 3. Reads the `.md` files of articles tagged with `aws`
@@ -109,6 +112,7 @@ The agent:
 The author asks: "Add a new part to the gitlab-runner series."
 
 The agent:
+
 1. Finds all articles with `mappings.series.name == "gitlab-runner"`
 2. Reads them in order to understand the narrative arc
 3. Writes the new article continuing from where the series left off
@@ -140,9 +144,7 @@ The `article.htmlx` template can render related articles:
 ```html
 <article>
   <h1>{{article.title}}</h1>
-  {{article.content_html}}
-
-  {{#each article.related}}
+  {{article.content_html}} {{#each article.related}}
   <aside class="related">
     <h3>Related</h3>
     <ul>
@@ -173,3 +175,8 @@ For agents to use the mappings effectively, the project can include an agent ins
 ```
 
 This turns the content directory into an agent-navigable knowledge graph where the metadata provides the edges and the markdown files provide the nodes.
+
+## queryable graph database
+
+- traversable knowledge graphs available on RAM.
+- which linux kernels, develop in C ++. User wants to learn it.

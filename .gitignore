@@ -1,3 +1,29 @@
+# Cargo build artifacts
 /target
+/reference/crates/target
+
+# C++ prototype build output
+/prototypes/*/build
+
+# Runtime data directories for the sample projects.
+# `wo.toml` points at `./data` which holds the per-project engine state.
 /data
+/docs/examples/*/data
+
+# Legacy blog content and data (v1 writeonce storage)
 /content
+
+# Symlink to the Linux kernel source tree for research — user-specific
+# absolute path; each contributor sets their own via
+#   ln -s <path-to-linux-src> reference/linux
+/reference/linux
+
+# Editor / OS noise — left broad on purpose so a contributor doesn't
+# accidentally commit their IDE scratch or macOS metadata.
+.DS_Store
+*.swp
+*.swo
+/.idea/
+/.vscode/*
+!/.vscode/settings.json.example
+!/.vscode/extensions.json
