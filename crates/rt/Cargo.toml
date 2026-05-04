@@ -16,9 +16,6 @@ path = "src/bin/wo.rs"
 anyhow     = "1"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio      = { version = "1", features = ["rt", "macros", "net", "signal", "sync", "time"] }
-axum       = "0.7"
-tower      = "0.4"
 libc       = "0.2"   # phase 02 — direct epoll/eventfd/timerfd/signalfd syscalls
 
 [dev-dependencies]

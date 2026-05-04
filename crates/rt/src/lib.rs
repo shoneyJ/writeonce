@@ -7,6 +7,7 @@
 pub mod ast;
 pub mod compile;
 pub mod engine;
+pub mod http;
 pub mod lexer;
 pub mod parser;
 pub mod runtime;
