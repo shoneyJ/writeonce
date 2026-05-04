@@ -15,10 +15,12 @@
 
 # Symlinks to research source trees — user-specific absolute paths.
 # Each contributor sets their own via:
-#   ln -s <path-to-linux-src> reference/linux
-#   ln -s <path-to-go-src>    reference/go
+#   ln -s <path-to-linux-src>      reference/linux
+#   ln -s <path-to-go-src>         reference/go
+#   ln -s <path-to-postgresql-src> reference/postgresql
 /reference/linux
 /reference/go
+/reference/postgresql
 
 # Editor / OS noise — left broad on purpose so a contributor doesn't
 # accidentally commit their IDE scratch or macOS metadata.

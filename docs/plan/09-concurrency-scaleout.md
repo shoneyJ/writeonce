@@ -8,7 +8,7 @@ Phases 02–08 produce a single-threaded event-loop runtime with zero external R
 
 This phase is the refinement of the Phase-2 concurrency doctrine "shard to scale past one core" into a concrete architecture. The stance stays the same — **no Go-style goroutines, no work-stealing across threads, no shared mutable heap** — but now we have multiple event loops, each owning its core, its share of connections, and its slice of engine state.
 
-This doc is a **master plan**. It outlines sub-phases 10–15 at a high level; each sub-phase lands as its own numbered plan doc when implementation starts. No code changes in this pass.
+This doc is a **master plan**. It outlines sub-phases A–F at a high level; each sub-phase lands as its own plan doc (`09a-…`, `09b-…`, …) when implementation starts. No code changes in this pass. The numerical phase slots 10/11/12 are taken by the storage roadmap ([`./10-storage-foundations.md`](./10-storage-foundations.md), [`./11-wal-and-recovery.md`](./11-wal-and-recovery.md), [`./12-engine-disk-cutover.md`](./12-engine-disk-cutover.md)) — single-thread durability has to land before the per-shard WAL of `09c`.
 
 ## Goal
 
@@ -63,31 +63,31 @@ Reference cards already exist for most; this phase adds the ones that are cross-
 
 Each one lands as its own numbered plan doc when ready for implementation. Smoke test (`cargo run --bin wo -- run docs/examples/ecommerce` serves correctly) stays green after every sub-phase.
 
-### `10-thread-per-core.md` — N event loops, `SO_REUSEPORT`
+### `09a-thread-per-core.md` — N event loops, `SO_REUSEPORT`
 
 Introduce a thread-pool manager at `crates/rt/src/runtime/scheduler.rs` (Go parallel: `proc.go`). Spawn `WO_THREADS` OS threads at boot; each pins itself and runs an `EventLoop`. Replace the single `Listener` with per-thread listeners bound `SO_REUSEPORT` to the same port. State is still global at first (shared `Arc<Mutex<Engine>>`) — one thing at a time. Exit criterion: `wo run` boots N threads visible in `ps -T`, accepts load balanced across them per `ss -tnp`, no regression in the 20-assertion blog smoke.
 
-### `11-sharded-engine.md` — per-thread engine state
+### `09b-sharded-engine.md` — per-thread engine state
 
 Partition the in-memory engine catalog + row BTreeMaps by shard id (= thread id). Shard key is `customer.id` for ecommerce / `author.id` for blog / per-type default for anything else. Add a shard router in front of every REST/WS handler: resolve the shard from the request's identifying field, send an in-process message to that thread's mailbox, await response. Shared `Arc<Mutex<Engine>>` goes away; each thread owns its slice. Cross-shard reads (admin `list orders`) fan out to every thread and merge results.
 
-### `12-per-shard-wal.md` — one WAL file per shard
+### `09c-per-shard-wal.md` — one WAL file per shard
 
-Each thread has its own `foo.wal` + `foo.data` + per-thread `io_uring` ring (phase 3's durability work, repeated per shard). Recovery is parallel across threads. No shared WAL writer thread. Group commit is per-thread.
+Each thread has its own `foo.wal` + `foo.data` + per-thread `io_uring` ring ([phase 11's durability work](./11-wal-and-recovery.md), repeated per shard). Recovery is parallel across threads. No shared WAL writer thread. Group commit is per-thread.
 
-### `13-cross-shard-subscriptions.md` — LIVE fanout
+### `09d-cross-shard-subscriptions.md` — LIVE fanout
 
 A commit on shard K that creates/updates rows of type T needs to wake subscribers on every shard watching T. Via broadcast: K writes the delta to a per-subscriber-thread mailbox — one message per destination thread, not per subscriber. The destination thread then does the fine-grained predicate match against its local subscription table. Avoids N² traffic when N connections watch the same stream.
 
-### `14-cross-shard-txn.md` — 2PC for transactions that span shards
+### `09e-cross-shard-txn.md` — 2PC for transactions that span shards
 
 `fn checkout(customer, product, qty)` might touch shards A (customer), B (product), and C (order) if they hash differently. The transaction coordinator (already designed in [`../runtime/database/02-wo-language.md`](../runtime/database/02-wo-language.md) § Cross-Paradigm Transaction Coordinator) generalises to cross-shard: `begin(snapshot_ts)` broadcasts to all participating shards, `prepare()` collects votes, `commit(wal_lsn)` atomically flips markers, `abort()` if any participant refuses. The per-shard WAL entries carry the 2PC state machine.
 
-### `15-observability-and-rebalance.md` — ops
+### `09f-observability-and-rebalance.md` — ops
 
 Per-shard metrics (connections, ops/s, p99, WAL lag), Prometheus scrape endpoint on one well-known thread. A `WO_RESHARD` admin command migrates a contiguous customer-id range from shard K to shard K′ via state snapshot → replay → cutover. For a fixed-core deployment this is rare; matters when `WO_THREADS` changes between runs.
 
-## Verification targets (after 15 lands)
+## Verification targets (after `09f` lands)
 
 Ecommerce sample on an 8-core box with `WO_THREADS=8`:
 
@@ -104,7 +104,7 @@ Ecommerce sample on an 8-core box with `WO_THREADS=8`:
 ## Non-scope
 
 - **No Go-style goroutines, even after this phase.** Adding M:N scheduling is not on the roadmap. When one core runs out, add more cores (more threads) — horizontally, thread-per-core.
-- **No distributed (multi-node) sharding.** This phase is single-box only. Redis-Cluster-style network sharding is a separate future phase; the in-process shard bus (phase 10's mailboxes) is not the same thing as a cluster membership protocol.
+- **No distributed (multi-node) sharding.** This phase is single-box only. Redis-Cluster-style network sharding is a separate future phase; the in-process shard bus (`09a`'s mailboxes) is not the same thing as a cluster membership protocol.
 - **No dynamic thread count at runtime.** `WO_THREADS` is set at boot and pinned. Adding/removing a thread means a rolling restart. Acceptable for a database; fundamental to the zero-contention model.
 - **No work-stealing.** A slow handler on thread A does not get rebalanced to thread B. Back-pressure is the thread-local queue filling up. If one thread hot-spots because of a bad shard key, the fix is to reshard — not to steal.
 - **No `std::thread::available_parallelism` on exotic hosts.** `WO_THREADS` override covers kubernetes CFS-bound pods, NUMA partitioning, and single-core debug runs.

@@ -156,3 +156,17 @@ The transition from current to target doesn't have to be all-or-nothing:
 3. **Phase 3** — Collapse repositories. Move frontend into the unified codebase. Ship as a single binary that serves both API and static assets.
 
 Each phase produces a working system. The current architecture can run in parallel until the new one is ready.
+
+## Implementation phases
+
+The "embedded storage engine" of Phase 1 above lands in three numbered plan docs under [`docs/plan/`](./plan/):
+
+| Phase | Doc | What it ships |
+| --- | --- | --- |
+| 10 | [`plan/10-storage-foundations.md`](./plan/10-storage-foundations.md) | On-disk row codec (length-prefix + flags + LSN + CRC32C); per-type segment files (`data/<TypeName>.seg`); `posix_fallocate` preallocation; `pwrite`-only append path. Reads still in-memory. |
+| 11 | [`plan/11-wal-and-recovery.md`](./plan/11-wal-and-recovery.md) | WAL log with `fdatasync` at commit; group commit per loop tick; control file with `last_durable_lsn` (rename-on-write); replay loop on startup. `kill -9` mid-write loses nothing acknowledged. |
+| 12 | [`plan/12-engine-disk-cutover.md`](./plan/12-engine-disk-cutover.md) | `Engine`'s row payload moves to disk; in-memory map becomes `BTreeMap<i64, SegmentOffset>`. Periodic checkpoint flushes segments + advances the control file. RAM bounded by id-count, not row size. |
+
+Postgres' storage subsystem is the design reference — see [`docs/plan/exploration/postgresql/`](./plan/exploration/postgresql/) for which Postgres modules informed which decision and what writeonce skips (multi-process IPC, latches, separate writer processes).
+
+The durability syscalls themselves live in [`docs/plan/exploration/linux/12-pwrite-fsync.md`](./plan/exploration/linux/12-pwrite-fsync.md).

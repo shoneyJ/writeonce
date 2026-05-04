@@ -19,6 +19,7 @@ Each primitive has its own numbered file with the kernel source path (into [`ref
 | [09](./09-fallocate.md)     | `fallocate` + `pread` + `pwritev2` — positional I/O & pre-allocation | phase 3 (WAL + SSTables) |
 | [10](./10-pidfd.md)         | `pidfd` — process as fd, race-free supervision | future supervisor |
 | [11](./11-memfd_create.md)  | `memfd_create` — anonymous shared memory | phase 3 (index build) |
+| [12](./12-pwrite-fsync.md)  | `pwrite` + `fsync`/`fdatasync`/`sync_file_range`/`posix_fadvise` — durability barriers | phases 10, 11, 12 (storage foundations, WAL, engine cutover) |
 
 The list below is the original overview kept for context and for a handful of adjacent primitives (`fanotify`, `splice`/`tee`) that don't yet have their own reference card.
 
