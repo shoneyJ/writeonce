@@ -1,0 +1,22 @@
+<article class="article-card" data-component="article-card" data-id="{{article.id}}">
+  <h2 class="article-card-title">
+    <a href="/article/{{article.slug}}">{{article.title}}</a>
+  </h2>
+
+  <p class="article-card-meta">
+    <span class="article-card-author">{{article.author.display}}</span>
+    <time datetime="{{article.published_at}}">{{article.published_at}}</time>
+  </p>
+
+  {{#if article.meta.excerpt}}
+    <p class="article-card-excerpt">{{article.meta.excerpt}}</p>
+  {{/if}}
+
+  {{#if article.tags}}
+    <ul class="article-card-tags">
+      {{#each article.tags as tag}}
+        <li><a href="/tag/{{tag.slug}}">{{tag.name}}</a></li>
+      {{/each}}
+    </ul>
+  {{/if}}
+</article>

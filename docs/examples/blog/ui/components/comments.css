@@ -1,0 +1,19 @@
+/* Scoped to the article-comments component via the data-component attribute
+ * emitted by comments.htmlx. The compiler rewrites bare selectors below to
+ * [data-component="article-comments"] <selector>, so the rules cannot leak
+ * outside the component subtree. */
+
+.comments-header h3        { font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; color: #888; }
+
+.comment-list              { list-style: none; padding: 0; margin: 1rem 0; }
+.comment                   { padding: 0.75rem 0; border-bottom: 1px solid #eee; }
+.comment:last-child        { border-bottom: none; }
+
+.comment-meta              { display: flex; gap: 0.75rem; font-size: 0.85rem; color: #999; margin-bottom: 0.25rem; }
+.comment-author            { color: #555; font-weight: 600; }
+.comment-body              { margin: 0; }
+
+.comment-form              { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.comment-form textarea     { padding: 0.5rem; font-family: inherit; border: 1px solid #ddd; border-radius: 4px; resize: vertical; min-height: 4rem; }
+.comment-form button       { align-self: flex-start; padding: 0.4rem 1rem; background: #222; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+.comment-form button:hover { background: #0066cc; }

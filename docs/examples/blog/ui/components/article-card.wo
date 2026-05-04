@@ -1,0 +1,11 @@
+-- The article-card component renders one article preview. It has no source of
+-- its own — the parent (a list screen) iterates a query and hands each row in
+-- via the typed `article` input. Pure presentation lives in article-card.htmlx.
+
+##component
+#article-card
+    template: 'article-card.htmlx'
+    styles:   ['article-card.css']
+
+    inputs:
+        article: Article

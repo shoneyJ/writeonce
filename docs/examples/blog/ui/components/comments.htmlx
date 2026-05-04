@@ -1,0 +1,25 @@
+<section class="comments" data-component="article-comments" data-article-id="{{article-id}}">
+  <header class="comments-header">
+    <h3>Comments</h3>
+  </header>
+
+  <ul class="comment-list" data-live="comments">
+    {{#each comments as comment}}
+      <li class="comment" data-id="{{comment.id}}">
+        <div class="comment-meta">
+          <span class="comment-author">{{comment.author.display}}</span>
+          <time datetime="{{comment.created_at}}">{{comment.created_at}}</time>
+        </div>
+        <p class="comment-body">{{comment.body}}</p>
+      </li>
+    {{/each}}
+  </ul>
+
+  {{#when actions.create}}
+    <form class="comment-form" data-action="create">
+      <input type="hidden" name="article" value="{{article-id}}">
+      <textarea name="body" required placeholder="Write a comment&hellip;"></textarea>
+      <button type="submit">Post comment</button>
+    </form>
+  {{/when}}
+</section>

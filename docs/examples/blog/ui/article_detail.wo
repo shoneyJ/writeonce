@@ -24,13 +24,10 @@
             columns:  [title, meta.excerpt, published_at]
             live:     true
 
-        -- Reader comments. Two-way live: new comments appear without refresh.
+        -- Reader comments. The article-comments component owns its own data
+        -- source, sort, live binding, and create action — this screen only
+        -- declares the embed and binds its typed inputs.
         - comments:
-            title:    "Comments"
-            renderer: list
-            source:   Comment{ article.slug == $key }
-            columns:  [author.display, body, created_at]
-            sort:     { default: created_at asc }
-            live:     true
-            actions:
-                create: /api/comments    role: Author | Admin
+            use: article-comments
+            with:
+                article-id: $article.id

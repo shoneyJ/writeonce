@@ -8,6 +8,13 @@ version: 1
 theme:   "light"
 i18n:    [en]
 
+-- Global stylesheets. Resolved relative to ./styles/, served under
+-- /static/styles/, and emitted as <link> tags in the SSR layout in this
+-- order. Component-scoped CSS lives next to the component (see ui/components).
+styles:
+    - styles/main.css
+    - styles/code-theme.css
+
 -- URL → UI screen binding. `:slug` is a dynamic path segment that binds to a
 -- parameter visible inside the screen as `$slug`.
 routes:

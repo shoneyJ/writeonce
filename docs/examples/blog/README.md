@@ -27,14 +27,43 @@ blog/
 │   ├── article.wo            # Article — all three paradigms in one type
 │   ├── tag.wo                # Tag taxonomy
 │   └── comment.wo            # Reader comments
+├── styles/
+│   ├── main.css              # global stylesheet (linked from app.wo styles:)
+│   └── code-theme.css        # syntax highlighting tokens
 ├── ui/
 │   ├── article_list.wo       # home page list view (live)
-│   └── article_detail.wo     # per-article page with comments + related
+│   ├── article_detail.wo     # per-article page with comments + related
+│   └── components/           # reusable components (.wo + .htmlx + .css per component)
+│       ├── article-card.wo   # selector + typed inputs + styles:
+│       ├── article-card.htmlx
+│       ├── article-card.css
+│       ├── comments.wo       # selector + source + actions + role + styles:
+│       ├── comments.htmlx
+│       └── comments.css
 └── tests/
     └── article_test.wo       # `wo test` picks this up
 ```
 
 No `main.wo` is needed — a pure type+service app auto-generates its entry point. Add `main.wo` if you need CLI args, background workers, or custom startup logic beyond the `on startup` hook in `app.wo`.
+
+### UI: components vs. screens
+
+The `ui/` tree separates concerns the way Angular separates `@Component` / template / parent:
+
+- **Screens** (`ui/article_list.wo`, `ui/article_detail.wo`) declare a `##ui` block — they own the route, the page-level data source, and the section layout. They embed components by selector via `use: <name>` + `with: { ... }` and pass typed inputs.
+- **Components** (`ui/components/*.wo`) declare a `##component` block with `template: 'foo.htmlx'`, typed `inputs:`, and — when the component owns its own query — its `source:`, `sort:`, `live:`, and `actions:`. No HTML.
+- **Templates** (`ui/components/*.htmlx`) are pure presentation. They read from the component's `inputs` and from the rows produced by its `source`. No data-source declarations, no role checks.
+
+Screens never inline a component's HTML or its query; templates never declare data sources. Each `.wo` paired with one `.htmlx` is the unit of UI reuse.
+
+### Styling
+
+CSS is declared at two scopes; in both cases the compiler emits the `<link>` tags into the SSR layout and serves the files under `/static/`:
+
+- **App-level (global)** — `##app styles: [...]` in `app.wo` lists global stylesheets. Resolved relative to `./styles/`. Linked once, in declaration order, on every page.
+- **Component-scoped** — `##component styles: [...]` lists CSS files alongside the component. The compiler rewrites bare selectors in those files to `[data-component="<selector>"] <rule>`, using the `data-component` attribute the templates already emit. Rules cannot leak outside the component subtree, so two components can both declare `.title` without colliding.
+
+A component's CSS is only fetched on pages that embed the component. Global styles always load. Neither layer requires a build step — `wo run` serves the files as-is.
 
 ## Run it
 

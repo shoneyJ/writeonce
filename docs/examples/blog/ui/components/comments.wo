@@ -1,0 +1,23 @@
+-- The article-comments component renders the comment thread for one article
+-- and exposes an inline create action. Wiring lives here; presentation lives
+-- in comments.htmlx; the parent screen (ui/article_detail.wo) embeds the
+-- component by selector and binds its inputs.
+
+##component
+#article-comments
+    template: 'comments.htmlx'
+    styles:   ['comments.css']
+
+    inputs:
+        article-id: int
+
+    source:
+        Comment{ article.id == $article-id }
+
+    sort:
+        default: created_at asc
+
+    live: true
+
+    actions:
+        create: /api/comments    role: Author | Admin
