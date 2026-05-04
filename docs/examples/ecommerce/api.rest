@@ -1,0 +1,122 @@
+###############################################################################
+# ecommerce/api.rest — exercise the `.wo` runtime against this directory.
+#
+# Start the server first (from repo root):
+#     cargo run --bin wo -- run docs/examples/ecommerce
+#
+# This sample leans on features that land in later stages:
+#   * orders are minted by `fn checkout(...)` — Stage 3/4
+#   * customers/products/orders are seeded by `on startup do: seed()` — Stage 3+
+#   * Order-status lifecycle triggers — Stage 3+
+#
+# So this file documents what Stage 2 *does* serve: route wiring, empty-list
+# reads, 405 for un-exposed methods, and the Stage-3 stubs that respond 501.
+# A heavier annotated cousin lives at reference/rest/ecommerce.rest.
+###############################################################################
+
+@host = http://127.0.0.1:8080
+
+
+### Runtime info — 200
+GET {{host}}/
+
+### Liveness probe — 200 "ok"
+GET {{host}}/healthz
+
+
+###############################################################################
+# Product — exposes: list, get, subscribe (no create — admin seeds inventory)
+###############################################################################
+
+### List products — 200 [] (no startup seed yet)
+GET {{host}}/api/products
+
+### Product create not exposed — 405
+POST {{host}}/api/products
+Content-Type: application/json
+
+{
+  "sku":   "SKU-WIDGET",
+  "name":  "Widget",
+  "price": 1999,
+  "meta":  { "description": "A widget.", "images": [], "attributes": { "colour": "blue" } },
+  "inventory": { "on_hand": 50, "reserved": 0, "reorder_at": 10 }
+}
+
+### Get by id — 404 (nothing exists)
+GET {{host}}/api/products/1
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/products/live
+
+
+###############################################################################
+# Customer — exposes: get, me, update, subscribe (no list, no create)
+###############################################################################
+
+### List not exposed — 404 (no route at /api/customers at all)
+GET {{host}}/api/customers
+
+### Customer create not exposed — 404 (same reason)
+POST {{host}}/api/customers
+Content-Type: application/json
+
+{ "email": "carol@shop.test", "name": "Carol", "role": "Customer" }
+
+### Get by id — 404 (nothing exists)
+GET {{host}}/api/customers/1
+
+### Update by id — 404 (would be 200 if the row existed)
+PATCH {{host}}/api/customers/1
+Content-Type: application/json
+
+{ "name": "Carol Updated" }
+
+### /me — Stage 3 session layer; 501
+GET {{host}}/api/customers/me
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/customers/live
+
+
+###############################################################################
+# Order — exposes: list, get, subscribe (use fn checkout to create)
+###############################################################################
+
+### List orders — 200 []
+GET {{host}}/api/orders
+
+### Order create not exposed (use fn checkout) — 405
+POST {{host}}/api/orders
+Content-Type: application/json
+
+{ "customer": 1, "status": "Pending", "line_items": [] }
+
+### LIVE subscribe — the WebSocket the Stage-6 `##ui #admin-orders` board
+### will open. Stage 2 returns 501.
+GET {{host}}/api/orders/live
+
+
+###############################################################################
+# fn checkout — Stage 3/4 (transactional functions)
+#
+# Becomes the canonical cross-paradigm ACID test once it lands: one call
+# updates the product's inventory doc, inserts an Order row, and creates a
+# Purchase graph edge inside one BEGIN ... COMMIT.
+# See docs/examples/ecommerce/logic/checkout.wo.
+###############################################################################
+
+### Stage 2 — 404 (route not registered yet)
+POST {{host}}/api/fn/checkout
+Content-Type: application/json
+
+{ "customer": 1, "product": 1, "qty": 2 }
+
+
+###############################################################################
+# Purchase — link type, no `service rest` block
+# Edges are created by fn checkout and traversed via Customer.purchased.
+###############################################################################
+
+### Purchase list not exposed — 404
+GET {{host}}/api/purchases

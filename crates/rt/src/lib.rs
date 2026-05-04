@@ -9,6 +9,7 @@ pub mod compile;
 pub mod engine;
 pub mod lexer;
 pub mod parser;
+pub mod runtime;
 pub mod server;
 pub mod token;
 

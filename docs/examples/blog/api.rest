@@ -1,0 +1,173 @@
+###############################################################################
+# blog/api.rest — exercise the `.wo` runtime against this directory.
+#
+# Start the server first (from repo root):
+#     cargo run --bin wo -- run docs/examples/blog
+#
+# Then in VS Code (REST Client extension) or JetBrains (HTTP Client) click
+# "Send Request" on each block top to bottom. `# @name foo` lets later blocks
+# pick up ids minted by earlier ones.
+#
+# A more annotated, side-by-side cousin of this file (with the same requests
+# but heavier commentary on Stage-3+ stubs) lives at reference/rest/blog.rest.
+###############################################################################
+
+@host = http://127.0.0.1:8080
+
+
+### Runtime info — 200
+GET {{host}}/
+
+### Liveness probe — 200 "ok"
+GET {{host}}/healthz
+
+
+###############################################################################
+# Author — exposes: list, get, me, subscribe (no create)
+###############################################################################
+
+### List authors — 200 [] on a fresh boot (Stage 2 has no startup seeding)
+GET {{host}}/api/authors
+
+### Author create not exposed — 405
+POST {{host}}/api/authors
+Content-Type: application/json
+
+{ "email": "alice@example.com", "handle": "alice", "display": "Alice" }
+
+### /me — Stage 3 session layer; 501
+GET {{host}}/api/authors/me
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/authors/live
+
+
+###############################################################################
+# Article — exposes: list, get, create, update, delete, subscribe
+###############################################################################
+
+### Create an article — 201
+# @name createArticle
+POST {{host}}/api/articles
+Content-Type: application/json
+
+{
+  "slug":      "hello-writeonce",
+  "title":     "Hello, writeonce",
+  "author":    1,
+  "published": true,
+  "meta": {
+    "excerpt": "First post on the new runtime.",
+    "body_md": "# Hi\n\nHello from the `.wo` runtime. The server, the database, and this HTTP API are all one binary.\n"
+  }
+}
+
+### Create a draft — 201
+# @name createDraft
+POST {{host}}/api/articles
+Content-Type: application/json
+
+{
+  "slug":      "second-draft",
+  "title":     "Second Post (draft)",
+  "author":    1,
+  "published": false,
+  "meta": { "excerpt": "", "body_md": "WIP." }
+}
+
+### List articles — 200 with 2 rows
+GET {{host}}/api/articles
+
+### Get one article — 200
+GET {{host}}/api/articles/{{createArticle.response.body.id}}
+
+### PATCH the title — 200
+PATCH {{host}}/api/articles/{{createArticle.response.body.id}}
+Content-Type: application/json
+
+{ "title": "Hi, writeonce!" }
+
+### PATCH an embedded-doc field (Stage 2 = shallow merge — re-send the whole `meta`)
+PATCH {{host}}/api/articles/{{createArticle.response.body.id}}
+Content-Type: application/json
+
+{
+  "meta": { "excerpt": "Updated excerpt.", "body_md": "# Hi\n\nUpdated body." }
+}
+
+### Publish the draft — 200 (`on update` trigger that sets published_at is Stage 3+)
+PATCH {{host}}/api/articles/{{createDraft.response.body.id}}
+Content-Type: application/json
+
+{ "published": true }
+
+### Delete the draft — 204
+DELETE {{host}}/api/articles/{{createDraft.response.body.id}}
+
+### Re-fetch the deleted id — 404
+GET {{host}}/api/articles/{{createDraft.response.body.id}}
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/articles/live
+
+
+###############################################################################
+# Tag — exposes: list, get, subscribe
+###############################################################################
+
+### List tags — 200 []
+GET {{host}}/api/tags
+
+### Tag create not exposed — 405
+POST {{host}}/api/tags
+Content-Type: application/json
+
+{ "slug": "rust", "label": "Rust" }
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/tags/live
+
+
+###############################################################################
+# Comment — exposes: list, get, create, update, delete, subscribe
+###############################################################################
+
+### Create a comment — 201
+# @name createComment
+POST {{host}}/api/comments
+Content-Type: application/json
+
+{
+  "article": {{createArticle.response.body.id}},
+  "author":  1,
+  "body":    "Nice post. Runs on one binary which is still weird to me."
+}
+
+### List comments — 200 with 1 row
+GET {{host}}/api/comments
+
+### Get one comment — 200
+GET {{host}}/api/comments/{{createComment.response.body.id}}
+
+### Update body — 200 (the `set self.edited_at = now()` trigger lands in Stage 3+)
+PATCH {{host}}/api/comments/{{createComment.response.body.id}}
+Content-Type: application/json
+
+{ "body": "Edited: really, one binary? Neat." }
+
+### Delete the comment — 204
+DELETE {{host}}/api/comments/{{createComment.response.body.id}}
+
+### LIVE subscribe — Stage 3; 501
+GET {{host}}/api/comments/live
+
+
+###############################################################################
+# Final state — one updated article, no drafts, no comments.
+###############################################################################
+
+### Final article list — 200 with 1 row
+GET {{host}}/api/articles
+
+### Final comment list — 200 []
+GET {{host}}/api/comments
