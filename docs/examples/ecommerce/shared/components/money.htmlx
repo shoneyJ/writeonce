@@ -1,0 +1,6 @@
+{{!--
+  Tiny partial: renders a Money value (minor units — cents) as a localised
+  currency string. Called from any screen via `{{> money amount=total}}`.
+  See apps/admin/ui/orders/orders.wo columns block for a live example.
+--}}
+<span class="money">${{divide amount by 100}}.{{mod amount by 100 padleft 2 with "0"}}</span>

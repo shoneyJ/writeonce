@@ -1,0 +1,9 @@
+[package]
+name        = "txn"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce transaction coordinator — MVCC, snapshot isolation, `RETURNING` alias table"
+
+[lib]
+name = "txn"
+path = "src/lib.rs"

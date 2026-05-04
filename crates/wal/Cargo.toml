@@ -1,0 +1,9 @@
+[package]
+name        = "wal"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce write-ahead log — io_uring + fsync + crash recovery"
+
+[lib]
+name = "wal"
+path = "src/lib.rs"

@@ -1,24 +1,17 @@
-##app
-name:    "ecommerce"
-version: 1
-theme:   "light"
-i18n:    [en]
+-- Idempotent demo seed + the cross-entity Admin/Ops bypass policy.
+-- Both belong to the *shared* layer rather than to any one app:
+--   * The seed primes the shared database so either the storefront or the
+--     admin app shows something on first boot.
+--   * The bypass policy applies across every type, so it has to live where
+--     every app can see it.
+-- Runs once when the shared `wo db serve` daemon comes up — each app connects
+-- over the wire and inherits the already-seeded state.
 
-routes:
-    /                     -> ui.storefront
-    /product/:sku         -> ui.product-detail  { key: $sku }
-    /cart                 -> ui.cart
-    /orders               -> ui.order-tracker
-    /admin/orders         -> ui.admin-orders                     role: Admin | Ops
-
--- Cross-entity policy — Admin + Ops bypass row-level filters so they can see
--- every customer's orders in the live ops table.
 policy admin-ops-bypass
     applies_to: Order, Product, Customer, Purchase
     when: $session.role == Admin or $session.role == Ops
     effect: skip-row-filters
 
--- Startup seed: idempotent demo data so `wo run` shows something useful.
 on startup
     do: seed()
 

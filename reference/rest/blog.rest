@@ -1,0 +1,181 @@
+###############################################################################
+# blog.rest — exercise the `.wo` runtime against docs/examples/blog/
+#
+# Start the server first:
+#     cargo run --bin wo -- run docs/examples/blog
+#
+# Then in VS Code (REST Client extension) or JetBrains (HTTP Client):
+#     click "Send Request" on each block, top to bottom
+#
+# Response back-references (# @name foo → {{foo.response.body.id}}) are
+# supported by both clients — later blocks pick up ids minted by earlier
+# blocks automatically. For `curl` equivalents, see reference/rest/README.md.
+###############################################################################
+
+@host = http://127.0.0.1:8080
+
+
+### Runtime info — expected 200
+GET {{host}}/
+
+### Liveness probe — expected 200 "ok"
+GET {{host}}/healthz
+
+
+###############################################################################
+# Author — exposes: list, get, me, subscribe
+###############################################################################
+
+### List authors (empty on fresh boot) — expected 200 []
+GET {{host}}/api/authors
+
+### Author create is NOT exposed in the blog sample (expose list, get, me, subscribe)
+# Expected 405 — method not allowed. The sample expects authors seeded by
+# `on startup do: seed_admin()` in app.wo. Stage 2 doesn't run startup hooks
+# yet, so the list above will be empty.
+POST {{host}}/api/authors
+Content-Type: application/json
+
+{ "email": "alice@example.com", "handle": "alice", "display": "Alice" }
+
+### /me — Stage 3 session layer; expected 501
+GET {{host}}/api/authors/me
+
+### LIVE subscribe — Stage 3; expected 501
+GET {{host}}/api/authors/live
+
+
+###############################################################################
+# Article — exposes: list, get, create, update, delete, subscribe
+###############################################################################
+
+### Create an article — expected 201
+# @name createArticle
+POST {{host}}/api/articles
+Content-Type: application/json
+
+{
+  "slug":      "hello-writeonce",
+  "title":     "Hello, writeonce",
+  "author":    1,
+  "published": true,
+  "meta": {
+    "excerpt": "First post on the new runtime.",
+    "body_md": "# Hi\n\nHello from the `.wo` runtime. The server, the database, and this HTTP API are all one binary.\n"
+  }
+}
+
+### Create a second article (draft) — expected 201
+# @name createDraft
+POST {{host}}/api/articles
+Content-Type: application/json
+
+{
+  "slug":      "second-draft",
+  "title":     "Second Post (draft)",
+  "author":    1,
+  "published": false,
+  "meta": { "excerpt": "", "body_md": "WIP." }
+}
+
+### List articles — expected 200 with 2 rows
+GET {{host}}/api/articles
+
+### Get one article by id — expected 200
+GET {{host}}/api/articles/{{createArticle.response.body.id}}
+
+### Partial update (PATCH) — change just the title — expected 200
+PATCH {{host}}/api/articles/{{createArticle.response.body.id}}
+Content-Type: application/json
+
+{ "title": "Hi, writeonce!" }
+
+### Partial update of an embedded-document field — expected 200
+# Note: Stage 2's PATCH does a shallow merge at the top level.
+# To change `meta.excerpt` alone you re-send the whole `meta` object.
+PATCH {{host}}/api/articles/{{createArticle.response.body.id}}
+Content-Type: application/json
+
+{
+  "meta": { "excerpt": "Updated excerpt.", "body_md": "# Hi\n\nUpdated body." }
+}
+
+### Publish the draft — expected 200 (`on update` trigger that sets
+### `published_at` is Stage 3+; Stage 2 just records the bool change).
+PATCH {{host}}/api/articles/{{createDraft.response.body.id}}
+Content-Type: application/json
+
+{ "published": true }
+
+### Delete the draft — expected 204 No Content
+DELETE {{host}}/api/articles/{{createDraft.response.body.id}}
+
+### Get the deleted id — expected 404
+GET {{host}}/api/articles/{{createDraft.response.body.id}}
+
+### LIVE subscribe (Article) — Stage 3; expected 501
+GET {{host}}/api/articles/live
+
+
+###############################################################################
+# Tag — exposes: list, get, subscribe
+###############################################################################
+
+### List tags — expected 200 [] (create is not exposed)
+GET {{host}}/api/tags
+
+### Tag create NOT exposed (expose list, get, subscribe) — expected 405
+POST {{host}}/api/tags
+Content-Type: application/json
+
+{ "slug": "rust", "label": "Rust" }
+
+### LIVE subscribe (Tag) — Stage 3; expected 501
+GET {{host}}/api/tags/live
+
+
+###############################################################################
+# Comment — exposes: list, get, create, update, delete, subscribe
+###############################################################################
+
+### Create a comment — expected 201
+# @name createComment
+POST {{host}}/api/comments
+Content-Type: application/json
+
+{
+  "article": {{createArticle.response.body.id}},
+  "author":  1,
+  "body":    "Nice post. Runs on one binary which is still weird to me."
+}
+
+### List comments — expected 200 with 1 row
+GET {{host}}/api/comments
+
+### Get one comment — expected 200
+GET {{host}}/api/comments/{{createComment.response.body.id}}
+
+### Update comment body — expected 200 (the `on update when old.body != new.body
+### do set self.edited_at = now()` trigger is Stage 3+; edited_at stays unset)
+PATCH {{host}}/api/comments/{{createComment.response.body.id}}
+Content-Type: application/json
+
+{ "body": "Edited: really, one binary? Neat." }
+
+### Delete comment — expected 204
+DELETE {{host}}/api/comments/{{createComment.response.body.id}}
+
+### LIVE subscribe (Comment) — Stage 3; expected 501
+GET {{host}}/api/comments/live
+
+
+###############################################################################
+# Final state — should show the updated article still there, no drafts,
+# no comments (all deleted above).
+###############################################################################
+
+### Final article list — expected 200 with 1 row
+GET {{host}}/api/articles
+
+### Final comment list — expected 200 []
+GET {{host}}/api/comments

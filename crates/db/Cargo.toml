@@ -1,0 +1,9 @@
+[package]
+name        = "db"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce top-level database facade — `open()`, `Tx`, `Query`, `Subscribe` over the engine"
+
+[lib]
+name = "db"
+path = "src/lib.rs"

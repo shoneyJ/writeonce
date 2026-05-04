@@ -3,13 +3,19 @@
 -- shown; every commit (checkout, status flip, trigger-updated timestamp) pushes
 -- a delta down the WebSocket and the client runtime swaps the row in place.
 -- No polling, no refresh button.
+--
+-- Lives in the admin app; the app's own `app.wo` gates it to role Admin | Ops,
+-- so customers never hit this route. Same underlying Order table as the
+-- storefront's customer-facing order-tracker — row-level policies decide who
+-- sees which rows; delta fanout is cross-app (see docs/plan/ui/00-overview.md
+-- § Sub-phase 13).
 
 ##ui
-#admin-orders
+#orders
     title:   "Orders — Live"
     source:  Order
     live:    true
-    role:    Admin | Ops                       -- gated by role; customers can't reach /admin/orders
+    role:    Admin | Ops                       -- secondary gate (app-level gate in app.wo)
 
     -- Sidebar filter controls bind to these predicates at render time.
     filter:
@@ -37,10 +43,10 @@
     sort:
         default: placed_at desc
 
-    -- Single-row + bulk actions. Each one calls a `fn` from logic/checkout.wo
-    -- (or a stdlib action like `email`). The compiler wires them to endpoints.
+    -- Single-row + bulk actions. Each one calls a `fn` from
+    -- shared/logic/checkout.wo or an app-local fulfillment fn.
     actions:
-        row-click:           /admin/orders/:id
+        row-click:           /orders/:id
         row-mark-paid:       mark_paid(self)        role: Admin | Ops
         row-mark-shipped:    mark_shipped(self)     role: Admin | Ops
         row-cancel:          update self set status = Cancelled   role: Admin

@@ -1,0 +1,9 @@
+[package]
+name        = "logic"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce trigger + stored-fn compiler — type-attached `on <event>` and cross-entity `##logic`"
+
+[lib]
+name = "logic"
+path = "src/lib.rs"

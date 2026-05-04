@@ -1,0 +1,19 @@
+-- Admin app manifest: the ops/fulfillment dashboard binary.
+-- Entire app is gated to role `Admin | Ops`; the storefront's public routes
+-- don't live here at all. The cross-entity "admin/ops bypass row filters"
+-- policy is global (shared/logic/seed.wo) — this app inherits it via the
+-- shared DB connection.
+
+##app
+name:    "admin"
+version: 1
+theme:   "dark"
+i18n:    [en]
+role:    Admin | Ops                                    -- app-level gate
+
+routes:
+    /orders               -> ui.orders                  -- apps/admin/ui/orders/
+    -- future:
+    -- /inventory          -> ui.inventory
+    -- /customers          -> ui.customers
+    -- /reports            -> ui.reports

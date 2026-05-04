@@ -1,9 +1,15 @@
--- Public product list. Live inventory — when a checkout reserves the last
--- unit, the "In stock" badge flips to "Out of stock" on every open browser
--- without refresh.
+-- Storefront home — public product list. Live inventory: when a checkout
+-- reserves the last unit, the "In stock" badge flips to "Out of stock" on
+-- every open browser without refresh.
+--
+-- Angular-component-style layout: home/{home.wo, home.htmlx, home.css}.
+-- home.wo is the declarative spec; home.htmlx (when added) lets an author
+-- hand-tune the template while the compiler still generates the
+-- <wo:live> + wo:bind subscription glue. See
+-- [docs/plan/ui/00-overview.md](../../../../../plan/ui/00-overview.md).
 
 ##ui
-#storefront
+#home
     title:  "Shop"
     source: Product
     live:   true

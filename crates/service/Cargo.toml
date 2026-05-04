@@ -1,0 +1,9 @@
+[package]
+name        = "service"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce service dispatcher — type-attached `service rest/graphql/native` and standalone `##service` bundles"
+
+[lib]
+name = "service"
+path = "src/lib.rs"

@@ -1,0 +1,42 @@
+{{!--
+  Top-level page chrome shared across every app in the workspace.
+  Both storefront and admin inherit this layout and override the `{{> slot.content}}`
+  partial with their own screen's body.
+
+  The `wo:bind="session.user.name"` in the header is a field-level live binding:
+  when the customer updates their profile, every open tab's header repaints
+  without a page reload — the same delta-dispatch mechanism the live tables use,
+  just on a singleton subscription.
+
+  See docs/plan/ui/01-htmlx-format-spec.md (to land in a future sub-phase)
+  for the full grammar.
+--}}
+<!doctype html>
+<html lang="{{app.i18n}}">
+<head>
+  <meta charset="utf-8">
+  <title>{{page.title}} — {{app.name}}</title>
+  <link rel="stylesheet" href="/static/{{app.name}}.css">
+  {{> slot.head}}
+</head>
+<body class="theme-{{app.theme}}">
+  <header class="page-header">
+    <a href="/" class="brand">{{app.name}}</a>
+    <nav>{{> slot.nav}}</nav>
+    {{#if session.user}}
+      <span class="session" wo:bind="session.user.name">{{session.user.name}}</span>
+    {{/if}}
+  </header>
+
+  <main class="page-body">
+    {{> slot.content}}
+  </main>
+
+  <footer class="page-footer">
+    <small>Built with writeonce · {{app.version}}</small>
+  </footer>
+
+  {{!-- Client runtime + subscription manifest are injected automatically. --}}
+  <script data-wo-runtime src="/_wo/runtime.js"></script>
+</body>
+</html>

@@ -13,10 +13,12 @@
 # Legacy blog content and data (v1 writeonce storage)
 /content
 
-# Symlink to the Linux kernel source tree for research — user-specific
-# absolute path; each contributor sets their own via
+# Symlinks to research source trees — user-specific absolute paths.
+# Each contributor sets their own via:
 #   ln -s <path-to-linux-src> reference/linux
+#   ln -s <path-to-go-src>    reference/go
 /reference/linux
+/reference/go
 
 # Editor / OS noise — left broad on purpose so a contributor doesn't
 # accidentally commit their IDE scratch or macOS metadata.
@@ -27,3 +29,5 @@
 /.vscode/*
 !/.vscode/settings.json.example
 !/.vscode/extensions.json
+
+/prototypes

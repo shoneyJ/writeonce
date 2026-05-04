@@ -8,8 +8,8 @@ Each Go asm category from [`01-go-runtime-asm.md`](./01-go-runtime-asm.md) maps 
 
 | Go asm need | What writeonce uses | Why it covers the gap |
 | --- | --- | --- |
-| Scheduler stack switching (`gogo`, `mcall`, `systemstack`) | — nothing — | Single-threaded event loop (see Phase 2 [Concurrency Model](../runtime/database/02-wo-language.md#concurrency-model)). No goroutines, no stack switching, no `g0`. |
-| Preemption (`asyncPreempt`) | — nothing — | No preemption. Handlers run to completion on the single thread. |
+| Scheduler stack switching (`gogo`, `mcall`, `systemstack`) | — nothing — | Single-threaded event loop through phases 02–08 (see Phase 2 [Concurrency Model](../runtime/database/02-wo-language.md#concurrency-model)). [Phase 09](../09-concurrency-scaleout.md) introduces **thread-per-core** scaling for the 10k-user ecommerce workload — but still no Go-style stack switching: each thread runs its own event loop, connections are pinned for their lifetime, and cross-thread work is message-passing, not scheduler-stealing. No goroutines, no `g0`, even at scale. |
+| Preemption (`asyncPreempt`) | — nothing — | No preemption through phases 02–08. Phase 09's thread-per-core model keeps this property: handlers run to completion on whichever thread owns their connection. |
 | Atomic operations (`Load`, `Store`, `Cas`, `Xadd`, ...) | [`std::sync::atomic`](https://doc.rust-lang.org/std/sync/atomic/) | The compiler emits the right instruction per target — `LOCK CMPXCHG` on x86, `LDXR/STXR` on ARM, `LR.W/SC.W` on RISC-V. Ordering is in the type signature (`Ordering::Acquire`, `Release`, `SeqCst`). |
 | Memory barriers (`MFENCE` etc.) | [`std::sync::atomic::fence(Ordering)`](https://doc.rust-lang.org/std/sync/atomic/fn.fence.html) | One call, one fence, arch-neutral. |
 | `memmove` / `memequal` / `memclr` | [`core::ptr::copy`](https://doc.rust-lang.org/core/ptr/fn.copy.html), `<[T]>::copy_from_slice`, `==`, `[T]::fill(0)` | LLVM emits the same vectorised code Go's asm does, often better because it knows alignment statically. |
@@ -44,6 +44,7 @@ Phase 3's WAL loop batches commits and fsyncs them in one `io_uring` submission.
 
 - **Rust answer:** [`std::hint::spin_loop()`](https://doc.rust-lang.org/std/hint/fn.spin_loop.html). The compiler emits `PAUSE` / `WFE` per target. Use `core::hint::black_box` to prevent compiler over-optimisation of measurement.
 - **When to escalate:** when benchmarks show a specific hotspot the compiler is provably wrong about. Not before.
+
 
 ## The escape hatch
 

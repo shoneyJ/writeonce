@@ -1,0 +1,9 @@
+[package]
+name        = "policy"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce policy engine — RBAC + row-level rules compiled into planner rewrites"
+
+[lib]
+name = "policy"
+path = "src/lib.rs"

@@ -1,16 +1,32 @@
-name        = "ecommerce"
+name        = "ecommerce-workspace"
 version     = "0.1.0"
-description = "A sample writeonce e-commerce app: cross-paradigm ACID checkout + live order-ops table"
+description = "Monorepo: shared types + logic powering two apps (storefront, admin) against one DB"
+kind        = "workspace"                 # not a single app — see [workspace] below
 
 [runtime]
 wo = ">= 0.1"
 
-[server]
-listen = ":8080"
+# Apps = one binary each; shared = libraries imported across apps by path.
+# Mirrors Angular/Nx workspaces (apps/* + libs/*). See
+# docs/plan/ui/00-overview.md § Target layout.
+[workspace]
+apps   = [
+    "apps/storefront",
+    "apps/admin",
+]
+shared = [
+    "shared/types",
+    "shared/logic",
+    "shared/components",
+]
 
+# The shared DB daemon — one process, no UI, just the engine + wire protocol.
+# Starts with `wo db serve` (see docs/plan/ui/06-shared-db-daemon.md when
+# that sub-phase lands). Apps connect at runtime via WO_DB.
 [database]
+listen   = "127.0.0.1:5555"               # native wire-protocol port
 data_dir = "./data"
-isolation = "snapshot"        # snapshot isolation for the canonical checkout flow
+isolation = "snapshot"                    # default for cross-paradigm checkout
 
 [test]
-parallel = false              # ordering tests touch the same rows; serialize
+parallel = false                          # cross-app integration tests hit the same DB

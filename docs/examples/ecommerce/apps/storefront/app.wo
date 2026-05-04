@@ -1,0 +1,19 @@
+-- Storefront app manifest: the customer-facing ecommerce binary.
+-- Routes serve to anonymous visitors + authenticated customers;
+-- admin/ops users exist as DB rows but have no route in this binary.
+--
+-- The app binary connects to the shared `wo db` daemon (see
+-- ../../wo.toml [database] + apps/storefront/wo.toml WO_DB env var).
+-- Row-level policies on shared/types/*.wo scope what each session sees.
+
+##app
+name:    "storefront"
+version: 1
+theme:   "light"
+i18n:    [en]
+
+routes:
+    /                     -> ui.home                           -- apps/storefront/ui/home/
+    /product/:sku         -> ui.product-detail { key: $sku }   -- apps/storefront/ui/product-detail/
+    /cart                 -> ui.cart
+    /orders               -> ui.orders                         -- apps/storefront/ui/orders/

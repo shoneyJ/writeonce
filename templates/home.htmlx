@@ -1,4 +1,12 @@
-<h1>articles</h1>
-{{#each articles}}
-  {{> article-card article=this}}
-{{/each}}
+<div class="home-page">
+  <div class="hero">
+    <h1>writeonce</h1>
+    <p class="tagline">a personal blog on software engineering, systems programming, and everything in between.</p>
+  </div>
+  <section class="recent-posts">
+    <h2>recent posts</h2>
+    {{#each articles}}
+      {{> article-card article=this}}
+    {{/each}}
+  </section>
+</div>

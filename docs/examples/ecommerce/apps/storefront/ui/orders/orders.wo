@@ -3,7 +3,7 @@
 -- to `customer == $session.user`, so a user only ever sees their own orders.
 
 ##ui
-#order-tracker
+#orders
     title:  "Your Orders"
     source: Order{ customer == $session.user }
     live:   true

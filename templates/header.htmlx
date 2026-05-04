@@ -1,7 +1,9 @@
 <header>
   <nav>
-    <a href="/">writeonce</a>
-    <a href="/about">about</a>
-    <a href="/contact">contact</a>
+    <a href="/" class="site-name"><img src="/static/logo.svg" alt="writeonce" class="site-logo"></a>
+    <div class="nav-links">
+      <a href="/">blog</a>
+      <a href="/about">about</a>
+    </div>
   </nav>
 </header>

@@ -1,0 +1,142 @@
+###############################################################################
+# ecommerce.rest — exercise the `.wo` runtime against docs/examples/ecommerce/
+#
+# Start the server first:
+#     cargo run --bin wo -- run docs/examples/ecommerce
+#
+# The ecommerce sample is heavier on features that land in later stages:
+#   * orders are minted by `fn checkout(customer, product, qty) in txn snapshot`
+#     — transactional functions are a Stage 3/4 addition. Stage 2 does not
+#     register `/api/fn/checkout` yet; the block below documents that.
+#   * customer/product/order rows are seeded by `on startup do: seed()` in
+#     app.wo — startup hooks are also Stage 3+. Lists start empty.
+#   * Order-status lifecycle triggers (`on update when old.status != Paid ...`)
+#     are Stage 3+.
+#
+# This file therefore focuses on what Stage 2 *does* serve — route wiring,
+# empty-list reads, method-not-allowed for non-exposed operations, and the
+# Stage-3 stubs that respond 501. It doubles as a living spec for what the
+# ecommerce sample should behave like once Stage 3+ lands.
+###############################################################################
+
+@host = http://127.0.0.1:8080
+
+
+### Runtime info — expected 200
+GET {{host}}/
+
+### Liveness probe — expected 200 "ok"
+GET {{host}}/healthz
+
+
+###############################################################################
+# Product — exposes: list, get, subscribe
+# Stage 2 does NOT expose create — admin console is expected to seed inventory.
+###############################################################################
+
+### List products — expected 200 [] (no startup seed yet)
+GET {{host}}/api/products
+
+### Product create NOT exposed — expected 405
+POST {{host}}/api/products
+Content-Type: application/json
+
+{
+  "sku":   "SKU-WIDGET",
+  "name":  "Widget",
+  "price": 1999,
+  "meta":  { "description": "A widget.", "images": [], "attributes": { "colour": "blue" } },
+  "inventory": { "on_hand": 50, "reserved": 0, "reorder_at": 10 }
+}
+
+### Get by id — expected 404 (nothing exists)
+GET {{host}}/api/products/1
+
+### LIVE subscribe — Stage 3; expected 501
+GET {{host}}/api/products/live
+
+
+###############################################################################
+# Customer — exposes: get, me, update, subscribe
+# Customer create is gated by admin/self-signup flows outside this sample's
+# scope. For now the list endpoint is not exposed either.
+###############################################################################
+
+### List NOT exposed — expected 404
+# Customer's `expose get, me, update, subscribe` has nothing at the collection
+# root, so no route is registered at `/api/customers` at all. The server
+# returns 404 "no route" rather than 405 "method not allowed".
+GET {{host}}/api/customers
+
+### Customer create NOT exposed — expected 404
+# Same reason: no method attached to /api/customers.
+POST {{host}}/api/customers
+Content-Type: application/json
+
+{ "email": "carol@shop.test", "name": "Carol", "role": "Customer" }
+
+### Get by id — expected 404 (nothing exists)
+GET {{host}}/api/customers/1
+
+### Update by id — would work if the customer existed; expected 404
+PATCH {{host}}/api/customers/1
+Content-Type: application/json
+
+{ "name": "Carol Updated" }
+
+### /me — Stage 3 session layer; expected 501
+GET {{host}}/api/customers/me
+
+### LIVE subscribe — Stage 3; expected 501
+GET {{host}}/api/customers/live
+
+
+###############################################################################
+# Order — exposes: list, get, subscribe
+# Orders are created by `fn checkout(...)` (see logic/checkout.wo), not via
+# POST. Stage 2 does not register transactional-fn endpoints, so the list is
+# empty until Stage 3/4 brings them online.
+###############################################################################
+
+### List orders — expected 200 []
+GET {{host}}/api/orders
+
+### Order create NOT exposed (use fn checkout) — expected 405
+POST {{host}}/api/orders
+Content-Type: application/json
+
+{ "customer": 1, "status": "Pending", "line_items": [] }
+
+### LIVE subscribe — same WebSocket the `##ui #admin-orders` board opens in
+### Stage 6. For now the endpoint responds 501. This is the single most
+### requested Stage 3 endpoint for this sample.
+GET {{host}}/api/orders/live
+
+
+###############################################################################
+# fn checkout — deferred to Stage 3/4 (transactional functions)
+#
+# When transactional-fn endpoints land, this block becomes the canonical
+# cross-paradigm ACID test: one call updates the product's inventory doc,
+# inserts an Order row, creates a Purchase graph edge, and threads the new
+# order id through all three stores inside one BEGIN ... COMMIT.
+#
+# See docs/examples/ecommerce/logic/checkout.wo and
+# docs/runtime/database/05-go-sdk.md "Checkout from Go without codegen".
+###############################################################################
+
+### Stage 2 returns 404 — the route isn't registered.
+POST {{host}}/api/fn/checkout
+Content-Type: application/json
+
+{ "customer": 1, "product": 1, "qty": 2 }
+
+
+###############################################################################
+# Purchase (link type) — no `service rest` block declared
+# Purchase edges are created by fn checkout and read via
+# `Customer.purchased` traversal (Stage 3+ query language).
+###############################################################################
+
+### Purchase list NOT exposed — expected 404 (no route registered)
+GET {{host}}/api/purchases

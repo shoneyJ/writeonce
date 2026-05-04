@@ -1,0 +1,9 @@
+[package]
+name        = "app"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce app manifest — `##app` routes, startup hooks, theme, i18n"
+
+[lib]
+name = "app"
+path = "src/lib.rs"

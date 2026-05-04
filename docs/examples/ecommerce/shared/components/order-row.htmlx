@@ -1,0 +1,23 @@
+{{!--
+  One order row — used by both apps' order tables. Different columns are
+  displayed depending on the caller, via conditional sub-partials; the
+  `wo:bind="status"` attribute makes the status cell live-update on delta
+  frames regardless of which table embeds this row.
+
+  Customer view (storefront/ui/orders/orders.wo):        {{> order-row for="customer"}}
+  Admin view    (admin/ui/orders/orders.wo):             {{> order-row for="ops"}}
+--}}
+<tr class="order-row status-{{status}}" data-key="{{id}}">
+  <td class="order-id" wo:bind="id">{{id}}</td>
+  <td class="order-status" wo:bind="status">{{status}}</td>
+  {{#if (eq for "ops")}}
+    <td class="customer-name">{{customer.name}}</td>
+    <td class="customer-email">{{customer.email}}</td>
+  {{/if}}
+  <td class="order-total" wo:bind="total">{{> money amount=total}}</td>
+  <td class="order-placed" wo:bind="placed_at">{{relative placed_at}}</td>
+  {{#if (eq for "ops")}}
+    <td class="order-paid" wo:bind="paid_at">{{relative paid_at}}</td>
+    <td class="order-shipped" wo:bind="shipped_at">{{relative shipped_at}}</td>
+  {{/if}}
+</tr>

@@ -1,0 +1,9 @@
+[package]
+name        = "gen"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce codegen — `.wo` schema → typed Go / TypeScript / Rust / Python clients"
+
+[lib]
+name = "gen"
+path = "src/lib.rs"

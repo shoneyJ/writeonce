@@ -1,0 +1,26 @@
+name        = "storefront"
+version     = "0.1.0"
+description = "Customer-facing ecommerce binary. Connects to the shared wo-db daemon."
+app_kind    = "app"                       # not a library; produces a binary under target/wo/storefront
+
+[runtime]
+wo = ">= 0.1"
+
+# The storefront depends on the shared type + logic sources one workspace
+# level up. Paths are workspace-relative.
+[dependencies]
+shared = [
+    "../../shared/types",
+    "../../shared/logic",
+    "../../shared/components",
+]
+
+[server]
+listen = ":8080"                          # what this app exposes to browsers
+
+[database]
+# Pointer to the shared DB daemon. At runtime, `WO_DB=wo://...` overrides.
+url = "wo://127.0.0.1:5555"
+# The app presents this API key on connect; the daemon's per-app policy
+# table scopes what rows it can see.
+api_key_env = "STOREFRONT_DB_KEY"

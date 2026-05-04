@@ -1,0 +1,9 @@
+[package]
+name        = "ql"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce query language — lexer, parser, AST for the `.wo` grammar"
+
+[lib]
+name = "ql"
+path = "src/lib.rs"

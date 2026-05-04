@@ -1,2 +1,19 @@
-<h1>about</h1>
-<p>writeonce is a content platform built as a single Rust binary with embedded storage, no external database, and kernel-level subscriptions.</p>
+<div class="about-page">
+  <h1>about me</h1>
+  <p>Hi, I'm <strong>Shoney John Arickathil</strong> — a full stack developer based in Mannheim, Germany. I write about software engineering, systems programming, DevOps, and things I learn along the way.</p>
+
+  <p>I work across the stack with C# .NET, Python, TypeScript, Java Spring Boot, Rust, and Go. My interests lean toward backend systems, infrastructure as code, and building tools from scratch.</p>
+
+  <p>Outside of work, I enjoy digging into low-level systems programming, experimenting with machine learning, and writing about what I find.</p>
+
+  <h2>about this site</h2>
+  <p>writeonce is my personal blog. The engine behind it is a single Rust binary with embedded storage — no external database, no framework, just a custom runtime with kernel-level file watching for live content updates.</p>
+  <p>The source code is on <a href="https://github.com/shoneyj/writeonce">GitHub</a>.</p>
+
+  <h2>get in touch</h2>
+  <ul class="contact-links">
+    <li><a href="mailto:shoney.john@outlook.com">shoney.john@outlook.com</a></li>
+    <li><a href="https://github.com/shoneyj">GitHub</a></li>
+    <li><a href="https://www.linkedin.com/in/shoney-john">LinkedIn</a></li>
+  </ul>
+</div>

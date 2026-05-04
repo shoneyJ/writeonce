@@ -1,5 +1,12 @@
-<article>
-  <h1 data-bind="article.title">{{article.title}}</h1>
-  <p class="meta">by {{article.author}} &middot; {{article.tags}}</p>
-  {{article.content_html}}
+<article class="blog-post">
+  <header class="post-header">
+    <h1 data-bind="article.title">{{article.title}}</h1>
+    <p class="meta">{{article.date}} &middot; {{article.tags}}</p>
+  </header>
+  <div class="post-content">
+    {{article.content_html}}
+  </div>
+  <footer class="post-footer">
+    <a href="/">&larr; back to all posts</a>
+  </footer>
 </article>

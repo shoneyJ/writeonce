@@ -1,0 +1,9 @@
+[package]
+name        = "engine"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce in-memory executor — relational, document, and graph storage over a shared catalog"
+
+[lib]
+name = "engine"
+path = "src/lib.rs"

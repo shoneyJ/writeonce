@@ -1,0 +1,9 @@
+[package]
+name        = "sub"
+version     = "0.1.0"
+edition     = "2021"
+description = "writeonce live subscriptions — LIVE query registry + delta frames on commit"
+
+[lib]
+name = "sub"
+path = "src/lib.rs"

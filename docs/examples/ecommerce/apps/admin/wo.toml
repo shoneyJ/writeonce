@@ -1,0 +1,24 @@
+name        = "admin"
+version     = "0.1.0"
+description = "Ops/fulfillment dashboard binary. Gated to role Admin | Ops."
+app_kind    = "app"
+
+[runtime]
+wo = ">= 0.1"
+
+[dependencies]
+shared = [
+    "../../shared/types",
+    "../../shared/logic",
+    "../../shared/components",
+]
+
+[server]
+listen = ":8081"                          # admin runs on a separate port from storefront
+
+[database]
+# Same daemon as storefront, different API key → daemon's policy table gives
+# this app Admin-level row visibility (per docs/plan/ui/07-per-app-policies.md
+# when that phase lands).
+url = "wo://127.0.0.1:5555"
+api_key_env = "ADMIN_DB_KEY"
