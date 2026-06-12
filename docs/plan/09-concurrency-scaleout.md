@@ -116,6 +116,7 @@ If the "single core per process, shard across processes" argument ([Redis Cluste
 
 ## Cross-references
 
+- [`./exploration/c-runtime/00-plan.md`](./exploration/c-runtime/00-plan.md) — the C prototype's phased evolution (threads → arena → io_uring → WAL → recovery); the executable proving ground for 09a's thread-per-core skeleton and 09c's per-shard WAL before the Rust work starts.
 - [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) — last prerequisite phase; feature-complete single-threaded runtime.
 - [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) — updated to reference this phase's thread-per-core model; still no asm.
 - [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) — the stance this plan refines.

@@ -5,6 +5,12 @@
 # C++ prototype build output
 /prototypes/*/build
 
+# C runtime prototype (prototypes/wo-rt-c): compiled binary + WAL/snapshot data.
+# `just rt-c-demo` and the default WO_DATA write ./wo-data at the repo root.
+/prototypes/wo-rt-c/wo-rt
+/wo-data
+/prototypes/wo-rt-c/wo-data
+
 # Runtime data directories for the sample projects.
 # `wo.toml` points at `./data` which holds the per-project engine state.
 /data
@@ -32,4 +38,7 @@
 !/.vscode/settings.json.example
 !/.vscode/extensions.json
 
-/prototypes
+/prototypes/wo-db
+# Phase-F bench binaries (sources are committed; builds are not)
+/prototypes/wo-rt-c/bench/bench
+/prototypes/wo-rt-c/bench/goref/goref

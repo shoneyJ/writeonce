@@ -33,6 +33,8 @@ The repo holds three cuts of the same project plus one research reference:
 
 There is also **`prototypes/wo-db/`** — a ~2k-line **C++ prototype** of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). It keeps its `wo-db` directory name (C++ project, separate from the Rust crate `db`). It's the reference implementation the Rust port follows; `make test` still passes.
 
+And **`prototypes/wo-rt-c/`** — a single-file **C reference of the runtime layer** (edge-triggered epoll loop, signalfd shutdown, non-blocking listener, in-RAM store over minimal HTTP; libc only). It's the runtime-layer sibling of `wo-db`: each block maps one-to-one to a `crates/rt/src/runtime/` module (table in its README). `make` builds it; `just rt-c-demo` exercises it. Its evolution into a multi-threaded io_uring RAM-database runtime (thread-per-core, mmap arena, WAL dual-write, recovery, ACID) is phased A–F in `docs/plan/exploration/c-runtime/00-plan.md`, with the one-address architecture trace beside it (`01-architecture.md`) — the proving ground for plans 09–12. **Documentation belongs under `docs/`** — prototype/crate directories keep only their orientation README.
+
 ## Commands
 
 ```bash

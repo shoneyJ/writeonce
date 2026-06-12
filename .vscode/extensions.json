@@ -1,0 +1,8 @@
+{
+  // Workspace extension recommendations — VS Code offers to install these on open.
+  "recommendations": [
+    "bierner.markdown-mermaid",   // renders ```mermaid blocks in the markdown preview
+    "rust-lang.rust-analyzer",
+    "humao.rest-client"           // reference/rest/*.rest files
+  ]
+}
