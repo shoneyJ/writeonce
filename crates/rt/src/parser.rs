@@ -141,7 +141,10 @@ impl Parser {
 
         self.expect(&Kind::LBrace, "'{'")?;
 
-        let mut decl = TypeDecl { name, fields: Vec::new(), services: Vec::new(), is_class };
+        let mut decl = TypeDecl {
+            name, fields: Vec::new(), services: Vec::new(), is_class,
+            methods: Vec::new(),
+        };
         loop {
             self.skip_newlines();
             match self.peek() {
@@ -149,7 +152,12 @@ impl Parser {
                 Kind::End    => bail!("unexpected end of input inside type body"),
                 Kind::KwPolicy => self.skip_block_line()?,   // policy <read|write|...> ...
                 Kind::KwOn     => self.skip_on_block()?,      // on update when ... do ...
-                Kind::KwFn     => self.skip_block_line()?,    // method — executes from 13b;
+                Kind::KwFn if is_class => {
+                    // 13b: class methods parse for real — signature + DML body.
+                    decl.methods.push(self.parse_method()?);
+                }
+                Kind::KwFn     => self.skip_block_line()?,    // fn inside a plain `type`:
+                                                              // parse-and-discard (13a);
                                                               // brace depth keeps the body's
                                                               // `}` from closing the type
                 Kind::KwService => decl.services.push(self.parse_service()?),
@@ -475,6 +483,270 @@ impl Parser {
         }
         Ok(ServiceDecl { kind, path, expose })
     }
+
+    // --- class methods (plan 13b) ---
+
+    /// `fn name([p: T, ...]) [-> Ret] [in txn [snapshot|serializable]] { body }`
+    fn parse_method(&mut self) -> Result<MethodDecl> {
+        self.expect(&Kind::KwFn, "`fn`")?;
+        let name = self.expect_ident("method name")?;
+
+        self.expect(&Kind::LParen, "'('")?;
+        let mut params = Vec::new();
+        self.skip_newlines();
+        while !matches!(self.peek(), Kind::RParen) {
+            let pname = self.expect_ident("parameter name")?;
+            self.expect(&Kind::Colon, "':'")?;
+            let pty = self.expect_ident("parameter type")?;
+            params.push((pname, pty));
+            self.skip_newlines();
+            if !self.accept(&Kind::Comma) { break; }
+            self.skip_newlines();
+        }
+        self.expect(&Kind::RParen, "')'")?;
+
+        let mut ret = None;
+        if self.accept(&Kind::Arrow) {
+            ret = Some(self.expect_ident("return type")?);
+        }
+
+        let mut txn = TxnMode::None;
+        if self.accept(&Kind::KwIn) {
+            self.expect(&Kind::KwTxn, "`txn`")?;
+            txn = match self.peek() {
+                Kind::KwSnapshot     => { self.advance(); TxnMode::Snapshot }
+                Kind::KwSerializable => { self.advance(); TxnMode::Serializable }
+                _ => TxnMode::Txn,
+            };
+        }
+
+        self.skip_newlines();
+        self.expect(&Kind::LBrace, "'{' to open method body")?;
+        let body = self.parse_stmt_block()?;
+        Ok(MethodDecl { name, params, ret, txn, body })
+    }
+
+    /// Statements until the matching `}` (consumed).
+    fn parse_stmt_block(&mut self) -> Result<Vec<Stmt>> {
+        let mut stmts = Vec::new();
+        loop {
+            self.skip_newlines();
+            while self.accept(&Kind::Semicolon) { self.skip_newlines(); }
+            match self.peek() {
+                Kind::RBrace => { self.advance(); return Ok(stmts); }
+                Kind::End    => bail!("unexpected end of input inside method body"),
+                _ => stmts.push(self.parse_stmt()?),
+            }
+        }
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt> {
+        let stmt = match self.peek() {
+            Kind::KwLet => {
+                self.advance();
+                let name = self.expect_ident("binding name")?;
+                self.expect(&Kind::Eq, "'='")?;
+                let expr = self.parse_expr()?;
+                Stmt::Let { name, expr }
+            }
+            // Schema-layer DML `insert` is lowercase and deliberately NOT a
+            // lexer keyword (only SQL-layer `INSERT` is) — same rule that
+            // keeps `subscribe`/`me`/`self` usable as plain identifiers.
+            Kind::Ident(s) if s == "insert" => {
+                self.advance();
+                let ty = self.expect_ident("type name after `insert`")?;
+                self.expect(&Kind::LBrace, "'{'")?;
+                let mut fields = Vec::new();
+                loop {
+                    self.skip_newlines();
+                    if self.accept(&Kind::RBrace) { break; }
+                    let fname = self.expect_ident("field name")?;
+                    self.expect(&Kind::Colon, "':'")?;
+                    let expr = self.parse_expr()?;
+                    fields.push((fname, expr));
+                    self.skip_newlines();
+                    self.accept(&Kind::Comma);
+                }
+                Stmt::Insert { ty, fields }
+            }
+            Kind::KwReturn => {
+                self.advance();
+                let expr = if matches!(self.peek(),
+                    Kind::Semicolon | Kind::Newline | Kind::RBrace | Kind::End)
+                { None } else { Some(self.parse_expr()?) };
+                Stmt::Return { expr }
+            }
+            Kind::KwAssert => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let mut msg = None;
+                if self.accept(&Kind::KwOtherwise) {
+                    self.expect(&Kind::KwAbort, "`abort`")?;
+                    if let Kind::Str(s) = self.peek().clone() {
+                        self.advance();
+                        msg = Some(s);
+                    }
+                }
+                Stmt::Assert { cond, msg }
+            }
+            Kind::KwIf => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                self.skip_newlines();
+                self.expect(&Kind::LBrace, "'{' after if condition")?;
+                let then = self.parse_stmt_block()?;
+                let mut otherwise = Vec::new();
+                // `else` may sit on the next line.
+                let mark = self.pos;
+                self.skip_newlines();
+                if self.accept(&Kind::KwElse) {
+                    self.skip_newlines();
+                    if matches!(self.peek(), Kind::KwIf) {
+                        otherwise.push(self.parse_stmt()?);   // else-if chain
+                    } else {
+                        self.expect(&Kind::LBrace, "'{' after else")?;
+                        otherwise = self.parse_stmt_block()?;
+                    }
+                } else {
+                    self.pos = mark;   // no else — restore consumed newlines
+                }
+                return Ok(Stmt::If { cond, then, otherwise });
+            }
+            other => bail!(
+                "line {}: unsupported statement in method body: {other} \
+                 (13b executes `let`/`insert`/`return`/`assert`/`if`)",
+                self.peek_line()
+            ),
+        };
+        // Statement terminator: `;`, newline, or the closing `}`.
+        match self.peek() {
+            Kind::Semicolon | Kind::Newline => { self.advance(); }
+            Kind::RBrace | Kind::End => {}
+            other => bail!("line {}: expected end of statement, got {other}", self.peek_line()),
+        }
+        Ok(stmt)
+    }
+
+    // --- expressions (precedence climbing: or < and < cmp < add < mul < unary < postfix) ---
+
+    fn parse_expr(&mut self) -> Result<Expr> {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Result<Expr> {
+        let mut lhs = self.parse_and()?;
+        while self.accept(&Kind::KwOr) {
+            let rhs = self.parse_and()?;
+            lhs = Expr::Binary(BinOp::Or, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr> {
+        let mut lhs = self.parse_cmp()?;
+        while self.accept(&Kind::KwAnd) {
+            let rhs = self.parse_cmp()?;
+            lhs = Expr::Binary(BinOp::And, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_cmp(&mut self) -> Result<Expr> {
+        let lhs = self.parse_add()?;
+        let op = match self.peek() {
+            Kind::EqEq  => BinOp::Eq,
+            Kind::NotEq => BinOp::Ne,
+            Kind::Lt    => BinOp::Lt,
+            Kind::LtEq  => BinOp::Le,
+            Kind::Gt    => BinOp::Gt,
+            Kind::GtEq  => BinOp::Ge,
+            _ => return Ok(lhs),
+        };
+        self.advance();
+        let rhs = self.parse_add()?;
+        Ok(Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+    }
+
+    fn parse_add(&mut self) -> Result<Expr> {
+        let mut lhs = self.parse_mul()?;
+        loop {
+            let op = match self.peek() {
+                Kind::Plus => BinOp::Add,
+                Kind::Dash => BinOp::Sub,
+                _ => return Ok(lhs),
+            };
+            self.advance();
+            let rhs = self.parse_mul()?;
+            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr> {
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let op = match self.peek() {
+                Kind::Star    => BinOp::Mul,
+                Kind::Slash   => BinOp::Div,
+                Kind::Percent => BinOp::Mod,
+                _ => return Ok(lhs),
+            };
+            self.advance();
+            let rhs = self.parse_unary()?;
+            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr> {
+        match self.peek() {
+            Kind::Dash  => { self.advance(); Ok(Expr::Unary(UnOp::Neg, Box::new(self.parse_unary()?))) }
+            Kind::KwNot => { self.advance(); Ok(Expr::Unary(UnOp::Not, Box::new(self.parse_unary()?))) }
+            _ => self.parse_postfix(),
+        }
+    }
+
+    /// Primary followed by `.field` chains.
+    fn parse_postfix(&mut self) -> Result<Expr> {
+        let mut e = self.parse_primary()?;
+        while self.accept(&Kind::Dot) {
+            let field = self.expect_ident("field name after '.'")?;
+            e = Expr::Field(Box::new(e), field);
+        }
+        Ok(e)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr> {
+        match self.peek().clone() {
+            Kind::Int(n)  => { self.advance(); Ok(Expr::Int(n)) }
+            Kind::Str(s)  => { self.advance(); Ok(Expr::Str(s)) }
+            Kind::KwTrue  => { self.advance(); Ok(Expr::Bool(true)) }
+            Kind::KwFalse => { self.advance(); Ok(Expr::Bool(false)) }
+            Kind::KwNull  => { self.advance(); Ok(Expr::Null) }
+            Kind::LParen  => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(&Kind::RParen, "')'")?;
+                Ok(e)
+            }
+            Kind::Ident(name) => {
+                self.advance();
+                // `name(args)` — call form.
+                if self.accept(&Kind::LParen) {
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Kind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if !self.accept(&Kind::Comma) { break; }
+                        }
+                    }
+                    self.expect(&Kind::RParen, "')'")?;
+                    Ok(Expr::Call(name, args))
+                } else {
+                    Ok(Expr::Ident(name))
+                }
+            }
+            other => bail!("line {}: expected expression, got {other}", self.peek_line()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -632,12 +904,53 @@ class Product {
         let t = &sch.types[0];
         assert!(t.is_class);
         assert_eq!(t.name, "Product");
-        // Methods are parsed-and-discarded in 13a; fields and services survive.
         assert_eq!(t.fields.len(), 4);
         assert!(matches!(t.fields[3].ty, FieldTy::MultiEdge { ref target, .. } if target == "Price"));
         assert_eq!(t.services.len(), 1);
         assert_eq!(t.services[0].path, "/api/products");
         assert_eq!(t.services[0].expose.len(), 6);
+
+        // 13b: methods parse into real AST.
+        assert_eq!(t.methods.len(), 2);
+        let cp = &t.methods[0];
+        assert_eq!(cp.name, "current_price");
+        assert!(cp.params.is_empty());
+        assert_eq!(cp.ret.as_deref(), Some("Money"));
+        assert_eq!(cp.txn, TxnMode::Txn);
+        assert_eq!(cp.body.len(), 1);
+        assert!(matches!(cp.body[0], Stmt::Return { expr: Some(_) }));
+
+        let sp = &t.methods[1];
+        assert_eq!(sp.name, "set_price");
+        assert_eq!(sp.params, vec![("amount".to_string(), "Money".to_string())]);
+        assert_eq!(sp.txn, TxnMode::Txn);
+        assert!(matches!(&sp.body[0],
+            Stmt::Insert { ty, fields } if ty == "Price" && fields.len() == 2));
+    }
+
+    #[test]
+    fn method_body_expression_ast() {
+        let src = r#"
+class Price {
+  id:     Id
+  amount: Money
+
+  fn discounted(pct: Int) -> Money {
+    return self.amount * (100 - pct) / 100;
+  }
+}
+"#;
+        let sch = parse(src).unwrap();
+        let m = &sch.types[0].methods[0];
+        assert_eq!(m.txn, TxnMode::None);
+        let Stmt::Return { expr: Some(e) } = &m.body[0] else { panic!("expected return") };
+        // ((self.amount * (100 - pct)) / 100) — mul level is left-associative.
+        let Expr::Binary(BinOp::Div, lhs, rhs) = e else { panic!("expected /: {e:?}") };
+        assert!(matches!(**rhs, Expr::Int(100)));
+        let Expr::Binary(BinOp::Mul, base, paren) = &**lhs else { panic!("expected *") };
+        assert!(matches!(&**base, Expr::Field(b, f) if f == "amount"
+            && matches!(&**b, Expr::Ident(s) if s == "self")));
+        assert!(matches!(&**paren, Expr::Binary(BinOp::Sub, _, _)));
     }
 
     #[test]

@@ -201,7 +201,7 @@ Rules:
 - **No inheritance.** No `extends`, no override, no virtual dispatch. "Is-a" is a tagged union; "has-a" is `ref`/`multi`. This also kills the table-per-class storage-mapping problem: a class IS one table (+ doc/graph parts), exactly like a type.
 - **Methods are row-scoped transactional functions.** `fn name(args) -> Ret [in txn [snapshot]]` — the same signature grammar and coordinator as a free-standing `fn` (see `fn checkout` in the ecommerce sample); `self` binds to the receiving row. Bodies are the schema-layer DML of the section above. Exposed as RPC: `POST /api/products/:id/current_price` (plan 13b).
 - **Storage and REST are class-blind.** The catalog treats `class` exactly like `type`; converting between them is a no-op for stored data. `self` stays a plain identifier in the lexer (same rule as `subscribe`/`me`).
-- **Status:** parsing + CRUD shipped (13a, `ast::TypeDecl::is_class`); method execution lands in 13b — until then `fn` bodies are parsed-and-discarded like triggers.
+- **Status:** parsing + CRUD shipped (13a, `ast::TypeDecl::is_class`); method execution shipped (13b, `crates/rt/src/method.rs`) — bodies compile to `ast::{Stmt, Expr}` (`let`, `insert`, `return`, `assert … otherwise abort`, `if/else`) and run on the row's owning shard, committing as one atomic `WalRec::Txn` frame; an abort rolls back completely (HTTP 409). `fn` inside a plain `type` is still parsed-and-discarded.
 
 ## Query Layer — Hybrid SQL + Cypher, Fixed Glue
 

@@ -17,10 +17,12 @@ class Product {
     return latest(self.prices).amount;
   }
 
-  -- The write path of the live-pricing demo. One call inserts a Price in
-  -- the same transaction; the commit pushes one delta to every subscriber
-  -- of this product (13c) and patches every open pricing screen (13d).
+  -- The write path of the live-pricing demo. The assert and the insert
+  -- commit or roll back together (one WAL frame); the commit pushes one
+  -- delta to every subscriber of this product (13c) and patches every open
+  -- pricing screen (13d).
   fn set_price(amount: Money) in txn {
+    assert amount > 0 otherwise abort "price must be positive"
     insert Price { product: self.id, amount: amount };
   }
 

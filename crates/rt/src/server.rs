@@ -50,18 +50,20 @@ pub fn router(ctx: Rc<ShardCtx>, catalog: &Catalog) -> Router {
         let t = catalog.get(name).expect("type present");
         for svc in &t.services {
             if svc.kind != ServiceKind::Rest { continue; }
-            r = attach_rest(r, ctx.clone(), t.name.clone(), svc.path.clone(), &svc.expose);
+            r = attach_rest(r, ctx.clone(), t.name.clone(), svc.path.clone(), &svc.expose,
+                            &t.methods);
         }
     }
     r
 }
 
 fn attach_rest(
-    mut r: Router,
-    ctx:   Rc<ShardCtx>,
-    ty:    String,
-    path:  String,
-    ops:   &[Operation],
+    mut r:   Router,
+    ctx:     Rc<ShardCtx>,
+    ty:      String,
+    path:    String,
+    ops:     &[Operation],
+    methods: &[crate::ast::MethodDecl],
 ) -> Router {
     let id_path = format!("{path}/:id");
 
@@ -106,6 +108,17 @@ fn attach_rest(
             }
             Operation::Subscribe | Operation::Me | Operation::Custom => {}
         }
+    }
+
+    // Class methods (plan 13b): every method of a class with a rest service
+    // is served as a row-scoped RPC. Registered after the CRUD `/:id` routes
+    // — the extra path segment makes patterns disjoint either way.
+    for m in methods {
+        let ctx = ctx.clone();
+        let ty  = ty.clone();
+        let m   = m.clone();
+        r = r.route(Method::Post, &format!("{path}/:id/{}", m.name),
+            move |req, params| method_h(&ctx, &ty, &m, req, params));
     }
     r
 }
@@ -215,6 +228,51 @@ fn delete_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, params: &RouteParams) 
     }
 }
 
+/// Row-scoped method RPC (plan 13b): `POST <path>/:id/<method>` with a JSON
+/// args object. Executes on the shard that owns the receiving row — inserts
+/// the body performs mint on that shard, so everything a method writes it
+/// also owns. The whole body commits as one WAL frame; failures roll back.
+fn method_h(
+    ctx:    &Rc<ShardCtx>,
+    ty:     &str,
+    m:      &crate::ast::MethodDecl,
+    req:    &Request,
+    params: &RouteParams,
+) -> Response {
+    let id = match parse_id(params) {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    let args = match parse_json_body(req) {
+        Ok(Value::Object(map)) => map,
+        Ok(Value::Null)        => Default::default(),
+        Ok(_)  => return Response::status(Status::BAD_REQUEST)
+                      .text("method arguments must be a JSON object"),
+        Err(r) => return r,
+    };
+    let ty_owned = ty.to_string();
+    let m_owned  = m.clone();
+    let res = ctx.run_on(ctx.owner_of(id), move |e| {
+        crate::method::call(e, &ty_owned, id, &m_owned, &args)
+            .map_err(|err| (status_for(&err), err.to_string()))
+    });
+    match res {
+        None => shard_gone(),
+        Some(Ok(v)) => gate_if_staged(ctx, Response::ok().json(&v)),
+        Some(Err((status, msg))) => Response::status(status).text(msg),
+    }
+}
+
+fn status_for(err: &crate::method::MethodError) -> Status {
+    use crate::method::MethodError::*;
+    match err {
+        NoSuchRow  => Status::NOT_FOUND,
+        BadArgs(_) => Status::BAD_REQUEST,
+        Abort(_)   => Status::CONFLICT,
+        Exec(_)    => Status::INTERNAL_SERVER_ERROR,
+    }
+}
+
 fn parse_id(params: &RouteParams) -> Result<i64, Response> {
     params.get("id")
         .and_then(|s| s.parse::<i64>().ok())
@@ -250,6 +308,14 @@ pub fn describe_routes(catalog: &Catalog) -> String {
                     Operation::Custom    => continue,
                 };
                 out.push_str(&format!("  {m} {p:<30}  {n}\n"));
+            }
+            for m in &t.methods {
+                let p = format!("{}/:id/{}", svc.path, m.name);
+                let mode = match m.txn {
+                    crate::ast::TxnMode::None => "",
+                    _                         => " in txn",
+                };
+                out.push_str(&format!("  POST   {p:<30}  method  {}.{}{mode}\n", name, m.name));
             }
         }
     }
@@ -335,5 +401,80 @@ type Article { id: Id
 "#);
         let resp = r.dispatch(&req(Method::Get, "/api/articles/live", b""));
         assert_eq!(resp.status.0, 501);
+    }
+
+    const PRICING: &str = r#"
+class Price {
+  id:      Id
+  product: ref Product
+  amount:  Money
+  service rest "/api/prices" expose list
+}
+
+class Product {
+  id:     Id
+  sku:    SKU @unique
+  name:   Text
+  prices: multi Price
+
+  fn current_price() -> Money in txn {
+    return latest(self.prices).amount;
+  }
+
+  fn set_price(amount: Money) in txn {
+    assert amount > 0 otherwise abort "price must be positive"
+    insert Price { product: self.id, amount: amount };
+  }
+
+  service rest "/api/products" expose list, get, create
+}
+"#;
+
+    #[test]
+    fn class_methods_serve_rpc_routes() {
+        let (_ctx, r) = build(PRICING);
+
+        let resp = r.dispatch(&req(Method::Post, "/api/products", br#"{"sku":"SKU-1","name":"Gadget"}"#));
+        assert_eq!(resp.status.0, 201);
+
+        // The 13b exit criterion: POST :id/set_price inserts a Price atomically…
+        let resp = r.dispatch(&req(Method::Post, "/api/products/1/set_price", br#"{"amount": 4999}"#));
+        assert_eq!(resp.status.0, 200, "{}", String::from_utf8_lossy(&resp.body));
+
+        // …and current_price returns it.
+        let resp = r.dispatch(&req(Method::Post, "/api/products/1/current_price", b""));
+        assert_eq!(resp.status.0, 200);
+        assert_eq!(resp.body, b"4999");
+
+        // The Price row is a real, listable row.
+        let resp = r.dispatch(&req(Method::Get, "/api/prices", b""));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["product"], 1);
+        assert_eq!(rows[0]["amount"], 4999);
+    }
+
+    #[test]
+    fn method_errors_map_to_http_statuses() {
+        let (_ctx, r) = build(PRICING);
+        r.dispatch(&req(Method::Post, "/api/products", br#"{"sku":"S","name":"N"}"#));
+
+        // Unknown row → 404.
+        let resp = r.dispatch(&req(Method::Post, "/api/products/99/set_price", br#"{"amount": 1}"#));
+        assert_eq!(resp.status.0, 404);
+
+        // Missing argument → 400.
+        let resp = r.dispatch(&req(Method::Post, "/api/products/1/set_price", b"{}"));
+        assert_eq!(resp.status.0, 400);
+
+        // Aborting method → 409, and the transaction rolled back.
+        let resp = r.dispatch(&req(Method::Post, "/api/products/1/set_price", br#"{"amount": 0}"#));
+        assert_eq!(resp.status.0, 409);
+        let resp = r.dispatch(&req(Method::Get, "/api/prices", b""));
+        assert_eq!(resp.body, b"[]", "aborted method must leave no rows");
+
+        // GET on a method route → 405 (route exists, wrong verb).
+        let resp = r.dispatch(&req(Method::Get, "/api/products/1/set_price", b""));
+        assert_eq!(resp.status.0, 405);
     }
 }

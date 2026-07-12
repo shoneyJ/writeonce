@@ -16,10 +16,75 @@ pub struct TypeDecl {
     pub fields:   Vec<Field>,
     pub services: Vec<ServiceDecl>,
     /// Declared with `class` instead of `type`. Storage and REST are
-    /// class-blind (plan 13 decision 5); the flag exists for the 13b method
-    /// executor and for diagnostics. Stage 13a: `fn` methods inside the body
-    /// are parsed-and-discarded like triggers.
+    /// class-blind (plan 13 decision 5); the flag gates method parsing —
+    /// `fn` members of a `class` compile into [`MethodDecl`]s (13b), while
+    /// `fn` inside a plain `type` keeps the 13a parse-and-discard behaviour.
     pub is_class: bool,
+    /// Row-scoped methods (plan 13b). Only populated for classes.
+    pub methods:  Vec<MethodDecl>,
+}
+
+/// `fn name(args) -> Ret [in txn [snapshot]] { body }` — a row-scoped
+/// transactional function with an implicit `self` receiver (plan 13
+/// decision 2). Served over RPC as `POST <service-path>/:id/<name>`.
+#[derive(Debug, Clone)]
+pub struct MethodDecl {
+    pub name:   String,
+    /// `(name, declared type)` — the type is diagnostic-only in Stage 2.
+    pub params: Vec<(String, String)>,
+    pub ret:    Option<String>,
+    pub txn:    TxnMode,
+    pub body:   Vec<Stmt>,
+}
+
+/// Transaction annotation on a method. The Stage-2 engine is single-threaded
+/// per shard, so every method already executes atomically and in isolation;
+/// the mode is recorded for diagnostics and for the future MVCC coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxnMode { None, Txn, Snapshot, Serializable }
+
+/// Method-body statement — the schema-layer DML subset of
+/// `02-wo-language.md § Schema-Layer DML` that 13b executes.
+#[derive(Debug, Clone)]
+pub enum Stmt {
+    /// `let name = expr` — binding is a snapshot (spec rule).
+    Let    { name: String, expr: Expr },
+    /// `insert Type { field: expr, ... }` — construction form.
+    Insert { ty: String, fields: Vec<(String, Expr)> },
+    /// `return [expr]`
+    Return { expr: Option<Expr> },
+    /// `assert expr [otherwise abort ["msg"]]` — false aborts the txn.
+    Assert { cond: Expr, msg: Option<String> },
+    /// `if cond { ... } [else { ... }]` (else-if chains nest in `otherwise`).
+    If     { cond: Expr, then: Vec<Stmt>, otherwise: Vec<Stmt> },
+}
+
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    Null,
+    /// Argument, `let` binding, or `self` (bound positionally — `self` stays
+    /// a plain identifier in the lexer, plan 13 decision 4).
+    Ident(String),
+    /// `base.field` — plain object access, or relation resolution when the
+    /// base is `self` and the field is a `multi`/`backlink` relation.
+    Field(Box<Expr>, String),
+    /// `name(args)` — builtins: `latest`, `count`, `now`.
+    Call(String, Vec<Expr>),
+    Unary(UnOp, Box<Expr>),
+    Binary(BinOp, Box<Expr>, Box<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOp { Neg, Not }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add, Sub, Mul, Div, Mod,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    And, Or,
 }
 
 #[derive(Debug, Clone)]

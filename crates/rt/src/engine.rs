@@ -33,6 +33,24 @@ pub struct Engine {
     /// Set when the last mutation staged a group-commit frame — the caller
     /// (handler or shard job) must park its ack. Cleared by `take_staged`.
     staged: bool,
+    /// Active method transaction (plan 13b): mutations defer their WAL
+    /// records here and journal undo entries; `commit_txn` emits one
+    /// [`WalRec::Txn`] frame, `abort_txn` reverts RAM in reverse order.
+    txn: Option<TxnState>,
+}
+
+#[derive(Debug, Default)]
+struct TxnState {
+    wal:  Vec<crate::wal::WalRec>,
+    undo: Vec<Undo>,
+}
+
+/// Inverse of one applied mutation — enough to restore the pre-txn RAM state.
+#[derive(Debug)]
+enum Undo {
+    Created { ty: String, id: i64 },
+    Updated { ty: String, id: i64, prev: Row },
+    Deleted { ty: String, id: i64, row: Row },
 }
 
 #[derive(Debug)]
@@ -55,7 +73,8 @@ impl Engine {
             tables.insert(name.clone(), BTreeMap::new());
             next_id.insert(name.clone(), shard as i64 + 1);
         }
-        Self { catalog, tables, next_id, id_step: n_shards.max(1) as i64, wal: None, staged: false }
+        Self { catalog, tables, next_id, id_step: n_shards.max(1) as i64, wal: None, staged: false,
+               txn: None }
     }
 
     /// Attach a per-commit WAL (fsync inside each mutation). Must happen
@@ -139,12 +158,69 @@ impl Engine {
             WalRec::Delete { ty, id } => {
                 if let Some(table) = self.tables.get_mut(ty) { table.remove(id); }
             }
+            // A method's mutations — the frame validated whole, apply all.
+            WalRec::Txn { recs } => {
+                for r in recs { self.replay(r); }
+            }
+        }
+    }
+
+    // --- method transactions (plan 13b) ---
+
+    /// Enter method-transaction mode: subsequent mutations journal undo
+    /// entries and defer their WAL records until [`commit_txn`].
+    pub fn begin_txn(&mut self) -> Result<()> {
+        if self.txn.is_some() {
+            anyhow::bail!("nested method transactions are not supported");
+        }
+        self.txn = Some(TxnState::default());
+        Ok(())
+    }
+
+    /// Commit the active transaction: every deferred record leaves as ONE
+    /// `WalRec::Txn` frame (atomic on replay). `Err` means the WAL rejected
+    /// the frame — RAM has been rolled back and the caller must not ack.
+    pub fn commit_txn(&mut self) -> Result<()> {
+        let Some(t) = self.txn.take() else {
+            anyhow::bail!("commit_txn without begin_txn");
+        };
+        if t.wal.is_empty() { return Ok(()); }   // read-only method — nothing to log
+        if let Err(e) = self.wal_log(crate::wal::WalRec::Txn { recs: t.wal }) {
+            self.apply_undo(t.undo);             // never ack non-durable
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Abort the active transaction: revert RAM in reverse order, log nothing.
+    pub fn abort_txn(&mut self) {
+        if let Some(t) = self.txn.take() {
+            self.apply_undo(t.undo);
+        }
+    }
+
+    fn apply_undo(&mut self, undo: Vec<Undo>) {
+        for u in undo.into_iter().rev() {
+            match u {
+                Undo::Created { ty, id } => {
+                    if let Some(t) = self.tables.get_mut(&ty) { t.remove(&id); }
+                }
+                Undo::Updated { ty, id, prev } | Undo::Deleted { ty, id, row: prev } => {
+                    if let Some(t) = self.tables.get_mut(&ty) { t.insert(id, prev); }
+                }
+            }
         }
     }
 
     /// Make a mutation durable (per-commit) or stage it (group). `Err`
-    /// means the caller must undo the RAM apply.
+    /// means the caller must undo the RAM apply. Inside a method
+    /// transaction the record is deferred instead — durability happens
+    /// once, at [`commit_txn`], as a single atomic frame.
     fn wal_log(&mut self, rec: crate::wal::WalRec) -> Result<()> {
+        if let Some(t) = self.txn.as_mut() {
+            t.wal.push(rec);
+            return Ok(());
+        }
         match self.wal.as_mut() {
             Some(WalBackend::PerCommit(w)) => {
                 w.append(&rec).map_err(|e| anyhow::anyhow!("wal append: {e}"))?;
@@ -193,6 +269,9 @@ impl Engine {
         row.insert("id".into(), json!(id));
 
         self.tables.get_mut(ty).unwrap().insert(id, row.clone());
+        if let Some(t) = self.txn.as_mut() {
+            t.undo.push(Undo::Created { ty: ty.into(), id });
+        }
         // Dual-write order: RAM applied above, durable now, ack after return.
         if let Err(e) = self.wal_log(crate::wal::WalRec::Create { ty: ty.into(), row: row.clone() }) {
             self.tables.get_mut(ty).unwrap().remove(&id);   // never ack non-durable
@@ -214,6 +293,9 @@ impl Engine {
             }
         }
         let updated = row.clone();
+        if let Some(t) = self.txn.as_mut() {
+            t.undo.push(Undo::Updated { ty: ty.into(), id, prev: prev.clone() });
+        }
         if let Err(e) = self.wal_log(crate::wal::WalRec::Update { ty: ty.into(), id, body }) {
             self.tables.get_mut(ty).unwrap().insert(id, prev);  // undo: never ack non-durable
             return Err(e);
@@ -225,6 +307,9 @@ impl Engine {
         let table = self.tables.get_mut(ty)
             .ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))?;
         let Some(removed) = table.remove(&id) else { return Ok(false) };
+        if let Some(t) = self.txn.as_mut() {
+            t.undo.push(Undo::Deleted { ty: ty.into(), id, row: removed.clone() });
+        }
         if let Err(e) = self.wal_log(crate::wal::WalRec::Delete { ty: ty.into(), id }) {
             self.tables.get_mut(ty).unwrap().insert(id, removed);  // undo
             return Err(e);
@@ -293,7 +378,7 @@ impl Engine {
     }
 }
 
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

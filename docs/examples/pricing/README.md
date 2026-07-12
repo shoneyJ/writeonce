@@ -2,7 +2,7 @@
 
 A `Price` class and a `Product` class with methods — products have prices — and a `/pricing` screen that shows **live price data for selected products**. Data stays in RAM; one product is readable by millions of customers at once; a price update pushes live to millions of subscribers; all concurrency is Linux kernel I/O (epoll today, io_uring per the scale-out plan).
 
-> **Status: 13a shipped.** `class` declarations parse and the demo serves real REST CRUD today — `wo run docs/examples/pricing` (or `just pricing-demo`) compiles 2 classes and serves `/api/products`. Methods (`set_price`, `current_price`) parse but don't execute until 13b; `subscribe` is a 501 stub until 13c; the UI is design-only until 13d/plan 14. The master plan is [`docs/plan/13-class-model-live-pricing.md`](../../plan/13-class-model-live-pricing.md).
+> **Status: 13a + 13b shipped.** `class` declarations parse, the demo serves real REST CRUD, **and methods execute over RPC** — `wo run docs/examples/pricing` (or `just pricing-demo`) serves `POST /api/products/:id/set_price` and `:id/current_price` as row-scoped transactions: the whole body commits as one WAL frame, an `assert … otherwise abort` rolls everything back (409). `subscribe` is a 501 stub until 13c; the UI is design-only until 13d/plan 14. The master plan is [`docs/plan/13-class-model-live-pricing.md`](../../plan/13-class-model-live-pricing.md).
 
 ## The class model in one paragraph
 
@@ -32,7 +32,7 @@ pricing/
 | File / feature | Goes live in | Plan |
 | --- | --- | --- |
 | `class` parses; `/api/products` CRUD serves | **13a ✅ shipped** | lexer/parser/AST + spec amendments |
-| `set_price` / `current_price` over RPC (`POST /api/products/:id/set_price`) | **13b** | method execution, row-scoped txn |
+| `set_price` / `current_price` over RPC (`POST /api/products/:id/set_price`) | **13b ✅ shipped** | method execution, row-scoped txn, one WAL frame per call |
 | `subscribe` / `LIVE select` — delta on every commit, WebSocket at `/api/products/live` | **13c** | subscription registry (scoped Stage 3) |
 | `/pricing` screen patches price cells in open browsers | **13d** | SSR + `wo:live`/`wo:bind` client runtime |
 | Millions of readers + millions of live recipients | **13e** | scale targets + load harness |

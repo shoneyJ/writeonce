@@ -36,13 +36,17 @@ const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
 /// One logged mutation. `Create` carries the FULL post-default row (id,
 /// timestamps included) so replay is byte-exact; `Update` carries the merge
-/// body (merge is deterministic in log order).
-#[derive(Serialize, Deserialize)]
+/// body (merge is deterministic in log order). `Txn` bundles every mutation
+/// of one method call (plan 13b) into a single frame: the frame's CRC +
+/// trailer make it replay whole-or-not-at-all, so a crash mid-method can
+/// never leave a partial method on disk.
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum WalRec {
     Create { ty: String, row: Row },
     Update { ty: String, id: i64, body: Value },
     Delete { ty: String, id: i64 },
+    Txn    { recs: Vec<WalRec> },
 }
 
 #[derive(Debug)]

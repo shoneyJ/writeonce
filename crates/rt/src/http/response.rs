@@ -18,6 +18,7 @@ impl Status {
     pub const BAD_REQUEST:           Status = Status(400, "Bad Request");
     pub const NOT_FOUND:             Status = Status(404, "Not Found");
     pub const METHOD_NOT_ALLOWED:    Status = Status(405, "Method Not Allowed");
+    pub const CONFLICT:              Status = Status(409, "Conflict");
     pub const INTERNAL_SERVER_ERROR: Status = Status(500, "Internal Server Error");
     pub const NOT_IMPLEMENTED:       Status = Status(501, "Not Implemented");
 }

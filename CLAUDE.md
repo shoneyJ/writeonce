@@ -96,6 +96,7 @@ Covered in `docs/runtime/database/02-wo-language.md § Concurrency Model` and `0
 | `engine.rs` (Value + Row helpers) | `value` | 2 |
 | `engine.rs` (Engine + Catalog) | `engine` | 2 |
 | `compile.rs` | `engine` | 2 |
+| `method.rs` (13b method executor) | `logic` | 6 |
 | `server.rs` | `http` + `service` | 4 / 6 |
 | `bin/wo.rs` | stays in `rt` (the binary) | — |
 
@@ -126,8 +127,8 @@ Stage-3 stubs (501) and policy-shaped 405/404 responses are **intentional and do
 
 - **`rt` is monolithic on purpose.** Splitting it into the 14 sibling crates is Phase-by-Phase work, not a Stage-2 refactor.
 - **`reference/crates/` is its own workspace.** Running `cargo build` at the root does not build v1. Running it in `reference/crates/` does.
-- **Parser identifiers vs. keywords.** `subscribe`, `receive`, `expect_abort`, `me` are NOT keywords in the lexer — they stay as plain idents so they can appear as operation names in `expose` lists. Adding them to the keyword map breaks `service rest "..." expose subscribe`.
-- **Parser skip-on-block.** Unknown triggers (`on update do ...`) are parsed-and-discarded by brace-depth-aware skipping. Object literals like `{ article_id: self.id }` inside trigger actions contain `}` that must not be mistaken for the type's outer close brace — the depth counter exists specifically because of this.
+- **Parser identifiers vs. keywords.** `subscribe`, `receive`, `expect_abort`, `me`, `self`, and lowercase `insert` are NOT keywords in the lexer — they stay as plain idents (only SQL-layer `INSERT` is a keyword). The 13b statement parser matches `insert` as an ident; adding these to the keyword map breaks `service rest "..." expose subscribe` and method bodies.
+- **Parser skip-on-block.** Unknown triggers (`on update do ...`) are parsed-and-discarded by brace-depth-aware skipping. Object literals like `{ article_id: self.id }` inside trigger actions contain `}` that must not be mistaken for the type's outer close brace — the depth counter exists specifically because of this. Exception since 13b: `fn` inside a `class` parses into a real `MethodDecl` (body statements + expressions, executed by `method.rs`); `fn` inside a plain `type` still skips.
 - **Newline significance.** The lexer emits `Kind::Newline` tokens and the parser uses them to end policy/trigger lines. Do not filter newlines globally.
 - **Default-value parsing.** `= now()` is recognised explicitly as `DefaultExpr::Now`; anything else falls into an opaque-expression path that `engine::eval_default` then **omits from created rows** (computed fields display as empty, not as debug-printed tokens).
 - **Binary variable shadowing.** `crates/rt/src/bin/wo.rs` has `let rt = ...` (a tokio runtime handle) inside `run()` that shadows the crate named `rt`. Inside `run()` the variable wins; inside `serve()` (a different function) `rt::` refers to the crate. Don't rename the variable without also auditing the crate-path references.

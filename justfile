@@ -48,12 +48,13 @@ rt-c-bench port="8085" threads="8" conns="64":
 pricing:
     cargo run --bin wo -- run docs/examples/pricing
 
-# class model in action: serve pricing, CRUD round-trip on Product, shut down
+# class model in action: CRUD + row-scoped method RPC (13b) on Product.
+# WO_THREADS=1 + WO_DATA=off keep ids deterministic and the demo stateless.
 pricing-demo port="8092":
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --bin wo
-    WO_LISTEN=127.0.0.1:{{port}} ./target/debug/wo run docs/examples/pricing &
+    WO_THREADS=1 WO_DATA=off WO_LISTEN=127.0.0.1:{{port}} ./target/debug/wo run docs/examples/pricing &
     server=$!
     trap 'kill $server 2>/dev/null' EXIT
     base=http://127.0.0.1:{{port}}
@@ -62,6 +63,11 @@ pricing-demo port="8092":
     echo "--- create:";  curl -s -X POST "$base/api/products" -H 'Content-Type: application/json' -d '{"sku":"WO-001","name":"writeonce mug"}'; echo
     echo "--- list:";    curl -s "$base/api/products"; echo
     echo "--- patch 1:"; curl -s -X PATCH "$base/api/products/1" -d '{"name":"writeonce mug v2"}'; echo
+    echo "--- set_price 4999 (method RPC, expect 200):"; curl -s -X POST "$base/api/products/1/set_price" -d '{"amount":4999}' -o /dev/null -w '%{http_code}\n'
+    echo "--- set_price 5999 (expect 200):";             curl -s -X POST "$base/api/products/1/set_price" -d '{"amount":5999}' -o /dev/null -w '%{http_code}\n'
+    echo "--- current_price (expect 5999):";             curl -s -X POST "$base/api/products/1/current_price"; echo
+    echo "--- set_price 0 (assert aborts, expect 409):"; curl -s -X POST "$base/api/products/1/set_price" -d '{"amount":0}'; echo
+    echo "--- current_price unchanged (expect 5999):";   curl -s -X POST "$base/api/products/1/current_price"; echo
     echo "--- live (13c pending, expect 501):"; curl -s -o /dev/null -w '%{http_code}\n' "$base/api/products/live"
     echo "--- delete 1 (expect 204):";          curl -s -X DELETE "$base/api/products/1" -o /dev/null -w '%{http_code}\n'
 

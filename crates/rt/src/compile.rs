@@ -21,6 +21,10 @@ pub struct CompiledType {
     /// those specially but keeps them in the type's row object for echo.
     pub fields:   Vec<Field>,
     pub services: Vec<ServiceDecl>,
+    /// Row-scoped methods (plan 13b) — populated for `class` declarations,
+    /// empty for plain `type`s. Storage stays class-blind; methods only add
+    /// RPC routes on top.
+    pub methods:  Vec<MethodDecl>,
     /// True iff the type declared an `id: Id` column. Auto-populated on insert.
     pub has_id:   bool,
 }
@@ -42,6 +46,7 @@ impl Catalog {
                     name:     t.name.clone(),
                     fields:   t.fields,
                     services: t.services,
+                    methods:  t.methods,
                     has_id,
                 });
             }
