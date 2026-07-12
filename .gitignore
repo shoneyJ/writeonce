@@ -21,12 +21,15 @@
 
 # Symlinks to research source trees — user-specific absolute paths.
 # Each contributor sets their own via:
-#   ln -s <path-to-linux-src>      reference/linux
-#   ln -s <path-to-go-src>         reference/go
-#   ln -s <path-to-postgresql-src> reference/postgresql
+#   ln -s <path-to-linux-src>          reference/linux
+#   ln -s <path-to-go-src>             reference/go
+#   ln -s <path-to-postgresql-src>     reference/postgresql
+#   ln -s <path-to-mcp-python-sdk-src> reference/mcp-python-sdk
+#     (clone: https://github.com/modelcontextprotocol/python-sdk.git)
 /reference/linux
 /reference/go
 /reference/postgresql
+/reference/mcp-python-sdk
 
 # Editor / OS noise — left broad on purpose so a contributor doesn't
 # accidentally commit their IDE scratch or macOS metadata.

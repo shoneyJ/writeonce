@@ -51,6 +51,11 @@ All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-
 | ⬜ | 13c LIVE pricing push | [13](13-class-model-live-pricing.md) | Stage 3 scoped: subscription registry, WS at `/api/<t>/live`, replaces the 501 stub |
 | ⬜ | Stage 3 wire layer | [../runtime/database/04-client-api.md](../runtime/database/04-client-api.md) | full subscription engine + wire protocol; 13c is its beachhead |
 | ⬜ | 13e pricing at scale | [13](13-class-model-live-pricing.md) | wires demo to 09; hot-row reads |
+| ⬜ | 15a MCP core + tools | [15](15-mcp-streamable-http.md) | JSON-RPC 2.0 on `POST /mcp`; catalog-generated tools; durable-ack gated; stateless |
+| ⬜ | 15b MCP resources | [15](15-mcp-streamable-http.md) | `wo://` URIs, templates, cursors |
+| ⬜ | 15c MCP SSE + sessions | [15](15-mcp-streamable-http.md) | first streaming response in `rt`; `Mcp-Session-Id`; GET stream |
+| ⬜ | 15d `service mcp` surface | [15](15-mcp-streamable-http.md) | `ServiceKind::Mcp`; 13b methods become tools |
+| ⬜ | 15e MCP live subscriptions | [15](15-mcp-streamable-http.md) | `resources/subscribe` + `Last-Event-ID` replay — needs 13c + 09d |
 
 Ecommerce sample status (verified 2026-06-13, `api.rest` **17/17 expected statuses pass**): route wiring, empty lists, 405 for un-exposed ops, 404 for unregistered routes, 501 Stage-3 stubs — all exactly as documented. `fn checkout`, `on startup` seeding, and status-lifecycle triggers await 13b-style execution + 09e.
 
@@ -75,5 +80,6 @@ Ecommerce sample status (verified 2026-06-13, `api.rest` **17/17 expected status
 1. **13b — method execution** (unblocks `fn checkout` semantics, the ecommerce sample's core promise)
 2. **13c / Stage 3 LIVE** with **09d** fan-out (turns every 501 stub real; the ecommerce order-ops board's backend)
 3. **09e — 2PC** (cross-shard `fn checkout` — the canonical ACID demo end-to-end)
-4. **05/06** dependency removal (mechanical, any time)
-5. **10–12** storage completion (snapshots/compaction; arena engine)
+4. **15a/15b — MCP core, tools, resources** (needs nothing unshipped; makes every app agent-callable; 15c/15d any time after; 15e waits on 13c + 09d)
+5. **05/06** dependency removal (mechanical, any time)
+6. **10–12** storage completion (snapshots/compaction; arena engine)
