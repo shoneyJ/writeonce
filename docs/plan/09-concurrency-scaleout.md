@@ -1,5 +1,7 @@
 # 09 — Scale-out: thread-per-core for 10k concurrent users
 
+> **Kanban: 🔄 in progress** — 09a/09b/09c ✅ shipped (+ keep-alive and io_uring group-commit follow-ups, measured in the shipped notes below); 09d/09e/09f ⬜ not started. Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) (last single-threaded phase), [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) (the "single-threaded" policy we're now refining), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) (original concurrency stance), [`docs/examples/ecommerce/`](../examples/ecommerce/) (the target workload), [`./linux/`](./linux/) (kernel primitives), [`reference/go/src/runtime/`](../../reference/go/src/runtime/) (precedent for a runtime that scales across threads).
 
 ## Context

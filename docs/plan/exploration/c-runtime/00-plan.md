@@ -1,5 +1,7 @@
 # wo-rt-c roadmap — multi-threaded io_uring RAM database runtime, in C
 
+> **Kanban: ✅ done** — phases A–F all shipped with measured exit evidence below. Board: [../../00-kanban.md](../../00-kanban.md)
+
 **Context sources:** [`prototypes/wo-rt-c/wo-rt.c`](../../../../prototypes/wo-rt-c/wo-rt.c) (phase 0 — the single-threaded epoll baseline), [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) (the thread-per-core doctrine every phase here miniaturizes), [`../../10-storage-foundations.md`](../../10-storage-foundations.md) / [`11-wal-and-recovery.md`](../../11-wal-and-recovery.md) / [`12-engine-disk-cutover.md`](../../12-engine-disk-cutover.md) (the storage track), kernel reference cards [`../linux/07-io_uring.md`](../linux/07-io_uring.md), [`08-mmap.md`](../linux/08-mmap.md), [`09-fallocate.md`](../linux/09-fallocate.md), [`12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md), [`02-eventfd.md`](../linux/02-eventfd.md).
 
 ## Goal

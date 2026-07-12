@@ -1,5 +1,7 @@
 # 07 — `inotify` Content Watcher
 
+> **Kanban: ⬜ not started** — Track 1 (runtime foundations). Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./linux/00-linux.md`](./linux/00-linux.md) § File Watching, [`../02-recovery.md`](../02-recovery.md) § No AWS Infrastructure.
 
 ## Goal

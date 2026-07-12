@@ -1,5 +1,7 @@
 # 13 — Class model + live pricing: state and methods, no inheritance
 
+> **Kanban: 🔄 in progress** — 13a ✅ shipped; 13b (method execution) is the next API milestone; 13c ⬜; 13d ⏸ parked (frontend); 13e ⬜. Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`../runtime/database/02-wo-language.md`](../runtime/database/02-wo-language.md) (schema layer, § Schema-Layer DML brace disambiguation, § Cross-Paradigm Transaction Coordinator), [`../runtime/database/04-client-api.md`](../runtime/database/04-client-api.md) (subscription engine), [`./09-concurrency-scaleout.md`](./09-concurrency-scaleout.md) (thread-per-core scale-out), [`./exploration/ui/00-overview.md`](./exploration/ui/00-overview.md) + [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) (live UI), [`../examples/pricing/`](../examples/pricing/) (the demo this phase makes real), [`../examples/ecommerce/shared/logic/checkout.wo`](../examples/ecommerce/shared/logic/checkout.wo) (the existing `fn … in txn snapshot` signature style methods reuse).
 
 ## Context

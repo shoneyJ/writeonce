@@ -1,5 +1,7 @@
 # 05 — Hand-Rolled JSON
 
+> **Kanban: ⬜ not started** — Track 1 (runtime foundations), next in the dependency-removal sequence. Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`./04-cutover-remove-tokio-axum.md`](./04-cutover-remove-tokio-axum.md), [`../../prototypes/wo-db/src/value.hpp`](../../prototypes/wo-db/src/value.hpp).
 
 ## Goal

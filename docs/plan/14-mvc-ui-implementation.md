@@ -1,5 +1,7 @@
 # 14 — MVC UI implementation: model = class, view = htmlx + scss, controller = .wo
 
+> **Kanban: ⏸ parked (frontend)** — backend focus first; design stays current. Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) (the design this plan implements), [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) / [`02-ui-compiler.md`](./exploration/ui/02-ui-compiler.md) / [`03-client-runtime.md`](./exploration/ui/03-client-runtime.md) (the three UI-track pieces this plan sequences, each with port sources and LOC budgets), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the class methods controllers call: 13a/13b; the LIVE deltas views consume: 13c), [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) (the reference MVC triplet), [`reference/crates/wo-htmlx/`](../../reference/crates/wo-htmlx/) (the v1 template engine, primary port source).
 
 ## Context

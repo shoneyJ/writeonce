@@ -1,5 +1,7 @@
 # 12 — Engine cutover: rows live on disk
 
+> **Kanban: ⬜ not started** — the C prototype's phase B (mmap arena) is the proving ground. Board: [00-kanban.md](00-kanban.md)
+
 **Context sources:** [`./10-storage-foundations.md`](./10-storage-foundations.md), [`./11-wal-and-recovery.md`](./11-wal-and-recovery.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/buffer-and-checkpoint.md`](./exploration/postgresql/buffer-and-checkpoint.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md).
 
 ## Goal
