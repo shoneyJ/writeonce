@@ -18,6 +18,17 @@ impl Listener {
     /// Bind to `addr` (IPv4 only for now) and start listening with backlog 128.
     /// Socket is created `SOCK_NONBLOCK | SOCK_CLOEXEC`.
     pub fn bind(addr: &str) -> io::Result<Self> {
+        Self::bind_inner(addr, false)
+    }
+
+    /// Like [`bind`](Self::bind), but with `SO_REUSEPORT`: every shard thread
+    /// binds its own listener to the same port and the kernel load-balances
+    /// incoming connections across them by 4-tuple hash (plan 09 decision 3).
+    pub fn bind_reuseport(addr: &str) -> io::Result<Self> {
+        Self::bind_inner(addr, true)
+    }
+
+    fn bind_inner(addr: &str, reuseport: bool) -> io::Result<Self> {
         let parsed: SocketAddr = addr.parse().map_err(|e| {
             io::Error::new(io::ErrorKind::InvalidInput, format!("bad addr {addr:?}: {e}"))
         })?;
@@ -47,6 +58,21 @@ impl Listener {
             let err = io::Error::last_os_error();
             unsafe { libc::close(fd); }
             return Err(err);
+        }
+
+        if reuseport {
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd, libc::SOL_SOCKET, libc::SO_REUSEPORT,
+                    &one as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if ret < 0 {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(fd); }
+                return Err(err);
+            }
         }
 
         let s_addr = u32::from_be_bytes(v4.ip().octets()).to_be();
@@ -146,5 +172,16 @@ mod tests {
         let cfd = accepted.expect("accept produced a client fd");
         unsafe { libc::close(cfd); }
         drop(stream);
+    }
+
+    #[test]
+    fn reuseport_allows_two_listeners_on_one_port() {
+        let a = Listener::bind_reuseport("127.0.0.1:0").unwrap();
+        let port = a.local_addr().port();
+        let b = Listener::bind_reuseport(&format!("127.0.0.1:{port}"))
+            .expect("second SO_REUSEPORT bind on the same port must succeed");
+        assert_eq!(b.local_addr().port(), port);
+        // Plain bind on the same port must still fail (no REUSEPORT).
+        assert!(Listener::bind(&format!("127.0.0.1:{port}")).is_err());
     }
 }

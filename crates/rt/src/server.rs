@@ -13,52 +13,55 @@
 //! me        GET    /path/me                                  (501)
 //! ```
 //!
-//! Phase-04 cutover: the axum + tokio backend was replaced with the
-//! hand-rolled [`http::Router`](crate::http::Router) running on the
-//! phase-02 [`EventLoop`](crate::runtime::EventLoop). Handlers are
-//! synchronous, the engine sits behind `Arc<std::sync::Mutex<_>>`, and
-//! the binary owns one event loop on one thread.
+//! Since plan 09b the engine is **sharded**: each worker thread owns its own
+//! [`Engine`] behind a [`ShardCtx`](crate::shard::ShardCtx) — no mutex, no
+//! shared heap. Handlers resolve the owning shard from the row id
+//! (`owner = (id-1) % n`, the interleaved-mint rule), run locally when it's
+//! ours, ship a job over the shard bus when it isn't. Creates always mint
+//! locally; lists fan out to every shard and merge by id.
+
+use std::rc::Rc;
 
 use crate::ast::{Operation, ServiceKind};
 use crate::compile::Catalog;
-use crate::engine::Engine;
+use crate::engine::Row;
 use crate::http::{Method, Request, Response, RouteParams, Router, Status};
+use crate::shard::ShardCtx;
 
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 
-pub type Shared = Arc<Mutex<Engine>>;
-
-/// Build the fully-wired [`Router`] for a running engine.
-pub fn router(engine: Shared, catalog: &Catalog) -> Router {
+/// Build the fully-wired [`Router`] for one shard's worker thread.
+pub fn router(ctx: Rc<ShardCtx>, catalog: &Catalog) -> Router {
+    let shard = ctx.id;
+    let n     = ctx.n;
     let mut r = Router::new()
-        .route(Method::Get, "/",        |_, _| root_response())
+        .route(Method::Get, "/", move |_, _| {
+            Response::ok().json(&json!({
+                "runtime": "wo",
+                "stage":   2,
+                "threads": n,
+                "shard":   shard,
+                "notes":   "REST CRUD for each `service rest` block. /healthz for liveness. LIVE subscribe in Stage 3."
+            }))
+        })
         .route(Method::Get, "/healthz", |_, _| Response::ok().text("ok"));
 
     for name in &catalog.order {
         let t = catalog.get(name).expect("type present");
         for svc in &t.services {
             if svc.kind != ServiceKind::Rest { continue; }
-            r = attach_rest(r, engine.clone(), t.name.clone(), svc.path.clone(), &svc.expose);
+            r = attach_rest(r, ctx.clone(), t.name.clone(), svc.path.clone(), &svc.expose);
         }
     }
     r
 }
 
-fn root_response() -> Response {
-    Response::ok().json(&json!({
-        "runtime": "wo",
-        "stage":   2,
-        "notes":   "REST CRUD for each `service rest` block. /healthz for liveness. LIVE subscribe in Stage 3."
-    }))
-}
-
 fn attach_rest(
-    mut r:   Router,
-    engine:  Shared,
-    ty:      String,
-    path:    String,
-    ops:     &[Operation],
+    mut r: Router,
+    ctx:   Rc<ShardCtx>,
+    ty:    String,
+    path:  String,
+    ops:   &[Operation],
 ) -> Router {
     let id_path = format!("{path}/:id");
 
@@ -82,24 +85,24 @@ fn attach_rest(
     for op in ops {
         match op {
             Operation::List => {
-                let eng = engine.clone(); let ty = ty.clone();
-                r = r.route(Method::Get, &path, move |req, params| list_h(&eng, &ty, req, params));
+                let ctx = ctx.clone(); let ty = ty.clone();
+                r = r.route(Method::Get, &path, move |req, params| list_h(&ctx, &ty, req, params));
             }
             Operation::Create => {
-                let eng = engine.clone(); let ty = ty.clone();
-                r = r.route(Method::Post, &path, move |req, params| create_h(&eng, &ty, req, params));
+                let ctx = ctx.clone(); let ty = ty.clone();
+                r = r.route(Method::Post, &path, move |req, params| create_h(&ctx, &ty, req, params));
             }
             Operation::Get => {
-                let eng = engine.clone(); let ty = ty.clone();
-                r = r.route(Method::Get, &id_path, move |req, params| get_h(&eng, &ty, req, params));
+                let ctx = ctx.clone(); let ty = ty.clone();
+                r = r.route(Method::Get, &id_path, move |req, params| get_h(&ctx, &ty, req, params));
             }
             Operation::Update => {
-                let eng = engine.clone(); let ty = ty.clone();
-                r = r.route(Method::Patch, &id_path, move |req, params| update_h(&eng, &ty, req, params));
+                let ctx = ctx.clone(); let ty = ty.clone();
+                r = r.route(Method::Patch, &id_path, move |req, params| update_h(&ctx, &ty, req, params));
             }
             Operation::Delete => {
-                let eng = engine.clone(); let ty = ty.clone();
-                r = r.route(Method::Delete, &id_path, move |req, params| delete_h(&eng, &ty, req, params));
+                let ctx = ctx.clone(); let ty = ty.clone();
+                r = r.route(Method::Delete, &id_path, move |req, params| delete_h(&ctx, &ty, req, params));
             }
             Operation::Subscribe | Operation::Me | Operation::Custom => {}
         }
@@ -108,41 +111,73 @@ fn attach_rest(
 }
 
 // --- handlers ---
+//
+// Cross-shard results travel as `Result<_, String>` (anyhow::Error isn't
+// guaranteed Send-friendly to reconstruct losslessly; the string is what we
+// put in the HTTP body anyway). `run_on` returning `None` means the owning
+// shard is gone — only during shutdown — and maps to 503.
 
-fn list_h(engine: &Shared, ty: &str, _req: &Request, _params: &RouteParams) -> Response {
-    let eng = engine.lock().unwrap();
-    match eng.list(ty) {
-        Ok(rows) => Response::ok().json(&json!(rows)),
-        Err(e)   => Response::status(Status::INTERNAL_SERVER_ERROR).text(e.to_string()),
-    }
+fn shard_gone() -> Response {
+    Response::status(Status::INTERNAL_SERVER_ERROR).text("owning shard unavailable")
 }
 
-fn get_h(engine: &Shared, ty: &str, _req: &Request, params: &RouteParams) -> Response {
+fn list_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, _params: &RouteParams) -> Response {
+    let ty_owned = ty.to_string();
+    // Fan out to every shard, merge by id — the cross-shard read per 09b.
+    let per_shard: Vec<Result<Vec<Row>, String>> =
+        ctx.fanout(move |e| e.list(&ty_owned).map_err(|e| e.to_string()));
+    let mut rows = Vec::new();
+    for r in per_shard {
+        match r {
+            Ok(mut v)  => rows.append(&mut v),
+            Err(e)     => return Response::status(Status::INTERNAL_SERVER_ERROR).text(e),
+        }
+    }
+    rows.sort_by_key(|row| row.get("id").and_then(|v| v.as_i64()).unwrap_or(0));
+    Response::ok().json(&json!(rows))
+}
+
+fn get_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, params: &RouteParams) -> Response {
     let id = match parse_id(params) {
         Ok(id) => id,
         Err(r) => return r,
     };
-    let eng = engine.lock().unwrap();
-    match eng.get(ty, id) {
-        Ok(Some(row)) => Response::ok().json(&json!(row)),
-        Ok(None)      => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
-        Err(e)        => Response::status(Status::INTERNAL_SERVER_ERROR).text(e.to_string()),
+    let ty_owned = ty.to_string();
+    let res = ctx.run_on(ctx.owner_of(id), move |e| {
+        e.get(&ty_owned, id).map_err(|e| e.to_string())
+    });
+    match res {
+        None                => shard_gone(),
+        Some(Ok(Some(row))) => Response::ok().json(&json!(row)),
+        Some(Ok(None))      => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
+        Some(Err(e))        => Response::status(Status::INTERNAL_SERVER_ERROR).text(e),
     }
 }
 
-fn create_h(engine: &Shared, ty: &str, req: &Request, _params: &RouteParams) -> Response {
+fn create_h(ctx: &Rc<ShardCtx>, ty: &str, req: &Request, _params: &RouteParams) -> Response {
     let body = match parse_json_body(req) {
         Ok(v)  => v,
         Err(r) => return r,
     };
-    let mut eng = engine.lock().unwrap();
-    match eng.create(ty, body) {
-        Ok(row) => Response::status(Status::CREATED).json(&json!(row)),
+    // Always local: the receiving shard mints from its own interleaved
+    // stride, so the row it creates is by construction a row it owns.
+    let res = ctx.engine.borrow_mut().create(ty, body);
+    match res {
+        Ok(row) => gate_if_staged(ctx, Response::status(Status::CREATED).json(&json!(row))),
         Err(e)  => Response::status(Status::BAD_REQUEST).text(e.to_string()),
     }
 }
 
-fn update_h(engine: &Shared, ty: &str, req: &Request, params: &RouteParams) -> Response {
+/// Group commit: a mutation that staged a WAL frame must not be acked until
+/// the batch fsync — flag the response so the connection parks it.
+fn gate_if_staged(ctx: &Rc<ShardCtx>, mut resp: Response) -> Response {
+    if ctx.engine.borrow_mut().take_staged() {
+        resp.gate = true;
+    }
+    resp
+}
+
+fn update_h(ctx: &Rc<ShardCtx>, ty: &str, req: &Request, params: &RouteParams) -> Response {
     let id = match parse_id(params) {
         Ok(id) => id,
         Err(r) => return r,
@@ -151,24 +186,32 @@ fn update_h(engine: &Shared, ty: &str, req: &Request, params: &RouteParams) -> R
         Ok(v)  => v,
         Err(r) => return r,
     };
-    let mut eng = engine.lock().unwrap();
-    match eng.update(ty, id, body) {
-        Ok(Some(row)) => Response::ok().json(&json!(row)),
-        Ok(None)      => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
-        Err(e)        => Response::status(Status::BAD_REQUEST).text(e.to_string()),
+    let ty_owned = ty.to_string();
+    let res = ctx.run_on(ctx.owner_of(id), move |e| {
+        e.update(&ty_owned, id, body).map_err(|e| e.to_string())
+    });
+    match res {
+        None                => shard_gone(),
+        Some(Ok(Some(row))) => gate_if_staged(ctx, Response::ok().json(&json!(row))),
+        Some(Ok(None))      => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
+        Some(Err(e))        => Response::status(Status::BAD_REQUEST).text(e),
     }
 }
 
-fn delete_h(engine: &Shared, ty: &str, _req: &Request, params: &RouteParams) -> Response {
+fn delete_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, params: &RouteParams) -> Response {
     let id = match parse_id(params) {
         Ok(id) => id,
         Err(r) => return r,
     };
-    let mut eng = engine.lock().unwrap();
-    match eng.delete(ty, id) {
-        Ok(true)  => Response::no_content(),
-        Ok(false) => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
-        Err(e)    => Response::status(Status::INTERNAL_SERVER_ERROR).text(e.to_string()),
+    let ty_owned = ty.to_string();
+    let res = ctx.run_on(ctx.owner_of(id), move |e| {
+        e.delete(&ty_owned, id).map_err(|e| e.to_string())
+    });
+    match res {
+        None             => shard_gone(),
+        Some(Ok(true))   => gate_if_staged(ctx, Response::no_content()),
+        Some(Ok(false))  => Response::status(Status::NOT_FOUND).text(format!("no {ty} with id {id}")),
+        Some(Err(e))     => Response::status(Status::INTERNAL_SERVER_ERROR).text(e),
     }
 }
 
@@ -187,12 +230,12 @@ fn parse_json_body(req: &Request) -> Result<Value, Response> {
 }
 
 /// Format the endpoint banner the CLI prints on startup.
-pub fn describe_routes(engine: &Engine) -> String {
+pub fn describe_routes(catalog: &Catalog) -> String {
     let mut out = String::new();
     out.push_str("  GET    /                          runtime info\n");
     out.push_str("  GET    /healthz                   liveness\n");
-    for name in &engine.catalog().order {
-        let t = engine.catalog().get(name).unwrap();
+    for name in &catalog.order {
+        let t = catalog.get(name).unwrap();
         for svc in &t.services {
             if svc.kind != ServiceKind::Rest { continue; }
             for op in &svc.expose {
@@ -217,13 +260,18 @@ pub fn describe_routes(engine: &Engine) -> String {
 mod tests {
     use super::*;
     use crate::compile::Catalog;
+    use crate::engine::Engine;
     use crate::parser::parse;
+    use crate::shard::ShardBus;
 
-    fn build(src: &str) -> (Shared, Router) {
+    /// Single-shard context: `run_on` is always local, `fanout` is just us —
+    /// exactly the WO_THREADS=1 production shape.
+    fn build(src: &str) -> (Rc<ShardCtx>, Router) {
         let cat = Catalog::from_schemas(vec![parse(src).unwrap()]).unwrap();
-        let eng = Arc::new(Mutex::new(Engine::new(cat.clone())));
-        let r = router(eng.clone(), &cat);
-        (eng, r)
+        let bus = ShardBus::new(1).unwrap();
+        let ctx = ShardCtx::new(0, 1, Engine::for_shard(cat.clone(), 0, 1), bus);
+        let r = router(ctx.clone(), &cat);
+        (ctx, r)
     }
 
     fn req(method: Method, path: &str, body: &[u8]) -> Request {
@@ -233,12 +281,13 @@ mod tests {
             query:   None,
             headers: Default::default(),
             body:    body.to_vec(),
+            keep_alive: true,
         }
     }
 
     #[test]
     fn router_serves_crud_for_a_service_rest_block() {
-        let (_eng, r) = build(r#"
+        let (_ctx, r) = build(r#"
 type Article { id: Id
                title: Text
                service rest "/api/articles" expose list, get, create, update, delete }
@@ -268,7 +317,7 @@ type Article { id: Id
 
     #[test]
     fn unexposed_method_yields_405() {
-        let (_eng, r) = build(r#"
+        let (_ctx, r) = build(r#"
 type Tag { id: Id
            label: Text
            service rest "/api/tags" expose list, get }
@@ -279,7 +328,7 @@ type Tag { id: Id
 
     #[test]
     fn live_subscribe_is_501() {
-        let (_eng, r) = build(r#"
+        let (_ctx, r) = build(r#"
 type Article { id: Id
                title: Text
                service rest "/api/articles" expose list, subscribe }

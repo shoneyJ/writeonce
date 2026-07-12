@@ -13,10 +13,13 @@
 
 mod eventfd;
 mod netpoll_epoll;
+mod netpoll_io_uring;
+pub mod scheduler;
 mod signalfd;
 mod timerfd;
 
 pub use eventfd::EventFd;
 pub use netpoll_epoll::{Event, EventLoop, Interest, Token};
+pub use netpoll_io_uring::Uring;
 pub use signalfd::SignalFd;
 pub use timerfd::TimerFd;

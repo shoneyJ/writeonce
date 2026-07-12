@@ -1,0 +1,20 @@
+-- Price — a `class`: state + methods, no inheritance.
+-- (Phase 13 design artifact — see docs/plan/13-class-model-live-pricing.md.
+--  The Stage 2 parser skips `class` blocks; this parses as real syntax from 13a.)
+--
+-- Prices are append-only history rows: setting a new price inserts a Price,
+-- it never mutates an old one. A product's "current price" is the latest row.
+
+class Price {
+  id:       Id
+  product:  ref Product                  -- owning product (foreign key)
+  amount:   Money                        -- minor units (cents); stdlib scalar
+  currency: Text = "EUR"
+  at:       Timestamp = now()
+
+  -- Method: implicit `self` receiver, like Go methods — no class hierarchy,
+  -- just behavior attached to a row. Pure computation, so no `in txn`.
+  fn discounted(pct: Int) -> Money {
+    return self.amount * (100 - pct) / 100;
+  }
+}

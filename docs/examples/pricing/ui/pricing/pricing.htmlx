@@ -1,0 +1,37 @@
+{{!--
+  pricing.htmlx — the VIEW of the /pricing screen (MVC). Plain htmlx:
+  Mustache + <wo:live>/wo:bind per docs/plan/exploration/ui/01-htmlx-format-spec.md.
+  Logic-free — `products` and `watchlist` come from the controller's model:
+  block (pricing.wo); actions are raised by name, the controller dispatches.
+
+  Live behavior (13c/13d): when set_price commits, only the wo:bind cells of
+  the affected row patch in place — no reload, no row re-render.
+--}}
+<section class="pricing">
+  <h1>Live pricing</h1>
+
+  <wo:live source="products" key="id" sort="name asc">
+    <table class="price-table">
+      <thead>
+        <tr><th></th><th>Product</th><th>SKU</th><th>Price</th><th>Updated</th></tr>
+      </thead>
+      <tbody>
+        {{#each products as p}}
+        <tr data-key="{{p.id}}" class="{{#if (in watchlist p.id)}}watched{{/if}}">
+          <td class="watch-toggle">
+            {{#if (in watchlist p.id)}}
+              <button wo:action="unwatch" wo:args="{{p.id}}">★</button>
+            {{else}}
+              <button wo:action="watch" wo:args="{{p.id}}">☆</button>
+            {{/if}}
+          </td>
+          <td class="name">{{p.name}}</td>
+          <td class="sku">{{p.sku}}</td>
+          <td class="price" wo:bind="prices">{{> money amount=p.current_price}}</td>
+          <td class="updated" wo:bind="prices">{{relative p.prices[-1].at}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+  </wo:live>
+</section>

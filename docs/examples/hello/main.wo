@@ -1,0 +1,71 @@
+-- main.wo — the smallest complete writeonce program.
+--
+-- Run it from the repo root:
+--
+--   cargo run --bin wo -- run docs/examples/hello     (or: just hello)
+--   just hello-demo                                   -- scripted CRUD round-trip
+--
+-- and exercise it:
+--
+--   curl -X POST localhost:8080/api/notes \
+--        -H "Content-Type: application/json" \
+--        -d '{"title":"hello","body":"# First note"}'
+--   curl localhost:8080/api/notes
+--   curl localhost:8080/api/notes/1
+--   curl -X PATCH localhost:8080/api/notes/1 -d '{"pinned":true}'
+--   curl -X DELETE localhost:8080/api/notes/1
+--
+-- One type declaration is the whole app: the fields define the schema, the
+-- `service` block generates the REST endpoints, and the runtime serves them
+-- from a single binary — no external database, no framework.
+
+type Note {
+  id:         Id
+  title:      Text
+  body:       Markdown
+  pinned:     Bool = false                -- literal defaults populate on create
+  created_at: Timestamp = now()           -- so does now(); computed defaults
+                                          -- like words(...) are Stage 4+
+
+  service rest "/api/notes"
+    expose list, get, create, update, delete, subscribe
+    -- list/get/create/update/delete work today (Stage 2).
+    -- subscribe maps to GET /api/notes/live — a documented 501 stub
+    -- until Stage 3 lands LIVE subscriptions over WebSocket.
+}
+
+-- A second actor that modifies Note. The closest thing to "another class" in
+-- writeonce is another type with a trigger: there is no class/method model —
+-- behavior attaches to data. Creating a Revision rewrites its target note's
+-- title, inside the same transaction as the insert. Triggers execute from
+-- Stage 4; today the block parses and is discarded.
+type Revision {
+  id:        Id
+  note:      ref Note                     -- foreign key into Note
+  new_title: Text
+  at:        Timestamp = now()
+
+  on create
+    do update Note{ id == self.note }.title = self.new_title
+}
+
+-- Procedural entry point. Stage 2 parses and discards `main` blocks
+-- (see crates/rt/src/parser.rs — skip_top_level_chunk); from Phase 6 on
+-- this runs once at startup, before the HTTP server binds.
+main {
+  insert Note { title: "hello", body: "# First note" };
+
+  -- A snapshot binding would never see later changes (let n = select ...).
+  -- LIVE is the language's "pointer that observes stores": the handle
+  -- receives a delta at every commit that touches a matching row. Stage 3.
+  -- (Spec: docs/runtime/database/02-wo-language.md § Schema-Layer DML)
+  let live = LIVE select Note{ title };
+
+  -- The other actor fires: this insert runs Revision's on-create trigger,
+  -- the trigger updates the note, and the commit pushes one delta.
+  insert Revision { note: 1, new_title: "Hello World" };
+
+  for delta in live {
+    print(delta.kind, delta.row.title);   -- update "Hello World"
+  }
+}

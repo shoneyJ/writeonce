@@ -27,11 +27,14 @@ pub struct Response {
     pub status:  Status,
     pub headers: Vec<(String, String)>,
     pub body:    Vec<u8>,
+    /// Group-commit gate: this response acknowledges a staged WAL frame and
+    /// must not leave until the batch's fsync CQE (the connection parks).
+    pub gate:    bool,
 }
 
 impl Response {
     pub fn status(s: Status) -> Self {
-        Self { status: s, headers: Vec::new(), body: Vec::new() }
+        Self { status: s, headers: Vec::new(), body: Vec::new(), gate: false }
     }
 
     pub fn ok()        -> Self { Self::status(Status::OK) }
@@ -62,8 +65,8 @@ impl Response {
     }
 
     /// Serialize to the wire format. Auto-injects `Content-Length` and
-    /// `Connection: close` (no keep-alive in Stage 2).
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// Serialize with the connection disposition the state machine decided.
+    pub fn to_bytes(&self, keep_alive: bool) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256 + self.body.len());
         buf.extend_from_slice(
             format!("HTTP/1.1 {} {}\r\n", self.status.0, self.status.1).as_bytes(),
@@ -72,7 +75,8 @@ impl Response {
             buf.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
         }
         buf.extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
-        buf.extend_from_slice(b"Connection: close\r\n");
+        buf.extend_from_slice(if keep_alive { b"Connection: keep-alive\r\n".as_slice() }
+                              else            { b"Connection: close\r\n".as_slice() });
         buf.extend_from_slice(b"\r\n");
         buf.extend_from_slice(&self.body);
         buf
@@ -87,7 +91,7 @@ mod tests {
     #[test]
     fn ok_text_body() {
         let r = Response::ok().text("ok");
-        let s = String::from_utf8(r.to_bytes()).unwrap();
+        let s = String::from_utf8(r.to_bytes(false)).unwrap();
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("Content-Type: text/plain"));
         assert!(s.contains("Content-Length: 2\r\n"));
@@ -97,7 +101,7 @@ mod tests {
     #[test]
     fn json_body() {
         let r = Response::created().json(&json!({"id": 1, "title": "Hi"}));
-        let s = String::from_utf8(r.to_bytes()).unwrap();
+        let s = String::from_utf8(r.to_bytes(false)).unwrap();
         assert!(s.starts_with("HTTP/1.1 201 Created\r\n"));
         assert!(s.contains("Content-Type: application/json"));
         assert!(s.contains(r#"{"id":1,"title":"Hi"}"#));
@@ -106,7 +110,7 @@ mod tests {
     #[test]
     fn no_content_status() {
         let r = Response::no_content();
-        let s = String::from_utf8(r.to_bytes()).unwrap();
+        let s = String::from_utf8(r.to_bytes(false)).unwrap();
         assert!(s.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert!(s.ends_with("\r\n\r\n"));
     }

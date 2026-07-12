@@ -5,19 +5,14 @@
 //!                  compile a catalog, and serve REST CRUD on :8080.
 //!   wo --help      print usage.
 //!
-//! After the phase-04 cutover this binary owns one event loop on one
-//! thread. No tokio. The same pattern Redis and TigerBeetle use — see
-//! `docs/runtime/database/02-wo-language.md § Concurrency Model`.
+//! After the phase-04 cutover this binary owned one event loop on one
+//! thread; plan 09a upgrades that to thread-per-core — `WO_THREADS` pinned
+//! workers, each with its own event loop and `SO_REUSEPORT` listener
+//! (`rt::runtime::scheduler`). Engine state is still globally shared until
+//! 09b. No tokio. See `docs/plan/09-concurrency-scaleout.md`.
 
-use std::collections::HashMap;
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use rt::http::{Connection, Listener, Router};
-use rt::runtime::{EventLoop, Interest, SignalFd, Token};
 
 fn usage() {
     eprintln!(
@@ -85,90 +80,102 @@ fn run(dir: PathBuf) -> anyhow::Result<ExitCode> {
     println!("[wo] compiled catalog — {} type{}", catalog.order.len(),
         if catalog.order.len() == 1 { "" } else { "s" });
 
-    // 4. Boot the engine + the router.
-    let engine = Arc::new(Mutex::new(rt::engine::Engine::new(catalog.clone())));
+    // 4. Print the route banner.
     println!();
     println!("[wo] routes:");
-    {
-        let e = engine.lock().unwrap();
-        print!("{}", rt::server::describe_routes(&e));
-    }
-    let router = rt::server::router(engine.clone(), &catalog);
+    print!("{}", rt::server::describe_routes(&catalog));
 
-    // 5. Bind and serve.
+    // 5. Serve — thread-per-core with a SHARDED engine (plan 09b): each
+    //    worker owns its own Engine (interleaved ids) and its own router;
+    //    cross-shard operations travel the shard bus (mailbox + eventfd).
+    //    No Arc<Mutex<Engine>> anywhere.
     let addr = std::env::var("WO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let listener = Listener::bind(&addr)
-        .map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
+    let n = rt::runtime::scheduler::thread_count();
     println!();
-    println!("[wo] listening on http://{}", listener.local_addr());
+    println!("[wo] listening on http://{addr} — {n} shard{} (thread-per-core, SO_REUSEPORT, sharded engine)",
+        if n == 1 { "" } else { "s" });
     println!("[wo] ctrl-C to stop");
 
-    serve_loop(listener, router)?;
-    Ok(ExitCode::from(0))
-}
-
-fn serve_loop(listener: Listener, router: Router) -> anyhow::Result<()> {
-    let mut eloop  = EventLoop::new()?;
-    let signals    = SignalFd::new()?;
-    let listen_fd  = listener.as_raw_fd();
-    let signal_fd  = signals.as_raw_fd();
-
-    // Tokens: connection fds carry their own raw fd as the token; the
-    // listener and signalfd use their fds too — they're disjoint by
-    // construction (different fds).
-    eloop.register(listen_fd, Interest::READABLE, Token(listen_fd as u64))?;
-    eloop.register(signal_fd, Interest::READABLE, Token(signal_fd as u64))?;
-
-    let mut conns: HashMap<RawFd, Connection> = HashMap::new();
-
-    'outer: loop {
-        let events = match eloop.wait_once(Some(Duration::from_secs(60))) {
-            Ok(evs) => evs,
-            Err(e)  => {
-                eprintln!("[wo] event loop error: {e}");
-                continue;
-            }
-        };
-
-        for ev in events {
-            let fd = ev.token().0 as RawFd;
-
-            if fd == listen_fd {
-                // Drain accept queue (edge-triggered).
-                while let Some(cfd) = listener.accept()? {
-                    eloop.register(cfd, Interest::READABLE, Token(cfd as u64))?;
-                    conns.insert(cfd, Connection::new(cfd));
+    // Durability (plan 09c): per-shard WAL under WO_DATA (default ./wo-data;
+    // WO_DATA=off disables). A `meta` file pins the shard count — replaying
+    // a 4-shard data dir with WO_THREADS=8 would strand logs and break the
+    // id interleave, so a mismatch refuses to boot (resharding is 09f).
+    let data_dir = std::env::var("WO_DATA").unwrap_or_else(|_| "./wo-data".to_string());
+    let durable = data_dir != "off";
+    if durable {
+        std::fs::create_dir_all(&data_dir)?;
+        let meta = std::path::Path::new(&data_dir).join("meta");
+        match std::fs::read_to_string(&meta) {
+            Ok(prev) => {
+                let prev: usize = prev.trim().parse().unwrap_or(0);
+                if prev != 0 && prev != n {
+                    anyhow::bail!("{data_dir} was written with WO_THREADS={prev} — restart with that, or wipe the dir");
                 }
-                continue;
             }
-
-            if fd == signal_fd {
-                let sig = signals.read().unwrap_or(0);
-                println!();
-                println!("[wo] received signal {sig} — shutting down");
-                break 'outer;
-            }
-
-            // Connection event.
-            let Some(conn) = conns.get_mut(&fd) else { continue };
-            let want_writable = match conn.drive(ev.readable, ev.writable, ev.hangup, ev.error, &router) {
-                Ok(w)  => w,
-                Err(_) => { conns.remove(&fd); continue; }
-            };
-
-            if conn.is_done() {
-                eloop.deregister(fd).ok();
-                conns.remove(&fd); // Drop closes the fd.
-            } else if want_writable {
-                let _ = eloop.modify(fd, Interest::READ_WRITE, Token(fd as u64));
-            }
+            Err(_) => std::fs::write(&meta, format!("{n}\n"))?,
         }
     }
 
-    // Tear down outstanding connections cleanly. Dropping Connection closes
-    // each fd; deregistering from the loop is optional (close auto-removes).
-    for (fd, _) in conns.drain() {
-        let _ = eloop.deregister(fd);
-    }
-    Ok(())
+    let bus = rt::shard::ShardBus::new(n)?;
+    let catalog_for_workers = catalog.clone();
+    rt::runtime::scheduler::serve(&addr, move |id| {
+        use std::os::unix::io::AsRawFd;
+        let mut engine = rt::engine::Engine::for_shard(catalog_for_workers.clone(), id, n);
+        let mut has_group_wal = false;
+        if durable {
+            let path = std::path::Path::new(&data_dir).join(format!("shard-{id}.rwal"));
+            let t0 = std::time::Instant::now();
+            match rt::wal::Wal::open_and_replay(&path, &mut engine) {
+                Ok((wal, recs)) => {
+                    if recs > 0 {
+                        println!("[wo] shard {id}: replayed {recs} wal records in {:?}", t0.elapsed());
+                    }
+                    // Group commit (io_uring): batch the tick's frames into
+                    // one WRITE→FSYNC pair; acks ride the fsync CQE. Falls
+                    // back to per-commit fsync if the ring is unavailable
+                    // (or WO_GROUP_COMMIT=off, kept for A/B measurement).
+                    let group_enabled = std::env::var("WO_GROUP_COMMIT").map(|v| v != "off").unwrap_or(true);
+                    match (if group_enabled { rt::runtime::Uring::new(256) } else { Err(std::io::Error::other("disabled")) })
+                        .and_then(|ring| rt::wal::WalGroup::new(wal, ring))
+                    {
+                        Ok(group) => { engine.attach_wal_group(group); has_group_wal = true; }
+                        Err(e) => {
+                            eprintln!("[wo] shard {id}: io_uring unavailable ({e}) — per-commit fsync");
+                            // wal moved; reopen in per-commit mode
+                            let mut scratch = rt::engine::Engine::for_shard(catalog_for_workers.clone(), id, n);
+                            if let Ok((w2, _)) = rt::wal::Wal::open_and_replay(&path, &mut scratch) {
+                                engine.attach_wal(w2);
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[wo] shard {id}: WAL unavailable ({e}) — running non-durable"),
+            }
+        }
+        let ctx     = rt::shard::ShardCtx::new(id, n, engine, bus.clone());
+        let router  = rt::server::router(ctx.clone(), &catalog_for_workers);
+        let mail_fd = bus.mail_fd(id).as_raw_fd();
+        let wal_hooks = if has_group_wal {
+            ctx.engine.borrow().wal_ring_fd().map(|rfd| {
+                let pump_ctx   = ctx.clone();
+                let unpark_ctx = ctx.clone();
+                let park_ctx   = ctx.clone();
+                rt::runtime::scheduler::WalHooks {
+                    ring_fd:   rfd,
+                    pump:      Box::new(move || pump_ctx.wal_pump()),
+                    unparks:   Box::new(move || unpark_ctx.take_unparks()),
+                    park_conn: Box::new(move |fd, gen| park_ctx.engine.borrow_mut().park_conn(fd, gen)),
+                }
+            })
+        } else { None };
+        let mail_ctx = ctx.clone();
+        rt::runtime::scheduler::Worker {
+            router,
+            mail: Some((mail_fd, Box::new(move || mail_ctx.drain_inbox()))),
+            wal:  wal_hooks,
+        }
+    })?;
+
+    println!("[wo] all {n} shards joined — bye");
+    Ok(ExitCode::from(0))
 }

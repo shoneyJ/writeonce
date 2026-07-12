@@ -1,0 +1,39 @@
+// pricing.scss — VIEW styles of the /pricing screen (MVC), external to the
+// markup. Compiled to flat CSS by `wo build` (strict SCSS subset: variables,
+// nesting, @use of partials — see docs/plan/exploration/ui/08-mvc-structure.md
+// decision 3) and served as a static asset via sendfile.
+
+$accent:  #0a7d4f;
+$muted:   #6b7280;
+$border:  #e5e7eb;
+
+.pricing {
+  max-width: 56rem;
+  margin: 0 auto;
+
+  .price-table {
+    width: 100%;
+    border-collapse: collapse;
+
+    th {
+      text-align: left;
+      color: $muted;
+      border-bottom: 2px solid $border;
+    }
+
+    td {
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid $border;
+    }
+
+    .price {
+      color: $accent;
+      font-variant-numeric: tabular-nums;   // cells patch live; keep digits steady
+    }
+
+    .sku     { font-family: monospace; }
+    .updated { color: $muted; }
+
+    tr.watched { background: rgba($accent, 0.06); }
+  }
+}

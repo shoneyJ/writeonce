@@ -15,6 +15,11 @@ pub struct TypeDecl {
     pub name:     String,
     pub fields:   Vec<Field>,
     pub services: Vec<ServiceDecl>,
+    /// Declared with `class` instead of `type`. Storage and REST are
+    /// class-blind (plan 13 decision 5); the flag exists for the 13b method
+    /// executor and for diagnostics. Stage 13a: `fn` methods inside the body
+    /// are parsed-and-discarded like triggers.
+    pub is_class: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,25 @@
+-- pricing — Phase 13 demo entry point.
+-- (Design artifact: Stage 2 parses and discards `main` blocks; this executes
+--  from Phase 6. The annotated walkthrough mirrors docs/examples/hello/main.wo.)
+
+main {
+  insert Product { sku: "WO-001", name: "writeonce mug" };
+
+  -- LIVE binding (13c): the handle receives a delta at every commit that
+  -- touches a matching row — the "pointer that observes stores". A plain
+  -- `let p = select ...` would be a snapshot and never see later changes.
+  -- Brace rule: bare identifiers are projections, so this subscribes to
+  -- the { name, prices } shape of all products.
+  -- (Spec: docs/runtime/database/02-wo-language.md § Schema-Layer DML)
+  let live = LIVE select Product{ name, prices };
+
+  -- Method call (13b): row-scoped transaction — inserts a Price, commits,
+  -- and the commit fans the delta out to `live` and to every browser on
+  -- the /pricing screen (13d). At scale: one commit → one message per
+  -- core → batched socket writes to millions of subscribers (13e).
+  Product{ sku == "WO-001" }.set_price(4999);
+
+  for delta in live {
+    print(delta.kind, delta.row.name);   -- update "writeonce mug"
+  }
+}

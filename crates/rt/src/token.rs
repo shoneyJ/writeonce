@@ -12,6 +12,7 @@ pub enum Kind {
 
     // keywords (schema + query layer)
     KwType,
+    KwClass,
     KwRef,
     KwMulti,
     KwVia,

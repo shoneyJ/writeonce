@@ -1,0 +1,29 @@
+-- pricing.wo — the CONTROLLER of the /pricing screen (MVC).
+-- (Phase 13 design artifact; executes from 13d. MVC structure:
+--  docs/plan/exploration/ui/08-mvc-structure.md. Anatomy mirrors the v1
+--  Angular component reference/writeonce-app/src/app/article/ —
+--  view:/styles: ≈ templateUrl/styleUrl, model: ≈ component fields,
+--  actions: ≈ component methods.)
+--
+-- The controller binds the MODEL (class Product, types/product.wo) into the
+-- VIEW (pricing.htmlx) and is the only place the UI may call class methods.
+-- No service layer: the database is in-process, a model binding IS a query.
+
+##ui
+#pricing
+    route:  /pricing
+    view:   pricing.htmlx              -- View: plain htmlx, logic-free
+    styles: pricing.scss               -- View styles: external SCSS, compiled at `wo build`
+
+    -- Model → View binding. These names are the root scope of pricing.htmlx.
+    -- LIVE bindings re-patch the view on every commit that touches a match.
+    model:
+        products:  LIVE select Product{ name, sku, prices }
+        watchlist: $session.watchlist
+
+    -- Controller actions — handlers call class methods (plan 13b).
+    -- The view raises them via wo:action; it never calls methods directly.
+    actions:
+        set-price(id, amount): Product{ id == id }.set_price(amount)   role: Ops | Admin
+        watch(id):             session.watchlist += id
+        unwatch(id):           session.watchlist -= id

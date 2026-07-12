@@ -159,6 +159,50 @@ type Article {
 }
 ```
 
+### Schema-Layer DML — Brace Disambiguation
+
+The schema-layer DML used in `main` blocks and triggers (`insert` / `update` / `select` / `delete` over `Type{ ... }`) reuses one brace syntax for three roles. The parser decides per entry, with one token of lookahead:
+
+| Entry shape inside `Type{ ... }` | Meaning | Example |
+| --- | --- | --- |
+| `name: value` pairs | construction (insert only) | `insert Note { title: "hello" }` |
+| expression containing an operator | predicate (filter) | `select Note{ title == "hello" }` |
+| bare identifier / dotted path | projection (shape) | `select Note{ title }` — rows shaped `{ title }` |
+
+Rules:
+
+- **A bare identifier is always a projection; a predicate always requires an operator.** Boolean fields are the case this rule exists for: `select Note{ pinned }` projects the `pinned` column; filtering on it must be written `pinned == true`.
+- **Entries mix.** `select Note{ title, pinned == true }` filters on `pinned` and projects `title`. Entry order inside the braces is irrelevant.
+- **Cardinality.** A `select` with no predicate (or a non-unique one) returns a set; dotted access distributes over it — `select Note{ title }` followed by `.title` yields the set of all titles, consistent with the query layer's one-path rule below and with Cypher projections. A predicate over a `@unique` field returns at most one row, and dotted access yields a scalar.
+- **Bindings are snapshots.** `let n = select ...` copies values at read time; a later `update` does not retro-change `n`. Live observation is the `LIVE` prefix's job, not `let`'s.
+
+Precedent: EdgeDB shapes (`select Movie { title }`). The projection form is also symmetric with construction — braces build a shape on `insert`, and select the same shape on read.
+
+### Class Model — state + methods, no inheritance
+
+`class` is the behavior-bearing sibling of `type` ([plan 13](../../plan/13-class-model-live-pricing.md)). Identical field grammar and attachable blocks (`service`, `policy`, `on <event>`), plus `fn` methods:
+
+```wo
+class Product {
+  id:     Id
+  sku:    SKU @unique
+  prices: multi Price                    -- composition, not inheritance
+
+  fn current_price() -> Money in txn {   -- implicit `self` = the receiving row
+    return latest(self.prices).amount;
+  }
+
+  service rest "/api/products" expose list, get, create, update, delete, subscribe
+}
+```
+
+Rules:
+
+- **No inheritance.** No `extends`, no override, no virtual dispatch. "Is-a" is a tagged union; "has-a" is `ref`/`multi`. This also kills the table-per-class storage-mapping problem: a class IS one table (+ doc/graph parts), exactly like a type.
+- **Methods are row-scoped transactional functions.** `fn name(args) -> Ret [in txn [snapshot]]` — the same signature grammar and coordinator as a free-standing `fn` (see `fn checkout` in the ecommerce sample); `self` binds to the receiving row. Bodies are the schema-layer DML of the section above. Exposed as RPC: `POST /api/products/:id/current_price` (plan 13b).
+- **Storage and REST are class-blind.** The catalog treats `class` exactly like `type`; converting between them is a no-op for stored data. `self` stays a plain identifier in the lexer (same rule as `subscribe`/`me`).
+- **Status:** parsing + CRUD shipped (13a, `ast::TypeDecl::is_class`); method execution lands in 13b — until then `fn` bodies are parsed-and-discarded like triggers.
+
 ## Query Layer — Hybrid SQL + Cypher, Fixed Glue
 
 Keep the syntax developers already know. Fix five things so the three grammars share semantics:

@@ -58,12 +58,15 @@ Documentation lives under `docs/` (repo convention) — this README stays here a
 
 Same C bench client (`bench/bench.c`, keep-alive, only 2xx counted) against both servers:
 
-| Benchmark | **wo-rt-c** (8 shards, durable WAL) | **Go `net/http`** (go1.25.1, 20 cores, no durability) |
-| --- | --- | --- |
-| `GET /healthz` | **908,916 req/s** · p50 66 µs · p99 154 µs | 495,235 req/s · p50 65 µs · p99 1,310 µs |
-| `GET /` (JSON) | **686,738 req/s** · p99 189 µs | 481,666 req/s · p99 1,297 µs |
-| `POST` write | **643,250 commits/s** — every one fsync-acked · p99 177 µs | 354,758 req/s — RAM only, no WAL · p99 1,649 µs |
-| 10,000 idle conns | 0 errors | 0 errors |
+| Benchmark | **wo-rt-c** (8 shards, durable WAL, io_uring + group commit) | **Go `net/http`** (go1.25.1, 20 cores, no durability) | **Rust `wo`** (release, 8 shards, durable WAL, io_uring group commit)¹ |
+| --- | --- | --- | --- |
+| `GET /healthz` | **859,033 req/s** · p50 71 µs · p99 159 µs | 336,444 req/s · p50 70 µs · p99 1,277 µs | 746,340 req/s · p50 73 µs · p99 186 µs |
+| `GET /` (JSON) | **671,312 req/s** · p99 180 µs | — | 692,671 req/s · p99 167 µs |
+| `POST` write (tmpfs) | **618,343 commits/s** — fsync-acked · p99 194 µs | 320,516 req/s — RAM only, no WAL · p99 1,581 µs | 330,285 commits/s — fsync-acked · p99 360 µs |
+| `POST` write (real ext4/NVMe) | — | — | **27,014 commits/s group commit vs 5,765 per-commit (4.7×)** · p50 2.2 ms |
+| 10,000 idle conns | 0 errors | 0 errors | 0 errors |
+
+¹ All numbers measured on a clean box with the same client (earlier parasite-contaminated runs superseded). The Rust column's history is the architecture roadmap, measured: 09a global mutex (74.9k writes/s) → 09b sharded engine (+51%) → 09c per-shard WAL (~1% durability cost) → **keep-alive: reads ×3.4 to 770k/s, durable writes ×1.9 to 331k/s, p99 under 350 µs everywhere**. Rust now beats Go on both columns *while fsyncing every write*, and sits within ~10% of the C prototype on reads — converging exactly as the same-architecture argument predicted. The one remaining C advantage is **group commit on io_uring** (one batched fsync + one syscall per tick vs per-commit fsync over epoll), which is the next port. Bonus finding: with `/tmp` accidentally full, the C runtime **refused to ack non-durable writes under ENOSPC** — the durability guarantee holding in an unplanned failure mode.
 
 wo-rt-c on 8 cores outpaces Go on 20 with ~8× tighter p99 (Go's GC shows there) — while fsyncing every write Go doesn't. Honest caveats: `net/http` does full general-purpose HTTP; our parser is minimal; .NET was not installed on the box. **ACID under load:** three crash rounds (`kill -9` mid-bench at ~2M commits) all showed WAL records ≥ acked; isolation probe: 300 concurrent commits → 300 distinct ids; torn-tail records drop whole by CRC.
 

@@ -130,6 +130,7 @@ impl<'a> Lexer<'a> {
                 let name = self.read_ident_chars();
                 let kind = match name.as_str() {
                     "type"       => Kind::KwType,
+                    "class"      => Kind::KwClass,
                     "ref"        => Kind::KwRef,
                     "multi"      => Kind::KwMulti,
                     "via"        => Kind::KwVia,

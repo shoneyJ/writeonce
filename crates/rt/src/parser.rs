@@ -75,7 +75,7 @@ impl Parser {
             self.skip_newlines();
             if self.at_end() { break; }
             match self.peek() {
-                Kind::KwType => sch.types.push(self.parse_type()?),
+                Kind::KwType | Kind::KwClass => sch.types.push(self.parse_type()?),
                 // Skip constructs we don't execute yet.
                 Kind::HashHash(_)
                 | Kind::KwFn
@@ -108,6 +108,7 @@ impl Parser {
                 Kind::LParen   => { depth += 1; self.advance(); }
                 Kind::RParen   => { depth -= 1; self.advance(); }
                 Kind::KwType if depth == 0 && self.pos > start => break,
+                Kind::KwClass if depth == 0 && self.pos > start => break,
                 Kind::HashHash(_) if depth == 0 && self.pos > start => break,
                 _ => { self.advance(); }
             }
@@ -118,7 +119,14 @@ impl Parser {
     // --- type declaration ---
 
     fn parse_type(&mut self) -> Result<TypeDecl> {
-        self.expect(&Kind::KwType, "`type`")?;
+        // `class` is the behavior-bearing sibling of `type` — identical field
+        // grammar plus `fn` methods (plan 13a). Storage/REST are class-blind.
+        let is_class = matches!(self.peek(), Kind::KwClass);
+        if is_class {
+            self.advance();
+        } else {
+            self.expect(&Kind::KwType, "`type` or `class`")?;
+        }
         let name = self.expect_ident("type name")?;
 
         // Link types have a different header: `type Purchase link Customer -> Product { ... }`.
@@ -133,7 +141,7 @@ impl Parser {
 
         self.expect(&Kind::LBrace, "'{'")?;
 
-        let mut decl = TypeDecl { name, fields: Vec::new(), services: Vec::new() };
+        let mut decl = TypeDecl { name, fields: Vec::new(), services: Vec::new(), is_class };
         loop {
             self.skip_newlines();
             match self.peek() {
@@ -141,6 +149,9 @@ impl Parser {
                 Kind::End    => bail!("unexpected end of input inside type body"),
                 Kind::KwPolicy => self.skip_block_line()?,   // policy <read|write|...> ...
                 Kind::KwOn     => self.skip_on_block()?,      // on update when ... do ...
+                Kind::KwFn     => self.skip_block_line()?,    // method — executes from 13b;
+                                                              // brace depth keeps the body's
+                                                              // `}` from closing the type
                 Kind::KwService => decl.services.push(self.parse_service()?),
                 Kind::Ident(_) => {
                     if is_link {
@@ -217,7 +228,7 @@ impl Parser {
                     while matches!(self.peek(), Kind::Newline) { self.advance(); }
                     if matches!(self.peek(),
                         Kind::RBrace | Kind::KwPolicy | Kind::KwService
-                        | Kind::KwOn | Kind::End
+                        | Kind::KwOn | Kind::KwFn | Kind::End
                     ) { return Ok(()); }
                     if matches!(self.peek(), Kind::Ident(_)) && self.looks_like_field() {
                         return Ok(());
@@ -593,5 +604,71 @@ type Order { status: Pending | Paid | Shipped }
         }
         assert!(sch.types.iter().any(|t| t.name == "Article" && !t.services.is_empty()),
             "Article should have a service");
+    }
+
+    #[test]
+    fn parses_class_with_methods() {
+        let src = r#"
+class Product {
+  id:     Id
+  sku:    SKU @unique
+  name:   Text
+  prices: multi Price
+
+  fn current_price() -> Money in txn {
+    return latest(self.prices).amount;
+  }
+
+  fn set_price(amount: Money) in txn {
+    insert Price { product: self.id, amount: amount };
+  }
+
+  service rest "/api/products"
+    expose list, get, create, update, delete, subscribe
+}
+"#;
+        let sch = parse(src).unwrap();
+        assert_eq!(sch.types.len(), 1);
+        let t = &sch.types[0];
+        assert!(t.is_class);
+        assert_eq!(t.name, "Product");
+        // Methods are parsed-and-discarded in 13a; fields and services survive.
+        assert_eq!(t.fields.len(), 4);
+        assert!(matches!(t.fields[3].ty, FieldTy::MultiEdge { ref target, .. } if target == "Price"));
+        assert_eq!(t.services.len(), 1);
+        assert_eq!(t.services[0].path, "/api/products");
+        assert_eq!(t.services[0].expose.len(), 6);
+    }
+
+    #[test]
+    fn class_method_braces_do_not_truncate_body() {
+        // The method body's `}` and nested `{ ... }` literals must not be
+        // mistaken for the class's closing brace — fields AFTER the methods
+        // must still parse, and a following declaration must be seen.
+        let src = r#"
+class Price {
+  id:     Id
+
+  fn discounted(pct: Int) -> Money {
+    if pct > 0 {
+      return self.amount * (100 - pct) / 100;
+    }
+    return self.amount;
+  }
+
+  amount:   Money
+  currency: Text = "EUR"
+}
+
+type Audit { id: Id }
+"#;
+        let sch = parse(src).unwrap();
+        assert_eq!(sch.types.len(), 2);
+        let p = &sch.types[0];
+        assert!(p.is_class);
+        assert_eq!(p.fields.len(), 3, "fields after the method must parse");
+        assert_eq!(p.fields[1].name, "amount");
+        assert!(!sch.types[1].is_class);
+        assert_eq!(sch.types[1].name, "Audit");
     }
 }

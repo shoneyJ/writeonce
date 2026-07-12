@@ -12,7 +12,9 @@ pub mod lexer;
 pub mod parser;
 pub mod runtime;
 pub mod server;
+pub mod shard;
 pub mod token;
+pub mod wal;
 
 use std::fs;
 use std::path::{Path, PathBuf};

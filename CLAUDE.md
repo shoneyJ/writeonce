@@ -78,7 +78,11 @@ Covered in `docs/runtime/database/02-wo-language.md`:
 
 Both layers are `.wo` files. The schema layer compiles down to query-layer operations — but only when Phase 5 codegen and Phase 6 full-stack blocks need a single authoritative input. Stage 2 ships with the schema layer only.
 
-### Single-threaded event loop
+### Concurrency: thread-per-core event loops (09a shipped)
+
+Since plans 09a+09b, `wo run` boots `WO_THREADS` pinned worker threads (default = online cores; `wo-shard-<t>` in `ps -T`), each running its own epoll `EventLoop` with its own `SO_REUSEPORT` listener (`crates/rt/src/runtime/scheduler.rs`) **and its own `Engine`** — there is no `Arc<Mutex<Engine>>` anywhere. Ids interleave per shard (`Engine::for_shard`; owner = `(id-1) % n`); cross-shard operations travel the shard bus (`crates/rt/src/shard.rs`: mpsc job mailboxes + mail eventfds; creates local, point ops hop once, lists fan out and merge). Deadlock-freedom: jobs never block, waiters pump their own inbox. Routers are thread-local (`HandlerFn` is not `Send`/`Sync`). Signals are blocked before spawn; worker 0 owns the signalfd and broadcasts shutdown via per-worker eventfds. Don't reintroduce shared mutable engine state — the doctrine below is now enforced by ownership.
+
+### Single-threaded event loop (original doctrine)
 
 Covered in `docs/runtime/database/02-wo-language.md § Concurrency Model` and `03-inmemory-engine.md`. The runtime is Redis/TigerBeetle-style: **one userland thread owns everything** — connection accept, parser, engine, subscription registry. The only non-userland thread is the kernel-owned io_uring SQPOLL helper. This is pinned architecturally — group commit still applies (loop drains many commits into one fsync SQE per tick), and scaling past one core is done by **sharding** independent engine processes, not by adding worker threads. Keep this in mind before proposing `Arc<Mutex<...>>` anything beyond what's already there.
 

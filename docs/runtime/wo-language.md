@@ -8,7 +8,7 @@
 
 `writeonce` is a programming language, a standard runtime, and a toolchain. Three layers of one product:
 
-1. **The language** — `.wo` source files. Declarative by default (`type`, `service`, `policy`, `on <event>`) with a hybrid SQL+Cypher query sublanguage for the imperative parts. Types, queries, transactions, subscriptions, policies, triggers, HTTP endpoints, and UI screens are all first-class language constructs.
+1. **The language** — `.wo` source files. Declarative by default (`type`, `class`, `service`, `policy`, `on <event>`) with a hybrid SQL+Cypher query sublanguage for the imperative parts. Types, queries, transactions, subscriptions, policies, triggers, HTTP endpoints, and UI screens are all first-class language constructs. A `class` is a `type` plus `fn` methods (`self` receiver, transactional) — state and behavior, **no inheritance** ([plan 13](../plan/13-class-model-live-pricing.md)).
 2. **The runtime** — an ACID multi-paradigm database (relational + document + graph), an HTTP server, a subscription engine, and a scheduler. All of it links into a single binary with your program. No external Postgres, no external Redis, no separate Node process.
 3. **The toolchain** — the `wo` command: `wo run`, `wo build`, `wo test`, `wo fmt`, `wo mod`, `wo gen`. Modelled directly on the Go toolchain. One binary per project; no runtime to install on the target host.
 

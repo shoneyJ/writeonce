@@ -13,7 +13,10 @@ use std::collections::HashMap;
 
 use super::{Method, Request, Response, Status};
 
-pub type HandlerFn = dyn Fn(&Request, &RouteParams) -> Response + Send + Sync + 'static;
+// NOT `Send`/`Sync`: since plan 09b each worker thread builds and owns its
+// own Router over its own shard engine (`Rc<ShardCtx>` captures) — routers
+// never cross threads.
+pub type HandlerFn = dyn Fn(&Request, &RouteParams) -> Response + 'static;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Segment {
@@ -105,7 +108,7 @@ impl Router {
 
     pub fn route<F>(mut self, method: Method, pattern: &str, handler: F) -> Self
     where
-        F: Fn(&Request, &RouteParams) -> Response + Send + Sync + 'static,
+        F: Fn(&Request, &RouteParams) -> Response + 'static,
     {
         self.routes.push(Route {
             method,
@@ -142,7 +145,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn req(method: Method, path: &str) -> Request {
-        Request { method, path: path.into(), query: None, headers: HashMap::new(), body: vec![] }
+        Request { method, path: path.into(), query: None, headers: HashMap::new(), body: vec![], keep_alive: true }
     }
 
     #[test]

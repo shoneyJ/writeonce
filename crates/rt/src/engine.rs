@@ -21,17 +21,141 @@ pub struct Engine {
     tables:  std::collections::HashMap<String, BTreeMap<i64, Row>>,
     /// per-type id allocator
     next_id: std::collections::HashMap<String, i64>,
+    /// id stride — 1 for a standalone engine, `n_shards` for a 09b shard so
+    /// ids interleave (shard t mints t+1, t+1+n, …) and the owner of any id
+    /// is recoverable as `(id-1) % n` with zero coordination.
+    id_step: i64,
+    /// Per-shard write-ahead log (plan 09c). `PerCommit` fsyncs inside the
+    /// mutating call (simple, used by tests); `Group` stages frames and
+    /// parks acks for the worker's per-tick io_uring flush — the C
+    /// prototype's phase-D group commit.
+    wal: Option<WalBackend>,
+    /// Set when the last mutation staged a group-commit frame — the caller
+    /// (handler or shard job) must park its ack. Cleared by `take_staged`.
+    staged: bool,
+}
+
+#[derive(Debug)]
+enum WalBackend {
+    PerCommit(crate::wal::Wal),
+    Group(crate::wal::WalGroup),
 }
 
 impl Engine {
     pub fn new(catalog: Catalog) -> Self {
+        Self::for_shard(catalog, 0, 1)
+    }
+
+    /// One shard of a thread-per-core deployment (plan 09b): same engine,
+    /// interleaved id minting.
+    pub fn for_shard(catalog: Catalog, shard: usize, n_shards: usize) -> Self {
         let mut tables = std::collections::HashMap::new();
         let mut next_id = std::collections::HashMap::new();
         for name in catalog.order.iter() {
             tables.insert(name.clone(), BTreeMap::new());
-            next_id.insert(name.clone(), 1);
+            next_id.insert(name.clone(), shard as i64 + 1);
         }
-        Self { catalog, tables, next_id }
+        Self { catalog, tables, next_id, id_step: n_shards.max(1) as i64, wal: None, staged: false }
+    }
+
+    /// Attach a per-commit WAL (fsync inside each mutation). Must happen
+    /// AFTER replay — replayed mutations must not be re-logged.
+    pub fn attach_wal(&mut self, wal: crate::wal::Wal) {
+        self.wal = Some(WalBackend::PerCommit(wal));
+    }
+
+    /// Attach a group-commit WAL (io_uring): mutations stage frames; the
+    /// worker flushes once per tick and releases parked acks on the CQE.
+    pub fn attach_wal_group(&mut self, wal: crate::wal::WalGroup) {
+        self.wal = Some(WalBackend::Group(wal));
+    }
+
+    /// Did the last mutation stage a group-commit frame? (Cleared on read.)
+    /// The caller must park its ack on the batch when this is true.
+    pub fn take_staged(&mut self) -> bool {
+        std::mem::take(&mut self.staged)
+    }
+
+    /// Park a cross-shard reply on the active batch — sent on fsync.
+    pub fn park_reply(&mut self, cb: Box<dyn FnOnce() + Send>) {
+        match self.wal.as_mut() {
+            Some(WalBackend::Group(g)) => g.park(crate::wal::Parked::Reply(cb)),
+            _ => cb(),   // no group WAL: durability already settled (or off)
+        }
+    }
+
+    /// Park a local connection's response on the active batch.
+    pub fn park_conn(&mut self, fd: std::os::unix::io::RawFd, gen: u64) {
+        if let Some(WalBackend::Group(g)) = self.wal.as_mut() {
+            g.park(crate::wal::Parked::Conn { fd, gen });
+        }
+    }
+
+    /// Worker hooks — flush at tick end; reap on ring-fd readable.
+    pub fn wal_flush(&mut self) {
+        if let Some(WalBackend::Group(g)) = self.wal.as_mut() {
+            if let Err(e) = g.flush() { eprintln!("[wo] wal flush: {e}"); }
+        }
+    }
+
+    pub fn wal_complete(&mut self) -> Option<(bool, Vec<crate::wal::Parked>)> {
+        match self.wal.as_mut() {
+            Some(WalBackend::Group(g)) => g.complete(),
+            _ => None,
+        }
+    }
+
+    pub fn wal_ring_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        match self.wal.as_ref() {
+            Some(WalBackend::Group(g)) => Some(g.ring_fd()),
+            _ => None,
+        }
+    }
+
+    /// Apply one replayed WAL record. Bypasses default-seeding and id
+    /// minting — the log carries exact state — but advances the id
+    /// high-water mark so post-recovery mints never collide.
+    pub fn replay(&mut self, rec: &crate::wal::WalRec) {
+        use crate::wal::WalRec;
+        match rec {
+            WalRec::Create { ty, row } => {
+                let Some(id) = row.get("id").and_then(|v| v.as_i64()) else { return };
+                if let Some(table) = self.tables.get_mut(ty) {
+                    table.insert(id, row.clone());
+                    let step = self.id_step;
+                    let counter = self.next_id.entry(ty.clone()).or_insert(1);
+                    while *counter <= id { *counter += step; }
+                }
+            }
+            WalRec::Update { ty, id, body } => {
+                if let Some(row) = self.tables.get_mut(ty).and_then(|t| t.get_mut(id)) {
+                    if let Value::Object(input) = body {
+                        for (k, v) in input {
+                            if k != "id" { row.insert(k.clone(), v.clone()); }
+                        }
+                    }
+                }
+            }
+            WalRec::Delete { ty, id } => {
+                if let Some(table) = self.tables.get_mut(ty) { table.remove(id); }
+            }
+        }
+    }
+
+    /// Make a mutation durable (per-commit) or stage it (group). `Err`
+    /// means the caller must undo the RAM apply.
+    fn wal_log(&mut self, rec: crate::wal::WalRec) -> Result<()> {
+        match self.wal.as_mut() {
+            Some(WalBackend::PerCommit(w)) => {
+                w.append(&rec).map_err(|e| anyhow::anyhow!("wal append: {e}"))?;
+            }
+            Some(WalBackend::Group(g)) => {
+                g.stage(&rec).map_err(|e| anyhow::anyhow!("wal stage: {e}"))?;
+                self.staged = true;
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     pub fn catalog(&self) -> &Catalog { &self.catalog }
@@ -69,6 +193,11 @@ impl Engine {
         row.insert("id".into(), json!(id));
 
         self.tables.get_mut(ty).unwrap().insert(id, row.clone());
+        // Dual-write order: RAM applied above, durable now, ack after return.
+        if let Err(e) = self.wal_log(crate::wal::WalRec::Create { ty: ty.into(), row: row.clone() }) {
+            self.tables.get_mut(ty).unwrap().remove(&id);   // never ack non-durable
+            return Err(e);
+        }
         Ok(row)
     }
 
@@ -77,19 +206,30 @@ impl Engine {
         let table = self.tables.get_mut(ty)
             .ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))?;
         let Some(row) = table.get_mut(&id) else { return Ok(None); };
-        if let Value::Object(input) = body {
+        let prev = row.clone();
+        if let Value::Object(input) = &body {
             for (k, v) in input {
                 if k == "id" { continue; }   // don't let the client mutate the primary key
-                row.insert(k, v);
+                row.insert(k.clone(), v.clone());
             }
         }
-        Ok(Some(row.clone()))
+        let updated = row.clone();
+        if let Err(e) = self.wal_log(crate::wal::WalRec::Update { ty: ty.into(), id, body }) {
+            self.tables.get_mut(ty).unwrap().insert(id, prev);  // undo: never ack non-durable
+            return Err(e);
+        }
+        Ok(Some(updated))
     }
 
     pub fn delete(&mut self, ty: &str, id: i64) -> Result<bool> {
         let table = self.tables.get_mut(ty)
             .ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))?;
-        Ok(table.remove(&id).is_some())
+        let Some(removed) = table.remove(&id) else { return Ok(false) };
+        if let Err(e) = self.wal_log(crate::wal::WalRec::Delete { ty: ty.into(), id }) {
+            self.tables.get_mut(ty).unwrap().insert(id, removed);  // undo
+            return Err(e);
+        }
+        Ok(true)
     }
 
     // --- helpers ---
@@ -105,7 +245,7 @@ impl Engine {
     fn mint_id(&mut self, ty: &str) -> i64 {
         let counter = self.next_id.entry(ty.to_string()).or_insert(1);
         let id = *counter;
-        *counter += 1;
+        *counter += self.id_step;
         id
     }
 

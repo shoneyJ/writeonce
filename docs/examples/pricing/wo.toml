@@ -1,0 +1,15 @@
+name        = "pricing"
+version     = "0.1.0"
+description = "Phase 13 demo: class model (state + methods, no inheritance) + live pricing fan-out"
+
+[runtime]
+wo = ">= 0.1"
+
+[app]
+listen = "127.0.0.1:8080"
+
+# RAM-resident engine; disk (phases 10-12) is durability behind the read path,
+# never in front of it. See docs/plan/13-class-model-live-pricing.md § 13e.
+[database]
+data_dir  = "./data"
+isolation = "snapshot"

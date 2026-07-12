@@ -1,0 +1,31 @@
+-- Product — a `class` with state, methods, and a REST surface.
+-- (Phase 13 design artifact — see docs/plan/13-class-model-live-pricing.md.)
+--
+-- "Products have prices": composition via `multi`, not inheritance. The
+-- price history is its own class (types/price.wo); the product owns the
+-- collection edge.
+
+class Product {
+  id:     Id
+  sku:    SKU @unique
+  name:   Text
+  prices: multi Price                    -- append-only price history
+
+  -- Row-scoped transactional method (13b): runs inside a snapshot of the
+  -- receiving row, exposed as POST /api/products/:id/current_price.
+  fn current_price() -> Money in txn {
+    return latest(self.prices).amount;
+  }
+
+  -- The write path of the live-pricing demo. One call inserts a Price in
+  -- the same transaction; the commit pushes one delta to every subscriber
+  -- of this product (13c) and patches every open pricing screen (13d).
+  fn set_price(amount: Money) in txn {
+    insert Price { product: self.id, amount: amount };
+  }
+
+  -- CRUD works from 13a (classes are storage-identical to types);
+  -- subscribe goes live in 13c.
+  service rest "/api/products"
+    expose list, get, create, update, delete, subscribe
+}

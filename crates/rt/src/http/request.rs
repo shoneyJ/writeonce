@@ -42,10 +42,15 @@ pub struct Request {
     pub query:   Option<String>,
     pub headers: HashMap<String, String>,
     pub body:    Vec<u8>,
+    /// HTTP/1.1 defaults to keep-alive unless `Connection: close`;
+    /// HTTP/1.0 defaults to close unless `Connection: keep-alive`.
+    pub keep_alive: bool,
 }
 
 pub enum ParseResult {
-    Complete(Request),
+    /// A full request plus the number of bytes it consumed — the caller
+    /// trims its buffer so a pipelined follow-up request survives.
+    Complete(Request, usize),
     Incomplete,
     Error(String),
 }
@@ -86,6 +91,7 @@ pub fn parse(buf: &[u8]) -> ParseResult {
         Some(p) => p,
         None    => return ParseResult::Error("missing path".into()),
     };
+    let http10 = parts.next() == Some("HTTP/1.0");
     let (path, query) = match raw_path.split_once('?') {
         Some((p, q)) => (p.to_string(), Some(q.to_string())),
         None         => (raw_path.to_string(), None),
@@ -114,7 +120,13 @@ pub fn parse(buf: &[u8]) -> ParseResult {
     }
 
     let body = buf[header_bytes..total].to_vec();
-    ParseResult::Complete(Request { method, path, query, headers, body })
+    let conn_hdr = headers.get("connection").map(|v| v.to_ascii_lowercase());
+    let keep_alive = if http10 {
+        conn_hdr.as_deref() == Some("keep-alive")
+    } else {
+        conn_hdr.as_deref() != Some("close")
+    };
+    ParseResult::Complete(Request { method, path, query, headers, body, keep_alive }, total)
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
@@ -128,7 +140,7 @@ mod tests {
     #[test]
     fn parses_simple_get() {
         let raw = b"GET /api/articles HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let ParseResult::Complete(req) = parse(raw) else { panic!("expected Complete") };
+        let ParseResult::Complete(req, _) = parse(raw) else { panic!("expected Complete") };
         assert_eq!(req.method, Method::Get);
         assert_eq!(req.path, "/api/articles");
         assert!(req.query.is_none());
@@ -138,7 +150,7 @@ mod tests {
     #[test]
     fn parses_query_string() {
         let raw = b"GET /tag/rust?page=2 HTTP/1.1\r\n\r\n";
-        let ParseResult::Complete(req) = parse(raw) else { panic!() };
+        let ParseResult::Complete(req, _) = parse(raw) else { panic!() };
         assert_eq!(req.path, "/tag/rust");
         assert_eq!(req.query.as_deref(), Some("page=2"));
     }
@@ -153,7 +165,8 @@ mod tests {
         raw.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
         raw.extend_from_slice(b"\r\n");
         raw.extend_from_slice(body);
-        let ParseResult::Complete(req) = parse(&raw) else { panic!() };
+        let ParseResult::Complete(req, consumed) = parse(&raw) else { panic!() };
+        assert_eq!(consumed, raw.len());
         assert_eq!(req.method, Method::Post);
         assert_eq!(req.body, body);
     }
@@ -173,7 +186,7 @@ mod tests {
     #[test]
     fn parses_patch_method() {
         let raw = b"PATCH /api/articles/1 HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
-        let ParseResult::Complete(req) = parse(raw) else { panic!() };
+        let ParseResult::Complete(req, _) = parse(raw) else { panic!() };
         assert_eq!(req.method, Method::Patch);
     }
 }
