@@ -1,8 +1,2 @@
-# db storage-runtime
-
-- add symlink of ~/projects/postgresql to /reference
-- explore src/backend/ — that's where the server lives. Key subdirectories:
-
-eg storage/ — buffer manager, locks, shared memory (great for learning linux kernel usage)
-
-- update docs/plan with numerically numbered markdown files. Creating a plan to have persistant storage.
+Next per the
+board: 13c — LIVE pricing push (the subscription registry and WebSocket upgrade that replaces the 501 stub, pairing with 09d).
