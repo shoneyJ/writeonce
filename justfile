@@ -68,6 +68,8 @@ pricing-demo port="8092":
     echo "--- current_price (expect 5999):";             curl -s -X POST "$base/api/products/1/current_price"; echo
     echo "--- set_price 0 (assert aborts, expect 409):"; curl -s -X POST "$base/api/products/1/set_price" -d '{"amount":0}'; echo
     echo "--- current_price unchanged (expect 5999):";   curl -s -X POST "$base/api/products/1/current_price"; echo
+    echo "--- price history via select (projected amount+at):"; curl -s -X POST "$base/api/products/1/history"; echo
+    echo "--- indexed REST filter ?product=1:";          curl -s "$base/api/prices?product=1"; echo
     echo "--- live (13c pending, expect 501):"; curl -s -o /dev/null -w '%{http_code}\n' "$base/api/products/live"
     echo "--- delete 1 (expect 204):";          curl -s -X DELETE "$base/api/products/1" -o /dev/null -w '%{http_code}\n'
 

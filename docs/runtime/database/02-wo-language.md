@@ -201,7 +201,28 @@ Rules:
 - **No inheritance.** No `extends`, no override, no virtual dispatch. "Is-a" is a tagged union; "has-a" is `ref`/`multi`. This also kills the table-per-class storage-mapping problem: a class IS one table (+ doc/graph parts), exactly like a type.
 - **Methods are row-scoped transactional functions.** `fn name(args) -> Ret [in txn [snapshot]]` — the same signature grammar and coordinator as a free-standing `fn` (see `fn checkout` in the ecommerce sample); `self` binds to the receiving row. Bodies are the schema-layer DML of the section above. Exposed as RPC: `POST /api/products/:id/current_price` (plan 13b).
 - **Storage and REST are class-blind.** The catalog treats `class` exactly like `type`; converting between them is a no-op for stored data. `self` stays a plain identifier in the lexer (same rule as `subscribe`/`me`).
-- **Status:** parsing + CRUD shipped (13a, `ast::TypeDecl::is_class`); method execution shipped (13b, `crates/rt/src/method.rs`) — bodies compile to `ast::{Stmt, Expr}` (`let`, `insert`, `return`, `assert … otherwise abort`, `if/else`) and run on the row's owning shard, committing as one atomic `WalRec::Txn` frame; an abort rolls back completely (HTTP 409). `fn` inside a plain `type` is still parsed-and-discarded.
+- **Status:** parsing + CRUD shipped (13a, `ast::TypeDecl::is_class`); method execution shipped (13b, `crates/rt/src/method.rs`) — bodies compile to `ast::{Stmt, Expr}` (`let`, `insert`, `select` expressions, `return`, `assert … otherwise abort`, `if/else`) and run on the row's owning shard, committing as one atomic `WalRec::Txn` frame; an abort rolls back completely (HTTP 409). `fn` inside a plain `type` is still parsed-and-discarded.
+
+### Type-Level Annotations — `@table`
+
+An optional annotation list may precede a `type`/`class` declaration. The first one is `@table` — **storage configuration, never storage declaration**: every `type`/`class` IS a table regardless (see Class Model rule 3 above and plan 13 decisions 3/5); `@table` only configures how.
+
+```wo
+@table(name: "prices", index: [product, at], index: [sku])
+class Price { ... }
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `name: "…"` | Storage/table name (default: the type name). Catalog-unique, enforced at compile. Consumed by the SQL layer and the storage phases (plans 10–12); the WAL keeps the *type name* as the stable identifier, so renaming a table is replay-safe. |
+| `index: [a, b]` | One composite secondary index per entry (repeatable). Columns must be stored scalar columns — scalars, unions, and `ref` FKs; `multi`/`backlink` have no column and are compile errors. |
+
+Rules:
+
+- **Bare `@table` is a legal no-op.** Annotating changes nothing by itself.
+- **Indexes are engine-maintained on every mutation path** — CRUD, method-transaction undo, and WAL replay — and serve three DML surfaces through one lookup (`Engine::find_by`, longest-prefix index selection, scan fallback): relation reads (`self.prices`), schema-layer `select Type{ field == expr }` expressions in method bodies, and REST list filters (`GET /api/prices?product=1`; unknown field → 400).
+- **Unknown `@table` keys are parse errors** (`shard_key:` and `retention:` are reserved for later phases — no silent passthrough on owned surface). Unknown annotation *names* (`@foo`) skip silently, like unknown field annotations.
+- Indexes are per-shard structures over that shard's rows (shared-nothing, plan 09); cross-shard list filters fan out and merge exactly like unfiltered lists.
 
 ## Query Layer — Hybrid SQL + Cypher, Fixed Glue
 

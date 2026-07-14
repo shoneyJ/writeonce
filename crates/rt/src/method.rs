@@ -178,9 +178,57 @@ fn eval(cx: &mut Cx, e: &Expr) -> Result<Value, MethodError> {
             match b {
                 Value::Object(m) => m.get(field).cloned().ok_or_else(||
                     MethodError::Exec(format!("no field `{field}`"))),
+                // Dotted access distributes over a set — the spec's
+                // cardinality rule: `select Price{...}.amount` is the set
+                // of amounts.
+                Value::Array(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for it in items {
+                        match it {
+                            Value::Object(m) => out.push(m.get(field).cloned()
+                                .ok_or_else(|| MethodError::Exec(
+                                    format!("no field `{field}` in set element")))?),
+                            other => return Err(MethodError::Exec(format!(
+                                "`.{field}` on a non-object set element ({other})"))),
+                        }
+                    }
+                    Ok(Value::Array(out))
+                }
                 other => Err(MethodError::Exec(format!(
                     "`.{field}` on a non-object value ({other})"))),
             }
+        }
+        Expr::Select { ty, predicates, projection } => {
+            // Equality predicates route through the engine's secondary
+            // indexes (`@table(index: ...)`) via find_by; other comparison
+            // operators filter the candidates.
+            let mut eq   = Vec::new();
+            let mut rest = Vec::new();
+            for (field, op, rhs) in predicates {
+                let v = eval(cx, rhs)?;
+                if *op == BinOp::Eq { eq.push((field.clone(), v)); }
+                else                { rest.push((field.as_str(), *op, v)); }
+            }
+            let rows = cx.e.find_by(ty, &eq)
+                .map_err(|e| MethodError::Exec(format!("select {ty}: {e}")))?;
+            let mut out = Vec::new();
+            for row in rows {
+                if !rest.iter().all(|(f, op, v)| pred_holds(row.get(*f), *op, v)) {
+                    continue;
+                }
+                out.push(if projection.is_empty() {
+                    Value::Object(row)
+                } else {
+                    let mut shaped = Map::new();
+                    for p in projection {
+                        if let Some(v) = row.get(p) {
+                            shaped.insert(p.clone(), v.clone());
+                        }
+                    }
+                    Value::Object(shaped)
+                });
+            }
+            Ok(Value::Array(out))
         }
         Expr::Call(name, args) => {
             let mut vals = Vec::with_capacity(args.len());
@@ -249,6 +297,33 @@ fn as_i64(v: &Value) -> Result<i64, MethodError> {
     v.as_i64().ok_or_else(|| MethodError::Exec(format!("expected a number, got {v}")))
 }
 
+/// Non-equality select predicate over a row column. Numbers compare
+/// numerically, strings lexicographically (covers `at > "2026-…"`);
+/// mismatched or missing values fail the predicate rather than erroring —
+/// a filter, not an expression.
+fn pred_holds(actual: Option<&Value>, op: BinOp, wanted: &Value) -> bool {
+    let Some(a) = actual else { return op == BinOp::Ne && !wanted.is_null() };
+    match op {
+        BinOp::Ne => a != wanted,
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            let ord = match (a.as_i64(), wanted.as_i64()) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                _ => match (a.as_str(), wanted.as_str()) {
+                    (Some(x), Some(y)) => x.cmp(y),
+                    _ => return false,
+                },
+            };
+            match op {
+                BinOp::Lt => ord.is_lt(),
+                BinOp::Le => ord.is_le(),
+                BinOp::Gt => ord.is_gt(),
+                _         => ord.is_ge(),
+            }
+        }
+        _ => unreachable!("equality predicates go through find_by"),
+    }
+}
+
 /// If `field` names a relation on the receiving type, materialize it:
 /// `multi T` / `backlink T.f` → array of the related rows, in id order.
 /// Returns `Ok(None)` when `field` is not a relation (plain column access).
@@ -285,10 +360,11 @@ fn relation_rows(cx: &mut Cx, field: &str) -> Result<Option<Value>, MethodError>
     };
 
     let self_id = cx.self_row.get("id").cloned().unwrap_or(Value::Null);
-    let rows = cx.e.list(&target)
+    // Index-accelerated when the target declares @table(index: [<link>, …]);
+    // find_by falls back to a scan otherwise.
+    let rows = cx.e.find_by(&target, &[(link_field, self_id)])
         .map_err(|e| MethodError::Exec(e.to_string()))?
         .into_iter()
-        .filter(|r| r.get(&link_field) == Some(&self_id))
         .map(Value::Object)
         .collect::<Vec<_>>();
     Ok(Some(Value::Array(rows)))
@@ -326,11 +402,13 @@ mod tests {
     use crate::parser::parse;
 
     const PRICING: &str = r#"
+@table(name: "prices", index: [product, at])
 class Price {
   id:       Id
   product:  ref Product
   amount:   Money
   currency: Text = "EUR"
+  at:       Text = "t0"
 
   fn discounted(pct: Int) -> Money {
     return self.amount * (100 - pct) / 100;
@@ -350,6 +428,10 @@ class Product {
   fn set_price(amount: Money) in txn {
     assert amount > 0 otherwise abort "price must be positive"
     insert Price { product: self.id, amount: amount };
+  }
+
+  fn history() -> [Money] in txn {
+    return select Price{ product == self.id, amount };
   }
 
   service rest "/api/products" expose list, get, create
@@ -388,6 +470,31 @@ class Product {
         let cur = method(&e, "Product", "current_price");
         let v = call(&mut e, "Product", id, &cur, &Map::new()).unwrap();
         assert_eq!(v, json!(5999));
+    }
+
+    #[test]
+    fn select_expression_filters_and_projects() {
+        let mut e = engine();
+        let p1 = e.create("Product", json!({"sku": "A", "name": "A"})).unwrap();
+        let p2 = e.create("Product", json!({"sku": "B", "name": "B"})).unwrap();
+        let (id1, id2) = (p1["id"].as_i64().unwrap(), p2["id"].as_i64().unwrap());
+
+        let set = method(&e, "Product", "set_price");
+        call(&mut e, "Product", id1, &set, &args(json!({"amount": 100}))).unwrap();
+        call(&mut e, "Product", id1, &set, &args(json!({"amount": 200}))).unwrap();
+        call(&mut e, "Product", id2, &set, &args(json!({"amount": 999}))).unwrap();
+
+        // `history` = select Price{ product == self.id, amount } — the
+        // equality predicate rides the (product, at) index; the projection
+        // shapes each row down to { amount }.
+        let hist = method(&e, "Product", "history");
+        let v = call(&mut e, "Product", id1, &hist, &Map::new()).unwrap();
+        assert_eq!(v, json!([{"amount": 100}, {"amount": 200}]));
+
+        // Indexed relation read (self.prices) equals the select's row set.
+        let cur = method(&e, "Product", "current_price");
+        assert_eq!(call(&mut e, "Product", id1, &cur, &Map::new()).unwrap(), json!(200));
+        assert_eq!(call(&mut e, "Product", id2, &cur, &Map::new()).unwrap(), json!(999));
     }
 
     #[test]

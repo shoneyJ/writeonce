@@ -4,7 +4,13 @@
 --
 -- Prices are append-only history rows: setting a new price inserts a Price,
 -- it never mutates an old one. A product's "current price" is the latest row.
+--
+-- @table configures storage — it never toggles it (every class IS a table):
+--   name:  the storage/table name for the SQL layer and plans 10–12
+--   index: composite secondary index — accelerates `self.prices`,
+--          `select Price{ product == ... }`, and GET /api/prices?product=N
 
+@table(name: "prices", index: [product, at])
 class Price {
   id:       Id
   product:  ref Product                  -- owning product (foreign key)
@@ -17,4 +23,9 @@ class Price {
   fn discounted(pct: Int) -> Money {
     return self.amount * (100 - pct) / 100;
   }
+
+  -- Read-only history endpoint; `GET /api/prices?product=1` filters via
+  -- the (product, at) index above.
+  service rest "/api/prices"
+    expose list
 }

@@ -22,6 +22,23 @@ pub struct TypeDecl {
     pub is_class: bool,
     /// Row-scoped methods (plan 13b). Only populated for classes.
     pub methods:  Vec<MethodDecl>,
+    /// Storage configuration from a type-level `@table(...)` annotation.
+    /// Every type/class IS a table regardless (plan 13 decisions 3/5) —
+    /// `@table` configures storage, it never toggles it.
+    pub table:    TableCfg,
+}
+
+/// `@table(name: "prices", index: [product, at], index: [sku])` — optional
+/// storage configuration. `shard_key:`/`retention:` are reserved for later
+/// phases and rejected by the parser until they land.
+#[derive(Debug, Clone, Default)]
+pub struct TableCfg {
+    /// Storage/table name override. Defaults to the type name. Consumed by
+    /// the SQL layer and plans 10–12; WAL records keep the type name as the
+    /// stable identifier.
+    pub name:    Option<String>,
+    /// Composite secondary indexes — one `index: [a, b]` entry each.
+    pub indexes: Vec<Vec<String>>,
 }
 
 /// `fn name(args) -> Ret [in txn [snapshot]] { body }` — a row-scoped
@@ -73,6 +90,17 @@ pub enum Expr {
     Field(Box<Expr>, String),
     /// `name(args)` — builtins: `latest`, `count`, `now`.
     Call(String, Vec<Expr>),
+    /// `select Type{ field == expr, other_field }` — schema-layer select per
+    /// § Brace Disambiguation: operator entries are predicates, bare idents
+    /// are projections. Evaluates to a set (array) of row objects, shaped by
+    /// the projection when one is given. Equality predicates route through
+    /// the engine's secondary indexes when the type declares a matching
+    /// `@table(index: ...)`.
+    Select {
+        ty:         String,
+        predicates: Vec<(String, BinOp, Box<Expr>)>,
+        projection: Vec<String>,
+    },
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
 }

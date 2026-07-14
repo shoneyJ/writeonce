@@ -75,7 +75,21 @@ impl Parser {
             self.skip_newlines();
             if self.at_end() { break; }
             match self.peek() {
-                Kind::KwType | Kind::KwClass => sch.types.push(self.parse_type()?),
+                Kind::KwType | Kind::KwClass =>
+                    sch.types.push(self.parse_type(TableCfg::default())?),
+                // Type-level annotation: `@table(...)` configures the
+                // declaration that follows; unknown names skip silently
+                // (the field-annotation precedent).
+                Kind::At => {
+                    if let Some(table) = self.parse_type_annotations()? {
+                        self.skip_newlines();
+                        if !matches!(self.peek(), Kind::KwType | Kind::KwClass) {
+                            bail!("line {}: expected `type` or `class` after @table, got {}",
+                                  self.peek_line(), self.peek());
+                        }
+                        sch.types.push(self.parse_type(table)?);
+                    }
+                }
                 // Skip constructs we don't execute yet.
                 Kind::HashHash(_)
                 | Kind::KwFn
@@ -90,6 +104,79 @@ impl Parser {
             }
         }
         Ok(sch)
+    }
+
+    /// Parse the type-level annotation list ahead of a `type`/`class`.
+    /// Returns `Some(cfg)` when a recognised `@table` was consumed, `None`
+    /// when the annotation was unknown and skipped (caller resumes the loop).
+    fn parse_type_annotations(&mut self) -> Result<Option<TableCfg>> {
+        self.expect(&Kind::At, "'@'")?;
+        let name = self.expect_ident("annotation name")?;
+        if name != "table" {
+            // Unknown type-level annotation: consume an optional (...) block
+            // and let the schema loop decide what the next token means.
+            if matches!(self.peek(), Kind::LParen) {
+                let mut depth = 1i32;
+                self.advance();
+                while depth > 0 && !self.at_end() {
+                    match self.peek() {
+                        Kind::LParen => { depth += 1; self.advance(); }
+                        Kind::RParen => { depth -= 1; self.advance(); }
+                        _ => { self.advance(); }
+                    }
+                }
+            }
+            return Ok(None);
+        }
+
+        let mut cfg = TableCfg::default();
+        if !self.accept(&Kind::LParen) {
+            return Ok(Some(cfg));            // bare `@table` — legal no-op
+        }
+        loop {
+            self.skip_newlines();
+            if self.accept(&Kind::RParen) { break; }
+            let key = self.expect_ident("@table argument")?;
+            self.expect(&Kind::Colon, "':'")?;
+            match key.as_str() {
+                "name" => {
+                    if cfg.name.is_some() {
+                        bail!("line {}: @table(name: ...) given twice", self.peek_line());
+                    }
+                    match self.peek().clone() {
+                        Kind::Str(s) => { self.advance(); cfg.name = Some(s); }
+                        other => bail!("line {}: @table name must be a string, got {other}",
+                                       self.peek_line()),
+                    }
+                }
+                "index" => {
+                    self.expect(&Kind::LBracket, "'['")?;
+                    let mut cols = Vec::new();
+                    loop {
+                        cols.push(self.expect_ident("index column")?);
+                        if !self.accept(&Kind::Comma) { break; }
+                    }
+                    self.expect(&Kind::RBracket, "']'")?;
+                    if cols.is_empty() {
+                        bail!("line {}: @table index needs at least one column", self.peek_line());
+                    }
+                    cfg.indexes.push(cols);
+                }
+                // `shard_key`/`retention` are reserved for later phases —
+                // reject loudly rather than silently ignoring (no silent
+                // passthrough on surface we own).
+                other => bail!(
+                    "line {}: unknown @table argument `{other}` \
+                     (supported: name, index)", self.peek_line()),
+            }
+            self.skip_newlines();
+            if !self.accept(&Kind::Comma) {
+                self.skip_newlines();
+                self.expect(&Kind::RParen, "')' or ','")?;
+                break;
+            }
+        }
+        Ok(Some(cfg))
     }
 
     /// Walk forward until we reach the start of the next top-level construct
@@ -118,7 +205,7 @@ impl Parser {
 
     // --- type declaration ---
 
-    fn parse_type(&mut self) -> Result<TypeDecl> {
+    fn parse_type(&mut self, table: TableCfg) -> Result<TypeDecl> {
         // `class` is the behavior-bearing sibling of `type` — identical field
         // grammar plus `fn` methods (plan 13a). Storage/REST are class-blind.
         let is_class = matches!(self.peek(), Kind::KwClass);
@@ -143,7 +230,7 @@ impl Parser {
 
         let mut decl = TypeDecl {
             name, fields: Vec::new(), services: Vec::new(), is_class,
-            methods: Vec::new(),
+            methods: Vec::new(), table,
         };
         loop {
             self.skip_newlines();
@@ -507,7 +594,14 @@ impl Parser {
 
         let mut ret = None;
         if self.accept(&Kind::Arrow) {
-            ret = Some(self.expect_ident("return type")?);
+            // `-> Money` or `-> [Price]` — diagnostic-only in Stage 2.
+            if self.accept(&Kind::LBracket) {
+                let inner = self.expect_ident("return type")?;
+                self.expect(&Kind::RBracket, "']'")?;
+                ret = Some(format!("[{inner}]"));
+            } else {
+                ret = Some(self.expect_ident("return type")?);
+            }
         }
 
         let mut txn = TxnMode::None;
@@ -729,6 +823,16 @@ impl Parser {
             }
             Kind::Ident(name) => {
                 self.advance();
+                // `select Type{ ... }` — schema-layer select expression.
+                // Lowercase `select` is an ident (only SQL `SELECT` is a
+                // keyword); the two-token shape Ident + LBrace disambiguates
+                // it from a variable named `select`.
+                if name == "select"
+                    && matches!(self.peek(), Kind::Ident(_))
+                    && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Kind::LBrace))
+                {
+                    return self.parse_select_expr();
+                }
                 // `name(args)` — call form.
                 if self.accept(&Kind::LParen) {
                     let mut args = Vec::new();
@@ -746,6 +850,42 @@ impl Parser {
             }
             other => bail!("line {}: expected expression, got {other}", self.peek_line()),
         }
+    }
+
+    /// `select Type{ entries }` — per § Brace Disambiguation: an entry with a
+    /// comparison operator is a predicate; a bare identifier is a projection.
+    /// (`select` and the type name are already consumed up to the ident.)
+    fn parse_select_expr(&mut self) -> Result<Expr> {
+        let ty = self.expect_ident("type name after `select`")?;
+        self.expect(&Kind::LBrace, "'{'")?;
+        let mut predicates = Vec::new();
+        let mut projection = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.accept(&Kind::RBrace) { break; }
+            let field = self.expect_ident("field name")?;
+            let op = match self.peek() {
+                Kind::EqEq  => Some(BinOp::Eq),
+                Kind::NotEq => Some(BinOp::Ne),
+                Kind::Lt    => Some(BinOp::Lt),
+                Kind::LtEq  => Some(BinOp::Le),
+                Kind::Gt    => Some(BinOp::Gt),
+                Kind::GtEq  => Some(BinOp::Ge),
+                _ => None,
+            };
+            match op {
+                Some(op) => {
+                    self.advance();
+                    // RHS is an additive expression — comparisons don't chain.
+                    let rhs = self.parse_add()?;
+                    predicates.push((field, op, Box::new(rhs)));
+                }
+                None => projection.push(field),
+            }
+            self.skip_newlines();
+            self.accept(&Kind::Comma);
+        }
+        Ok(Expr::Select { ty, predicates, projection })
     }
 }
 
@@ -926,6 +1066,74 @@ class Product {
         assert_eq!(sp.txn, TxnMode::Txn);
         assert!(matches!(&sp.body[0],
             Stmt::Insert { ty, fields } if ty == "Price" && fields.len() == 2));
+    }
+
+    #[test]
+    fn parses_table_annotation() {
+        let src = r#"
+@table(name: "prices", index: [product, at], index: [sku])
+class Price {
+  id:      Id
+  product: ref Product
+  amount:  Money
+  at:      Timestamp = now()
+  sku:     SKU
+}
+
+@table
+type Note { id: Id }
+
+type Plain { id: Id }
+"#;
+        let sch = parse(src).unwrap();
+        assert_eq!(sch.types.len(), 3);
+        let p = &sch.types[0];
+        assert_eq!(p.table.name.as_deref(), Some("prices"));
+        assert_eq!(p.table.indexes, vec![
+            vec!["product".to_string(), "at".to_string()],
+            vec!["sku".to_string()],
+        ]);
+        // bare @table = legal no-op config
+        let n = &sch.types[1];
+        assert!(n.table.name.is_none() && n.table.indexes.is_empty());
+        assert!(sch.types[2].table.indexes.is_empty());
+    }
+
+    #[test]
+    fn table_annotation_error_cases() {
+        // Reserved-for-later keys error loudly — no silent passthrough.
+        let err = parse("@table(shard_key: sku)\ntype T { id: Id }").unwrap_err().to_string();
+        assert!(err.contains("unknown @table argument `shard_key`"), "{err}");
+
+        // @table must be followed by a type/class.
+        assert!(parse("@table(name: \"x\")\nfn stray() {}").is_err());
+
+        // Unknown annotation NAMES skip silently (field-annotation precedent).
+        let sch = parse("@experimental(anything, at: all)\ntype T { id: Id }").unwrap();
+        assert_eq!(sch.types.len(), 1);
+        assert_eq!(sch.types[0].name, "T");
+    }
+
+    #[test]
+    fn parses_select_expression() {
+        let src = r#"
+class Product {
+  id: Id
+  fn history() -> [Price] in txn {
+    return select Price{ product == self.id, amount, at };
+  }
+}
+"#;
+        let m = &parse(src).unwrap().types[0].methods[0];
+        let Stmt::Return { expr: Some(Expr::Select { ty, predicates, projection }) } = &m.body[0]
+            else { panic!("expected return select, got {:?}", m.body[0]) };
+        assert_eq!(ty, "Price");
+        assert_eq!(predicates.len(), 1);
+        assert_eq!(predicates[0].0, "product");
+        assert!(matches!(predicates[0].1, BinOp::Eq));
+        assert!(matches!(&*predicates[0].2, Expr::Field(b, f) if f == "id"
+            && matches!(&**b, Expr::Ident(s) if s == "self")));
+        assert_eq!(projection, &vec!["amount".to_string(), "at".to_string()]);
     }
 
     #[test]

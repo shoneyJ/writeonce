@@ -260,7 +260,8 @@ mod tests {
 
     fn catalog() -> Catalog {
         Catalog::from_schemas(vec![parse(
-            r#"type Note { id: Id
+            r#"@table(index: [title])
+               type Note { id: Id
                            title: Text
                            service rest "/api/notes" expose list, get, create, update, delete }"#,
         ).unwrap()]).unwrap()
@@ -294,6 +295,12 @@ mod tests {
         let ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
         assert_eq!(ids, vec![1, 5]);
         assert_eq!(rows[0]["title"], "a2");
+        // Replay went through row_insert/row_remove — the secondary index is
+        // rebuilt: the update moved id 1 from "a" to "a2", the delete cleared
+        // id 3's entry.
+        assert_eq!(e.find_by("Note", &[("title".into(), json!("a2"))]).unwrap().len(), 1);
+        assert!(e.find_by("Note", &[("title".into(), json!("a"))]).unwrap().is_empty());
+        assert!(e.find_by("Note", &[("title".into(), json!("b"))]).unwrap().is_empty());
         // id high-water restored: the next mint must not collide (and must
         // keep the shard-0-of-2 stride: odd ids).
         e.attach_wal(wal);

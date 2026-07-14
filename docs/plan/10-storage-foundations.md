@@ -1,6 +1,6 @@
 # 10 — Storage Foundations: on-disk row codec + segment append path
 
-> **Kanban: ⬜ not started (scope reduced)** — WAL framing/fallocate/CRC landed early via plan 09c. Board: [00-kanban.md](00-kanban.md)
+> **Kanban: ⬜ not started (scope reduced)** — WAL framing/fallocate/CRC landed early via plan 09c; the `@table(name:, index:)` storage-config surface and in-RAM secondary indexes (`Engine::find_by`) landed via the plan-13 follow-up (spec: [`02-wo-language.md § Type-Level Annotations`](../runtime/database/02-wo-language.md)) — this plan inherits the surface and gives indexes their on-disk form. Board: [00-kanban.md](00-kanban.md)
 
 **Context sources:** [`./done/04-cutover-remove-tokio-axum.md`](./done/04-cutover-remove-tokio-axum.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/smgr-and-md.md`](./exploration/postgresql/smgr-and-md.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`./exploration/linux/09-fallocate.md`](./exploration/linux/09-fallocate.md), [`reference/crates/wo-seg/src/`](../../reference/crates/wo-seg/src/).
 

@@ -134,11 +134,17 @@ fn shard_gone() -> Response {
     Response::status(Status::INTERNAL_SERVER_ERROR).text("owning shard unavailable")
 }
 
-fn list_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, _params: &RouteParams) -> Response {
+fn list_h(ctx: &Rc<ShardCtx>, ty: &str, req: &Request, _params: &RouteParams) -> Response {
+    // `?field=value` filters run through the engine's find_by — secondary
+    // indexes (`@table(index: ...)`) accelerate, scan is the fallback.
+    let filters = match query_filters(ctx, ty, req.query.as_deref()) {
+        Ok(f)  => f,
+        Err(r) => return r,
+    };
     let ty_owned = ty.to_string();
     // Fan out to every shard, merge by id — the cross-shard read per 09b.
     let per_shard: Vec<Result<Vec<Row>, String>> =
-        ctx.fanout(move |e| e.list(&ty_owned).map_err(|e| e.to_string()));
+        ctx.fanout(move |e| e.find_by(&ty_owned, &filters).map_err(|e| e.to_string()));
     let mut rows = Vec::new();
     for r in per_shard {
         match r {
@@ -148,6 +154,60 @@ fn list_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, _params: &RouteParams) -
     }
     rows.sort_by_key(|row| row.get("id").and_then(|v| v.as_i64()).unwrap_or(0));
     Response::ok().json(&json!(rows))
+}
+
+/// Parse `k=v&k2=v2` into equality filters. Fields must be stored columns
+/// of the type (unknown → 400); values coerce int → bool → string.
+fn query_filters(
+    ctx:   &Rc<ShardCtx>,
+    ty:    &str,
+    query: Option<&str>,
+) -> Result<Vec<(String, Value)>, Response> {
+    let Some(q) = query.filter(|q| !q.is_empty()) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    let engine = ctx.engine.borrow();
+    let t = engine.catalog().get(ty)
+        .ok_or_else(|| Response::status(Status::INTERNAL_SERVER_ERROR).text("type missing"))?;
+    for pair in q.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let (k, v) = (url_decode(k), url_decode(v));
+        let stored = k == "id" || t.fields.iter().any(|f| f.name == k && matches!(
+            f.ty,
+            crate::ast::FieldTy::Scalar(_) | crate::ast::FieldTy::Union(_)
+            | crate::ast::FieldTy::Ref(_)
+        ));
+        if !stored {
+            return Err(Response::status(Status::BAD_REQUEST)
+                .text(format!("unknown filter field `{k}` for {ty}")));
+        }
+        let val = if let Ok(n) = v.parse::<i64>() { json!(n) }
+                  else if v == "true"  { json!(true) }
+                  else if v == "false" { json!(false) }
+                  else { Value::String(v) };
+        out.push((k, val));
+    }
+    Ok(out)
+}
+
+/// Minimal percent-decoding for query values (`%XX` and `+` → space).
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let hex = |c: u8| (c as char).to_digit(16);
+                match (hex(b[i + 1]), hex(b[i + 2])) {
+                    (Some(h), Some(l)) => { out.push((h * 16 + l) as u8); i += 3; }
+                    _                  => { out.push(b[i]); i += 1; }
+                }
+            }
+            b'+' => { out.push(b' '); i += 1; }
+            c    => { out.push(c); i += 1; }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn get_h(ctx: &Rc<ShardCtx>, ty: &str, _req: &Request, params: &RouteParams) -> Response {
@@ -317,6 +377,17 @@ pub fn describe_routes(catalog: &Catalog) -> String {
                 };
                 out.push_str(&format!("  POST   {p:<30}  method  {}.{}{mode}\n", name, m.name));
             }
+            // @table storage configuration, when it says anything non-default.
+            if t.storage_name != *name || !t.indexes.is_empty() {
+                let mut cfg = format!("table \"{}\"", t.storage_name);
+                if !t.indexes.is_empty() {
+                    let idx = t.indexes.iter()
+                        .map(|c| c.join("+"))
+                        .collect::<Vec<_>>().join(", ");
+                    cfg.push_str(&format!(", index [{idx}]"));
+                }
+                out.push_str(&format!("         {:<30}  @table  {cfg}\n", name));
+            }
         }
     }
     out
@@ -404,6 +475,7 @@ type Article { id: Id
     }
 
     const PRICING: &str = r#"
+@table(name: "prices", index: [product])
 class Price {
   id:      Id
   product: ref Product
@@ -476,5 +548,54 @@ class Product {
         // GET on a method route → 405 (route exists, wrong verb).
         let resp = r.dispatch(&req(Method::Get, "/api/products/1/set_price", b""));
         assert_eq!(resp.status.0, 405);
+    }
+
+    fn req_q(path: &str, query: &str) -> Request {
+        Request {
+            method:  Method::Get,
+            path:    path.into(),
+            query:   Some(query.to_string()),
+            headers: Default::default(),
+            body:    vec![],
+            keep_alive: true,
+        }
+    }
+
+    #[test]
+    fn list_query_filter_is_index_backed() {
+        let (_ctx, r) = build(PRICING);
+        r.dispatch(&req(Method::Post, "/api/products", br#"{"sku":"A","name":"A"}"#));
+        r.dispatch(&req(Method::Post, "/api/products", br#"{"sku":"B","name":"B"}"#));
+        r.dispatch(&req(Method::Post, "/api/products/1/set_price", br#"{"amount": 100}"#));
+        r.dispatch(&req(Method::Post, "/api/products/1/set_price", br#"{"amount": 200}"#));
+        r.dispatch(&req(Method::Post, "/api/products/2/set_price", br#"{"amount": 999}"#));
+
+        // Unfiltered list unchanged.
+        let resp = r.dispatch(&req(Method::Get, "/api/prices", b""));
+        let all: Vec<serde_json::Value> = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // ?product=1 → only that product's prices, via the (product) index.
+        let resp = r.dispatch(&req_q("/api/prices", "product=1"));
+        assert_eq!(resp.status.0, 200);
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r["product"] == 1));
+
+        // Multiple filters combine (equality AND).
+        let resp = r.dispatch(&req_q("/api/prices", "product=1&amount=200"));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["amount"], 200);
+
+        // Unknown field → 400.
+        let resp = r.dispatch(&req_q("/api/prices", "nope=1"));
+        assert_eq!(resp.status.0, 400);
+
+        // Filtering on a non-indexed stored column falls back to scan.
+        let resp = r.dispatch(&req_q("/api/prices", "amount=999"));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["product"], 2);
     }
 }

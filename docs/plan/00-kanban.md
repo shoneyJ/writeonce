@@ -38,7 +38,7 @@ All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-
 
 | Status | Phase | Doc | Notes |
 | --- | --- | --- | --- |
-| ⬜ | 10 storage foundations | [10](10-storage-foundations.md) | scope reduced: WAL framing/fallocate landed via 09c |
+| ⬜ | 10 storage foundations | [10](10-storage-foundations.md) | scope reduced: WAL framing/fallocate landed via 09c; `@table(name:, index:)` surface + RAM secondary indexes landed via 13 follow-up |
 | ⬜ | 11 WAL & recovery | [11](11-wal-and-recovery.md) | remaining: snapshots (`.data`), compaction, WAL rotation — replay core shipped in 09c |
 | ⬜ | 12 engine disk cutover | [12](12-engine-disk-cutover.md) | mmap arena engine (C phase B is the proving ground) |
 
@@ -48,6 +48,7 @@ All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-
 | --- | --- | --- | --- |
 | ✅ | 13a class surface | [13](13-class-model-live-pricing.md) | `class` parses, CRUD serves, spec amended |
 | ✅ | 13b method execution | [13](13-class-model-live-pricing.md) | `POST /api/<t>/:id/<method>`; row-scoped txn; one `WalRec::Txn` frame per call; abort → 409 rollback |
+| ✅ | — `@table` + indexed DML (follow-up) | [13](13-class-model-live-pricing.md) | `@table(name:, index:)`; engine secondary indexes + `find_by`; `select Type{…}` in methods; `?field=value` REST filters |
 | ⬜ | 13c LIVE pricing push | [13](13-class-model-live-pricing.md) | Stage 3 scoped: subscription registry, WS at `/api/<t>/live`, replaces the 501 stub |
 | ⬜ | Stage 3 wire layer | [../runtime/database/04-client-api.md](../runtime/database/04-client-api.md) | full subscription engine + wire protocol; 13c is its beachhead |
 | ⬜ | 13e pricing at scale | [13](13-class-model-live-pricing.md) | wires demo to 09; hot-row reads |

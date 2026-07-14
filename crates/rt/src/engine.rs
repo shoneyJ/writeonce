@@ -9,16 +9,63 @@ use crate::compile::{Catalog, CompiledType};
 
 use anyhow::Result;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Row = Map<String, Value>;
+
+/// Comparable encoding of an indexed column value — the key space of the
+/// secondary indexes (`@table(index: [...])`). Ordering: Null < Bool < Int
+/// < Str, then natural order within each. Residual filters always re-check
+/// with real JSON equality, so encoding collisions cannot produce wrong
+/// results — only wasted candidates.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum IndexKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Str(String),
+}
+
+impl IndexKey {
+    fn from_value(v: Option<&Value>) -> IndexKey {
+        match v {
+            None | Some(Value::Null) => IndexKey::Null,
+            Some(Value::Bool(b))     => IndexKey::Bool(*b),
+            Some(other) => match other.as_i64() {
+                Some(n) => IndexKey::Int(n),
+                None => match other {
+                    Value::String(s) => IndexKey::Str(s.clone()),
+                    v                => IndexKey::Str(v.to_string()),
+                },
+            },
+        }
+    }
+}
+
+/// One composite secondary index: ordered key tuples → row ids. Per-shard,
+/// in RAM, maintained incrementally by [`Engine::row_insert`]/[`row_remove`].
+#[derive(Debug)]
+struct Index {
+    cols: Vec<String>,
+    map:  BTreeMap<Vec<IndexKey>, BTreeSet<i64>>,
+}
+
+impl Index {
+    fn key_for(&self, row: &Row) -> Vec<IndexKey> {
+        self.cols.iter().map(|c| IndexKey::from_value(row.get(c))).collect()
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Engine {
     catalog: Catalog,
     /// type_name → { id → row }
     tables:  std::collections::HashMap<String, BTreeMap<i64, Row>>,
+    /// type_name → its secondary indexes (`@table(index: [...])`). Only
+    /// mutated by `row_insert`/`row_remove` — every table mutation path
+    /// (CRUD, replay, txn undo) goes through those two helpers.
+    indexes: std::collections::HashMap<String, Vec<Index>>,
     /// per-type id allocator
     next_id: std::collections::HashMap<String, i64>,
     /// id stride — 1 for a standalone engine, `n_shards` for a 09b shard so
@@ -67,14 +114,22 @@ impl Engine {
     /// One shard of a thread-per-core deployment (plan 09b): same engine,
     /// interleaved id minting.
     pub fn for_shard(catalog: Catalog, shard: usize, n_shards: usize) -> Self {
-        let mut tables = std::collections::HashMap::new();
+        let mut tables  = std::collections::HashMap::new();
         let mut next_id = std::collections::HashMap::new();
+        let mut indexes = std::collections::HashMap::new();
         for name in catalog.order.iter() {
             tables.insert(name.clone(), BTreeMap::new());
             next_id.insert(name.clone(), shard as i64 + 1);
+            let t = catalog.get(name).expect("type present");
+            if !t.indexes.is_empty() {
+                indexes.insert(name.clone(), t.indexes.iter().map(|cols| Index {
+                    cols: cols.clone(),
+                    map:  BTreeMap::new(),
+                }).collect());
+            }
         }
-        Self { catalog, tables, next_id, id_step: n_shards.max(1) as i64, wal: None, staged: false,
-               txn: None }
+        Self { catalog, tables, indexes, next_id, id_step: n_shards.max(1) as i64,
+               wal: None, staged: false, txn: None }
     }
 
     /// Attach a per-commit WAL (fsync inside each mutation). Must happen
@@ -139,24 +194,25 @@ impl Engine {
         match rec {
             WalRec::Create { ty, row } => {
                 let Some(id) = row.get("id").and_then(|v| v.as_i64()) else { return };
-                if let Some(table) = self.tables.get_mut(ty) {
-                    table.insert(id, row.clone());
+                if self.tables.contains_key(ty) {
+                    self.row_insert(ty, id, row.clone());
                     let step = self.id_step;
                     let counter = self.next_id.entry(ty.clone()).or_insert(1);
                     while *counter <= id { *counter += step; }
                 }
             }
             WalRec::Update { ty, id, body } => {
-                if let Some(row) = self.tables.get_mut(ty).and_then(|t| t.get_mut(id)) {
-                    if let Value::Object(input) = body {
-                        for (k, v) in input {
-                            if k != "id" { row.insert(k.clone(), v.clone()); }
-                        }
+                // Remove-then-insert keeps the secondary indexes in step.
+                let Some(mut row) = self.row_remove(ty, *id) else { return };
+                if let Value::Object(input) = body {
+                    for (k, v) in input {
+                        if k != "id" { row.insert(k.clone(), v.clone()); }
                     }
                 }
+                self.row_insert(ty, *id, row);
             }
             WalRec::Delete { ty, id } => {
-                if let Some(table) = self.tables.get_mut(ty) { table.remove(id); }
+                self.row_remove(ty, *id);
             }
             // A method's mutations — the frame validated whole, apply all.
             WalRec::Txn { recs } => {
@@ -203,10 +259,13 @@ impl Engine {
         for u in undo.into_iter().rev() {
             match u {
                 Undo::Created { ty, id } => {
-                    if let Some(t) = self.tables.get_mut(&ty) { t.remove(&id); }
+                    self.row_remove(&ty, id);
                 }
                 Undo::Updated { ty, id, prev } | Undo::Deleted { ty, id, row: prev } => {
-                    if let Some(t) = self.tables.get_mut(&ty) { t.insert(id, prev); }
+                    // Clear the current version's index keys (if any row is
+                    // present) before restoring the previous one.
+                    self.row_remove(&ty, id);
+                    self.row_insert(&ty, id, prev);
                 }
             }
         }
@@ -268,24 +327,23 @@ impl Engine {
             .unwrap_or_else(|| self.mint_id(ty));
         row.insert("id".into(), json!(id));
 
-        self.tables.get_mut(ty).unwrap().insert(id, row.clone());
+        self.row_insert(ty, id, row.clone());
         if let Some(t) = self.txn.as_mut() {
             t.undo.push(Undo::Created { ty: ty.into(), id });
         }
         // Dual-write order: RAM applied above, durable now, ack after return.
         if let Err(e) = self.wal_log(crate::wal::WalRec::Create { ty: ty.into(), row: row.clone() }) {
-            self.tables.get_mut(ty).unwrap().remove(&id);   // never ack non-durable
+            self.row_remove(ty, id);   // never ack non-durable
             return Err(e);
         }
         Ok(row)
     }
 
-    /// Merge-update a row.
+    /// Merge-update a row. Remove-then-insert so the secondary indexes see
+    /// both the old and the new key tuples.
     pub fn update(&mut self, ty: &str, id: i64, body: Value) -> Result<Option<Row>> {
-        let table = self.tables.get_mut(ty)
-            .ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))?;
-        let Some(row) = table.get_mut(&id) else { return Ok(None); };
-        let prev = row.clone();
+        let Some(prev) = self.table(ty)?.get(&id).cloned() else { return Ok(None); };
+        let mut row = prev.clone();
         if let Value::Object(input) = &body {
             for (k, v) in input {
                 if k == "id" { continue; }   // don't let the client mutate the primary key
@@ -293,34 +351,118 @@ impl Engine {
             }
         }
         let updated = row.clone();
+        self.row_remove(ty, id);
+        self.row_insert(ty, id, row);
         if let Some(t) = self.txn.as_mut() {
             t.undo.push(Undo::Updated { ty: ty.into(), id, prev: prev.clone() });
         }
         if let Err(e) = self.wal_log(crate::wal::WalRec::Update { ty: ty.into(), id, body }) {
-            self.tables.get_mut(ty).unwrap().insert(id, prev);  // undo: never ack non-durable
+            self.row_remove(ty, id);            // undo: never ack non-durable
+            self.row_insert(ty, id, prev);
             return Err(e);
         }
         Ok(Some(updated))
     }
 
     pub fn delete(&mut self, ty: &str, id: i64) -> Result<bool> {
-        let table = self.tables.get_mut(ty)
-            .ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))?;
-        let Some(removed) = table.remove(&id) else { return Ok(false) };
+        self.table(ty)?;   // surface unknown-type as an error, not a silent false
+        let Some(removed) = self.row_remove(ty, id) else { return Ok(false) };
         if let Some(t) = self.txn.as_mut() {
             t.undo.push(Undo::Deleted { ty: ty.into(), id, row: removed.clone() });
         }
         if let Err(e) = self.wal_log(crate::wal::WalRec::Delete { ty: ty.into(), id }) {
-            self.tables.get_mut(ty).unwrap().insert(id, removed);  // undo
+            self.row_insert(ty, id, removed);  // undo
             return Err(e);
         }
         Ok(true)
+    }
+
+    /// Equality lookup, index-accelerated. Picks the index whose leading
+    /// columns form the longest prefix of the queried fields (prefix range
+    /// scan on its BTreeMap); remaining predicates filter the candidates;
+    /// no matching index → full scan. Results in id order. `eq` empty =
+    /// plain `list`.
+    pub fn find_by(&self, ty: &str, eq: &[(String, Value)]) -> Result<Vec<Row>> {
+        let table = self.table(ty)?;
+        if eq.is_empty() {
+            return Ok(table.values().cloned().collect());
+        }
+        // Real-equality re-check over ALL queried fields — the index only
+        // narrows candidates, it never decides membership.
+        let matches = |row: &Row| eq.iter().all(|(f, v)| {
+            match row.get(f) {
+                Some(rv) => rv == v,
+                None     => v.is_null(),
+            }
+        });
+
+        let mut best: Option<(&Index, usize)> = None;
+        if let Some(idxs) = self.indexes.get(ty) {
+            for idx in idxs {
+                let mut k = 0;
+                for col in &idx.cols {
+                    if eq.iter().any(|(f, _)| f == col) { k += 1; } else { break; }
+                }
+                if k > 0 && best.map_or(true, |(_, bk)| k > bk) {
+                    best = Some((idx, k));
+                }
+            }
+        }
+
+        let Some((idx, k)) = best else {
+            return Ok(table.values().filter(|r| matches(r)).cloned().collect());
+        };
+        let prefix: Vec<IndexKey> = idx.cols[..k].iter()
+            .map(|c| IndexKey::from_value(eq.iter().find(|(f, _)| f == c).map(|(_, v)| v)))
+            .collect();
+        let mut ids: Vec<i64> = Vec::new();
+        // A shorter Vec sorts before any longer Vec sharing its prefix, so
+        // range(prefix..) starts exactly at the first candidate key.
+        for (key, set) in idx.map.range(prefix.clone()..) {
+            if key.len() < k || key[..k] != prefix[..] { break; }
+            ids.extend(set.iter().copied());
+        }
+        ids.sort_unstable();
+        Ok(ids.into_iter()
+            .filter_map(|id| table.get(&id))
+            .filter(|r| matches(r))
+            .cloned()
+            .collect())
     }
 
     // --- helpers ---
 
     fn table(&self, ty: &str) -> Result<&BTreeMap<i64, Row>> {
         self.tables.get(ty).ok_or_else(|| anyhow::anyhow!("no such type: {ty}"))
+    }
+
+    /// THE two table-mutation primitives — every path that changes a row
+    /// (CRUD, WAL replay, txn undo) goes through these so the secondary
+    /// indexes can never drift from the tables.
+    fn row_insert(&mut self, ty: &str, id: i64, row: Row) {
+        if let Some(idxs) = self.indexes.get_mut(ty) {
+            for idx in idxs {
+                let key = idx.key_for(&row);
+                idx.map.entry(key).or_default().insert(id);
+            }
+        }
+        if let Some(t) = self.tables.get_mut(ty) {
+            t.insert(id, row);
+        }
+    }
+
+    fn row_remove(&mut self, ty: &str, id: i64) -> Option<Row> {
+        let row = self.tables.get_mut(ty)?.remove(&id)?;
+        if let Some(idxs) = self.indexes.get_mut(ty) {
+            for idx in idxs {
+                let key = idx.key_for(&row);
+                if let Some(set) = idx.map.get_mut(&key) {
+                    set.remove(&id);
+                    if set.is_empty() { idx.map.remove(&key); }
+                }
+            }
+        }
+        Some(row)
     }
 
     fn compiled(&self, ty: &str) -> Result<&CompiledType> {
@@ -442,6 +584,63 @@ mod tests {
     fn engine_from(src: &str) -> Engine {
         let cat = Catalog::from_schemas(vec![parse(src).unwrap()]).unwrap();
         Engine::new(cat)
+    }
+
+    const INDEXED: &str = r#"
+@table(index: [owner, at])
+type Item { id: Id
+            owner: Int
+            at: Text
+            service rest "/api/items" expose list }
+"#;
+
+    #[test]
+    fn secondary_index_tracks_create_update_delete() {
+        let mut eng = engine_from(INDEXED);
+        for i in 0..3 {
+            eng.create("Item", json!({"owner": 1, "at": format!("t{i}")})).unwrap();
+        }
+        eng.create("Item", json!({"owner": 2, "at": "t9"})).unwrap();
+
+        // prefix match (owner) and full composite (owner, at)
+        let one = eng.find_by("Item", &[("owner".into(), json!(1))]).unwrap();
+        assert_eq!(one.len(), 3);
+        let exact = eng.find_by("Item",
+            &[("owner".into(), json!(1)), ("at".into(), json!("t1"))]).unwrap();
+        assert_eq!(exact.len(), 1);
+
+        // update moves the row between index keys
+        let id = exact[0]["id"].as_i64().unwrap();
+        eng.update("Item", id, json!({"owner": 2})).unwrap();
+        assert_eq!(eng.find_by("Item", &[("owner".into(), json!(1))]).unwrap().len(), 2);
+        assert_eq!(eng.find_by("Item", &[("owner".into(), json!(2))]).unwrap().len(), 2);
+
+        // delete clears its entries
+        eng.delete("Item", id).unwrap();
+        assert_eq!(eng.find_by("Item", &[("owner".into(), json!(2))]).unwrap().len(), 1);
+
+        // non-indexed field → scan fallback, same semantics
+        assert_eq!(eng.find_by("Item", &[("at".into(), json!("t0"))]).unwrap().len(), 1);
+
+        // index answers equal scan answers (ground truth)
+        let scan: Vec<_> = eng.list("Item").unwrap().into_iter()
+            .filter(|r| r["owner"] == json!(1)).collect();
+        assert_eq!(eng.find_by("Item", &[("owner".into(), json!(1))]).unwrap(), scan);
+    }
+
+    #[test]
+    fn txn_abort_restores_index_state() {
+        let mut eng = engine_from(INDEXED);
+        eng.create("Item", json!({"owner": 1, "at": "a"})).unwrap();   // id 1
+
+        eng.begin_txn().unwrap();
+        eng.create("Item", json!({"owner": 1, "at": "b"})).unwrap();
+        eng.update("Item", 1, json!({"owner": 5})).unwrap();
+        eng.abort_txn();
+
+        assert_eq!(eng.find_by("Item", &[("owner".into(), json!(1))]).unwrap().len(), 1);
+        assert!(eng.find_by("Item", &[("owner".into(), json!(5))]).unwrap().is_empty());
+        assert_eq!(eng.list("Item").unwrap().len(), 1);
     }
 
     #[test]

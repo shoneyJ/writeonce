@@ -33,6 +33,7 @@ pricing/
 | --- | --- | --- |
 | `class` parses; `/api/products` CRUD serves | **13a ✅ shipped** | lexer/parser/AST + spec amendments |
 | `set_price` / `current_price` over RPC (`POST /api/products/:id/set_price`) | **13b ✅ shipped** | method execution, row-scoped txn, one WAL frame per call |
+| `@table(name: "prices", index: [product, at])` + indexed DML — `history()` via `select Price{ product == self.id }`, `GET /api/prices?product=1` | **✅ shipped (13 follow-up)** | engine secondary indexes, `find_by`, REST filters |
 | `subscribe` / `LIVE select` — delta on every commit, WebSocket at `/api/products/live` | **13c** | subscription registry (scoped Stage 3) |
 | `/pricing` screen patches price cells in open browsers | **13d** | SSR + `wo:live`/`wo:bind` client runtime |
 | Millions of readers + millions of live recipients | **13e** | scale targets + load harness |

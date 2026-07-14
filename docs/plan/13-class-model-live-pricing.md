@@ -30,6 +30,7 @@ This doc is a **master plan** in the style of [`09-concurrency-scaleout.md`](./0
 ## The class surface (normative example)
 
 ```wo
+@table(name: "prices", index: [product, at])
 class Price {
   id:       Id
   product:  ref Product
@@ -43,6 +44,8 @@ class Price {
   }
 }
 
+
+@table
 class Product {
   id:     Id
   sku:    SKU @unique
@@ -61,6 +64,8 @@ class Product {
     expose list, get, create, update, delete, subscribe
 }
 ```
+
+**`@table` — storage configuration, never storage declaration** (✅ shipped, with DML support). Every `type`/`class` IS a table (decisions 3/5 stand); the optional type-level `@table(...)` annotation *configures* it: `name: "prices"` sets the storage/table name (catalog-unique; the surface plans 10–12 and the SQL layer consume — WAL records keep the type name as the stable identifier), and each `index: [product, at]` declares a composite secondary index that the engine maintains on every mutation path (CRUD, method-txn undo, WAL replay) and that accelerates `self.prices` relation reads, the schema-layer `select Price{ product == self.id }` expression in method bodies, and `GET /api/prices?product=1` REST filters — all through one `Engine::find_by` path with scan fallback. Bare `@table` is a legal no-op. Unknown keys (`shard_key`, `retention`) are parse errors until their phases land; unknown annotation *names* skip silently. Spec: [`02-wo-language.md § Type-Level Annotations`](../runtime/database/02-wo-language.md).
 
 ## Sub-phase sequence
 
@@ -96,13 +101,13 @@ No new architecture — this sub-phase wires the demo to [`09-concurrency-scaleo
 
 **Exit: verification targets defined and a load harness scripted** (not necessarily met on dev hardware):
 
-| Metric | Target | How measured |
-| --- | --- | --- |
-| Concurrent readers of one product | 1 M req/s aggregate on 16 cores | `wrk -c 10000` against `GET /api/products/1`, hot-row replicas on |
-| Live subscribers receiving one price update | 1 M open sockets, delta delivered p99 < 250 ms | `websocat` fan-out harness, timestamped frames |
-| Commit→first-delta latency | p99 < 10 ms | in-process timestamp at commit vs first socket write |
-| Memory | ~2 KB/connection + engine working set | RSS under subscriber load |
-| Dep count | 1 (`libc`) | `crates/rt/Cargo.toml` unchanged by this phase |
+| Metric                                      | Target                                         | How measured                                                      |
+| ------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+| Concurrent readers of one product           | 1 M req/s aggregate on 16 cores                | `wrk -c 10000` against `GET /api/products/1`, hot-row replicas on |
+| Live subscribers receiving one price update | 1 M open sockets, delta delivered p99 < 250 ms | `websocat` fan-out harness, timestamped frames                    |
+| Commit→first-delta latency                  | p99 < 10 ms                                    | in-process timestamp at commit vs first socket write              |
+| Memory                                      | ~2 KB/connection + engine working set          | RSS under subscriber load                                         |
+| Dep count                                   | 1 (`libc`)                                     | `crates/rt/Cargo.toml` unchanged by this phase                    |
 
 ## Non-scope
 
