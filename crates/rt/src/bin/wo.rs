@@ -25,6 +25,9 @@ USAGE:
 
 ENV:
     WO_LISTEN        override the listen address (default: 127.0.0.1:8080)
+    WO_PG            postgres://user[:pass]@host[:port]/db — mirror every
+                     committed write to Postgres as a backup (reads stay in
+                     RAM; see docs/plan/16-postgres-mirror.md)
 "
     );
 }
@@ -116,6 +119,25 @@ fn run(dir: PathBuf) -> anyhow::Result<ExitCode> {
         }
     }
 
+    // Postgres backup mirror (plan 16b): RAM stays authoritative — the
+    // `wo-pg` thread receives every committed mutation on a bounded channel
+    // and upserts it as JSONB. Never in the ack path; off unless WO_PG set.
+    let mirror_tx = match std::env::var("WO_PG") {
+        Ok(url) => {
+            let cfg = rt::pg::PgConfig::from_url(&url)
+                .map_err(|e| anyhow::anyhow!("WO_PG: {e}"))?;
+            let tables: Vec<(String, String)> = catalog.order.iter()
+                .map(|name| (name.clone(), catalog.get(name).unwrap().storage_name.clone()))
+                .collect();
+            let (tx, rx) = std::sync::mpsc::sync_channel(rt::mirror::QUEUE_CAP);
+            rt::mirror::spawn(cfg.clone(), rx, tables);
+            println!("[wo] postgres mirror: {}:{}/{} (backup only — reads stay in RAM)",
+                cfg.host, cfg.port, cfg.database);
+            Some(tx)
+        }
+        Err(_) => None,
+    };
+
     let bus = rt::shard::ShardBus::new(n)?;
     let catalog_for_workers = catalog.clone();
     rt::runtime::scheduler::serve(&addr, move |id| {
@@ -151,6 +173,12 @@ fn run(dir: PathBuf) -> anyhow::Result<ExitCode> {
                 }
                 Err(e) => eprintln!("[wo] shard {id}: WAL unavailable ({e}) — running non-durable"),
             }
+        }
+        // Mirror attaches AFTER replay: the replayed state goes to Postgres
+        // once, as a boot-time bulk sync, then live mutations stream.
+        if let Some(tx) = &mirror_tx {
+            engine.attach_mirror(tx.clone());
+            engine.mirror_sync_all();
         }
         let ctx     = rt::shard::ShardCtx::new(id, n, engine, bus.clone());
         let router  = rt::server::router(ctx.clone(), &catalog_for_workers);

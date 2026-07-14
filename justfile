@@ -73,6 +73,35 @@ pricing-demo port="8092":
     echo "--- live (13c pending, expect 501):"; curl -s -o /dev/null -w '%{http_code}\n' "$base/api/products/live"
     echo "--- delete 1 (expect 204):";          curl -s -X DELETE "$base/api/products/1" -o /dev/null -w '%{http_code}\n'
 
+# Postgres backup mirror (plan 16): throwaway postgres:16 container, pricing
+# demo with WO_PG, verify rows via psql, tear everything down.
+# Needs docker + psql. RAM stays authoritative — psql is the backup view.
+pricing-pg-demo port="8093" pgport="54331":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --bin wo
+    docker rm -f wo-pg-demo >/dev/null 2>&1 || true
+    docker run -d --rm --name wo-pg-demo -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=wo -p {{pgport}}:5432 postgres:16 >/dev/null
+    trap 'kill $server 2>/dev/null || true; docker rm -f wo-pg-demo >/dev/null 2>&1 || true' EXIT
+    for _ in $(seq 1 60); do psql -h 127.0.0.1 -p {{pgport}} -U postgres wo -c 'select 1' >/dev/null 2>&1 && break; sleep 0.5; done
+    WO_THREADS=1 WO_DATA=off WO_PG=postgres://postgres@127.0.0.1:{{pgport}}/wo WO_LISTEN=127.0.0.1:{{port}} \
+        ./target/debug/wo run docs/examples/pricing &
+    server=$!
+    base=http://127.0.0.1:{{port}}
+    for _ in $(seq 1 40); do curl -s "$base/healthz" >/dev/null && break; sleep 0.25; done
+    echo
+    echo "--- create + set_price 4999, 5999 (RAM ack; mirror follows):"
+    curl -s -X POST "$base/api/products" -d '{"sku":"WO-001","name":"writeonce mug"}'; echo
+    curl -s -o /dev/null -X POST "$base/api/products/1/set_price" -d '{"amount":4999}'
+    curl -s -o /dev/null -X POST "$base/api/products/1/set_price" -d '{"amount":5999}'
+    echo "--- set_price 0 (aborts; must NOT reach Postgres):"
+    curl -s -X POST "$base/api/products/1/set_price" -d '{"amount":0}'; echo
+    sleep 1
+    echo "--- psql: the backup view (table name from @table(name: \"prices\")):"
+    psql -h 127.0.0.1 -p {{pgport}} -U postgres wo -c "SELECT id, row->>'amount' AS amount, row->>'at' AS at FROM prices ORDER BY id"
+    echo "--- current_price from RAM (reads never touch Postgres):"
+    curl -s -X POST "$base/api/products/1/current_price"; echo
+
 # main.wo in action: serve hello, run the full CRUD round-trip, shut down
 hello-demo port="8090":
     #!/usr/bin/env bash

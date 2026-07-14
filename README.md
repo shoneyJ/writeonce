@@ -4,6 +4,11 @@ A declarative full-stack programming language. You write `.wo` files; the runtim
 
 Think **Go + Postgres + `net/http` + Phoenix LiveView, folded into one language and one binary.**
 
+# persistant database
+
+- reads and writes database to RAM, persist data to postgres SQL.
+- The entire database lives in RAM; every committed write is mirrored to PostgreSQL **as a backup** — asynchronously, behind the runtime's own WAL, never in the read or ack path. Set `WO_PG=postgres://user@host:5432/db` and every type's rows appear as a Postgres table (named by its `@table(name: ...)` annotation) that you can query with plain `psql`. Plan and phases: [`docs/plan/16-postgres-mirror.md`](docs/plan/16-postgres-mirror.md); try it: `just pricing-pg-demo`.
+
 ## Quickstart
 
 ```bash
@@ -17,28 +22,28 @@ See [`reference/rest/blog.rest`](reference/rest/blog.rest) for a preconfigured H
 
 ## What this repository contains
 
-| Path | What it is |
-| --- | --- |
-| [`crates/rt/`](crates/rt/) | The new `.wo` language runtime — lexer, type-DSL parser, in-memory engine, axum REST server. Produces the `wo` binary. |
-| [`crates/{ql,value,engine,txn,db,wal,sub,http,gen,policy,logic,service,ui,app}/`](crates/) | 14 empty placeholder crates scaffolded for Phases 2–6. Real code extracts from `rt/` as each phase activates. |
-| [`docs/runtime/wo-language.md`](docs/runtime/wo-language.md) | **Start here.** The language overview: toolchain, hello-world, stdlib, client model. |
-| [`docs/runtime/database.md`](docs/runtime/database.md) | The 7-phase engineering series that drives the runtime's design. |
-| [`docs/examples/blog/`](docs/examples/blog/) | Sample `.wo` project: blog with articles, authors, tags, comments. ~200 lines. |
-| [`docs/examples/ecommerce/`](docs/examples/ecommerce/) | Sample `.wo` project: storefront + live order-ops table + cross-paradigm checkout. ~300 lines. |
-| [`prototypes/wo-db/`](prototypes/wo-db/) | C++ prototype of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). ~2k lines, smoke tests pass. Reference implementation the Rust port follows. |
-| [`reference/rest/`](reference/rest/) | `.rest` files (VS Code REST Client / JetBrains HTTP format) for manually testing the running prototype. |
-| [`reference/crates/`](reference/crates/) | The v1 writeonce blog — 13 Rust crates implementing the original `.seg` + sidecar-index storage engine and `.htmlx` templating. Preserved as a nested workspace; see [`reference/README.md`](reference/README.md). |
+| Path                                                                                       | What it is                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`crates/rt/`](crates/rt/)                                                                 | The new `.wo` language runtime — lexer, type-DSL parser, in-memory engine, axum REST server. Produces the `wo` binary.                                                                                             |
+| [`crates/{ql,value,engine,txn,db,wal,sub,http,gen,policy,logic,service,ui,app}/`](crates/) | 14 empty placeholder crates scaffolded for Phases 2–6. Real code extracts from `rt/` as each phase activates.                                                                                                      |
+| [`docs/runtime/wo-language.md`](docs/runtime/wo-language.md)                               | **Start here.** The language overview: toolchain, hello-world, stdlib, client model.                                                                                                                               |
+| [`docs/runtime/database.md`](docs/runtime/database.md)                                     | The 7-phase engineering series that drives the runtime's design.                                                                                                                                                   |
+| [`docs/examples/blog/`](docs/examples/blog/)                                               | Sample `.wo` project: blog with articles, authors, tags, comments. ~200 lines.                                                                                                                                     |
+| [`docs/examples/ecommerce/`](docs/examples/ecommerce/)                                     | Sample `.wo` project: storefront + live order-ops table + cross-paradigm checkout. ~300 lines.                                                                                                                     |
+| [`prototypes/wo-db/`](prototypes/wo-db/)                                                   | C++ prototype of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). ~2k lines, smoke tests pass. Reference implementation the Rust port follows.                            |
+| [`reference/rest/`](reference/rest/)                                                       | `.rest` files (VS Code REST Client / JetBrains HTTP format) for manually testing the running prototype.                                                                                                            |
+| [`reference/crates/`](reference/crates/)                                                   | The v1 writeonce blog — 13 Rust crates implementing the original `.seg` + sidecar-index storage engine and `.htmlx` templating. Preserved as a nested workspace; see [`reference/README.md`](reference/README.md). |
 
 ## Current stage
 
 The runtime is under active development. Each stage lands as an independently shippable cut:
 
-| Stage | What works | Status |
-| --- | --- | --- |
-| **1** | `wo run <dir>` discovers every `.wo` file under a directory | ✅ shipped |
-| **2** | Type-DSL parser, in-memory engine, REST CRUD (`list` / `get` / `create` / `update` / `delete`) generated from `service rest` blocks, JSON bodies with auto-id, default-value seeding, partial-update PATCH | ✅ shipped — `cargo run -- run docs/examples/blog` |
-| **3** | LIVE subscriptions over WebSocket, delta frames on commit, `me` / session layer | pending |
-| **4+** | Transactional fns (`fn checkout in txn snapshot`), row-level policies, type-attached triggers, `##ui` SSR, WAL durability, codegen | see [docs/runtime/database.md](docs/runtime/database.md) |
+| Stage  | What works                                                                                                                                                                                                 | Status                                                   |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **1**  | `wo run <dir>` discovers every `.wo` file under a directory                                                                                                                                                | ✅ shipped                                               |
+| **2**  | Type-DSL parser, in-memory engine, REST CRUD (`list` / `get` / `create` / `update` / `delete`) generated from `service rest` blocks, JSON bodies with auto-id, default-value seeding, partial-update PATCH | ✅ shipped — `cargo run -- run docs/examples/blog`       |
+| **3**  | LIVE subscriptions over WebSocket, delta frames on commit, `me` / session layer                                                                                                                            | pending                                                  |
+| **4+** | Transactional fns (`fn checkout in txn snapshot`), row-level policies, type-attached triggers, `##ui` SSR, WAL durability, codegen                                                                         | see [docs/runtime/database.md](docs/runtime/database.md) |
 
 `cargo test --lib` at the root runs 14 unit tests covering the lexer, parser, compiler, and engine. Stage-3 endpoints respond `501 Not Implemented` until they land.
 

@@ -97,6 +97,7 @@ Covered in `docs/runtime/database/02-wo-language.md § Concurrency Model` and `0
 | `engine.rs` (Engine + Catalog) | `engine` | 2 |
 | `compile.rs` | `engine` | 2 |
 | `method.rs` (13b method executor) | `logic` | 6 |
+| `pg.rs` + `mirror.rs` (16 Postgres backup mirror) | `db` | 3+ |
 | `server.rs` | `http` + `service` | 4 / 6 |
 | `bin/wo.rs` | stays in `rt` (the binary) | — |
 
@@ -129,6 +130,7 @@ Stage-3 stubs (501) and policy-shaped 405/404 responses are **intentional and do
 - **`reference/crates/` is its own workspace.** Running `cargo build` at the root does not build v1. Running it in `reference/crates/` does.
 - **Parser identifiers vs. keywords.** `subscribe`, `receive`, `expect_abort`, `me`, `self`, and lowercase `insert`/`select` are NOT keywords in the lexer — they stay as plain idents (only SQL-layer `INSERT`/`SELECT` are keywords). The 13b statement parser matches `insert` as an ident; the select expression is recognised by the two-token shape `select <Ident> {`. Adding these to the keyword map breaks `service rest "..." expose subscribe` and method bodies.
 - **Type-level annotations.** `@table(name: "...", index: [a, b])` before a `type`/`class` configures storage (it never toggles table-ness — every type IS a table). Unknown keys inside `@table(...)` are parse errors; unknown annotation *names* (`@foo`) skip silently. Engine secondary indexes are maintained ONLY via `Engine::row_insert`/`row_remove` — never touch `tables` directly or indexes drift.
+- **The Postgres mirror is a backup, never a commit path.** `WO_PG=…` streams committed mutations to Postgres asynchronously (`mirror.rs`, one `wo-pg` thread, hand-rolled wire client in `pg.rs` — no crates). Reads and acks must never depend on it: taps sit AFTER `wal_log` accepts, use `try_send`, and drop loudly on overflow. Boot re-pushes all RAM state (`mirror_sync_all`), so RAM stays authoritative and Postgres is always reconstructible from a restart. See `docs/plan/16-postgres-mirror.md`.
 - **Parser skip-on-block.** Unknown triggers (`on update do ...`) are parsed-and-discarded by brace-depth-aware skipping. Object literals like `{ article_id: self.id }` inside trigger actions contain `}` that must not be mistaken for the type's outer close brace — the depth counter exists specifically because of this. Exception since 13b: `fn` inside a `class` parses into a real `MethodDecl` (body statements + expressions, executed by `method.rs`); `fn` inside a plain `type` still skips.
 - **Newline significance.** The lexer emits `Kind::Newline` tokens and the parser uses them to end policy/trigger lines. Do not filter newlines globally.
 - **Default-value parsing.** `= now()` is recognised explicitly as `DefaultExpr::Now`; anything else falls into an opaque-expression path that `engine::eval_default` then **omits from created rows** (computed fields display as empty, not as debug-printed tokens).

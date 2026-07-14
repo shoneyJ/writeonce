@@ -34,13 +34,19 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **not started** · ⏸ **p
 
 All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-scaleout.md) shipped notes and the [benchmark table](../../prototypes/wo-rt-c/README.md).
 
-### Track 3 — Storage & durability (plans 10–12)
+### Track 3 — Storage & durability (plans 10–12, 16) — 🔄 in progress
 
 | Status | Phase | Doc | Notes |
 | --- | --- | --- | --- |
 | ⬜ | 10 storage foundations | [10](10-storage-foundations.md) | scope reduced: WAL framing/fallocate landed via 09c; `@table(name:, index:)` surface + RAM secondary indexes landed via 13 follow-up |
 | ⬜ | 11 WAL & recovery | [11](11-wal-and-recovery.md) | remaining: snapshots (`.data`), compaction, WAL rotation — replay core shipped in 09c |
 | ⬜ | 12 engine disk cutover | [12](12-engine-disk-cutover.md) | mmap arena engine (C phase B is the proving ground) |
+| ✅ | 16a PG wire client | [16](16-postgres-mirror.md) | hand-rolled protocol v3 (`pg.rs`): trust/password/md5 auth, simple query — zero crates |
+| ✅ | 16b PG backup mirror | [16](16-postgres-mirror.md) | `WO_PG=…`: async JSONB upserts behind the WAL ack; boot = full resync; RAM authoritative, reads never touch PG |
+| ⬜ | 16c typed columns | [16](16-postgres-mirror.md) | catalog → typed columns; `@table` indexes → `CREATE INDEX` |
+| ⬜ | 16d lossless resync | [16](16-postgres-mirror.md) | dirty-flag repair without restart; lag metrics on `/` |
+| ⬜ | 16e restore from PG | [16](16-postgres-mirror.md) | `WO_PG_RESTORE=1` boot when the WAL is gone |
+| ⬜ | 16f SCRAM auth | [16](16-postgres-mirror.md) | hand-rolled SHA-256/HMAC/PBKDF2 |
 
 ### Track 4 — Language & API (`.wo` on the wire) — 🔄 in progress
 

@@ -84,12 +84,22 @@ pub struct Engine {
     /// records here and journal undo entries; `commit_txn` emits one
     /// [`WalRec::Txn`] frame, `abort_txn` reverts RAM in reverse order.
     txn: Option<TxnState>,
+    /// Postgres backup mirror (plan 16b): committed mutations are cloned
+    /// onto this channel AFTER the WAL accepted them — the mirror never
+    /// gates an ack. `None` when `WO_PG` is unset.
+    mirror: Option<crate::mirror::MirrorSender>,
+    /// Records dropped because the mirror channel was full/closed —
+    /// counted per shard, logged loudly but never blocking.
+    mirror_dropped: u64,
 }
 
 #[derive(Debug, Default)]
 struct TxnState {
-    wal:  Vec<crate::wal::WalRec>,
-    undo: Vec<Undo>,
+    wal:    Vec<crate::wal::WalRec>,
+    undo:   Vec<Undo>,
+    /// Mirror records for this transaction — sent as ONE
+    /// [`crate::mirror::MirrorRec::Txn`] on commit, dropped on abort.
+    mirror: Vec<crate::mirror::MirrorRec>,
 }
 
 /// Inverse of one applied mutation — enough to restore the pre-txn RAM state.
@@ -129,7 +139,53 @@ impl Engine {
             }
         }
         Self { catalog, tables, indexes, next_id, id_step: n_shards.max(1) as i64,
-               wal: None, staged: false, txn: None }
+               wal: None, staged: false, txn: None, mirror: None, mirror_dropped: 0 }
+    }
+
+    /// Attach the Postgres backup mirror (plan 16b). Like `attach_wal`,
+    /// this happens AFTER boot replay — replayed rows are pushed once via
+    /// [`mirror_sync_all`], not re-mirrored record by record.
+    pub fn attach_mirror(&mut self, tx: crate::mirror::MirrorSender) {
+        self.mirror = Some(tx);
+    }
+
+    /// Enqueue this shard's ENTIRE current state as upserts — boot-time
+    /// initial sync so a fresh Postgres catches up with a replayed WAL.
+    pub fn mirror_sync_all(&mut self) {
+        if self.mirror.is_none() { return; }
+        let snapshot: Vec<(String, i64, Row)> = self.tables.iter()
+            .flat_map(|(ty, table)| table.iter()
+                .map(|(id, row)| (ty.clone(), *id, row.clone())))
+            .collect();
+        for (ty, id, row) in snapshot {
+            self.mirror_dispatch(crate::mirror::MirrorRec::Upsert { ty, id, row });
+        }
+    }
+
+    /// Route one committed mutation to the mirror: buffered while a method
+    /// transaction is open (sent atomically on commit), dispatched
+    /// immediately otherwise. No-op when no mirror is attached.
+    fn mirror_send(&mut self, rec: crate::mirror::MirrorRec) {
+        if self.mirror.is_none() { return; }
+        match self.txn.as_mut() {
+            Some(t) => t.mirror.push(rec),
+            None    => self.mirror_dispatch(rec),
+        }
+    }
+
+    /// Non-blocking send; a full or closed channel drops the record and
+    /// counts it — Postgres lags, clients never do (16b policy; the
+    /// dirty-flag resync is plan 16d).
+    fn mirror_dispatch(&mut self, rec: crate::mirror::MirrorRec) {
+        let Some(tx) = self.mirror.as_ref() else { return };
+        if tx.try_send(rec).is_err() {
+            self.mirror_dropped += 1;
+            if self.mirror_dropped.is_power_of_two() {
+                eprintln!("[wo] pg mirror: queue full/closed — {} records dropped on this \
+                           shard (Postgres is behind RAM until resync, plan 16d)",
+                          self.mirror_dropped);
+            }
+        }
     }
 
     /// Attach a per-commit WAL (fsync inside each mutation). Must happen
@@ -245,6 +301,11 @@ impl Engine {
             self.apply_undo(t.undo);             // never ack non-durable
             return Err(e);
         }
+        // Mirror the whole method as one atomic Postgres transaction —
+        // committed only; an aborted method never reaches this point.
+        if !t.mirror.is_empty() {
+            self.mirror_dispatch(crate::mirror::MirrorRec::Txn(t.mirror));
+        }
         Ok(())
     }
 
@@ -336,6 +397,11 @@ impl Engine {
             self.row_remove(ty, id);   // never ack non-durable
             return Err(e);
         }
+        if self.mirror.is_some() {
+            self.mirror_send(crate::mirror::MirrorRec::Upsert {
+                ty: ty.into(), id, row: row.clone(),
+            });
+        }
         Ok(row)
     }
 
@@ -361,6 +427,12 @@ impl Engine {
             self.row_insert(ty, id, prev);
             return Err(e);
         }
+        if self.mirror.is_some() {
+            // The mirror needs the FULL post-merge row, not the merge body.
+            self.mirror_send(crate::mirror::MirrorRec::Upsert {
+                ty: ty.into(), id, row: updated.clone(),
+            });
+        }
         Ok(Some(updated))
     }
 
@@ -374,6 +446,7 @@ impl Engine {
             self.row_insert(ty, id, removed);  // undo
             return Err(e);
         }
+        self.mirror_send(crate::mirror::MirrorRec::Delete { ty: ty.into(), id });
         Ok(true)
     }
 
