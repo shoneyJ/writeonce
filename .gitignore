@@ -31,6 +31,12 @@
 /reference/postgresql
 /reference/mcp-python-sdk
 
+# Developer-local links into agent-tooling state (Claude Code project data,
+# opencode config/data, llama.cpp cache) — user-specific absolute paths.
+# Only .dev/README.md is committed; recreate the links per machine as it describes.
+/.dev/*
+!/.dev/README.md
+
 # Editor / OS noise — left broad on purpose so a contributor doesn't
 # accidentally commit their IDE scratch or macOS metadata.
 .DS_Store
