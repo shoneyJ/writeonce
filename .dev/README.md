@@ -15,6 +15,16 @@ recreates them for their own machine (commands below).
 | `llama-cache/` | `~/.cache/llama.cpp` | Downloaded GGUF weights (Qwen3-Coder-30B-A3B etc.). What `MODEL_PATH`/`start-local-agents.sh` resolve against. |
 | `llama-server.log` | `<llama.cpp checkout>/llama-server.log` | Live log of the background `llama-server` started by `prototypes/llama-moe-stream/start-local-agents.sh` — `tail -f` it to watch prompt processing and tok/s. |
 
+## references/ — related source trees
+
+`references/` holds read-only symlinks to source trees under `~/projects/`
+used as study material for the compiler/runtime work (same idea as the
+`reference/{linux,go}` links at the repo root):
+
+| Link | Points at | Why it's a reference |
+| --- | --- | --- |
+| `references/llvm-project/` | `~/projects/llvm-project` (shallow clone) | Compiler-architecture study for the OCaml `woc` compiler: pass pipelines (`llvm/lib/Passes/`), IR design (`llvm/docs/LangRef.md`), Clang's lexer/parser/sema layering (`clang/lib/{Lex,Parse,Sema}/`), diagnostics machinery (`clang/include/clang/Basic/Diagnostic*.td`). Study-only — writeonce does NOT link against LLVM (zero-dep doctrine; `woc` emits `.wob` bytecode, no LLVM backend). |
+
 Related, already at the repo root: project-level agent definitions go in
 `.opencode/agents/*.md` (opencode) and `.claude/agents/*.md` (Claude Code) —
 those are *committed* when they should be shared with the team, unlike these
@@ -30,6 +40,9 @@ ln -sfn "$HOME/.config/opencode"       opencode-config
 ln -sfn "$HOME/.local/share/opencode"  opencode-data
 ln -sfn "$HOME/.cache/llama.cpp"       llama-cache
 ln -sfn <your-llama.cpp-checkout>/llama-server.log llama-server.log
+mkdir -p references
+git clone --depth 1 https://github.com/llvm/llvm-project.git ~/projects/llvm-project
+ln -sfn "$HOME/projects/llvm-project"  references/llvm-project
 ```
 
 (`claude-project`: Claude Code names the directory after the repo's absolute
