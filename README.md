@@ -18,7 +18,7 @@ cargo run --bin wo -- run docs/examples/blog     # serve the sample blog on :808
 curl http://127.0.0.1:8080/api/articles          # it's a real REST API now
 ```
 
-See [`reference/rest/blog.rest`](reference/rest/blog.rest) for a preconfigured HTTP-request file that drives the whole sample — open it in VS Code (with the REST Client extension) or JetBrains and click "Send Request" on each block.
+See [`.dev/reference/rest/blog.rest`](.dev/reference/rest/blog.rest) for a preconfigured HTTP-request file that drives the whole sample — open it in VS Code (with the REST Client extension) or JetBrains and click "Send Request" on each block.
 
 ## What this repository contains
 
@@ -31,8 +31,8 @@ See [`reference/rest/blog.rest`](reference/rest/blog.rest) for a preconfigured H
 | [`docs/examples/blog/`](docs/examples/blog/)                                               | Sample `.wo` project: blog with articles, authors, tags, comments. ~200 lines.                                                                                                                                     |
 | [`docs/examples/ecommerce/`](docs/examples/ecommerce/)                                     | Sample `.wo` project: storefront + live order-ops table + cross-paradigm checkout. ~300 lines.                                                                                                                     |
 | [`prototypes/wo-db/`](prototypes/wo-db/)                                                   | C++ prototype of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). ~2k lines, smoke tests pass. Reference implementation the Rust port follows.                            |
-| [`reference/rest/`](reference/rest/)                                                       | `.rest` files (VS Code REST Client / JetBrains HTTP format) for manually testing the running prototype.                                                                                                            |
-| [`reference/crates/`](reference/crates/)                                                   | The v1 writeonce blog — 13 Rust crates implementing the original `.seg` + sidecar-index storage engine and `.htmlx` templating. Preserved as a nested workspace; see [`reference/README.md`](reference/README.md). |
+| [`.dev/reference/rest/`](.dev/reference/rest/)                                                       | `.rest` files (VS Code REST Client / JetBrains HTTP format) for manually testing the running prototype.                                                                                                            |
+| [`.dev/reference/crates/`](.dev/reference/crates/)                                                   | The v1 writeonce blog — 13 Rust crates implementing the original `.seg` + sidecar-index storage engine and `.htmlx` templating. Preserved as a nested workspace; see [`.dev/reference/README.md`](.dev/reference/README.md). |
 
 ## Current stage
 
@@ -62,10 +62,10 @@ WO_LISTEN=127.0.0.1:9000 cargo run --bin wo -- run docs/examples/blog
 
 ## The v1 codebase (reference)
 
-The original writeonce blog engine — 13 crates, flat-file `.seg` storage, sidecar indexes, `.htmlx` templates, hand-rolled `epoll` event loop — moved to [`reference/crates/`](reference/crates/) when the new runtime was scaffolded. It's a nested Cargo workspace:
+The original writeonce blog engine — 13 crates, flat-file `.seg` storage, sidecar indexes, `.htmlx` templates, hand-rolled `epoll` event loop — moved to [`.dev/reference/crates/`](.dev/reference/crates/) when the new runtime was scaffolded. It's a nested Cargo workspace:
 
 ```bash
-cd reference/crates
+cd .dev/reference/crates
 cargo build                   # all 13 v1 crates still compile
 cargo test                    # 12 unit tests, 1 ignored integration test
 ```

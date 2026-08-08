@@ -1,6 +1,5 @@
 # Cargo build artifacts
 /target
-/.dev/reference/crates/target
 
 # C++ prototype build output
 /prototypes/*/build
@@ -25,16 +24,15 @@
 # Legacy blog content and data (v1 writeonce storage)
 /content
 
-# Developer-local links into agent-tooling state (Claude Code project data,
-# opencode config/data, llama.cpp cache) — user-specific absolute paths.
-# Committed inside .dev: README.md and reference/ (v1 archive + rest smoke files);
-# recreate the per-machine links as .dev/README.md describes.
+# Everything in .dev is developer-local (agent-tooling links, and the whole
+# reference/ area: v1 archive, rest smoke files, study-tree symlinks —
+# untracked 2026-08-08, disk-only; v1 history lives at the pre-move
+# reference/ path). Only this README survives:
 /.dev/*
 !/.dev/README.md
-!/.dev/reference/
+/.dev/reference/
 
-# Symlinks to research source trees inside .dev/reference — user-specific
-# absolute paths. Each contributor sets their own via:
+# Study-tree symlinks each contributor recreates per machine:
 #   ln -s <path-to-linux-src>          .dev/reference/linux
 #   ln -s <path-to-go-src>             .dev/reference/go
 #   ln -s <path-to-postgresql-src>     .dev/reference/postgresql
@@ -42,13 +40,7 @@
 #     (clone: https://github.com/modelcontextprotocol/python-sdk.git)
 #   ln -s <path-to-colibri>            .dev/reference/colibri
 #   ln -s <path-to-llama.cpp>          .dev/reference/llama-cpp
-/.dev/reference/linux
-/.dev/reference/go
-/.dev/reference/postgresql
-/.dev/reference/mcp-python-sdk
-/.dev/reference/colibri
-/.dev/reference/llama-cpp
-/.dev/reference/*
+#   ln -s <path-to-llvm-project>       .dev/reference/llvm-project
 
 # Agent-orchestration scratch (SDD ledgers, briefs, review packages)
 /.superpowers/

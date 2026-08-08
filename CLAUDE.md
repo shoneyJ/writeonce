@@ -1,153 +1,92 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+You are a senior Developer & Architect with a passion for performance & KISS.
 
-## What this repo is
+Always use the caveman skill.
 
-writeonce is a **declarative full-stack programming language**. You write `.wo` files; the runtime compiles them into a single binary that owns the database, serves REST, and (Stage 3+) pushes live subscriptions. Think: Go + Postgres + `net/http` + Phoenix LiveView folded into one language.
+## 0. Take Pride in providing outstanding results
 
-## The end goal — zero external deps, kernel primitives only
+**The results speaks for themselves**
 
-The runtime's north star — documented in [`docs/01-problem.md`](docs/01-problem.md), [`docs/02-recovery.md`](docs/02-recovery.md), and [`docs/plan/linux/00-linux.md`](docs/plan/linux/00-linux.md) — is **one binary, no external Rust crates, all I/O driven directly by Linux kernel primitives**. `epoll` (or `io_uring`), `inotify`, `eventfd`, `timerfd`, `signalfd`, `sendfile`, `mmap` — the kernel IS the subscription engine, the async runtime, and the file watcher.
+- You go the extra mile if the result is worth it
+- You dont sugarcoat subpar solutions, you despise them
+- You think outside the box
 
-Target end state of `crates/rt/Cargo.toml`:
+## 1. Think Before Coding
 
-```toml
-[dependencies]
-libc = "0.2"   # the unavoidable FFI bridge to syscalls
+**Don't assume. Don't hide confusion. Surface tradeoffs. Apply critical thinking.**
+
+Before implementing:
+
+- Don't outright trust existing code-comments. Question, validate & correct them.
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
 ```
 
-Stage 2 today carries six transitional deps (`anyhow`, `serde`, `serde_json`, `tokio`, `axum`, `tower`). [`docs/plan/02`](docs/plan/02-event-loop-epoll.md) through [`docs/plan/08`](docs/plan/08-sendfile-static-assets.md) sequence the removal of each one, replaced by hand-rolled modules ported from the v1 crates that already did exactly this (`reference/crates/wo-event`, `wo-http`, `wo-route`, `wo-serve`, `wo-watch`). **When working on the runtime, default to direct-syscall solutions over reaching for new crates** — the `docs/plan/` docs name the port source for every module.
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## Layout
+## 4. Fix Errors as you encounter them
 
-The repo holds three cuts of the same project plus one research reference:
+**An error means a broken baseline. Fix any error you encounter. No bandaids.**
 
-1. **`crates/rt/`** — the **active Rust runtime** (Stage 2 shipped). Monolithic on purpose for now: lexer, parser, AST, in-memory engine, axum REST server all in one crate. The `wo` binary lives at `crates/rt/src/bin/wo.rs`.
-2. **`crates/{ql,value,engine,txn,db,wal,sub,http,gen,policy,logic,service,ui,app}/`** — 14 **empty sibling crates** scaffolded to match the 7-phase design. Each has a `Cargo.toml` + `src/lib.rs` with just a doc comment pointing at its phase spec. Real code moves in from `rt` as each phase activates; do NOT refactor `rt` to use these today — it would break Stage 2.
-3. **`reference/crates/`** — the **v1 writeonce blog** (13 crates: `wo-seg`, `wo-index`, `wo-store`, `wo-htmlx`, etc.). This is a **nested Cargo workspace**, deliberately excluded from the root workspace. The v1 crates keep their `wo-` prefix; the new runtime crates dropped theirs. `cd reference/crates && cargo build` builds v1 standalone. See `docs/runtime/database/07-wo-seg-migration.md` for the plan replacing v1 with the new runtime.
-4. **`reference/linux/`** and **`reference/go/`** — **symlinks** to the Linux kernel source tree and the Go source tree respectively. Not committed (see `.gitignore`). Research resources:
-   - **`reference/linux/`** — grep `io_uring/`, `fs/notify/inotify/`, `kernel/eventfd.c`, `include/uapi/linux/*.h` when designing the kernel-primitive modules. Paired with per-primitive reference cards at [`docs/plan/linux/`](docs/plan/linux/).
-   - **`reference/go/`** — grep `src/runtime/netpoll_epoll.go`, `netpoll.go`, `os_linux*.go`, `asm_*.s`, `sys_linux_*.s` when designing the runtime layer. The `crates/rt/src/runtime/` module mirrors Go's `src/runtime/` file-per-flavour naming (`netpoll_epoll.rs` ↔ `netpoll_epoll.go`). The [`docs/plan/assembly/`](docs/plan/assembly/) docs cite this tree.
-   - Each contributor sets their own targets via `ln -s <path-to-src> reference/{linux,go}`.
+Always inspect crashsites. Always measure. Never assume.
 
-There is also **`prototypes/wo-db/`** — a ~2k-line **C++ prototype** of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). It keeps its `wo-db` directory name (C++ project, separate from the Rust crate `db`). It's the reference implementation the Rust port follows; `make test` still passes.
+## 5. Tools
 
-And **`runtime/`** — a single-file **C reference of the runtime layer** (edge-triggered epoll loop, signalfd shutdown, non-blocking listener, in-RAM store over minimal HTTP; libc only). It's the runtime-layer sibling of `wo-db`: each block maps one-to-one to a `crates/rt/src/runtime/` module (table in its README). `make -C runtime` builds it; `just rt-c-demo` exercises it. Its evolution into a multi-threaded io_uring RAM-database runtime (thread-per-core, mmap arena, WAL dual-write, recovery, ACID) is phased A–F in `docs/plan/exploration/c-runtime/00-plan.md`, with the one-address architecture trace beside it (`01-architecture.md`) — the proving ground for plans 09–12. **Documentation belongs under `docs/`** — prototype/crate directories keep only their orientation README. One recorded exception: the compiler track's plan documents live in `compiler/plan/` (architecture map + plans 2, 3, 8).
+- caveman
+- context-mode
+- web-search
+- superpowers
 
-## Commands
+---
 
-```bash
-# Build + test the runtime
-cargo build                                              # compiles all 15 crates
-cargo test --lib                                         # 14 unit tests (all in rt today)
-cargo test --lib parses_inline_struct -- --nocapture     # single named test
-
-# Run the runtime against a sample project
-cargo run --bin wo -- run docs/examples/blog       # :8080 — blog sample
-cargo run --bin wo -- run docs/examples/ecommerce  # :8080 — ecommerce sample
-WO_LISTEN=127.0.0.1:9000 cargo run --bin wo -- run docs/examples/blog   # override port
-
-# v1 blog codebase (nested workspace — must cd first)
-cd reference/crates && cargo build && cargo test
-
-# C++ prototype of the query-layer engine
-cd prototypes/wo-db && make test     # smoke.wo + checkout.wo
-cd prototypes/wo-db && make run      # interactive REPL
-
-# Manual HTTP smoke against a running `wo run ...`
-# Open reference/rest/blog.rest or ecommerce.rest in VS Code (with REST Client)
-# or JetBrains (built-in HTTP client). Or run curl per reference/rest/README.md.
-```
-
-## Architecture — what requires reading multiple files to understand
-
-### Naming convention
-
-- **New runtime crates are unprefixed.** `ql`, `value`, `engine`, `txn`, `db`, `wal`, `sub`, `http`, `gen`, `policy`, `logic`, `service`, `ui`, `app`, `rt`. Internal imports read cleanly: `use ql::Parser`, `use db::Tx`, `use http::router`.
-- **V1 crates keep the `wo-` prefix.** `wo-seg`, `wo-index`, `wo-store`, `wo-htmlx`, `wo-md`, and v1's own `wo-rt`/`wo-http`/`wo-sub`. These live in `reference/crates/`.
-- **The C++ prototype directory is `prototypes/wo-db/`** — unchanged, not a Rust crate.
-- **The binary is `wo`** — defined in `crates/rt/Cargo.toml` `[[bin]]`. Independent of the crate name.
-
-### The two-layer `.wo` language
-
-Covered in `docs/runtime/database/02-wo-language.md`:
-
-- **Schema layer** — unified `type Name { ... }` DSL (fields, embedded structs, `ref`, `multi @edge`, `multi via`, `backlink`, tagged unions, `policy`, `on <event>`, `service`). This is what developers write day-to-day.
-- **Query layer** — hybrid SQL + Cypher with five "fixed-glue" rules that make the three grammars share semantics: `$name` parameters everywhere, cross-paradigm `RETURNING col AS alias` visible to later statements in the same `BEGIN … COMMIT`, dotted paths identical in SQL/doc/Cypher, one transaction block syntax, one `LIVE` prefix on subscriptions.
-
-Both layers are `.wo` files. The schema layer compiles down to query-layer operations — but only when Phase 5 codegen and Phase 6 full-stack blocks need a single authoritative input. Stage 2 ships with the schema layer only.
-
-### Concurrency: thread-per-core event loops (09a shipped)
-
-Since plans 09a+09b, `wo run` boots `WO_THREADS` pinned worker threads (default = online cores; `wo-shard-<t>` in `ps -T`), each running its own epoll `EventLoop` with its own `SO_REUSEPORT` listener (`crates/rt/src/runtime/scheduler.rs`) **and its own `Engine`** — there is no `Arc<Mutex<Engine>>` anywhere. Ids interleave per shard (`Engine::for_shard`; owner = `(id-1) % n`); cross-shard operations travel the shard bus (`crates/rt/src/shard.rs`: mpsc job mailboxes + mail eventfds; creates local, point ops hop once, lists fan out and merge). Deadlock-freedom: jobs never block, waiters pump their own inbox. Routers are thread-local (`HandlerFn` is not `Send`/`Sync`). Signals are blocked before spawn; worker 0 owns the signalfd and broadcasts shutdown via per-worker eventfds. Don't reintroduce shared mutable engine state — the doctrine below is now enforced by ownership.
-
-### Single-threaded event loop (original doctrine)
-
-Covered in `docs/runtime/database/02-wo-language.md § Concurrency Model` and `03-inmemory-engine.md`. The runtime is Redis/TigerBeetle-style: **one userland thread owns everything** — connection accept, parser, engine, subscription registry. The only non-userland thread is the kernel-owned io_uring SQPOLL helper. This is pinned architecturally — group commit still applies (loop drains many commits into one fsync SQE per tick), and scaling past one core is done by **sharding** independent engine processes, not by adding worker threads. Keep this in mind before proposing `Arc<Mutex<...>>` anything beyond what's already there.
-
-### What's in `rt` today vs. what the empty crates promise
-
-`rt`'s modules deliberately mirror the future crate names so the extraction is mechanical when each phase activates:
-
-| `rt` module | Will move to | Phase |
-| --- | --- | --- |
-| `token.rs` + `lexer.rs` + `ast.rs` + `parser.rs` | `ql` | 2 |
-| `engine.rs` (Value + Row helpers) | `value` | 2 |
-| `engine.rs` (Engine + Catalog) | `engine` | 2 |
-| `compile.rs` | `engine` | 2 |
-| `method.rs` (13b method executor) | `logic` | 6 |
-| `pg.rs` + `mirror.rs` (16 Postgres backup mirror) | `db` | 3+ |
-| `server.rs` | `http` + `service` | 4 / 6 |
-| `bin/wo.rs` | stays in `rt` (the binary) | — |
-
-The `sub`, `wal`, `txn`, `policy`, `logic`, `ui`, `app`, `gen` crates have no `rt` counterpart yet — they land when their phase activates.
-
-### Sample projects drive the grammar
-
-`docs/examples/blog/` and `docs/examples/ecommerce/` are **both docs artifacts and the de facto integration tests**. The parser survives these because specific features in them (nested `{...}` object literals inside trigger actions, `count(...)` / `words(...)` computed defaults, unions like `Pending | Paid | Shipped`) forced real fixes. When changing the parser, run the full end-to-end against both samples, not just `cargo test`.
-
-The ecommerce sample in particular uses features that are deliberately **parse-and-discard** in Stage 2: `fn checkout(...) in txn snapshot`, type-attached `on update` triggers with multi-line `do` actions, `policy read for role ...`. These are part of the `.wo` language but Stage 2 does not execute them.
-
-### The migration story
-
-`docs/runtime/database/07-wo-seg-migration.md` specifies **phased coexistence**: abstract the v1 article store behind an `ArticleStore` trait, stand up the `.wo` engine as a second implementation, dual-write, cut over, decommission v1. Phase A (trait abstraction) hasn't started — the plan is on paper, the v1 code is still monolithic in `reference/crates/wo-store/`. Do not remove anything from `reference/crates/` without checking the migration doc.
-
-### Stage progress
-
-| Stage | Status |
-| --- | --- |
-| 1 — `wo run <dir>` discovers `.wo` files | ✅ shipped |
-| 2 — parser + engine + REST CRUD | ✅ shipped (`cargo run -- run docs/examples/blog`) |
-| 3 — LIVE subscriptions over WebSocket | pending — `/api/<type>/live` returns 501 as a stub |
-| 4+ — transactional `fn`, policies, triggers, `##ui`, WAL, codegen | design-only (see `docs/runtime/database.md`) |
-
-Stage-3 stubs (501) and policy-shaped 405/404 responses are **intentional and documented** in `reference/rest/*.rest`. Don't "fix" them without checking those files first.
-
-## Non-obvious gotchas
-
-- **`rt` is monolithic on purpose.** Splitting it into the 14 sibling crates is Phase-by-Phase work, not a Stage-2 refactor.
-- **`reference/crates/` is its own workspace.** Running `cargo build` at the root does not build v1. Running it in `reference/crates/` does.
-- **Parser identifiers vs. keywords.** `subscribe`, `receive`, `expect_abort`, `me`, `self`, and lowercase `insert`/`select` are NOT keywords in the lexer — they stay as plain idents (only SQL-layer `INSERT`/`SELECT` are keywords). The 13b statement parser matches `insert` as an ident; the select expression is recognised by the two-token shape `select <Ident> {`. Adding these to the keyword map breaks `service rest "..." expose subscribe` and method bodies.
-- **Type-level annotations.** `@table(name: "...", index: [a, b])` before a `type`/`class` configures storage (it never toggles table-ness — every type IS a table). Unknown keys inside `@table(...)` are parse errors; unknown annotation *names* (`@foo`) skip silently. Engine secondary indexes are maintained ONLY via `Engine::row_insert`/`row_remove` — never touch `tables` directly or indexes drift.
-- **The Postgres mirror is a backup, never a commit path.** `WO_PG=…` streams committed mutations to Postgres asynchronously (`mirror.rs`, one `wo-pg` thread, hand-rolled wire client in `pg.rs` — no crates). Reads and acks must never depend on it: taps sit AFTER `wal_log` accepts, use `try_send`, and drop loudly on overflow. Boot re-pushes all RAM state (`mirror_sync_all`), so RAM stays authoritative and Postgres is always reconstructible from a restart. See `docs/plan/16-postgres-mirror.md`.
-- **Parser skip-on-block.** Unknown triggers (`on update do ...`) are parsed-and-discarded by brace-depth-aware skipping. Object literals like `{ article_id: self.id }` inside trigger actions contain `}` that must not be mistaken for the type's outer close brace — the depth counter exists specifically because of this. Exception since 13b: `fn` inside a `class` parses into a real `MethodDecl` (body statements + expressions, executed by `method.rs`); `fn` inside a plain `type` still skips.
-- **Newline significance.** The lexer emits `Kind::Newline` tokens and the parser uses them to end policy/trigger lines. Do not filter newlines globally.
-- **Default-value parsing.** `= now()` is recognised explicitly as `DefaultExpr::Now`; anything else falls into an opaque-expression path that `engine::eval_default` then **omits from created rows** (computed fields display as empty, not as debug-printed tokens).
-- **Binary variable shadowing.** `crates/rt/src/bin/wo.rs` has `let rt = ...` (a tokio runtime handle) inside `run()` that shadows the crate named `rt`. Inside `run()` the variable wins; inside `serve()` (a different function) `rt::` refers to the crate. Don't rename the variable without also auditing the crate-path references.
-
-## Where to read next
-
-- `docs/runtime/wo-language.md` — user-facing language overview
-- `docs/runtime/database.md` — 7-phase engineering series index
-- `docs/plan/linux/00-linux.md` — catalogue of kernel primitives the runtime leans on
-- `docs/plan/02-event-loop-epoll.md` through `08-sendfile-static-assets.md` — the dependency-removal phase sequence
-- `docs/plan/done/01-scafolding-crates.md` — the completed crate-scaffolding phase
-- `docs/examples/blog/README.md` — the canonical worked example
-- `prototypes/wo-db/README.md` — the C++ prototype that shows the query layer
-- `reference/rest/README.md` — how to exercise the running prototype
-- `reference/README.md` — what's in the v1 archive and why it's preserved
-- `reference/linux/` (symlink) — the Linux kernel source tree; grep `io_uring/`, `fs/notify/inotify/`, `include/uapi/linux/*.h` when designing kernel-facing modules
-- `reference/go/` (symlink) — the Go source tree; grep `src/runtime/netpoll_*.go`, `asm_*.s`, `sys_linux_*.s` when porting runtime-layer ideas (writeonce's `crates/rt/src/runtime/` mirrors this naming)
-- `docs/plan/assembly/00-overview.md` — role of assembly in a runtime; writeonce policy is "no custom asm, use Rust stdlib"
-- `crates/README.md` — inventory of all 15 crates with phase assignments
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
