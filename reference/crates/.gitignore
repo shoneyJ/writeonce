@@ -1,3 +1,0 @@
-# Nested v1 workspace — has its own Cargo.lock and target dir.
-/target
-Cargo.lock

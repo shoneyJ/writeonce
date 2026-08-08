@@ -1,15 +1,21 @@
 # Cargo build artifacts
 /target
-/reference/crates/target
+/.dev/reference/crates/target
 
 # C++ prototype build output
 /prototypes/*/build
 
-# C runtime prototype (prototypes/wo-rt-c): compiled binary + WAL/snapshot data.
+# OCaml/dune build artifacts (compiler/, the woc compiler front)
+/compiler/_build
+
+# C runtime (runtime/): compiled binary + WAL/snapshot data.
 # `just rt-c-demo` and the default WO_DATA write ./wo-data at the repo root.
-/prototypes/wo-rt-c/wo-rt
+/runtime/wo-rt
 /wo-data
-/prototypes/wo-rt-c/wo-data
+/runtime/wo-data
+# wovm VM core: binary + test build dir (ASan test binaries, smoke fixtures)
+/runtime/wovm
+/runtime/build/
 
 # Runtime data directories for the sample projects.
 # `wo.toml` points at `./data` which holds the per-project engine state.
@@ -19,23 +25,33 @@
 # Legacy blog content and data (v1 writeonce storage)
 /content
 
-# Symlinks to research source trees — user-specific absolute paths.
-# Each contributor sets their own via:
-#   ln -s <path-to-linux-src>          reference/linux
-#   ln -s <path-to-go-src>             reference/go
-#   ln -s <path-to-postgresql-src>     reference/postgresql
-#   ln -s <path-to-mcp-python-sdk-src> reference/mcp-python-sdk
-#     (clone: https://github.com/modelcontextprotocol/python-sdk.git)
-/reference/linux
-/reference/go
-/reference/postgresql
-/reference/mcp-python-sdk
-
 # Developer-local links into agent-tooling state (Claude Code project data,
 # opencode config/data, llama.cpp cache) — user-specific absolute paths.
-# Only .dev/README.md is committed; recreate the links per machine as it describes.
+# Committed inside .dev: README.md and reference/ (v1 archive + rest smoke files);
+# recreate the per-machine links as .dev/README.md describes.
 /.dev/*
 !/.dev/README.md
+!/.dev/reference/
+
+# Symlinks to research source trees inside .dev/reference — user-specific
+# absolute paths. Each contributor sets their own via:
+#   ln -s <path-to-linux-src>          .dev/reference/linux
+#   ln -s <path-to-go-src>             .dev/reference/go
+#   ln -s <path-to-postgresql-src>     .dev/reference/postgresql
+#   ln -s <path-to-mcp-python-sdk-src> .dev/reference/mcp-python-sdk
+#     (clone: https://github.com/modelcontextprotocol/python-sdk.git)
+#   ln -s <path-to-colibri>            .dev/reference/colibri
+#   ln -s <path-to-llama.cpp>          .dev/reference/llama-cpp
+/.dev/reference/linux
+/.dev/reference/go
+/.dev/reference/postgresql
+/.dev/reference/mcp-python-sdk
+/.dev/reference/colibri
+/.dev/reference/llama-cpp
+/.dev/reference/*
+
+# Agent-orchestration scratch (SDD ledgers, briefs, review packages)
+/.superpowers/
 
 # Editor / OS noise — left broad on purpose so a contributor doesn't
 # accidentally commit their IDE scratch or macOS metadata.
@@ -47,7 +63,6 @@
 !/.vscode/settings.json.example
 !/.vscode/extensions.json
 
-/prototypes/wo-db
 # Phase-F bench binaries (sources are committed; builds are not)
-/prototypes/wo-rt-c/bench/bench
-/prototypes/wo-rt-c/bench/goref/goref
+/runtime/bench/bench
+/runtime/bench/goref/goref

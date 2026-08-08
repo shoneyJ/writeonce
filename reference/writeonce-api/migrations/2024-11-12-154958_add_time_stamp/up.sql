@@ -1,3 +1,0 @@
--- Your SQL goes here
-ALTER TABLE public.articles
-ADD COLUMN published_on BIGINT DEFAULT EXTRACT(EPOCH FROM CURRENT_TIMESTAMP);

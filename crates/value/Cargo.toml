@@ -1,9 +1,0 @@
-[package]
-name        = "value"
-version     = "0.1.0"
-edition     = "2021"
-description = "writeonce tagged `Value` + dotted-path utilities"
-
-[lib]
-name = "value"
-path = "src/lib.rs"
