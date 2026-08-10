@@ -1,0 +1,43 @@
+interface Priced {
+  fn current_price() -> Money
+}
+
+@table(name: "products", index: [sku])
+class Product {
+  id:     Id
+  sku:    SKU @unique
+  name:   Text
+  prices: multi Price
+  owner:  ref Customer
+
+  fn current_price() -> Money {
+    return latest(self.prices).amount;
+  }
+
+  fn rename(name: Text) {
+    self.name = name;
+  }
+
+  fn set_price(mut amount: Money) {
+    self.prices = amount;
+  }
+
+  fn adopt(take other: Product) -> Product {
+    return other;
+  }
+}
+
+@gc
+class PriceCache {
+  entries: map<SKU, Money>
+}
+
+type Note {
+  id:      Id
+  body:    Text
+  created: Timestamp = now()
+}
+
+fn discount(mut amount: Money, take pct: Int) -> Money {
+  return amount;
+}

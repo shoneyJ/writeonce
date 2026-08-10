@@ -1,0 +1,31 @@
+; Task 2 seam: a plain assert-and-print test executable wired into
+; `dune runtest`, just enough to TDD compiler/src/diag.ml. Task 3 adds
+; the golden-file runner (runner.ml + test/golden/ fixtures) alongside
+; this file — keep this stanza minimal so that addition is additive,
+; not a rewrite.
+(test
+ (name test_diag)
+ (modules test_diag)
+ (libraries woc_lib))
+
+; Task 3: golden-file runner. (deps (source_tree golden)) does two
+; jobs at once: it keeps the build-directory copy of golden/ that this
+; test reads from fresh on every run, and it is *why* dune notices a
+; fixture edit at all -- without a declared dependency on that
+; directory, dune has nothing to digest to decide this test's cached
+; PASS is stale, and a changed .wo/.expected file would go unnoticed.
+; WOC_BLESS=1 rewrites the real compiler/test/golden files on disk
+; directly (see runner.ml's module doc for why a bare relative write
+; from inside a dune test would not do that). The ../bin/woc dep is for
+; the CLI smoke section: it forces the woc binary to be built before
+; this test runs, and (because dune places a directory dependency's
+; target at the same relative path inside the sandbox) guarantees
+; "../bin/woc" resolves from this test's cwd exactly the way runner.ml
+; assumes.
+(test
+ (name runner)
+ (modules runner)
+ (libraries woc_lib)
+ (deps
+  (source_tree golden)
+  ../bin/woc))

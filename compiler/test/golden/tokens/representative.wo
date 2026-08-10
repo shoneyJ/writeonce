@@ -1,0 +1,33 @@
+-- representative token fixture: comments, newlines, literals, annotations, punctuation
+@table(name: "products", index: [name])
+class Product {
+  let name: Text = "widget"
+  let price: Int = 42
+  let tags: [Text] = []
+  let in_stock: Bool = true
+
+  fn discounted(pct: Int) -> Int {
+    let cut = self.price * pct / 100
+    if cut >= self.price {
+      return 0
+    } else {
+      return self.price - cut
+    }
+  }
+
+  fn total(counts: [Int]) -> Int {
+    let sum = 0
+    for n in counts {
+      sum = sum + n
+    }
+    return sum
+  }
+
+  fn clearance() -> Bool {
+    let ok = self.price <= 50
+    while ok {
+      return false
+    }
+    return ok
+  }
+}

@@ -1,0 +1,4 @@
+1:1 CLASS Article
+  2:3 FIELD id: Id
+  3:3 FIELD title: Text
+  13:3 FIELD published: Bool = KW_FALSE

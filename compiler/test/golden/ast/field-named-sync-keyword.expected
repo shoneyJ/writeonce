@@ -1,0 +1,6 @@
+1:1 CLASS Toggle
+  2:3 FIELD id: Id
+  3:3 FIELD on: Bool
+  4:3 FIELD service: Text
+  5:3 FIELD policy: Text
+  6:3 FIELD name: Text

@@ -1,0 +1,17 @@
+(executable
+ (name main)
+ (libraries woc_lib))
+
+; dune names the built executable after its main module (Main, from
+; main.ml), which lands in the build directory as main.exe. Copy it to
+; the plain "woc" name and fold that into this directory's default
+; alias so a bare `dune build` produces the woc binary directly.
+(rule
+ (target woc)
+ (deps main.exe)
+ (action
+  (copy main.exe woc)))
+
+(alias
+ (name default)
+ (deps woc))

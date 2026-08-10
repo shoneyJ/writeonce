@@ -1,0 +1,14 @@
+class Article {
+  id:    Id
+  title: Text
+
+  policy read  anyone
+  policy write for role Admin
+
+  service rest "/api/articles" expose list, get
+
+  on update when old.published == false and new.published == true
+    do set self.published_at = { article_id: self.id, at: now() }
+
+  published: Bool = false
+}

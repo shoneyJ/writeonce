@@ -1,0 +1,12 @@
+class Broken1 {
+  id: Id
+  bad_field Text
+}
+
+class Good {
+  id: Id
+}
+
+interface Broken2 {
+  fn oops(x Text) -> Money
+}

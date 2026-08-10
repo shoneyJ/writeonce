@@ -1,0 +1,5 @@
+1:1 KW_LET
+1:5 IDENT(bad)
+1:9 EQ
+1:11 STR(abc)
+1:16 EOF

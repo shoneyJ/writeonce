@@ -1,0 +1,4 @@
+-- gotcha fixture: keyword vs plain-identifier boundaries
+self me subscribe receive insert select
+type class interface fn let mut take return if else while for in true false
+INSERT SELECT

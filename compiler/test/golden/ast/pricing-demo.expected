@@ -1,0 +1,24 @@
+1:1 INTERFACE Priced
+  2:3 METHOD current_price() -> Money
+6:1 CLASS Product @table(name="products", index=[sku])
+  7:3 FIELD id: Id
+  8:3 FIELD sku: SKU @unique
+  9:3 FIELD name: Text
+  10:3 FIELD prices: multi Price
+  11:3 FIELD owner: ref Customer
+  13:3 METHOD current_price() -> Money
+    14:5 RETURN latest(self.prices).amount
+  17:3 METHOD rename(name: Text)
+    18:5 ASSIGN self.name = name
+  21:3 METHOD set_price(mut amount: Money)
+    22:5 ASSIGN self.prices = amount
+  25:3 METHOD adopt(take other: Product) -> Product
+    26:5 RETURN other
+31:1 CLASS PriceCache @gc
+  32:3 FIELD entries: map<SKU, Money>
+35:1 TYPE Note
+  36:3 FIELD id: Id
+  37:3 FIELD body: Text
+  38:3 FIELD created: Timestamp = now()
+41:1 METHOD discount(mut amount: Money, take pct: Int) -> Money
+  42:3 RETURN amount

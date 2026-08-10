@@ -1,0 +1,14 @@
+class Toggle {
+  id:      Id
+  on:      Bool
+  service: Text
+  policy:  Text
+  name:    Text
+
+  policy read anyone
+
+  on update when old.on == false and new.on == true
+    do set self.name = { note: "toggled", at: now() }
+
+  service rest "/api/toggles" expose list, get
+}
