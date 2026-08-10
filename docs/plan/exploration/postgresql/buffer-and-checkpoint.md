@@ -13,12 +13,12 @@ No separate process. No shared-buffer pinning. No dynamic-shared-memory coordina
 
 | File | Responsibility |
 | --- | --- |
-| [`storage/buffer/bufmgr.c`](../../../../reference/postgresql/src/backend/storage/buffer/bufmgr.c) | Page cache front-door: `ReadBuffer`, `BufferGetPage`, `MarkBufferDirty`, `FlushBuffer`. Tracks dirty bit per buffer; pinning prevents eviction. |
-| [`storage/buffer/freelist.c`](../../../../reference/postgresql/src/backend/storage/buffer/freelist.c) | Clock-sweep eviction policy. Buffers with `usage_count = 0` and `pin_count = 0` are eviction candidates; usage decremented on every sweep pass, incremented on access. |
-| [`storage/buffer/buf_table.c`](../../../../reference/postgresql/src/backend/storage/buffer/buf_table.c) | Hash table from `(file, block)` → buffer slot. The lookup that `ReadBuffer` does. |
-| [`postmaster/checkpointer.c`](../../../../reference/postgresql/src/backend/postmaster/checkpointer.c) | The checkpointer process. Triggered by time (`checkpoint_timeout`), WAL volume (`max_wal_size`), or signal. Runs `BufferSync()` to flush dirty buffers, then `CreateCheckPoint()` to update the control file. |
-| [`postmaster/bgwriter.c`](../../../../reference/postgresql/src/backend/postmaster/bgwriter.c) | Continuously trickles dirty pages to disk between checkpoints. Smooths the I/O burst the checkpointer would cause. |
-| [`storage/buffer/README`](../../../../reference/postgresql/src/backend/storage/buffer/README) | Overview of the pinning, locking, and replacement policy. Worth reading. |
+| [`storage/buffer/bufmgr.c`](../../../../.dev/reference/postgresql/src/backend/storage/buffer/bufmgr.c) | Page cache front-door: `ReadBuffer`, `BufferGetPage`, `MarkBufferDirty`, `FlushBuffer`. Tracks dirty bit per buffer; pinning prevents eviction. |
+| [`storage/buffer/freelist.c`](../../../../.dev/reference/postgresql/src/backend/storage/buffer/freelist.c) | Clock-sweep eviction policy. Buffers with `usage_count = 0` and `pin_count = 0` are eviction candidates; usage decremented on every sweep pass, incremented on access. |
+| [`storage/buffer/buf_table.c`](../../../../.dev/reference/postgresql/src/backend/storage/buffer/buf_table.c) | Hash table from `(file, block)` → buffer slot. The lookup that `ReadBuffer` does. |
+| [`postmaster/checkpointer.c`](../../../../.dev/reference/postgresql/src/backend/postmaster/checkpointer.c) | The checkpointer process. Triggered by time (`checkpoint_timeout`), WAL volume (`max_wal_size`), or signal. Runs `BufferSync()` to flush dirty buffers, then `CreateCheckPoint()` to update the control file. |
+| [`postmaster/bgwriter.c`](../../../../.dev/reference/postgresql/src/backend/postmaster/bgwriter.c) | Continuously trickles dirty pages to disk between checkpoints. Smooths the I/O burst the checkpointer would cause. |
+| [`storage/buffer/README`](../../../../.dev/reference/postgresql/src/backend/storage/buffer/README) | Overview of the pinning, locking, and replacement policy. Worth reading. |
 
 ## The page-cache idea worth porting
 

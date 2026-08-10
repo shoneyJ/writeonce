@@ -6,8 +6,8 @@ Zero-copy transfer from a file fd to a socket fd. The kernel splices pages direc
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/read_write.c`](../../../reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(sendfile, ...)` and `SYSCALL_DEFINE4(sendfile64, ...)`. Modern glibc aliases the first to the second; the syscalls are distinguished by the offset type. |
-| [`reference/linux/fs/splice.c`](../../../reference/linux/fs/splice.c) | Internally `sendfile` delegates to `splice_direct_to_actor`. Related — see [07-splice.md](./07-splice.md) if you ever need the more general fd-to-fd pipe path. |
+| [`.dev/reference/linux/fs/read_write.c`](../../../.dev/reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(sendfile, ...)` and `SYSCALL_DEFINE4(sendfile64, ...)`. Modern glibc aliases the first to the second; the syscalls are distinguished by the offset type. |
+| [`.dev/reference/linux/fs/splice.c`](../../../.dev/reference/linux/fs/splice.c) | Internally `sendfile` delegates to `splice_direct_to_actor`. Related — see [07-splice.md](./07-splice.md) if you ever need the more general fd-to-fd pipe path. |
 
 ## Man pages
 
@@ -75,4 +75,4 @@ unsafe {
 
 ## v1 port source
 
-[`reference/crates/wo-serve/src/sendfile.rs`](../../../reference/crates/wo-serve/src/sendfile.rs) (109 LOC) — `send_file(sock, path) -> Result` wrapping the loop + `EAGAIN` handling.
+[`.dev/reference/crates/wo-serve/src/sendfile.rs`](../../../.dev/reference/crates/wo-serve/src/sendfile.rs) (109 LOC) — `send_file(sock, path) -> Result` wrapping the loop + `EAGAIN` handling.

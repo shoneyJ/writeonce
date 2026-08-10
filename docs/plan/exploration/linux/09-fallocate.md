@@ -8,9 +8,9 @@ Together they form the backbone of the storage engine's on-disk layout: segment 
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/open.c`](../../../reference/linux/fs/open.c) | `SYSCALL_DEFINE4(fallocate, ...)`. The syscall delegates to `file->f_op->fallocate` — per-filesystem. |
-| [`reference/linux/fs/read_write.c`](../../../reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(pread64, ...)`, `SYSCALL_DEFINE4(pwrite64, ...)`, `SYSCALL_DEFINE6(pwritev2, ...)`. |
-| [`reference/linux/include/uapi/linux/falloc.h`](../../../reference/linux/include/uapi/linux/falloc.h) | `FALLOC_FL_*` flags. |
+| [`.dev/reference/linux/fs/open.c`](../../../.dev/reference/linux/fs/open.c) | `SYSCALL_DEFINE4(fallocate, ...)`. The syscall delegates to `file->f_op->fallocate` — per-filesystem. |
+| [`.dev/reference/linux/fs/read_write.c`](../../../.dev/reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(pread64, ...)`, `SYSCALL_DEFINE4(pwrite64, ...)`, `SYSCALL_DEFINE6(pwritev2, ...)`. |
+| [`.dev/reference/linux/include/uapi/linux/falloc.h`](../../../.dev/reference/linux/include/uapi/linux/falloc.h) | `FALLOC_FL_*` flags. |
 
 ## Man pages
 

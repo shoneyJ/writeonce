@@ -8,9 +8,9 @@ Central to Phase 3's storage engine: segment files are `mmap`ed read-only for O(
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/mm/mmap.c`](../../../reference/linux/mm/mmap.c) | VMA creation, `SYSCALL_DEFINE6(mmap, ...)`, `SYSCALL_DEFINE2(munmap, ...)`. |
-| [`reference/linux/mm/madvise.c`](../../../reference/linux/mm/madvise.c) | `SYSCALL_DEFINE3(madvise, ...)` + every `MADV_*` handler. |
-| [`reference/linux/include/uapi/linux/mman.h`](../../../reference/linux/include/uapi/linux/mman.h) | `MAP_*` flags, huge-page sizing macros. |
+| [`.dev/reference/linux/mm/mmap.c`](../../../.dev/reference/linux/mm/mmap.c) | VMA creation, `SYSCALL_DEFINE6(mmap, ...)`, `SYSCALL_DEFINE2(munmap, ...)`. |
+| [`.dev/reference/linux/mm/madvise.c`](../../../.dev/reference/linux/mm/madvise.c) | `SYSCALL_DEFINE3(madvise, ...)` + every `MADV_*` handler. |
+| [`.dev/reference/linux/include/uapi/linux/mman.h`](../../../.dev/reference/linux/include/uapi/linux/mman.h) | `MAP_*` flags, huge-page sizing macros. |
 | POSIX `<sys/mman.h>` | The other half of the constants (`PROT_*`, `MADV_*`). Usually folded into `linux/mman.h` by libc. |
 
 ## Man pages

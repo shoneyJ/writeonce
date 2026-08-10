@@ -85,7 +85,7 @@ fn main() -> Result<()> {
 3. **Storefront boots.** `WO_DB=wo://127.0.0.1:5555 STOREFRONT_DB_KEY=test ./target/wo/storefront &` then `curl -fsS http://127.0.0.1:8080/healthz` returns `200`. (The DB daemon from phase 06 is mocked or stubbed for this test if 06 hasn't landed yet — refuse-to-start without DB is the contract; the test verifies refuse-to-start when `WO_DB` is unset.)
 4. **Admin builds separately.** `wo build apps/admin` produces a *different* binary with a disjoint route table. Diffing the two `app_config.rs` files shows different route lists.
 5. **Refuse-to-start without DB.** `./target/wo/storefront` with no `WO_DB` and no manifest URL exits non-zero with a clear error.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
@@ -116,7 +116,7 @@ test -x target/wo/admin
 cargo run --bin wo -- run docs/examples/blog &
 PID=$!; sleep 1; curl -fsS http://127.0.0.1:8080/ >/dev/null; kill $PID
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

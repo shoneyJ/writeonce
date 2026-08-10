@@ -6,8 +6,8 @@ Counter as a file descriptor. `write(fd, &n, 8)` adds `n` to the counter; `read(
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/eventfd.c`](../../../reference/linux/fs/eventfd.c) | `SYSCALL_DEFINE2(eventfd, ...)`, `struct eventfd_ctx`, read/write handlers. |
-| [`reference/linux/include/uapi/linux/eventfd.h`](../../../reference/linux/include/uapi/linux/eventfd.h) | `EFD_*` flags. |
+| [`.dev/reference/linux/fs/eventfd.c`](../../../.dev/reference/linux/fs/eventfd.c) | `SYSCALL_DEFINE2(eventfd, ...)`, `struct eventfd_ctx`, read/write handlers. |
+| [`.dev/reference/linux/include/uapi/linux/eventfd.h`](../../../.dev/reference/linux/include/uapi/linux/eventfd.h) | `EFD_*` flags. |
 
 ## Man pages
 
@@ -63,4 +63,4 @@ unsafe {
 
 ## v1 port source
 
-[`reference/crates/wo-event/src/eventfd.rs`](../../../reference/crates/wo-event/src/eventfd.rs) (66 LOC) — `EventFd { new, write, read, as_raw_fd }`.
+[`.dev/reference/crates/wo-event/src/eventfd.rs`](../../../.dev/reference/crates/wo-event/src/eventfd.rs) (66 LOC) — `EventFd { new, write, read, as_raw_fd }`.

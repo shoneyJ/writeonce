@@ -8,9 +8,9 @@ Ring-buffer based async I/O (Linux 5.1+, mature 5.11+). Two lock-free SPSC rings
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/io_uring/`](../../../reference/linux/io_uring/) | Whole subsystem. Start with `io_uring.c` (ring setup + submission/completion) and `fs.c` (fsync op). |
-| [`reference/linux/io_uring/io_uring.c`](../../../reference/linux/io_uring/io_uring.c) | `SYSCALL_DEFINE2(io_uring_setup, ...)`, `SYSCALL_DEFINE6(io_uring_enter, ...)`, `SYSCALL_DEFINE4(io_uring_register, ...)`. |
-| [`reference/linux/include/uapi/linux/io_uring.h`](../../../reference/linux/include/uapi/linux/io_uring.h) | `struct io_uring_sqe`, `io_uring_cqe`, `io_uring_params`, every `IORING_*` flag. |
+| [`.dev/reference/linux/io_uring/`](../../../.dev/reference/linux/io_uring/) | Whole subsystem. Start with `io_uring.c` (ring setup + submission/completion) and `fs.c` (fsync op). |
+| [`.dev/reference/linux/io_uring/io_uring.c`](../../../.dev/reference/linux/io_uring/io_uring.c) | `SYSCALL_DEFINE2(io_uring_setup, ...)`, `SYSCALL_DEFINE6(io_uring_enter, ...)`, `SYSCALL_DEFINE4(io_uring_register, ...)`. |
+| [`.dev/reference/linux/include/uapi/linux/io_uring.h`](../../../.dev/reference/linux/include/uapi/linux/io_uring.h) | `struct io_uring_sqe`, `io_uring_cqe`, `io_uring_params`, every `IORING_*` flag. |
 
 ## Man pages
 

@@ -8,9 +8,9 @@ Useful for the storage engine's transient work: building an index in memory befo
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/mm/memfd.c`](../../../reference/linux/mm/memfd.c) | `SYSCALL_DEFINE2(memfd_create, ...)` + seal ops. |
-| [`reference/linux/include/uapi/linux/memfd.h`](../../../reference/linux/include/uapi/linux/memfd.h) | `MFD_*` flags. |
-| [`reference/linux/include/uapi/linux/fcntl.h`](../../../reference/linux/include/uapi/linux/fcntl.h) | `F_ADD_SEALS`, `F_GET_SEALS`, `F_SEAL_*` constants. Sealing is a `fcntl(F_ADD_SEALS, ...)` operation on the memfd. |
+| [`.dev/reference/linux/mm/memfd.c`](../../../.dev/reference/linux/mm/memfd.c) | `SYSCALL_DEFINE2(memfd_create, ...)` + seal ops. |
+| [`.dev/reference/linux/include/uapi/linux/memfd.h`](../../../.dev/reference/linux/include/uapi/linux/memfd.h) | `MFD_*` flags. |
+| [`.dev/reference/linux/include/uapi/linux/fcntl.h`](../../../.dev/reference/linux/include/uapi/linux/fcntl.h) | `F_ADD_SEALS`, `F_GET_SEALS`, `F_SEAL_*` constants. Sealing is a `fcntl(F_ADD_SEALS, ...)` operation on the memfd. |
 
 ## Man pages
 

@@ -6,9 +6,9 @@ Unix signals as file descriptors. `signalfd(fd, mask)` installs a mask on the pr
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/signalfd.c`](../../../reference/linux/fs/signalfd.c) | `SYSCALL_DEFINE4(signalfd4, ...)` + `signalfd_dequeue`. |
-| [`reference/linux/include/uapi/linux/signalfd.h`](../../../reference/linux/include/uapi/linux/signalfd.h) | `struct signalfd_siginfo`, `SFD_*` flags. |
-| [`reference/linux/kernel/signal.c`](../../../reference/linux/kernel/signal.c) | Background: `sigprocmask`, pending-signal dequeue. |
+| [`.dev/reference/linux/fs/signalfd.c`](../../../.dev/reference/linux/fs/signalfd.c) | `SYSCALL_DEFINE4(signalfd4, ...)` + `signalfd_dequeue`. |
+| [`.dev/reference/linux/include/uapi/linux/signalfd.h`](../../../.dev/reference/linux/include/uapi/linux/signalfd.h) | `struct signalfd_siginfo`, `SFD_*` flags. |
+| [`.dev/reference/linux/kernel/signal.c`](../../../.dev/reference/linux/kernel/signal.c) | Background: `sigprocmask`, pending-signal dequeue. |
 
 ## Man pages
 
@@ -74,4 +74,4 @@ unsafe {
 
 ## v1 port source
 
-[`reference/crates/wo-event/src/signalfd.rs`](../../../reference/crates/wo-event/src/signalfd.rs) (62 LOC) — `SignalFd::new(&[SIGINT, SIGTERM]) -> SignalFd` with a safe `read_signo()` helper.
+[`.dev/reference/crates/wo-event/src/signalfd.rs`](../../../.dev/reference/crates/wo-event/src/signalfd.rs) (62 LOC) — `SignalFd::new(&[SIGINT, SIGTERM]) -> SignalFd` with a safe `read_signo()` helper.

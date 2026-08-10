@@ -65,7 +65,7 @@ assert!(rs.contains(Role::Ops));
 3. **Build-time domain check fires.** A test workspace where `apps/storefront/app.wo` declares `role: Anonymous` against a type whose global policy does not define `Anonymous` — `wo build apps/storefront` exits non-zero with `PolicyDomainError`.
 4. **Cross-app integration.** Two storefront customers issue the same `GET /api/orders` against the daemon; each sees only their own rows (storefront app-scope narrows global). Admin sees both. Test runs against the phase-06 daemon.
 5. **v1 regression.** `wo run docs/examples/blog` boots; the global `policy read for anyone when published == true` on the blog `Article` type continues to gate anonymous reads as it does today.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
@@ -97,7 +97,7 @@ curl -fsS http://127.0.0.1:8080/api/articles                  # only published r
 test -z "$(curl -fsS http://127.0.0.1:8080/api/articles | grep '"published":false')"
 kill $PID
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

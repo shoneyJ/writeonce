@@ -4,7 +4,7 @@ Kernel primitives that the writeonce binary can leverage, mapped to the architec
 
 ### Per-primitive reference cards
 
-Each primitive has its own numbered file with the kernel source path (into [`reference/linux/`](../../../reference/linux/)), Rust FFI signature via `libc`, a minimal direct-syscall example, and the v1 port source. Use these when implementing the phase docs under [`docs/plan/`](../).
+Each primitive has its own numbered file with the kernel source path (into [`.dev/reference/linux/`](../../../.dev/reference/linux/)), Rust FFI signature via `libc`, a minimal direct-syscall example, and the v1 port source. Use these when implementing the phase docs under [`docs/plan/`](../).
 
 | # | Primitive | Used by |
 | --- | --- | --- |
@@ -143,4 +143,4 @@ Each pattern resolves to a set of inotify watch descriptors. When the watched se
 
 ## Related: the assembly policy
 
-Every primitive above is reached via `libc::<syscall>` or `libc::syscall(SYS_*, ...)` — no custom assembly. The reasoning lives in [`../assembly/`](../assembly/) — three files covering why runtimes use asm at all ([`00-overview.md`](../assembly/00-overview.md)), what Go's [`reference/go/src/runtime/*.s`](../../../reference/go/src/runtime/) actually contains ([`01-go-runtime-asm.md`](../assembly/01-go-runtime-asm.md)), and the writeonce policy that all of it is replaced by Rust stdlib + libc ([`02-writeonce-stance.md`](../assembly/02-writeonce-stance.md)).
+Every primitive above is reached via `libc::<syscall>` or `libc::syscall(SYS_*, ...)` — no custom assembly. The reasoning lives in [`../assembly/`](../assembly/) — three files covering why runtimes use asm at all ([`00-overview.md`](../assembly/00-overview.md)), what Go's [`.dev/reference/go/src/runtime/*.s`](../../../.dev/reference/go/src/runtime/) actually contains ([`01-go-runtime-asm.md`](../assembly/01-go-runtime-asm.md)), and the writeonce policy that all of it is replaced by Rust stdlib + libc ([`02-writeonce-stance.md`](../assembly/02-writeonce-stance.md)).

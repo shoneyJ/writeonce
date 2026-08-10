@@ -1,6 +1,6 @@
 # 08 — MVC structure: model = class, view = htmlx + scss, controller = .wo
 
-**Context sources:** [`reference/writeonce-app/src/app/`](../../../../reference/writeonce-app/src/app/) (the v1 Angular app whose component anatomy this formalizes), [`./00-overview.md`](./00-overview.md) ("Angular-component-style layout" — `home/{home.wo, home.htmlx, home.css}`), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the view grammar: Mustache + `<wo:live>` + `wo:bind`), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (the class methods controllers call), [`../../../examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) (the reference screen).
+**Context sources:** [`.dev/reference/writeonce-app/src/app/`](../../../../.dev/reference/writeonce-app/src/app/) (the v1 Angular app whose component anatomy this formalizes), [`./00-overview.md`](./00-overview.md) ("Angular-component-style layout" — `home/{home.wo, home.htmlx, home.css}`), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the view grammar: Mustache + `<wo:live>` + `wo:bind`), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (the class methods controllers call), [`../../../examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) (the reference screen).
 
 ## Goal
 
@@ -15,7 +15,7 @@ ui/pricing/
 
 ## The mapping, against the v1 Angular app
 
-| MVC role | v1 Angular (`reference/writeonce-app/src/app/`) | writeonce |
+| MVC role | v1 Angular (`.dev/reference/writeonce-app/src/app/`) | writeonce |
 | --- | --- | --- |
 | **Model** | `models/article.ts` (interface) + `services/article.service.ts` (HTTP fetch) | the `class` / `type` declaration itself (`types/product.wo`). No service layer: the database is in-process, and a model binding **is** a query — `LIVE select` for push, `select` for snapshot |
 | **View** | `article.component.html` + `article.component.css` | `pricing.htmlx` + `pricing.scss`. Plain markup; the only dynamic constructs are Mustache paths and `<wo:live>` / `wo:bind` from [`01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) |
@@ -72,7 +72,7 @@ browser action wo:action="set-price"
 
 ## Migration note
 
-The two existing screen specs (`docs/examples/ecommerce/apps/*/ui/*/`, single-file `##ui` shorthand) stay valid under decision 5. New screens — starting with [`docs/examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) — use the triplet. The v1 Angular app stays archived; its components are the *shape* reference, not a port source (the htmlx port source remains `reference/crates/wo-htmlx`).
+The two existing screen specs (`docs/examples/ecommerce/apps/*/ui/*/`, single-file `##ui` shorthand) stay valid under decision 5. New screens — starting with [`docs/examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) — use the triplet. The v1 Angular app stays archived; its components are the *shape* reference, not a port source (the htmlx port source remains `.dev/reference/crates/wo-htmlx`).
 
 ## Exit criteria (implementation sequenced in [plan 14](../../14-mvc-ui-implementation.md), landing with plan 13d)
 

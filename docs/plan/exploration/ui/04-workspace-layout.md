@@ -102,12 +102,12 @@ assert_eq!(blog.apps().len(), 1);
 3. **Component resolution.** `storefront.resolve_component("money")` returns the path to `shared/components/money.htmlx`. `storefront.resolve_component("nonsense")` errors as `ResolverError::NotFound`.
 4. **App-local override.** Adding `apps/storefront/ui/components/money.htmlx` makes `resolve_component("money")` return the app-local path; removing it falls back to the shared one.
 5. **Degenerate form.** `Workspace::load(docs/examples/blog)` loads as a one-app workspace; `wo run docs/examples/blog` continues to start unchanged.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
 - **No semver, no registry, no lockfile.** Path references only.
-- **No `wo dev` hot-reload.** File watching against `apps/*/ui/` is deferred (would consume `reference/crates/wo-watch/`).
+- **No `wo dev` hot-reload.** File watching against `apps/*/ui/` is deferred (would consume `.dev/reference/crates/wo-watch/`).
 - **No cross-workspace symlinks.** `shared = […]` paths must resolve under the workspace root.
 - **No build-time enforcement that an app touches only its declared shared dirs.** That's an integrity check for a later hardening phase.
 - **No env-var interpolation in `wo.toml`.** `${VAR}` syntax stays out; runtime config comes through env vars at startup, not manifest time.
@@ -131,7 +131,7 @@ cargo run --bin wo -- ls-apps docs/examples/blog
 cargo run --bin wo -- run docs/examples/blog &
 PID=$!; sleep 1; curl -fsS http://127.0.0.1:8080/ >/dev/null; kill $PID
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

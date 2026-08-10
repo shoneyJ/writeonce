@@ -15,10 +15,10 @@ The previous cards cover positional I/O ([`09-fallocate.md`](./09-fallocate.md))
 
 | Postgres call | Wraps | Where |
 | --- | --- | --- |
-| `pg_pwrite()` | `pwrite64` | [`storage/file/fd.c`](../../../../reference/postgresql/src/backend/storage/file/fd.c) — every block-aligned write. |
-| `pg_fsync()` | `fsync` (or platform variant) | [`storage/file/fd.c`](../../../../reference/postgresql/src/backend/storage/file/fd.c) — wraps `wal_sync_method` GUC dispatch. |
+| `pg_pwrite()` | `pwrite64` | [`storage/file/fd.c`](../../../../.dev/reference/postgresql/src/backend/storage/file/fd.c) — every block-aligned write. |
+| `pg_fsync()` | `fsync` (or platform variant) | [`storage/file/fd.c`](../../../../.dev/reference/postgresql/src/backend/storage/file/fd.c) — wraps `wal_sync_method` GUC dispatch. |
 | `pg_fdatasync()` | `fdatasync` | Same. Selected when `wal_sync_method = fdatasync`. |
-| Async writeback | `sync_file_range` | [`access/transam/xlog.c`](../../../../reference/postgresql/src/backend/access/transam/xlog.c) — `issue_xlog_fsync` calls `sync_file_range(SYNC_FILE_RANGE_WRITE)` to start I/O on the WAL ahead of the durability barrier. |
+| Async writeback | `sync_file_range` | [`access/transam/xlog.c`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlog.c) — `issue_xlog_fsync` calls `sync_file_range(SYNC_FILE_RANGE_WRITE)` to start I/O on the WAL ahead of the durability barrier. |
 
 The Postgres GUC matrix (`wal_sync_method`) lets the operator pick between `fsync`, `fdatasync`, `open_sync`, `open_datasync`, `fsync_writethrough`. **Writeonce picks one** — `fdatasync` for the WAL, `fsync` for control files and segment rollovers — and ships it.
 
@@ -26,10 +26,10 @@ The Postgres GUC matrix (`wal_sync_method`) lets the operator pick between `fsyn
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/read_write.c`](../../../reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(pread64, ...)`, `SYSCALL_DEFINE4(pwrite64, ...)`, `SYSCALL_DEFINE6(pwritev2, ...)`. |
-| [`reference/linux/fs/sync.c`](../../../reference/linux/fs/sync.c) | `SYSCALL_DEFINE1(fsync, ...)`, `SYSCALL_DEFINE1(fdatasync, ...)`, `SYSCALL_DEFINE4(sync_file_range, ...)`. |
-| [`reference/linux/include/uapi/asm-generic/fcntl.h`](../../../reference/linux/include/uapi/asm-generic/fcntl.h) | `O_SYNC`, `O_DSYNC`, `O_DIRECT`. |
-| [`reference/linux/Documentation/filesystems/ext4/journal.rst`](../../../reference/linux/Documentation/filesystems/ext4/journal.rst) | What ext4's journal commits when `fsync` runs. Worth understanding what the kernel actually does on the durability path. |
+| [`.dev/reference/linux/fs/read_write.c`](../../../.dev/reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(pread64, ...)`, `SYSCALL_DEFINE4(pwrite64, ...)`, `SYSCALL_DEFINE6(pwritev2, ...)`. |
+| [`.dev/reference/linux/fs/sync.c`](../../../.dev/reference/linux/fs/sync.c) | `SYSCALL_DEFINE1(fsync, ...)`, `SYSCALL_DEFINE1(fdatasync, ...)`, `SYSCALL_DEFINE4(sync_file_range, ...)`. |
+| [`.dev/reference/linux/include/uapi/asm-generic/fcntl.h`](../../../.dev/reference/linux/include/uapi/asm-generic/fcntl.h) | `O_SYNC`, `O_DSYNC`, `O_DIRECT`. |
+| [`.dev/reference/linux/Documentation/filesystems/ext4/journal.rst`](../../../.dev/reference/linux/Documentation/filesystems/ext4/journal.rst) | What ext4's journal commits when `fsync` runs. Worth understanding what the kernel actually does on the durability path. |
 
 ## Man pages
 
@@ -149,4 +149,4 @@ Pair with [`postgresql/wal.md`](../postgresql/wal.md), [`postgresql/buffer-and-c
 
 ## v1 port source
 
-**Partial.** `reference/crates/wo-seg/src/writer.rs:92` calls `file.sync_all()` (Rust stdlib's `fsync` wrapper). Phase 11 replaces with explicit `libc::fdatasync` for the WAL path; segment files keep `fsync` semantics for rollover events.
+**Partial.** `.dev/reference/crates/wo-seg/src/writer.rs:92` calls `file.sync_all()` (Rust stdlib's `fsync` wrapper). Phase 11 replaces with explicit `libc::fdatasync` for the WAL path; segment files keep `fsync` semantics for rollover events.

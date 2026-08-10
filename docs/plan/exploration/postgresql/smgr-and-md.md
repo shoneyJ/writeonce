@@ -8,10 +8,10 @@ The writeonce equivalent is **per-type segment files** (`data/<TypeName>.seg`). 
 
 | File | Responsibility |
 | --- | --- |
-| [`storage/smgr/smgr.c`](../../../../reference/postgresql/src/backend/storage/smgr/smgr.c) | Front-door API. `smgropen`, `smgrread`, `smgrwrite`, `smgrextend`, `smgrdounlink`. Holds the `SMgrRelation` cache. |
-| [`storage/smgr/md.c`](../../../../reference/postgresql/src/backend/storage/smgr/md.c) | The actual implementation against the kernel. Manages `MdfdVec` (open file descriptor handles per segment number), opens missing segments lazily. |
-| [`storage/smgr/bulk_write.c`](../../../../reference/postgresql/src/backend/storage/smgr/bulk_write.c) | Optimized path for bulk-loading: writes directly to `smgrwrite` without going through shared buffers. Useful for `COPY` / `CREATE INDEX` + the recovery path's wal-replay-rebuilds-pages flow. |
-| [`storage/smgr/README`](../../../../reference/postgresql/src/backend/storage/smgr/README) | Brief but worth reading — explains the relfilenode → file naming convention and how `RELSEG_SIZE` interacts with 32-bit-fs-size historical limits. |
+| [`storage/smgr/smgr.c`](../../../../.dev/reference/postgresql/src/backend/storage/smgr/smgr.c) | Front-door API. `smgropen`, `smgrread`, `smgrwrite`, `smgrextend`, `smgrdounlink`. Holds the `SMgrRelation` cache. |
+| [`storage/smgr/md.c`](../../../../.dev/reference/postgresql/src/backend/storage/smgr/md.c) | The actual implementation against the kernel. Manages `MdfdVec` (open file descriptor handles per segment number), opens missing segments lazily. |
+| [`storage/smgr/bulk_write.c`](../../../../.dev/reference/postgresql/src/backend/storage/smgr/bulk_write.c) | Optimized path for bulk-loading: writes directly to `smgrwrite` without going through shared buffers. Useful for `COPY` / `CREATE INDEX` + the recovery path's wal-replay-rebuilds-pages flow. |
+| [`storage/smgr/README`](../../../../.dev/reference/postgresql/src/backend/storage/smgr/README) | Brief but worth reading — explains the relfilenode → file naming convention and how `RELSEG_SIZE` interacts with 32-bit-fs-size historical limits. |
 
 ## What `md.c` actually does
 

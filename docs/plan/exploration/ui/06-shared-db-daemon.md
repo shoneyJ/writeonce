@@ -1,6 +1,6 @@
 # 06 — Shared database daemon (`wo db serve`)
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Goal" (L23), "Design decisions" 3 (L32), "Non-scope" (L201–203), [`./03-client-runtime.md`](./03-client-runtime.md) (the wire frames this daemon emits), [`./05-per-app-binaries.md`](./05-per-app-binaries.md) (the apps that connect), [`reference/crates/wo-sub/src/lib.rs`](../../../reference/crates/wo-sub/src/lib.rs) (the v1 subscription registry, 470 LOC, that needs generalising past `ByTitle`/`ByTag`/`All`), [`../../runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md) (the wire-protocol owner).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Goal" (L23), "Design decisions" 3 (L32), "Non-scope" (L201–203), [`./03-client-runtime.md`](./03-client-runtime.md) (the wire frames this daemon emits), [`./05-per-app-binaries.md`](./05-per-app-binaries.md) (the apps that connect), [`.dev/reference/crates/wo-sub/src/lib.rs`](../../../.dev/reference/crates/wo-sub/src/lib.rs) (the v1 subscription registry, 470 LOC, that needs generalising past `ByTitle`/`ByTag`/`All`), [`../../runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md) (the wire-protocol owner).
 
 ## Goal
 
@@ -10,7 +10,7 @@ Stand up a headless daemon — `wo db serve` — that runs the engine + WAL + su
 
 1. **Daemon = `crates/db` thin entrypoint + `crates/engine` + the wire acceptor.** No HTTP, no `.htmlx`, no `##ui`. The shared DB process knows nothing about the UI layer.
 2. **API-key table is in-memory, env-seeded.** On startup the daemon reads `WO_DB_KEY_<APP>=<hex>` for each app declared in the workspace and builds an `AuthTable: HashMap<ApiKey, Principal>`. A `--keys <file>` flag is accepted but treated as a future hook.
-3. **Generalise `wo-sub`** from `Subscription::ByTitle/ByTag/All` to `Subscription::ByPredicate(TypeRef, Expr, SortKey)`. The v1 variants stay as legacy aliases (`ByTitle(t)` ⇒ `ByPredicate(Article, sys_title == t, _)`) for the blog regression test. Anchored in [`reference/crates/wo-sub/src/lib.rs`](../../../reference/crates/wo-sub/src/lib.rs) L8–17.
+3. **Generalise `wo-sub`** from `Subscription::ByTitle/ByTag/All` to `Subscription::ByPredicate(TypeRef, Expr, SortKey)`. The v1 variants stay as legacy aliases (`ByTitle(t)` ⇒ `ByPredicate(Article, sys_title == t, _)`) for the blog regression test. Anchored in [`.dev/reference/crates/wo-sub/src/lib.rs`](../../../.dev/reference/crates/wo-sub/src/lib.rs) L8–17.
 4. **Connection scope = `Principal { app, roles }` stored on the connection.** Every query evaluator reads it; phase 07 wires it into policy AND-composition.
 5. **One data dir, one engine, many connections.** Snapshot isolation by default (per `[database].isolation = "snapshot"` in the workspace `wo.toml`).
 6. **Foreground-only this phase.** No daemonisation, no PID file, no signal handling beyond `SIGTERM` graceful shutdown. A future ops doc can add `wo db daemonize`.
@@ -24,7 +24,7 @@ Stand up a headless daemon — `wo db serve` — that runs the engine + WAL + su
 | `crates/db/src/main.rs` | Entrypoint, arg parsing, env-key loading | new (~100 LOC) |
 | `crates/db/src/server.rs` | Wire-protocol acceptor (TCP listener + per-conn handler) | new (~250 LOC) |
 | `crates/db/src/auth.rs` | `AuthTable`, `Principal`, key handshake | new (~120 LOC) |
-| `crates/sub/src/lib.rs` | Generalised subscription manager | port [`reference/crates/wo-sub/src/lib.rs`](../../../reference/crates/wo-sub/src/lib.rs) (470 LOC) + ~150 new |
+| `crates/sub/src/lib.rs` | Generalised subscription manager | port [`.dev/reference/crates/wo-sub/src/lib.rs`](../../../.dev/reference/crates/wo-sub/src/lib.rs) (470 LOC) + ~150 new |
 | `crates/sub/src/predicate.rs` | Predicate evaluation against a row (uses `crates/ql` if available, else minimal subset) | new (~150 LOC) |
 
 Total: ~1240 LOC (470 ported + ~770 new).
@@ -81,7 +81,7 @@ let id = subs.register(conn_fd, sub)?;
 3. **Two principals.** Two clients connect, one with each API key; each receives a distinct `Principal` in the `WELCOME` frame.
 4. **Predicate subscription.** Client registers `Subscription::ByPredicate(Order, "status != Cancelled", "placed_at desc")`; the manager returns a fresh `subscription_id`; on a stub `Order` insert, the matching client receives an `insert` frame.
 5. **v1 regression.** A connection running the legacy `Subscription::ByTitle("hello-world")` against the blog corpus still produces notifications via the legacy alias.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
@@ -112,7 +112,7 @@ kill $DB_PID
 # legacy v1 path
 cargo test -p sub --test legacy_by_title
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

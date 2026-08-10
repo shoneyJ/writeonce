@@ -6,8 +6,8 @@ Event-driven I/O multiplexing. One `epoll_fd` watches many fds for readiness; `e
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/eventpoll.c`](../../../reference/linux/fs/eventpoll.c) | All three syscalls (`epoll_create1`, `epoll_ctl`, `epoll_wait`) live here. Grep for `SYSCALL_DEFINE`. |
-| [`reference/linux/include/uapi/linux/eventpoll.h`](../../../reference/linux/include/uapi/linux/eventpoll.h) | `struct epoll_event`, `EPOLL_*` flags, the userspace-facing ABI. |
+| [`.dev/reference/linux/fs/eventpoll.c`](../../../.dev/reference/linux/fs/eventpoll.c) | All three syscalls (`epoll_create1`, `epoll_ctl`, `epoll_wait`) live here. Grep for `SYSCALL_DEFINE`. |
+| [`.dev/reference/linux/include/uapi/linux/eventpoll.h`](../../../.dev/reference/linux/include/uapi/linux/eventpoll.h) | `struct epoll_event`, `EPOLL_*` flags, the userspace-facing ABI. |
 
 ## Man pages
 
@@ -72,4 +72,4 @@ Every runtime phase that touches I/O: [`02-event-loop-epoll.md`](../02-event-loo
 
 ## v1 port source
 
-[`reference/crates/wo-event/src/epoll.rs`](../../../reference/crates/wo-event/src/epoll.rs) (183 LOC) — already wraps all three syscalls with a safe `EventLoop { register, deregister, wait_once }` facade.
+[`.dev/reference/crates/wo-event/src/epoll.rs`](../../../.dev/reference/crates/wo-event/src/epoll.rs) (183 LOC) — already wraps all three syscalls with a safe `EventLoop { register, deregister, wait_once }` facade.

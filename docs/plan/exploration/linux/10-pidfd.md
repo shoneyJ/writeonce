@@ -8,10 +8,10 @@ Not on the runtime's critical path today; useful when the runtime grows a superv
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/kernel/pid.c`](../../../reference/linux/kernel/pid.c) | `SYSCALL_DEFINE2(pidfd_open, ...)`, `pidfd_create`, `pidfd_pid`. |
-| [`reference/linux/kernel/signal.c`](../../../reference/linux/kernel/signal.c) | `SYSCALL_DEFINE4(pidfd_send_signal, ...)`. |
-| [`reference/linux/kernel/fork.c`](../../../reference/linux/kernel/fork.c) | `clone3` — the only way to get a pidfd atomically with spawn. |
-| [`reference/linux/include/uapi/linux/pidfd.h`](../../../reference/linux/include/uapi/linux/pidfd.h) | `PIDFD_*` flags. |
+| [`.dev/reference/linux/kernel/pid.c`](../../../.dev/reference/linux/kernel/pid.c) | `SYSCALL_DEFINE2(pidfd_open, ...)`, `pidfd_create`, `pidfd_pid`. |
+| [`.dev/reference/linux/kernel/signal.c`](../../../.dev/reference/linux/kernel/signal.c) | `SYSCALL_DEFINE4(pidfd_send_signal, ...)`. |
+| [`.dev/reference/linux/kernel/fork.c`](../../../.dev/reference/linux/kernel/fork.c) | `clone3` — the only way to get a pidfd atomically with spawn. |
+| [`.dev/reference/linux/include/uapi/linux/pidfd.h`](../../../.dev/reference/linux/include/uapi/linux/pidfd.h) | `PIDFD_*` flags. |
 
 ## Man pages
 

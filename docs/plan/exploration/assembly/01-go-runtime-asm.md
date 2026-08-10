@@ -2,11 +2,11 @@
 
 The Go runtime ships ~72 `TEXT` functions in `asm_amd64.s` alone, ~43 in `sys_linux_amd64.s`, and per-architecture variants of both for `386`, `arm`, `arm64`, `loong64`, `mips(64)x`, `ppc64x`, `riscv64`, `s390x`, `wasm`. This doc inventories them by purpose so a reader can map each Go asm concern to the writeonce equivalent (spoiler: usually "Rust stdlib does it"). Follow-on reading: [`02-writeonce-stance.md`](./02-writeonce-stance.md).
 
-All paths are inside [`reference/go/src/runtime/`](../../../reference/go/src/runtime/).
+All paths are inside [`.dev/reference/go/src/runtime/`](../../../.dev/reference/go/src/runtime/).
 
 ## Scheduler & stack switching — `asm_<arch>.s`
 
-One file per arch, everything that has to break Go's calling convention. The x86_64 version lives at [`asm_amd64.s`](../../../reference/go/src/runtime/asm_amd64.s).
+One file per arch, everything that has to break Go's calling convention. The x86_64 version lives at [`asm_amd64.s`](../../../.dev/reference/go/src/runtime/asm_amd64.s).
 
 | Go symbol | What |
 | --- | --- |
@@ -26,7 +26,7 @@ One file per arch, everything that has to break Go's calling convention. The x86
 
 ## Atomics & barriers — `internal/runtime/atomic/atomic_<arch>.s`
 
-Lives at [`internal/runtime/atomic/atomic_amd64.s`](../../../reference/go/src/internal/runtime/atomic/atomic_amd64.s) (and arch variants). Wrappers around arch-specific instructions:
+Lives at [`internal/runtime/atomic/atomic_amd64.s`](../../../.dev/reference/go/src/internal/runtime/atomic/atomic_amd64.s) (and arch variants). Wrappers around arch-specific instructions:
 
 | Go symbol | x86 instruction | Purpose |
 | --- | --- | --- |
@@ -41,7 +41,7 @@ Lives at [`internal/runtime/atomic/atomic_amd64.s`](../../../reference/go/src/in
 
 ## Syscall trampolines — `sys_<os>_<arch>.s`
 
-On Linux-x86_64 that's [`sys_linux_amd64.s`](../../../reference/go/src/runtime/sys_linux_amd64.s) — 43 `TEXT` functions. Each is a short wrapper: move args into the kernel's register layout, execute `SYSCALL`, convert `rax` into a Go return value + error.
+On Linux-x86_64 that's [`sys_linux_amd64.s`](../../../.dev/reference/go/src/runtime/sys_linux_amd64.s) — 43 `TEXT` functions. Each is a short wrapper: move args into the kernel's register layout, execute `SYSCALL`, convert `rax` into a Go return value + error.
 
 | Go symbol | Linux syscall |
 | --- | --- |
@@ -70,7 +70,7 @@ On Linux-x86_64 that's [`sys_linux_amd64.s`](../../../reference/go/src/runtime/s
 
 ## Cgo bridge — `cgo_<os>_<arch>.s`
 
-Files like [`cgo/asm_amd64.s`](../../../reference/go/src/runtime/cgo/asm_amd64.s). Machine-code marshalling between Go's register convention and C's SysV AMD64 ABI. Needed because Go's calling convention uses stack slots differently from C's register passing.
+Files like [`cgo/asm_amd64.s`](../../../.dev/reference/go/src/runtime/cgo/asm_amd64.s). Machine-code marshalling between Go's register convention and C's SysV AMD64 ABI. Needed because Go's calling convention uses stack slots differently from C's register passing.
 
 **Writeonce doesn't cross language boundaries** — Rust is the only language in the binary; `libc` is already in Rust's register convention via `extern "C"`. No cgo bridge needed.
 

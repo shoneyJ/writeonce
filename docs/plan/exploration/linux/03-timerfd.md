@@ -6,8 +6,8 @@ Timers as file descriptors. Set an expiry with `timerfd_settime`, `read` the fd 
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/timerfd.c`](../../../reference/linux/fs/timerfd.c) | All three syscalls (`timerfd_create`, `timerfd_settime`, `timerfd_gettime`). |
-| [`reference/linux/include/uapi/linux/timerfd.h`](../../../reference/linux/include/uapi/linux/timerfd.h) | `TFD_*` flags. |
+| [`.dev/reference/linux/fs/timerfd.c`](../../../.dev/reference/linux/fs/timerfd.c) | All three syscalls (`timerfd_create`, `timerfd_settime`, `timerfd_gettime`). |
+| [`.dev/reference/linux/include/uapi/linux/timerfd.h`](../../../.dev/reference/linux/include/uapi/linux/timerfd.h) | `TFD_*` flags. |
 
 ## Man pages
 
@@ -74,4 +74,4 @@ unsafe {
 
 ## v1 port source
 
-[`reference/crates/wo-event/src/timerfd.rs`](../../../reference/crates/wo-event/src/timerfd.rs) (91 LOC) — `TimerFd { oneshot(dur), periodic(dur), disarm, read_expirations }`.
+[`.dev/reference/crates/wo-event/src/timerfd.rs`](../../../.dev/reference/crates/wo-event/src/timerfd.rs) (91 LOC) — `TimerFd { oneshot(dur), periodic(dur), disarm, read_expirations }`.

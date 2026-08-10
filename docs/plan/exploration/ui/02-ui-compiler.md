@@ -60,7 +60,7 @@ for (path, src) in outputs { fs::write(path, src)?; }
 3. **Hand-written fallback honoured.** With a hand-written `apps/admin/ui/orders/orders.htmlx` present, the compiler returns its source unchanged but still emits the manifest.
 4. **Manifest cross-check fires.** Renaming `body` to `text` in a hand-written template that the `##ui` block expects under `wo:bind="body"` produces a `CompileError::HandWrittenMissingField` diagnostic.
 5. **Parser change is non-breaking.** `crates/rt`'s 14 unit tests still pass; `cargo run --bin wo -- run docs/examples/blog` boots and serves REST as before.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
@@ -87,7 +87,7 @@ head -1 target/wo/storefront/ui/orders.htmlx   # starts with <wo:live source="Or
 cargo run --bin wo -- run docs/examples/blog &
 PID=$!; sleep 1; curl -fsS http://127.0.0.1:8080/ >/dev/null; kill $PID
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

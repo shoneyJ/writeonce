@@ -1,6 +1,6 @@
 # 03 — Client runtime
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166) and decisions 1–2, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the manifest schema this runtime consumes), [`reference/crates/wo-sub/src/lib.rs`](../../../reference/crates/wo-sub/src/lib.rs) (the v1 frame model the wire format mirrors), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../examples/ecommerce/shared/components/order-row.htmlx) (the live workload the runtime must update without reload).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166) and decisions 1–2, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the manifest schema this runtime consumes), [`.dev/reference/crates/wo-sub/src/lib.rs`](../../../.dev/reference/crates/wo-sub/src/lib.rs) (the v1 frame model the wire format mirrors), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../examples/ecommerce/shared/components/order-row.htmlx) (the live workload the runtime must update without reload).
 
 ## Goal
 
@@ -9,7 +9,7 @@ Ship a ~500-line vanilla-JS client at `crates/ui/assets/wo-runtime.js` that, on 
 ## Design decisions (locked)
 
 1. **Vanilla JS, no transpiler.** The file shipped is the file written. Anchored in [`./00-overview.md`](./00-overview.md) L25, L198–199.
-2. **JSON over WebSocket.** Frame schema mirrors `reference/crates/wo-sub` semantics evolved into this phase's predicate-subscription model. `{ subscription_id, kind: "snapshot"|"insert"|"update"|"delete", key, row|fields }`.
+2. **JSON over WebSocket.** Frame schema mirrors `.dev/reference/crates/wo-sub` semantics evolved into this phase's predicate-subscription model. `{ subscription_id, kind: "snapshot"|"insert"|"update"|"delete", key, row|fields }`.
 3. **Targeted DOM patching, not virtual-DOM.** `update` ⇒ `document.querySelectorAll('[data-wo-subscription="<id>"] [data-key="<k>"] [wo\\:bind="<f>"]')` ⇒ `el.textContent = row[f]`. Matches the Zone-less Angular note in 00-overview decision 9.
 4. **Reconnect = full snapshot resync.** On reconnect the runtime re-subscribes and replaces each `<wo:live>` body with the fresh snapshot. No diff, no replay buffer.
 5. **Backpressure = drop all but latest update per `data-key`.** A coalescing queue keyed by `(subscription_id, key)` collapses queued `update` frames; the latest wins. New frames of other kinds (`insert`/`delete`) flush the queue.
@@ -73,7 +73,7 @@ ws.send_text(serde_json::to_string(&frame)?)?;
 3. **DOM-patch test (jsdom).** `node crates/ui/runtime-tests/run.mjs` loads a stub HTML containing one `<wo:live>` block and a manifest, fakes a WebSocket emitting `snapshot` → `insert` → `update` → `delete` frames, and asserts each patch hits the right element.
 4. **Reconnect test.** Killing the fake WS triggers exponential backoff; on resume the runtime re-issues subscriptions and replaces the body with the new snapshot.
 5. **Asset served.** Once phase 05 lands, `curl http://127.0.0.1:8080/_wo/runtime.js` returns the file with a stable `ETag` matching `sha256(RUNTIME_JS)`.
-6. `cd reference/crates && cargo build && cargo test`.
+6. `cd .dev/reference/crates && cargo build && cargo test`.
 
 ## Non-scope
 
@@ -101,7 +101,7 @@ test "$(wc -c < crates/ui/assets/wo-runtime.js)" -le 25600
 cargo run --bin wo -- run docs/examples/blog &
 PID=$!; sleep 1; curl -fsS http://127.0.0.1:8080/ >/dev/null; kill $PID
 
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase
