@@ -43,12 +43,12 @@
 
 - Newline-significant lexing and the identifier gotchas mirror
   `crates/rt`'s lexer — grammar parity is a stated contract.
-- Architecture map: `compiler/plan/architecture.md` (pipeline, module
+- Architecture map: `docs/plan/compiler/architecture.md` (pipeline, module
   contracts, study references).
 
 ## Proposed Solution
 
-- Execute the existing plan: `compiler/plan/2026-08-01-woc-compiler-front.md`
+- Execute the existing plan: `docs/plan/compiler/2026-08-01-woc-compiler-front.md`
   (diagnostics module, lexer, declaration/statement/expression parsers with
   skip-on-block, typechecker with field-kind derivation, MVS ownership pass
   producing the four emitter tables, driver + error catalog).

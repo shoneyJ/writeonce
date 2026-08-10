@@ -18,7 +18,7 @@ writeonce today is a declarative language executed by the Rust runtime (`crates/
 
 | Question | Decision |
 | --- | --- |
-| Fate of Rust runtime | **Evolve `wo-rt-c` into the C runtime.** OCaml compiler targets it. `crates/rt` stays active until parity, then retires to `reference/` like v1 did. |
+| Fate of Rust runtime | **Evolve `wo-rt-c` into the C runtime.** OCaml compiler targets it. `crates/rt` stays active until parity, then retires to `.dev/reference/` like v1 did. |
 | OOP shape | **Keep plan 13 doctrine: no inheritance, no override, no virtual class hierarchies — ever.** OOP = `class` (state + methods) + structural **interfaces** (Go-style) + composition (`ref`/`multi`). |
 | Borrow enforcement | **Hybrid.** Compiler proves most sites statically and emits nothing; VM enforces residual sites with borrow-word checks at runtime. |
 | GC opt-out granularity | **Per-class annotation** `@gc` — all instances of that class are GC-managed and freely aliased. |
@@ -160,6 +160,8 @@ struct wo_hdr {
 **Mixing rule:** an owned object may hold `@gc` references (rc participates). A `@gc` object may hold owned values (it owns them; they drop when the holder is freed). The borrow word applies only to owned objects; `@gc` aliasing is unrestricted by design.
 
 ## Section 5 — Bytecode and VM
+
+> Normative format reference (pinned by plan 1): [`docs/plan/oop-vm/00-wob-format.md`](../../plan/oop-vm/00-wob-format.md) · machine-readable twin: [`runtime/src/wob.h`](../../../runtime/src/wob.h)
 
 **Registers:** untyped 64-bit slots. The language is statically typed — the compiler knows every slot's type, so no tagging and no NaN-boxing. Scalars inline (`Int`/`Money`/`Timestamp` = i64, `Bool`), heap values as pointers (the header supplies the class at runtime for interface dispatch and traps).
 

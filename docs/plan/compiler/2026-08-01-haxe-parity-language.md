@@ -1,0 +1,114 @@
+# Haxe-Parity Language Adoptions Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.
+
+**Goal:** Plan 8 — implement every **adopt** row of the systems-track spec's Haxe keyword verdict table: the language grows switch expressions, records, optionals, try/catch/throw, enum payloads, abstracts, static members, using-extensions, modules, `is`, `pub(read)`, build flags, and interpolation — with the reject rows enforced as diagnostics.
+
+**Architecture:** Plan 8 of the roadmap. Depends on OOP plans 1–3 (woc + wovm + corpus). Overwhelmingly compiler work in `compiler/src/`; the VM changes are exactly three, called out in their tasks: catch frames (try/catch), variant objects (enum payloads), and boxed optionals for scalars. Everything else lowers onto existing opcodes. The spec's verdict table (`docs/superpowers/specs/2026-08-01-systems-track-design.md` Part 1) is normative — this plan sequences it.
+
+**Tech Stack:** OCaml stdlib (compiler), C11 libc (the three VM changes), conformance corpus.
+
+## Global Constraints
+
+- All OOP-track constraints carry over (stdlib-only OCaml, libc-only C, no commits — drafts to `.dev/commit.md`, ASan gate, docs under `docs/`).
+- **The verdict table is normative:** adopt rows land exactly as specified; reject rows produce diagnostics where they would parse (`extends`, `cast`, `Dynamic` as a type name) or stay absent where they would not.
+- **Every adoption ships with corpus fixtures** (golden run + must-fail) and an error-catalog entry for its new `WO-E` codes, in the same task.
+- **Doctrine unbroken:** no inheritance, no `Dynamic`, no macros — a task that finds itself needing one has found a plan defect; stop and ask.
+- **Format doc governs VM changes:** catch frames, variant layout, and boxed optionals each update `docs/plan/oop-vm/00-wob-format.md` in the task that introduces them.
+
+---
+
+## File Structure
+
+```
+compiler/src/            lexer/parser/types/owner/emit extensions per task
+runtime/src/vm.c         catch frames (Task 5)
+runtime/src/obj.c        variant objects, boxed scalar optionals (Tasks 4, 6)
+tests/corpus/lang/       one fixture directory per adoption
+docs/plan/oop-vm/01-error-catalog.md   grows per task
+docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
+```
+
+---
+
+### Task 1: Modules — `use` + directory-as-module
+
+**Concept & reason:** foundation first: later tasks and the whole stdlib import through it. A `.wo` file's module is its directory; `use fs` (stdlib namespace) or `use shared/util` (project-relative) brings a module's public names into scope. Symbol resolution goes file → module → used modules → stdlib; collisions diagnose rather than shadow silently. Public means `pub`-marked (this task adds the `pub` marker for declarations; field accessors come in Task 8). Unused `use` warns. The stdlib namespaces resolve even though their members arrive in plan 9 — the resolver knows reserved namespace names now so plan 9 slots in without resolver changes.
+
+- [ ] Failing fixtures: cross-module call via `use`; collision diagnostic; private-name-access diagnostic; unused-use warning golden.
+- [ ] Implement resolver + `pub`; corpus green; catalog entries.
+- [ ] Record commit draft: `feat(compiler): module system — directory-as-module, use resolution with collision/privacy diagnostics, pub marker, reserved stdlib namespaces.`
+
+### Task 2: Small control surface — `break`/`continue`, `do…while`, interpolation, `const`
+
+**Concept & reason:** the low-risk parity gaps, batched because each is a lexer/parser/emit touch with no typing subtlety. Loop control lowers to jumps with correct drop-set handling at early exits (the owner pass already computes scope-end drops for `return`; `break`/`continue` reuse that machinery — the one non-trivial bit, and its fixture proves an owned value dropped on `break`). String interpolation desugars to concatenation at parse time. `const NAME = literal` declares compile-time values usable in expressions and `#if`-adjacent contexts; `inline`-function requests are rejected with the table's reason.
+
+- [ ] Failing fixtures: loop-control goldens incl. the owned-drop-on-break ASan case; do-while; interpolation with expressions; const usage; `inline fn` must-fail.
+- [ ] Implement; green.
+- [ ] Record commit draft: `feat(compiler): break/continue/do-while with drop-correct early exits, string interpolation desugar, const values, inline-fn rejection.`
+
+### Task 3: `switch` as expression
+
+**Concept & reason:** Haxe's strongest habit and log-watcher's core idiom. `switch subject { case pattern: expr … default: expr }` is an expression; arms yield values of one unified type. Subjects: scalars, texts, union values. Exhaustiveness: switching a union without `default` requires every variant covered (diagnostic names the missing ones); scalars/texts require `default`. Lowering: compare-and-jump chains on existing opcodes (EQ/EQS/JZ); each arm is its own drop scope. Statement-position switch is the expression with a discarded value — one construct, not two.
+
+- [ ] Failing fixtures: value-yielding switch goldens over ints/texts/unions; missing-variant must-fail; missing-default-on-scalar must-fail; arm-type-mismatch must-fail.
+- [ ] Implement; green.
+- [ ] Record commit draft: `feat(compiler): switch expressions — exhaustive over unions (missing variants named), unified arm typing, EQ/JZ chain lowering with per-arm drop scopes.`
+
+### Task 4: `typedef` records + enum payload variants
+
+**Concept & reason:** the data-shape pair, together because both lower to the same VM notion (a class-table entry the source never declared as `class`). Records: `typedef Name = { field: Type, ?opt: Type }` — structural aliases; two typedefs with the same shape are the same type; record literals use the existing constructor-brace form; `?fields` type as optionals (Task 6 semantics — this task lands them as nullable-by-shape, Task 6 tightens handling). Enum payloads: union variants gain fields (`Pending | Failed(reason: Text)`); construction by variant name with arguments; a payload variant is a small heap object whose layout is a compiler-generated class entry with a variant tag the VM's existing header accommodates (format-doc update: the variant-tag convention). Switch (Task 3) binds payload fields in arms.
+
+- [ ] Failing fixtures: record round-trips incl. optional-field omission; structural-equivalence golden (same shape interchangeable); payload construction + switch destructuring; wrong-payload-arity must-fail.
+- [ ] Implement compiler + the variant-object VM piece; green; format doc updated.
+- [ ] Record commit draft: `feat: typedef records (structural, ?fields) + enum payload variants (tagged variant objects, switch destructuring); format doc variant convention.`
+
+### Task 5: `try` / `catch` / `throw` over the trap system
+
+**Concept & reason:** the biggest VM change of the plan: **catch frames**. A `try` region registers a handler; a trap raised inside unwinds frames — running drop maps exactly as today — but stops at the nearest handler instead of the entry boundary, delivering the structured error record `{code, method, line, msg}` bound to the catch variable. `throw value` raises EXPLICIT with the value attached (the error record grows an optional payload slot — format doc + wob version note; coordinate like the plan-6 route-section bump). Uncaught behavior is byte-for-byte today's trap surface. Compiler side: `try expr catch (e) expr` expression form, both arms unified in type; the owner pass treats the catch arm as an alternate flow join.
+
+- [ ] Failing fixtures: caught trap yields fallback (div0 probe pattern); drop maps still fire for frames skipped by the unwind (ASan big-class proof — the load-bearing test); throw-with-value caught upstream; uncaught still exits 1 with the plan-6 shaped error; nested try picks the nearest handler.
+- [ ] Implement VM catch frames + compiler lowering; all prior trap fixtures re-run unchanged; green.
+- [ ] Record commit draft: `feat: try/catch/throw — VM catch frames (unwind stops at nearest handler, drop maps intact, error payload slot), expression-form catch with flow-join ownership; uncaught surface unchanged.`
+
+### Task 6: `?T` optionals with forced handling
+
+**Concept & reason:** the null-safety story. `?T` admits nil; `T` never does — the diagnostic-enforced boundary. Representation: heap kinds use the zero word (the VM's existing null checks already trap on it — optionals make those unreachable by typing); scalar optionals box into a one-field cell (the VM piece — obj.c gains the box; format doc notes the convention). Narrowing: comparing against `null` narrows in the branch (`if x != null` makes `x` a `T` inside — Haxe's exact idiom); using a `?T` un-narrowed where `T` is required diagnoses. Stdlib returns (plan 9) and record `?fields` (Task 4) type as `?T` from here on.
+
+- [ ] Failing fixtures: narrowing goldens; un-narrowed-use must-fail; nil propagation through record optional fields; boxed scalar optional round-trip; assignment of null to plain `T` must-fail.
+- [ ] Implement; green.
+- [ ] Record commit draft: `feat: ?T optionals — null-narrowing control flow, forced handling diagnostics, zero-word heap nil + boxed scalar cells; record ?fields and future stdlib returns typed ?T.`
+
+### Task 7: `abstract` newtypes + `is`
+
+**Concept & reason:** type-safety sugar pair, compiler-only. Abstracts: `abstract Money = Int` — a distinct compile-time type over a scalar representation, zero-cost at runtime (registers hold the raw scalar); mixing `Money` and `Int` diagnoses unless the declaration lists explicit `from`/`to` conversions; the existing stdlib scalars (Money, SKU) re-declare in-language, removing magic. `is`: runtime test on union values (variant membership — reads the Task-4 tag) and interface values (vtable membership — reuses the loader's satisfaction data); statically-decidable `is` diagnoses as always-true/false instead of compiling to a runtime check.
+
+- [ ] Failing fixtures: abstract mixing must-fail + explicit-conversion golden; zero-cost proof (disassembly golden shows raw scalar ops); `is` on unions/interfaces; statically-known `is` must-fail.
+- [ ] Implement; green.
+- [ ] Record commit draft: `feat(compiler): abstract newtypes (zero-cost, explicit from/to; Money/SKU de-magicked) + is on unions/interfaces with static-decidability diagnostic.`
+
+### Task 8: `static` members, `using` extensions, `pub(read)` accessors
+
+**Concept & reason:** the organization trio. Statics: `static fn`/`static const` on classes — namespaced calls (`Flock.held(path)`) with no instance, no `self`; lower as free fns with mangled names. Using: `using shared/textutil` makes that module's free fns whose first parameter matches a type callable as methods on it (`s.words()` for `words(s: Text)`) — resolution is compile-time only, no dispatch table, collisions with real methods diagnose (real method wins is a lie surface; error instead). Accessors: `pub(read) field` exports read access, writes stay owner-class-only — the Haxe `(default, null)` pattern; enforcement in the typechecker at field-write sites.
+
+- [ ] Failing fixtures: static call goldens + self-in-static must-fail; using-extension call golden + collision must-fail; pub(read) external-write must-fail + internal-write golden.
+- [ ] Implement; green.
+- [ ] Record commit draft: `feat(compiler): static members (mangled free-fn lowering), using static-extensions (compile-time, collision-diagnosed), pub(read) accessor enforcement.`
+
+### Task 9: `#if` build flags + reject-row enforcement + closeout
+
+**Concept & reason:** last adoptions and the table's other half. Build flags: `woc -D name` defines flags; `#if name / #else / #end` sections include/exclude at the token stream level (flag names only, no expression language — the spec's limit); undefined flags are false; nesting allowed. Reject enforcement: the keywords that would otherwise parse get targeted diagnostics with the table's reasons — `extends`/`implements`/`super`/`override` on class declarations, `cast`, `Dynamic`/`untyped` as type/expression, `macro`, `extern`, `operator` — each cites the spec section. Closeout: error catalog complete for the track, keyword table in the spec annotated with shipped status, `just oop-accept` runs the grown corpus, CLAUDE.md language notes synced.
+
+- [ ] Failing fixtures: #if inclusion/exclusion goldens (portable-style flag), nesting, undefined-flag default; one must-fail per reject keyword with the doctrine message.
+- [ ] Implement; full corpus green; docs synced.
+- [ ] Record commit draft: `feat(compiler): #if build flags (token-level, flag names only) + reject-row diagnostics citing doctrine (extends/cast/Dynamic/macro/extern/operator...); systems-track language surface complete, catalog + docs synced.`
+
+---
+
+## Plan self-review notes
+
+- **Spec coverage (Part 1 + success criterion 1):** every adopt row has a task (modules T1, control/const/interp T2, switch T3, typedef+enum T4, try/catch/throw T5, optionals T6, abstract+is T7, static/using/pub(read) T8, #if T9); every reject row enforced in T9 or absent by construction. Criterion 1's "corpus coverage per row" is each task's fixture requirement.
+- **VM changes fenced:** exactly three (catch frames, variant objects, boxed scalar optionals), each with a format-doc update in its task; everything else is lowering.
+- **Order rationale:** modules first (everything imports), data shapes before optionals (records carry ?fields), try/catch after switch (arms reuse unified-type machinery), rejects last when all parse paths exist to hang diagnostics on.

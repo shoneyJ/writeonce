@@ -2,6 +2,8 @@
 
 Status board for every phase doc under `docs/plan/`. **Focus: the backend** — the runtime, the database engine, and the REST/`.wo`-language API. Frontend phases are parked, not deleted. Each phase file carries a matching status banner; this board is the index.
 
+Related planning surfaces this board indexes across: the mission story + review-in-order iterations at [`docs/stories/language-runtime-database/`](../stories/language-runtime-database/00-story.md); approved designs at [`docs/superpowers/specs/`](../superpowers/specs/); their implementation plans at [`docs/superpowers/plans/`](../superpowers/plans/) and [`docs/plan/compiler/`](compiler/architecture.md). Entry chain: [`docs/00-principles.md`](../00-principles.md) → [`docs/08-project-structure.md`](../08-project-structure.md) → this board.
+
 Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **not started** · ⏸ **parked (out of backend focus)**
 
 ## Board
@@ -32,7 +34,7 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **not started** · ⏸ **p
 | ⬜ | 09e cross-shard transactions (2PC) | needed by `fn checkout` spanning shards |
 | ⬜ | 09f observability & reshard | per-shard metrics, `WO_RESHARD` |
 
-All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-scaleout.md) shipped notes and the [benchmark table](../../prototypes/wo-rt-c/README.md).
+All numbers + find-and-fix stories: [09-concurrency-scaleout.md](09-concurrency-scaleout.md) shipped notes and the [benchmark table](../../runtime/README.md).
 
 ### Track 3 — Storage & durability (plans 10–12, 16) — 🔄 in progress
 
