@@ -94,8 +94,8 @@ Find: `rg 'anyhow::|anyhow!|bail!|\.context\(' crates/rt/src | wc -l` — expect
 1. **`cargo build`** — compiles with exactly one external dep.
 2. **`cargo test --lib`** — all 14 existing `rt` tests pass. A new test in `error.rs` exercises `From<io::Error>`, `with_context`, and `Display` formatting.
 3. **No `anyhow::` references anywhere in the repo.** `rg 'anyhow' crates/ docs/` returns zero hits (docs updated by this phase too).
-4. **`reference/rest/blog.rest`** — 20 assertions still pass. Error paths (404, 400) still produce the same response body format (plain-text error message from the handler's `.to_string()`).
-5. **`cd reference/crates && cargo build && cargo test`** unchanged. V1 doesn't use `anyhow` — nothing to touch there.
+4. **`.dev/reference/rest/blog.rest`** — 20 assertions still pass. Error paths (404, 400) still produce the same response body format (plain-text error message from the handler's `.to_string()`).
+5. **`cd .dev/reference/crates && cargo build && cargo test`** unchanged. V1 doesn't use `anyhow` — nothing to touch there.
 6. **`cargo tree -p rt --depth 1`** lists only `libc` as an external dep (plus transitive ones brought in by libc itself, all of which are kernel-facing).
 
 ## Non-scope
@@ -111,7 +111,7 @@ cargo build                                    # one external dep
 cargo test --lib                               # 14 + error.rs test green
 rg 'anyhow' crates/ docs/                      # zero hits
 # full .rest smoke — same script as phase 04
-cd reference/crates && cargo build && cargo test   # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test   # v1 untouched
 cat crates/rt/Cargo.toml | grep -A 20 '\[dependencies\]'   # libc is the only line
 ```
 

@@ -2,7 +2,7 @@
 
 > **Kanban: 🔄 in progress** — 09a/09b/09c ✅ shipped (+ keep-alive and io_uring group-commit follow-ups, measured in the shipped notes below); 09d/09e/09f ⬜ not started. Board: [00-kanban.md](00-kanban.md)
 
-**Context sources:** [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) (last single-threaded phase), [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) (the "single-threaded" policy we're now refining), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) (original concurrency stance), [`docs/examples/ecommerce/`](../examples/ecommerce/) (the target workload), [`./linux/`](./linux/) (kernel primitives), [`reference/go/src/runtime/`](../../reference/go/src/runtime/) (precedent for a runtime that scales across threads).
+**Context sources:** [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) (last single-threaded phase), [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) (the "single-threaded" policy we're now refining), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) (original concurrency stance), [`docs/examples/ecommerce/`](../examples/ecommerce/) (the target workload), [`./linux/`](./linux/) (kernel primitives), [`.dev/reference/go/src/runtime/`](../../.dev/reference/go/src/runtime/) (precedent for a runtime that scales across threads).
 
 ## Context
 
@@ -28,7 +28,7 @@ Serve the ecommerce sample at 10,000 concurrent websocket subscribers + 1,000 ch
 
 ## What we copy from Go, what we don't
 
-Read [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) and [`reference/go/src/runtime/proc.go`](../../reference/go/src/runtime/proc.go) for the shape; copy the **ideas** about fd-to-loop mapping and atomic-counter-based wake-up. Do **not** copy:
+Read [`.dev/reference/go/src/runtime/netpoll_epoll.go`](../../.dev/reference/go/src/runtime/netpoll_epoll.go) and [`.dev/reference/go/src/runtime/proc.go`](../../.dev/reference/go/src/runtime/proc.go) for the shape; copy the **ideas** about fd-to-loop mapping and atomic-counter-based wake-up. Do **not** copy:
 
 | Go feature | Why writeonce skips it |
 | --- | --- |
@@ -53,10 +53,10 @@ Reference cards already exist for most; this phase adds the ones that are cross-
 
 | Primitive | Use | Reference |
 | --- | --- | --- |
-| `SO_REUSEPORT` | N listener sockets on the same port; kernel load-balances accepts | [`reference/linux/net/core/sock_reuseport.c`](../../reference/linux/net/core/sock_reuseport.c) — worth adding `linux/12-so-reuseport.md` |
-| `sched_setaffinity` + `cpu_set_t` | Pin each thread to its core | [`reference/linux/kernel/sched/core.c`](../../reference/linux/kernel/sched/core.c) |
-| `futex(2)` | Fallback cross-thread wait if per-thread eventfd wake-up isn't enough | [`reference/linux/kernel/futex/`](../../reference/linux/kernel/futex/) — worth `linux/13-futex.md` |
-| `membarrier(2)` | Process-wide memory barrier when a rebalance migrates state between threads | [`reference/linux/kernel/sched/membarrier.c`](../../reference/linux/kernel/sched/membarrier.c) |
+| `SO_REUSEPORT` | N listener sockets on the same port; kernel load-balances accepts | [`.dev/reference/linux/net/core/sock_reuseport.c`](../../.dev/reference/linux/net/core/sock_reuseport.c) — worth adding `linux/12-so-reuseport.md` |
+| `sched_setaffinity` + `cpu_set_t` | Pin each thread to its core | [`.dev/reference/linux/kernel/sched/core.c`](../../.dev/reference/linux/kernel/sched/core.c) |
+| `futex(2)` | Fallback cross-thread wait if per-thread eventfd wake-up isn't enough | [`.dev/reference/linux/kernel/futex/`](../../.dev/reference/linux/kernel/futex/) — worth `linux/13-futex.md` |
+| `membarrier(2)` | Process-wide memory barrier when a rebalance migrates state between threads | [`.dev/reference/linux/kernel/sched/membarrier.c`](../../.dev/reference/linux/kernel/sched/membarrier.c) |
 | `io_uring` with `IORING_SETUP_SINGLE_ISSUER` | One ring per thread, pinned | [`./linux/07-io_uring.md`](./linux/07-io_uring.md) |
 | `eventfd` per thread | Cross-thread wake-up — thread A writes to thread B's eventfd to deliver a message | [`./linux/02-eventfd.md`](./linux/02-eventfd.md) |
 | `mmap(MAP_HUGETLB)` | Per-thread arena allocator backed by 2 MB pages for cache locality | [`./linux/08-mmap.md`](./linux/08-mmap.md) |
@@ -132,7 +132,7 @@ If the "single core per process, shard across processes" argument ([Redis Cluste
 - [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) — last prerequisite phase; feature-complete single-threaded runtime.
 - [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) — updated to reference this phase's thread-per-core model; still no asm.
 - [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) — the stance this plan refines.
-- [`reference/go/src/runtime/proc.go`](../../reference/go/src/runtime/proc.go) — Go's scheduler, for contrast.
-- [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) — per-P netpoller, the idea we borrow.
-- [`reference/linux/net/core/sock_reuseport.c`](../../reference/linux/net/core/sock_reuseport.c) — kernel load balancer.
-- [`reference/linux/kernel/sched/core.c`](../../reference/linux/kernel/sched/core.c) — affinity syscalls.
+- [`.dev/reference/go/src/runtime/proc.go`](../../.dev/reference/go/src/runtime/proc.go) — Go's scheduler, for contrast.
+- [`.dev/reference/go/src/runtime/netpoll_epoll.go`](../../.dev/reference/go/src/runtime/netpoll_epoll.go) — per-P netpoller, the idea we borrow.
+- [`.dev/reference/linux/net/core/sock_reuseport.c`](../../.dev/reference/linux/net/core/sock_reuseport.c) — kernel load balancer.
+- [`.dev/reference/linux/kernel/sched/core.c`](../../.dev/reference/linux/kernel/sched/core.c) — affinity syscalls.

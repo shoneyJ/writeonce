@@ -2,7 +2,7 @@
 
 > **Kanban: ⬜ not started (Track 4 — Language & API)** — board: [00-kanban.md](00-kanban.md)
 
-**Context sources:** [MCP specification 2025-06-18 — Transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) (the normative Streamable HTTP contract this plan implements, verified 2026-07-12), [`reference/mcp-python-sdk/`](../../reference/README.md) (symlink to the official MCP Python SDK — grep `src/mcp/server/streamable_http.py` + `streamable_http_manager.py` for the reference server behaviour, `src/mcp/client/streamable_http.py` for what a conforming client expects; behaviour is ported, code is not), [`../runtime/database/04-client-api.md`](../runtime/database/04-client-api.md) (the wire-protocol design; its "REST + SSE gateway" row is what this plan makes concrete for agents), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (13b methods become MCP tools; 13c's subscription registry carries 15e), [`./09-concurrency-scaleout.md`](./09-concurrency-scaleout.md) (thread-per-core + shard bus the endpoint rides; 09d fan-out gates 15e), `crates/rt/src/server.rs` + `crates/rt/src/http/` (the keep-alive HTTP layer and router this lands in).
+**Context sources:** [MCP specification 2025-06-18 — Transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) (the normative Streamable HTTP contract this plan implements, verified 2026-07-12), [`.dev/reference/mcp-python-sdk/`](../../.dev/reference/README.md) (symlink to the official MCP Python SDK — grep `src/mcp/server/streamable_http.py` + `streamable_http_manager.py` for the reference server behaviour, `src/mcp/client/streamable_http.py` for what a conforming client expects; behaviour is ported, code is not), [`../runtime/database/04-client-api.md`](../runtime/database/04-client-api.md) (the wire-protocol design; its "REST + SSE gateway" row is what this plan makes concrete for agents), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (13b methods become MCP tools; 13c's subscription registry carries 15e), [`./09-concurrency-scaleout.md`](./09-concurrency-scaleout.md) (thread-per-core + shard bus the endpoint rides; 09d fan-out gates 15e), `crates/rt/src/server.rs` + `crates/rt/src/http/` (the keep-alive HTTP layer and router this lands in).
 
 ## Context
 
@@ -62,7 +62,7 @@ The rules the sub-phases implement, condensed from the spec — each MUST below 
 - **Tool generation**: per exposed type×op → `<type>_list`, `<type>_get`, `<type>_create`, `<type>_update`, `<type>_delete`, with `inputSchema` (JSON Schema) derived from catalog field types (unions → `enum`, embedded structs → nested `object`) — same source of truth as `describe_routes`.
 - **`tools/call` dispatch** through the *same* handler paths REST uses: creates local, point ops `run_on(owner_of(id))`, lists fan out — no second data path. Engine/validation failures return `isError: true` inside the tool *result* (the MCP rule: execution errors are results, protocol errors are JSON-RPC errors). Mutations park on the WAL gate (decision 4).
 
-**Exit:** scripted flow (checked in beside [`reference/rest/`](../../reference/rest/README.md)) against the blog sample passes: `initialize` → `202` for `initialized` → `tools/list` enumerates exactly the exposed ops → `article_create` → `article_list` shows the row; runs green with `WO_GROUP_COMMIT` on and off; `GET`→405, `DELETE`→405, bad version→400, disallowed Origin→403; unit tests in the `server.rs` style cover envelope errors and gate parking.
+**Exit:** scripted flow (checked in beside [`.dev/reference/rest/`](../../.dev/reference/rest/README.md)) against the blog sample passes: `initialize` → `202` for `initialized` → `tools/list` enumerates exactly the exposed ops → `article_create` → `article_list` shows the row; runs green with `WO_GROUP_COMMIT` on and off; `GET`→405, `DELETE`→405, bad version→400, disallowed Origin→403; unit tests in the `server.rs` style cover envelope errors and gate parking.
 
 ### `15b-resources.md` — the schema and rows become addressable
 
@@ -98,7 +98,7 @@ The rules the sub-phases implement, condensed from the spec — each MUST below 
 
 | Check | Target | How |
 | --- | --- | --- |
-| Spec conformance | T1–T8 matrix green (status codes, headers, content types) | scripted curl flow checked in beside `reference/rest/` |
+| Spec conformance | T1–T8 matrix green (status codes, headers, content types) | scripted curl flow checked in beside `.dev/reference/rest/` |
 | Interop | MCP Inspector connects, lists tools/resources, calls a tool | manual check, noted per release |
 | Parity | `tools/call <type>_get` ≡ `GET /api/<type>/:id` byte-for-byte on the row payload | unit test |
 | Durability | mutation results never precede their fsync CQE (`WO_GROUP_COMMIT` on) | gate test in `server.rs` style |
@@ -122,3 +122,4 @@ The rules the sub-phases implement, condensed from the spec — each MUST below 
 - [`./05-hand-rolled-json.md`](05-hand-rolled-json.md) — removes this plan's `serde_json` use when it lands.
 - [`./07-inotify-content-watcher.md`](07-inotify-content-watcher.md) — a future `notifications/tools/list_changed` on hot reload would pair with it (not scheduled).
 - [MCP specification 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) — the normative transport text summarized in T1–T8.
+- [`../examples/mcp-think/`](../examples/mcp-think/README.md) — the consumer-side counterpart: a working stdio MCP server (local model via Ollama) that Claude calls today; useful as a live MCP client/server reference while building 15a.

@@ -24,9 +24,9 @@ Serve static file bytes — eventually `##ui`-emitted HTML + CSS + JS bundle, to
 | File | Responsibility | Port source |
 | --- | --- | --- |
 | `mod.rs` | Re-exports `StaticHandler`, `resolve` | — |
-| `sendfile.rs` | Raw `sendfile(2)` wrapper + non-blocking `send_all` that co-operates with `EPOLLOUT` | [`reference/crates/wo-serve/src/sendfile.rs`](../../reference/crates/wo-serve/src/sendfile.rs) (109 LOC) |
-| `resolve.rs` | Path canonicalisation + traversal defence + file existence check | [`reference/crates/wo-serve/src/resolve.rs`](../../reference/crates/wo-serve/src/resolve.rs) (80 LOC) |
-| `mime.rs` | Extension → `Content-Type` table | [`reference/crates/wo-serve/src/mime.rs`](../../reference/crates/wo-serve/src/mime.rs) (44 LOC) |
+| `sendfile.rs` | Raw `sendfile(2)` wrapper + non-blocking `send_all` that co-operates with `EPOLLOUT` | [`.dev/reference/crates/wo-serve/src/sendfile.rs`](../../.dev/reference/crates/wo-serve/src/sendfile.rs) (109 LOC) |
+| `resolve.rs` | Path canonicalisation + traversal defence + file existence check | [`.dev/reference/crates/wo-serve/src/resolve.rs`](../../.dev/reference/crates/wo-serve/src/resolve.rs) (80 LOC) |
+| `mime.rs` | Extension → `Content-Type` table | [`.dev/reference/crates/wo-serve/src/mime.rs`](../../.dev/reference/crates/wo-serve/src/mime.rs) (44 LOC) |
 | `handler.rs` | `StaticHandler` — integrates the three with phase-03's `Response` builder; returns 404 / 403 / 200 as appropriate | ~120 new LOC |
 
 Total: ~350 LOC (233 ported + ~120 new).
@@ -74,7 +74,7 @@ The `Response` returned by `handler.serve()` owns the open `File` fd. The phase-
    ```
 4. **Path traversal attempts fail closed.** `curl :8080/static/../Cargo.toml` returns 403. `curl :8080/static/nonexistent.png` returns 404.
 5. **`EAGAIN` handling.** A test that rate-limits the socket sendbuf to force a partial write exercises the `EPOLLOUT` re-arm path; the full payload still arrives.
-6. **All 14 `rt` tests** + phase-02/03/04/05/06/07 additions pass. `reference/rest/blog.rest` 20 assertions still green (no regressions on the JSON endpoints).
+6. **All 14 `rt` tests** + phase-02/03/04/05/06/07 additions pass. `.dev/reference/rest/blog.rest` 20 assertions still green (no regressions on the JSON endpoints).
 
 ## Non-scope
 
@@ -96,9 +96,9 @@ cargo run --bin wo -- run docs/examples/blog &
 # ... (full script from exit criterion 3)
 
 # .rest smoke unchanged
-# full 20-assertion battery against reference/rest/blog.rest
+# full 20-assertion battery against .dev/reference/rest/blog.rest
 
-cd reference/crates && cargo build && cargo test   # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test   # v1 untouched
 ```
 
 ## After this phase

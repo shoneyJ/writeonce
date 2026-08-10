@@ -2,7 +2,7 @@
 
 > **Kanban: ⏸ parked (frontend)** — backend focus first; design stays current. Board: [00-kanban.md](00-kanban.md)
 
-**Context sources:** [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) (the design this plan implements), [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) / [`02-ui-compiler.md`](./exploration/ui/02-ui-compiler.md) / [`03-client-runtime.md`](./exploration/ui/03-client-runtime.md) (the three UI-track pieces this plan sequences, each with port sources and LOC budgets), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the class methods controllers call: 13a/13b; the LIVE deltas views consume: 13c), [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) (the reference MVC triplet), [`reference/crates/wo-htmlx/`](../../reference/crates/wo-htmlx/) (the v1 template engine, primary port source).
+**Context sources:** [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) (the design this plan implements), [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) / [`02-ui-compiler.md`](./exploration/ui/02-ui-compiler.md) / [`03-client-runtime.md`](./exploration/ui/03-client-runtime.md) (the three UI-track pieces this plan sequences, each with port sources and LOC budgets), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the class methods controllers call: 13a/13b; the LIVE deltas views consume: 13c), [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) (the reference MVC triplet), [`.dev/reference/crates/wo-htmlx/`](../../.dev/reference/crates/wo-htmlx/) (the v1 template engine, primary port source).
 
 ## Context
 
@@ -29,7 +29,7 @@ Phases 05/06 (hand-rolled JSON / bespoke error) are orthogonal: `crates/ui` adop
 
 ### `14a-htmlx-engine.md` — port the view engine into `crates/ui`
 
-Execute [`exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) as written: port `reference/crates/wo-htmlx` (585 LOC — `parser.rs`, `ast.rs`, `value.rs`, `registry.rs`, `render.rs` carried over per its table) into `crates/ui/src/htmlx/`, extend with `<wo:live>` structured nodes, `wo:bind` capture, and the `data-wo-manifest` JSON emitter (~250 LOC new). One addition beyond the 01 spec, from the MVC design: `<wo:live source="…">` records whether `source` is a bare name (controller model binding, resolved in 14d) or an inline query — a one-field change to `LiveSubscription`.
+Execute [`exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) as written: port `.dev/reference/crates/wo-htmlx` (585 LOC — `parser.rs`, `ast.rs`, `value.rs`, `registry.rs`, `render.rs` carried over per its table) into `crates/ui/src/htmlx/`, extend with `<wo:live>` structured nodes, `wo:bind` capture, and the `data-wo-manifest` JSON emitter (~250 LOC new). One addition beyond the 01 spec, from the MVC design: `<wo:live source="…">` records whether `source` is a bare name (controller model binding, resolved in 14d) or an inline query — a one-field change to `LiveSubscription`.
 **Exit:** the 01 spec's criteria — `cargo build -p ui` green, golden parse+render for every `.htmlx` under `docs/examples/{blog,ecommerce}` **plus** [`pricing/ui/pricing/pricing.htmlx`](../examples/pricing/ui/pricing/pricing.htmlx), manifest matches the 01 schema.
 
 ### `14b-scss-subset.md` — the stylesheet compiler
@@ -86,5 +86,5 @@ Execute [`exploration/ui/03-client-runtime.md`](./exploration/ui/03-client-runti
 - [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) — the design; its exit criteria are satisfied by 14c/14b/14f respectively.
 - [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) — 13a/13b gate 14e; 13c gates 14f; 13d's exit criterion is this plan's end-to-end target.
 - [`./exploration/ui/00-overview.md`](./exploration/ui/00-overview.md) — the UI track's master frame (per-app binaries, shared DB daemon) that 14d's asset/serving choices stay compatible with.
-- [`reference/crates/wo-htmlx/`](../../reference/crates/wo-htmlx/) — primary port source (585 LOC), per ui/01.
+- [`.dev/reference/crates/wo-htmlx/`](../../.dev/reference/crates/wo-htmlx/) — primary port source (585 LOC), per ui/01.
 - [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) — the reference triplet every sub-phase tests against.

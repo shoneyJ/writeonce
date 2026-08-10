@@ -26,7 +26,7 @@ Also the first real second consumer of the phase-02 `EventLoop` beyond the HTTP 
 | File | Responsibility | Port source |
 | --- | --- | --- |
 | `mod.rs` | Re-exports `Watcher`, `WatchEvent` | — |
-| `inotify.rs` | Raw wrappers: `init()`, `add_watch(path, mask)`, `read_events() -> Vec<RawEvent>`. Registers on the `EventLoop`. | [`reference/crates/wo-watch/src/lib.rs`](../../reference/crates/wo-watch/src/lib.rs) (280 LOC) — v1 already does exactly this |
+| `inotify.rs` | Raw wrappers: `init()`, `add_watch(path, mask)`, `read_events() -> Vec<RawEvent>`. Registers on the `EventLoop`. | [`.dev/reference/crates/wo-watch/src/lib.rs`](../../.dev/reference/crates/wo-watch/src/lib.rs) (280 LOC) — v1 already does exactly this |
 | `recursive.rs` | Walks the project root, calls `add_watch` for every directory matching `types/\|ui/\|logic/\|tests/` or containing `*.wo` | ~80 new LOC |
 | `debounce.rs` | Coalesces bursts per-watch-descriptor, fires a `TimerFd` for the 150 ms settle window | ~100 new LOC |
 | `reload.rs` | On debounced fire: re-discover, re-parse, re-compile, `ArcSwap::store(new_catalog)` | ~80 new LOC |
@@ -88,7 +88,7 @@ for event in loop_.wait_once(None)? {
    # observe: `curl :8080/api/articles` response shape reflects new field (no restart)
    ```
 4. **`[wo]` log lines** match the spec in [00-linux.md](./linux/00-linux.md) — one line per debounced change, showing the relative path and event kind.
-5. **All 14 `rt` unit tests still pass.** `reference/rest/blog.rest` 20-assertion battery still green.
+5. **All 14 `rt` unit tests still pass.** `.dev/reference/rest/blog.rest` 20-assertion battery still green.
 6. **No fd leak** — `ls -la /proc/$PID/fd` before and after ten consecutive edits shows the same count.
 
 ## Non-scope
@@ -116,7 +116,7 @@ curl -s http://127.0.0.1:8080/api/articles     # server did not restart; catalog
 kill $PID
 git checkout docs/examples/blog/types/article.wo   # undo the edit
 
-cd reference/crates && cargo build && cargo test   # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test   # v1 untouched
 ```
 
 ## After this phase

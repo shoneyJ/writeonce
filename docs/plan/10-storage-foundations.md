@@ -2,7 +2,7 @@
 
 > **Kanban: ⬜ not started (scope reduced)** — WAL framing/fallocate/CRC landed early via plan 09c; the `@table(name:, index:)` storage-config surface and in-RAM secondary indexes (`Engine::find_by`) landed via the plan-13 follow-up (spec: [`02-wo-language.md § Type-Level Annotations`](../runtime/database/02-wo-language.md)) — this plan inherits the surface and gives indexes their on-disk form. Board: [00-kanban.md](00-kanban.md)
 
-**Context sources:** [`./done/04-cutover-remove-tokio-axum.md`](./done/04-cutover-remove-tokio-axum.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/smgr-and-md.md`](./exploration/postgresql/smgr-and-md.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`./exploration/linux/09-fallocate.md`](./exploration/linux/09-fallocate.md), [`reference/crates/wo-seg/src/`](../../reference/crates/wo-seg/src/).
+**Context sources:** [`./done/04-cutover-remove-tokio-axum.md`](./done/04-cutover-remove-tokio-axum.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/smgr-and-md.md`](./exploration/postgresql/smgr-and-md.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`./exploration/linux/09-fallocate.md`](./exploration/linux/09-fallocate.md), [`.dev/reference/crates/wo-seg/src/`](../../.dev/reference/crates/wo-seg/src/).
 
 ## Goal
 
@@ -32,7 +32,7 @@ Lays the codec + filesystem layout that phase 11 (WAL + recovery) and phase 12 (
 | `codec.rs` | `trait RowCodec { fn encode(&self, row: &Row, buf: &mut Vec<u8>); fn decode(&self, bytes: &[u8]) -> Result<Row>; }` + `JsonCodec` impl backed by today's `serde_json`. | ~50 |
 | `seg.rs` | `SegStore { dir: PathBuf, fds: HashMap<String, RawFd>, tails: HashMap<String, u64> }`. `open(dir)`, `append(ty, &Row) -> Result<u64-offset>`, `read(ty, offset) -> Result<Row>` (used by phase 11 recovery, not by the engine yet). | ~250 |
 
-Total: ~560 LOC. The framing math + fallocate + pwrite plumbing is ported from [`reference/crates/wo-seg/src/{writer.rs,reader.rs,header.rs}`](../../reference/crates/wo-seg/src/) with the CRC trailer added.
+Total: ~560 LOC. The framing math + fallocate + pwrite plumbing is ported from [`.dev/reference/crates/wo-seg/src/{writer.rs,reader.rs,header.rs}`](../../.dev/reference/crates/wo-seg/src/) with the CRC trailer added.
 
 ### File layout written under `<wo_run_dir>/`
 
@@ -102,7 +102,7 @@ The root workspace member list also activates: `crates/db` joins `crates/rt` as 
    - `seg_append_writes_to_disk` — `append` then re-`open` reads the same row back.
    - `seg_grows_when_full` — appending past the initial 1 MiB triggers a fallocate-grow without losing existing records.
 3. **End-to-end** — `cargo run --bin wo -- run docs/examples/blog`, `curl -X POST /api/articles` with a body, then `xxd docs/examples/blog/data/Article.seg | head -3` — output shows the magic length prefix and the JSON payload.
-4. **`reference/rest/blog.rest`** — 20-assertion battery still passes byte-identically.
+4. **`.dev/reference/rest/blog.rest`** — 20-assertion battery still passes byte-identically.
 5. **Restart leaves the segment on disk but ignores it.** `wo run`, write 5 rows, ctrl-C, `wo run` again, `GET /api/articles` returns `[]`. The segment file still exists. Phase 11 will start replaying it.
 
 ## Non-scope
@@ -140,7 +140,7 @@ sleep 1
 curl -s http://127.0.0.1:8080/api/articles    # expect []
 kill -INT $PID
 
-cd reference/crates && cargo build && cargo test   # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test   # v1 untouched
 ```
 
 ## After this phase

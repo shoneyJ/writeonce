@@ -91,7 +91,7 @@ Covers 95% of current `serde_json::json!(...)` uses in the codebase. For the oth
    - `emit_stable_key_order` — emitting a `BTreeMap`-backed object produces keys in sorted order (matters for `.rest` expected-body stability).
    - `parse_errors` — unterminated string, trailing comma, missing comma, unclosed object all return `ParseError` with line/col.
 3. **All 14 existing `rt` tests pass** after the swap (the `engine::Engine` and `server::*` tests most affected).
-4. **`reference/rest/blog.rest`** — 20 assertions all return the same HTTP status AND the same response body shape (may differ in key ordering if `BTreeMap` ordering differs from `serde_json`'s insertion order — document the shift).
+4. **`.dev/reference/rest/blog.rest`** — 20 assertions all return the same HTTP status AND the same response body shape (may differ in key ordering if `BTreeMap` ordering differs from `serde_json`'s insertion order — document the shift).
 5. **Dep audit.** `cargo tree -p rt --depth 1` shows zero `serde*` lines.
 
 ## Non-scope
@@ -108,7 +108,7 @@ cargo build                                    # three deps
 cargo test --lib json                          # new parser/emitter tests
 cargo test --lib                               # 14 existing tests still green
 # full .rest smoke — same script as phase 04 exit criterion 3
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase

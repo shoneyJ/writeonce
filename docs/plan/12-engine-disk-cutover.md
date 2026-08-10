@@ -165,7 +165,7 @@ curl -s 'http://127.0.0.1:8080/api/articles' | python3 -c 'import json,sys;print
 # expect: 10000
 kill -INT $PID
 
-cd reference/crates && cargo build && cargo test     # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test     # v1 untouched
 ```
 
 ## After this phase

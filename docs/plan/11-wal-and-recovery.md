@@ -203,7 +203,7 @@ kill -INT $PID
 strace -e fdatasync,fsync,rename -f -p $(pgrep -f 'target/debug/wo run') 2>&1 | head -20
 
 # v1 untouched
-cd reference/crates && cargo build && cargo test
+cd .dev/reference/crates && cargo build && cargo test
 ```
 
 ## After this phase
