@@ -181,10 +181,10 @@ systems-track verdict table's `abstract` row flips **adopt → reject**
 scalar type adds a conversion surface without buying safety this language
 needs, and the compiler's own `Money`/`SKU` stopgap allowlist is the
 concrete proof the cost was real. Domain scalars are plain `Int`/`Text`.
-Haxe-parity Task 7 keeps only `is`. No allowlist has a future to be revived
+Haxe-parity's abstract+`is` task was deleted outright (`is` cut, 0 uses). No allowlist has a future to be revived
 into — re-adding `Float` requires float literals in the lexer *and* a float
 kind in `.wob` landing together; re-adding `abstract` requires the keyword
-itself to lex and parse, which plan 8 Task 9's reject-row enforcement now
+itself to lex and parse, which plan 8 Task 8's reject-row enforcement now
 actively blocks.
 
 ---
@@ -434,7 +434,7 @@ Selection rules when a later milestone adopts one:
 |---------|--------|
 | `builtin_scalars` | Task 6b: remove `"Money"`, `"SKU"`; add `"Float"`. This change (2026-08-10): remove `"Float"` too. Final list: `["Int"; "Bool"; "Text"; "Timestamp"; "Id"]`. |
 | Typechecker | Shipped: WO-W201 (`@gc` suggestion, self-reference-only heuristic) + WO-E225 (unknown type, bare class fields only). Still dead: ten reserved `WO-E2xx` codes — see "Dead-code register" above. |
-| `abstract` types | **Rejected**, not adopted. Verdict-table row flips adopt → reject; haxe-parity Task 7 keeps only `is`. No `Money`/`SKU`/any newtype re-declaration is coming. |
+| `abstract` types | **Rejected**, not adopted. Verdict-table row flips adopt → reject; haxe-parity's abstract+`is` task was deleted outright (`is` cut, 0 uses). No `Money`/`SKU`/any newtype re-declaration is coming. |
 | `?T` semantics | **Not implemented.** Plumbed through lexer/token/AST/parser/dump; typechecker enforcement (narrowing, forced handling, `WO-E211`–`WO-E213`) owned by haxe-parity Task 6 — the next work item. |
 | ADT roster | Globally accepted container ADTs recorded as the candidate pool for future native classes (section above); `multi`/`map`/`Text` mapped to List/Map/String |
 | Test fixtures | None added under `test/golden/types/` — Task 6b asserted behavior directly in `runner.ml` instead (see "What Task 6b actually tested") |
@@ -445,6 +445,6 @@ Selection rules when a later milestone adopts one:
 ## References
 
 - [Error catalog](../oop-vm/01-error-catalog.md) — every `WO-E`/`WO-W` code `woc` actually emits, plus the "Reserved, not yet emitted" section this doc's dead-code register expands on
-- [Haxe-Parity Language plan](2026-08-01-haxe-parity-language.md) — Task 6 owns `?T` forced handling (the handoff above); Task 7 is reduced to `is` only
+- [Haxe-Parity Language plan](2026-08-01-haxe-parity-language.md) — Task 6 owns `?T` forced handling (the handoff above); the abstract+`is` task is deleted (`is` cut, 0 uses)
 - [OOP Compiler VM Design](../../superpowers/specs/2026-08-01-oop-compiler-vm-design.md) - Section 3
 - [Systems Track Design](../../superpowers/specs/2026-08-01-systems-track-design.md) - Part 1; the `abstract` row (adopt → reject)

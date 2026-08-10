@@ -40,18 +40,19 @@ Every Haxe keyword (plus the contextual ones), one verdict each: **have** (write
 | `switch` / `case` / `default` | **adopt** | expression-form switch, exhaustive over unions; `default` optional when exhaustive |
 | `typedef` | **adopt** | structural record aliases with optional fields (`?field`) — the `SupConfig`/`TailState` pattern |
 | `null` / `Null<T>` | **adopt** | `?T` optional types; forced handling before use (no nil deref trap possible); bare `null` only assignable to `?T` |
-| `try` / `catch` / `throw` | **adopt** | expression-form over the trap system: `catch` binds the structured error `{code, method, line, msg}`; `throw value` raises an EXPLICIT trap carrying the value; uncaught = existing trap surface |
+| `try` / `catch` | **adopt** | expression-form over the trap system: `catch` binds the structured error `{code, method, line, msg}`; uncaught = existing trap surface. `throw` (explicit raise) is **cut** — 0 uses in the driving workload; parked post-iteration-12 |
 | `break` / `continue` | **adopt** | loop control |
 | `do` (do-while) | **adopt** | parity, trivial |
 | `static` | **adopt** | class-level `fn`/`const` — namespaced functions without instances (`Flock.held`, `Pgrep.alive` pattern) |
 | `abstract` | **reject** | a distinct scalar type adds a conversion surface without buying safety this language needs; domain scalars are plain `Int`/`Text` |
 | `using` | **adopt** | static extension methods — doctrine-safe reuse (composition sugar, the inheritance substitute) |
 | `import` / `package` | **adopt** | `use` + directory-as-module; stdlib namespaces (`fs`, `proc`, `net`, `time`, `env`, `json`) |
-| `is` | **adopt** | runtime type test restricted to union variants and interface values; a compile error on statically-known types |
+| `is` | **cut** | runtime type test restricted to union variants and interface values; a compile error on statically-known types — 0 uses in the driving workload; parked post-iteration-12 |
 | `inline` | **adopt (values)** | `const` compile-time values; inline *functions* rejected — optimization is the compiler's job |
 | `public` / `private` | **adopt (as `pub`)** | default private; `pub` exports; property-accessor pattern `(default, null)` becomes `pub(read)` — public read, owner-only write |
 | `#if` / `#else` / `#end` | **adopt** | build-flag conditional compilation only (the `-D portable` pattern); flags from the build command, no expression language beyond flag names |
 | string interpolation `'${}'` | **adopt** | in string literals |
+| `&&` / `\|\|` | **adopt** | spelled `and`/`or` (words, not symbols) — the lexer has no `&` case at all (a bare `&` reports `WO-E001`), so words cost nothing to add as keywords and read better in the sample's conditional-heavy code; one new precedence level below comparison and above assignment (`or` binds loosest, then `and`, then comparison, then the arithmetic ladder); short-circuit; `Bool`-typed operands only, `Bool` result, no truthiness; lowers to compare-and-jump on existing opcodes (`JZ` plus a jump), no VM change |
 | `extends` | **reject** | no-inheritance doctrine (plan 13, OOP spec) — is-a via unions, has-a via composition |
 | `super` | **reject** | no hierarchy to call up |
 | `override` | **reject** | nothing to override |
@@ -76,15 +77,38 @@ Every Haxe keyword (plus the contextual ones), one verdict each: **have** (write
 
 ## Part 3 — Systems stdlib
 
-Five builtin modules, scoped to what log-watcher's code actually uses. **Every handle (file, socket, process) is an owned object whose drop closes it** — MVS deterministic destruction is RAII: no close bookkeeping, no leaked fds by construction, and a handle sent nowhere dies at scope end.
+Six builtin modules, scoped to what log-watcher's code actually uses. **Every handle (file, socket, process) is an owned object whose drop closes it** — MVS deterministic destruction is RAII: no close bookkeeping, no leaked fds by construction, and a handle sent nowhere dies at scope end.
 
 | Module | Surface | log-watcher use it covers |
 | --- | --- | --- |
+| `env` | `args()`; `get(name) -> ?Text`; `exit(code)`; `stopping() -> Bool` | CLI subcommand dispatch and exit-code propagation for `main`; `env.get` reads the MCP API key with an environment fallback (1 use); `env.stopping` drives the poll-loop shutdown check (4 uses) — the daemon idiom's exit condition. |
 | `fs` | `exists(path)`; `stat(path) -> ?{size, inode, mtime}`; `read_at(path, offset, max) -> Text`; `read_all(path, cap)`; `append(path, text)`; `list(dir) -> multi Text` | rotation detection needs the inode; bounded tail-chunk reads (never front-to-back scans); JSONL detection sink (open-append-close); cron.d directory scan. **No write/truncate/delete in v1** — the read-only posture is the default posture. |
 | `proc` | `run(cmd, args: multi Text) -> {code: Int, out: Text, err: Text}`, bounded capture | the `flock -n` exit-code probe and `pgrep -f`. Args-array only — no shell-string form, command injection unrepresentable. |
 | `net` | `listen(addr, port) -> Listener`; `accept(listener) -> Conn`; `read(conn, max) -> Text`; `write(conn, text)` | the hand-rolled MCP HTTP subset (127.0.0.1 accept loop, one request per connection). TCP only in v1. |
-| `time` | `now()` wall ms (exists); `mono()` monotonic ms; `sleep(ms)` | poll-interval math on a monotonic clock; the daemon sleep. |
+| `time` | `now()` wall ms (exists); `sleep(ms)`; `iso(ms) -> Text`; `local(ms) -> {year, month, day, hour, minute, dow}` | the daemon sleep; `iso` gives JSONL detection timestamps and MCP response fields a stable textual instant; `local` gives cron next-fire computation broken-out calendar fields, including day-of-week. `mono()` is **cut** — 0 uses in the driving workload; parked post-iteration-12. |
 | `json` | `json.decode(text) as RecordType -> ?RecordType`; `json.encode(value) -> Text` | config loading and JSON-RPC — **typed**, replacing Haxe's `Dynamic` idiom: missing optional fields are fine, shape mismatches yield nil, never a trap. The `as` here is the decode-target position only — a checked conversion returning `?T`, not a cast; it exists nowhere else (the `cast` rejection stands). Reuses the HTTP plan's C codec as builtins. |
+
+### Core builtins
+
+The sample calls **22 unqualified builtin names across ~176 sites**, none of
+them in any spec: `len` ×55, `push` ×17, `byte_at` ×11, `starts_with` ×9,
+`index_of` ×8, `has` ×7, `split` ×6, `split_ws` ×6, `join` ×5, `parse_int` ×5,
+`trim` ×4, `slice` ×4, `substr` ×4, `pop` ×3, `ends_with` ×2,
+`last_index_of` ×2, `to_lower` ×2, `sort` ×2, `char_of` ×1, `shift` ×1,
+`remove` ×1, `reverse` ×1. `print_err` joins this set — Part 2 already named
+it; this table never listed it.
+
+These are **always in scope** — no `use` line, no namespace — the same status
+`print`, `print_int`, `now`, `words`, `count`, `latest` already have, and they
+share the same flat `WO_B_*` id space in the VM's builtin table as every other
+builtin. Grouping into text operations, collection operations, and map
+operations is documentation only, not namespaces. Each builtin has a
+fixed-arity typed contract, resolved at compile time like every other
+builtin; out-of-range indices **trap** (`T_BOUNDS`), never return a sentinel.
+
+**Deliberately not adopted:** iteration/closure builtins (`map`, `filter`,
+`reduce`) — the language has no function-value type, and adding higher-order
+functions would require one.
 
 ## Part 4 — The sample workload
 
@@ -102,7 +126,7 @@ A README table records the mapping and what (if anything) each file could not ex
 
 ## Error handling
 
-One system, two surfaces. Traps remain the runtime truth (OOP spec section 6). This track adds the language surface: `try expr catch (e) fallback-expr` — `e` is the structured error record; `throw value` raises EXPLICIT with the value attached. Optionals (`?T`) handle *expected* absence (missing file stat, failed decode, missing env var) — the stdlib returns nil for those, reserving traps/throw for genuine faults. The Haxe original's `try … catch (e:Dynamic) return false` probes become optional-returning calls — clearer than the original.
+One system, two surfaces. Traps remain the runtime truth (OOP spec section 6). This track adds the language surface: `try expr catch (e) fallback-expr` — `e` is the structured error record; uncaught faults still surface as traps. `throw` (explicit raise) is **cut** — 0 uses in the driving workload; parked post-iteration-12. Optionals (`?T`) handle *expected* absence (missing file stat, failed decode, missing env var) — the stdlib returns nil for those, reserving traps for genuine faults. The Haxe original's `try … catch (e:Dynamic) return false` probes become optional-returning calls — clearer than the original.
 
 ## Testing
 
@@ -114,10 +138,10 @@ One system, two surfaces. Traps remain the runtime truth (OOP spec section 6). T
 
 1. The keyword table is fully implemented: every **adopt** row parses, typechecks, and executes with corpus coverage; every **reject** row has a diagnostic or a documented absence.
 2. `fn main` program mode: `wo run` executes a CLI program; exit codes propagate; `woc build` produces a self-contained binary for it.
-3. All five stdlib modules pass their corpus fixtures; handle RAII is ASan-proven.
+3. All six stdlib modules pass their corpus fixtures; handle RAII is ASan-proven.
 4. `docs/examples/log-watcher/` compiles and its README mapping table has an empty "could not express" column.
 5. The sample's watch mode detects a silent death (error-final + quiet period) end to end on a real tempfile.
 
 ## Out of scope (named)
 
-Threads/worker pools in program mode (the shard-actor track owns concurrency); UDP/TLS; `fs` mutation beyond append; signal callbacks; sqlite-equivalent embedded SQL over RAM (that is the DB engine's job — a future sample can wire MiniLog's idea to `select`); Haxe macro-based reflection idioms.
+Threads/worker pools in program mode (the shard-actor track owns concurrency); UDP/TLS; `fs` mutation beyond append; signal callbacks; sqlite-equivalent embedded SQL over RAM (that is the DB engine's job — a future sample can wire MiniLog's idea to `select`); Haxe macro-based reflection idioms. `throw` (explicit raise), `time.mono`, and `is` are also cut — 0 uses in the driving workload each; parked post-iteration-12.

@@ -116,7 +116,7 @@ justfile                oop-e2e, oop-accept recipes                       (Tasks
 
 ### Task 8: Acceptance gate + docs closeout
 
-**Files:** modify `justfile` (`oop-accept`), `CLAUDE.md`, `compiler/README.md`, `runtime/README.md`, `docs/plan/00-kanban.md`; the spec gets its criteria checked.
+**Files:** modify `justfile` (`oop-accept`), `CLAUDE.md`, `compiler/README.md`, `runtime/README.md`, `docs/00-status.md`; the spec gets its criteria checked.
 
 **Concept & reason:** run milestone 1's definition of done as one command. `just oop-accept` executes, in order: compile-time measurement of the pricing subset (must be < 100 ms — criterion 1); the full conformance corpus under ASan including gc fixtures (criteria 2–4); the single-binary smoke (criterion 5); plus plan-1's `wovm-test` and plan-2's `woc-test` full gates. Docs closeout: CLAUDE.md gains the three-directory story (compiler/, runtime/, corpus) and the recipes; both READMEs cross-link; the kanban records the milestone. Anything failing here is a defect in an earlier task — this task adds no functionality, only the gate and the paper trail.
 

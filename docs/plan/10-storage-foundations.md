@@ -1,8 +1,8 @@
 # 10 — Storage Foundations: on-disk row codec + segment append path
 
-> **Kanban: ⬜ not started (scope reduced)** — WAL framing/fallocate/CRC landed early via plan 09c; the `@table(name:, index:)` storage-config surface and in-RAM secondary indexes (`Engine::find_by`) landed via the plan-13 follow-up (spec: [`02-wo-language.md § Type-Level Annotations`](../runtime/database/02-wo-language.md)) — this plan inherits the surface and gives indexes their on-disk form. Board: [00-kanban.md](00-kanban.md)
+> **Status: ⬜ not started (scope reduced)** — WAL framing/fallocate/CRC landed early via plan 09c; the `@table(name:, index:)` storage-config surface and in-RAM secondary indexes (`Engine::find_by`) landed via the plan-13 follow-up (spec: [`02-wo-language.md § Type-Level Annotations`](../runtime/database/02-wo-language.md)) — this plan inherits the surface and gives indexes their on-disk form. Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./done/04-cutover-remove-tokio-axum.md`](./done/04-cutover-remove-tokio-axum.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/smgr-and-md.md`](./exploration/postgresql/smgr-and-md.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`./exploration/linux/09-fallocate.md`](./exploration/linux/09-fallocate.md), [`reference/crates/wo-seg/src/`](../../reference/crates/wo-seg/src/).
+**Context sources:** [`./done/04-cutover-remove-tokio-axum.md`](./done/04-cutover-remove-tokio-axum.md), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md), [`./exploration/postgresql/smgr-and-md.md`](./exploration/postgresql/smgr-and-md.md), [`./exploration/postgresql/page-format.md`](./exploration/postgresql/page-format.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`./exploration/linux/09-fallocate.md`](./exploration/linux/09-fallocate.md), [`reference/crates/wo-seg/src/`](../../.dev/reference/crates/wo-seg/src/).
 
 ## Goal
 
@@ -32,7 +32,7 @@ Lays the codec + filesystem layout that phase 11 (WAL + recovery) and phase 12 (
 | `codec.rs` | `trait RowCodec { fn encode(&self, row: &Row, buf: &mut Vec<u8>); fn decode(&self, bytes: &[u8]) -> Result<Row>; }` + `JsonCodec` impl backed by today's `serde_json`. | ~50 |
 | `seg.rs` | `SegStore { dir: PathBuf, fds: HashMap<String, RawFd>, tails: HashMap<String, u64> }`. `open(dir)`, `append(ty, &Row) -> Result<u64-offset>`, `read(ty, offset) -> Result<Row>` (used by phase 11 recovery, not by the engine yet). | ~250 |
 
-Total: ~560 LOC. The framing math + fallocate + pwrite plumbing is ported from [`reference/crates/wo-seg/src/{writer.rs,reader.rs,header.rs}`](../../reference/crates/wo-seg/src/) with the CRC trailer added.
+Total: ~560 LOC. The framing math + fallocate + pwrite plumbing is ported from [`reference/crates/wo-seg/src/{writer.rs,reader.rs,header.rs}`](../../.dev/reference/crates/wo-seg/src/) with the CRC trailer added.
 
 ### File layout written under `<wo_run_dir>/`
 

@@ -1,6 +1,6 @@
 # 04 — Workspace layout + `wo.toml` grammar
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Target layout" (L73–117), "Design decisions" 4–5 (L33–34), [`docs/examples/ecommerce/wo.toml`](../../examples/ecommerce/wo.toml) (the workspace manifest already in the repo), [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../examples/ecommerce/apps/storefront/wo.toml) (the per-app manifest already in the repo), [`docs/examples/blog/`](../../examples/blog/) (the degenerate single-app form).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Target layout" (L73–117), "Design decisions" 4–5 (L33–34), [`docs/examples/ecommerce/wo.toml`](../../../examples/ecommerce/wo.toml) (the workspace manifest already in the repo), [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../../examples/ecommerce/apps/storefront/wo.toml) (the per-app manifest already in the repo), [`docs/examples/blog/`](../../examples/blog/) (the degenerate single-app form).
 
 ## Goal
 
@@ -8,7 +8,7 @@ Lock the `wo.toml` grammar at both workspace and per-app scope, fill any structu
 
 ## Design decisions (locked)
 
-1. **`wo.toml` is TOML.** Not `.wo`. The workspace + app manifests already exist in the repo using TOML; this phase formalises the schema and adds a parser. Anchored in [`docs/examples/ecommerce/wo.toml`](../../examples/ecommerce/wo.toml).
+1. **`wo.toml` is TOML.** Not `.wo`. The workspace + app manifests already exist in the repo using TOML; this phase formalises the schema and adds a parser. Anchored in [`docs/examples/ecommerce/wo.toml`](../../../examples/ecommerce/wo.toml).
 2. **Path-based shared dependencies, no registry.** `shared = ["../../shared/types", …]` resolves at parse time relative to the per-app `wo.toml`. No semver, no fetch. Anchored in [`./00-overview.md`](./00-overview.md) decision 4.
 3. **Workspace root vs. single app, by `kind`/`app_kind` field.** A `wo.toml` with `kind = "workspace"` triggers workspace loading and reads `[workspace]`. A `wo.toml` with `app_kind = "app"` is a leaf app. A `wo.toml` with neither is a degenerate single-app workspace (the blog example) — loaded as if it were `apps/<itself>`.
 4. **One screen per directory.** `apps/<X>/ui/<screen>/{<screen>.wo, <screen>.htmlx, <screen>.css}` is locked layout. The loader walks `apps/<X>/ui/*/` and registers each subdirectory as a screen. Anchored in [`./00-overview.md`](./00-overview.md) decision 5 + Target Layout (L98–103).

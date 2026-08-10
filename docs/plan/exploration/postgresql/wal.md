@@ -8,11 +8,11 @@ Writeonce mirrors the algorithm. The single-thread loop replaces multi-process c
 
 | File | Responsibility |
 | --- | --- |
-| [`access/transam/xlog.c`](../../../../reference/postgresql/src/backend/access/transam/xlog.c) | Top-level WAL machinery: insertion locks, segment rollover, flush coordination, control-file rendezvous. |
-| [`access/transam/xloginsert.c`](../../../../reference/postgresql/src/backend/access/transam/xloginsert.c) | Build a WAL record (header + payload + backup-block deltas) and place it into the in-memory WAL buffer. |
-| [`access/transam/xlogreader.c`](../../../../reference/postgresql/src/backend/access/transam/xlogreader.c) | Decode WAL records during recovery — pure parser, no I/O. Useful as the read-side spec. |
-| [`access/transam/xlogrecovery.c`](../../../../reference/postgresql/src/backend/access/transam/xlogrecovery.c) | The replay loop. Walks the WAL from the last-checkpoint LSN, replays each record into shared buffers, advances the redo pointer. |
-| [`postmaster/walwriter.c`](../../../../reference/postgresql/src/backend/postmaster/walwriter.c) | Background process that flushes the WAL buffer to disk asynchronously. Writeonce does this **inline in the loop tick**. |
+| [`access/transam/xlog.c`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlog.c) | Top-level WAL machinery: insertion locks, segment rollover, flush coordination, control-file rendezvous. |
+| [`access/transam/xloginsert.c`](../../../../.dev/reference/postgresql/src/backend/access/transam/xloginsert.c) | Build a WAL record (header + payload + backup-block deltas) and place it into the in-memory WAL buffer. |
+| [`access/transam/xlogreader.c`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlogreader.c) | Decode WAL records during recovery — pure parser, no I/O. Useful as the read-side spec. |
+| [`access/transam/xlogrecovery.c`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlogrecovery.c) | The replay loop. Walks the WAL from the last-checkpoint LSN, replays each record into shared buffers, advances the redo pointer. |
+| [`postmaster/walwriter.c`](../../../../.dev/reference/postgresql/src/backend/postmaster/walwriter.c) | Background process that flushes the WAL buffer to disk asynchronously. Writeonce does this **inline in the loop tick**. |
 
 ## The five Postgres WAL ideas writeonce keeps
 
@@ -57,9 +57,9 @@ Same effect as Postgres' group-commit fence (one `fsync` flushes many commits) w
 
 ## Pointers when implementing phase 11
 
-- [`xloginsert.c:XLogInsert()`](../../../../reference/postgresql/src/backend/access/transam/xloginsert.c) — entry point for "insert this record into the WAL." Read the prologue + the LSN-assignment loop, ignore the buffer-juggling.
-- [`xlog.c:XLogFlush()`](../../../../reference/postgresql/src/backend/access/transam/xlog.c) — "make this LSN durable on disk." Read the early-out for "already flushed" and the group-commit waiter logic.
-- [`xlogrecovery.c:PerformWalRecovery()`](../../../../reference/postgresql/src/backend/access/transam/xlogrecovery.c) — the replay loop. Read the redo-pointer advance logic; ignore the multi-process startup signaling.
+- [`xloginsert.c:XLogInsert()`](../../../../.dev/reference/postgresql/src/backend/access/transam/xloginsert.c) — entry point for "insert this record into the WAL." Read the prologue + the LSN-assignment loop, ignore the buffer-juggling.
+- [`xlog.c:XLogFlush()`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlog.c) — "make this LSN durable on disk." Read the early-out for "already flushed" and the group-commit waiter logic.
+- [`xlogrecovery.c:PerformWalRecovery()`](../../../../.dev/reference/postgresql/src/backend/access/transam/xlogrecovery.c) — the replay loop. Read the redo-pointer advance logic; ignore the multi-process startup signaling.
 
 ## Used by
 

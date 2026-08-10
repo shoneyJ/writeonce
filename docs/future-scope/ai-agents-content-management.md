@@ -23,7 +23,7 @@ Users define relationships between articles in the JSON metadata. These mappings
 
 ### Mapping Fields in JSON Metadata
 
-Per [06-markdown-render.md](./06-markdown-render.md), the JSON metadata is minimal. Add a `mappings` field:
+Per [06-markdown-render.md](../06-markdown-render.md), the JSON metadata is minimal. Add a `mappings` field:
 
 ```json
 {

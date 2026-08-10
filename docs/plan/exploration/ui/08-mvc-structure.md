@@ -1,6 +1,6 @@
 # 08 — MVC structure: model = class, view = htmlx + scss, controller = .wo
 
-**Context sources:** [`reference/writeonce-app/src/app/`](../../../../reference/writeonce-app/src/app/) (the v1 Angular app whose component anatomy this formalizes), [`./00-overview.md`](./00-overview.md) ("Angular-component-style layout" — `home/{home.wo, home.htmlx, home.css}`), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the view grammar: Mustache + `<wo:live>` + `wo:bind`), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (the class methods controllers call), [`../../../examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) (the reference screen).
+**Context sources:** [`reference/writeonce-app/src/app/`](../../../../.dev/reference/writeonce-app/src/app/) (the v1 Angular app whose component anatomy this formalizes), [`./00-overview.md`](./00-overview.md) ("Angular-component-style layout" — `home/{home.wo, home.htmlx, home.css}`), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the view grammar: Mustache + `<wo:live>` + `wo:bind`), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (the class methods controllers call), [`../../../examples/pricing/ui/pricing/`](../../../examples/pricing/ui/pricing/) (the reference screen).
 
 ## Goal
 

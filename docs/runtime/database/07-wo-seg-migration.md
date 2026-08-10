@@ -205,5 +205,5 @@ Each phase has its own exit criteria above. End-to-end verification for the whol
 - [04-client-api.md](./04-client-api.md) — wire protocol and `LIVE` subscriptions
 - [05-go-sdk.md](./05-go-sdk.md) — the Go SDK built from `.wo` types via `wo-gen`
 - [01-evaluation.md](./01-evaluation.md) — why writeonce built `wo-seg` in the first place, and why that choice still looks right for the blog even as the platform grows past it
-- [../05-datalayer.md](../05-datalayer.md) — current `.seg` + `.idx` implementation details
+- [../05-datalayer.md](../../05-datalayer.md) — current `.seg` + `.idx` implementation details
 - `prototypes/wo-db/` — the C++ prototype of the `.wo` engine, the reference implementation the Rust port follows

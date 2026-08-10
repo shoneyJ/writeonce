@@ -1,6 +1,6 @@
 # 02 — `##ui` → `.htmlx` compiler
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Sub-phase sequence" (L172–180), "Design decisions" 1–6, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the emission target), [`../../runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md) (the `##ui` block spec), [`docs/examples/blog/ui/article_list.wo`](../../examples/blog/ui/article_list.wo), [`docs/examples/blog/ui/article_detail.wo`](../../examples/blog/ui/article_detail.wo), [`docs/examples/ecommerce/apps/admin/ui/orders/orders.wo`](../../examples/ecommerce/apps/admin/ui/orders/orders.wo) (the test corpus), [`crates/rt/src/parser.rs:80–116`](../../../crates/rt/src/parser.rs) (the parse-and-discard call site to replace).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Sub-phase sequence" (L172–180), "Design decisions" 1–6, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the emission target), [`../../runtime/database/06-lowcode-fullstack.md`](../../../runtime/database/06-lowcode-fullstack.md) (the `##ui` block spec), [`docs/examples/blog/ui/article_list.wo`](../../../examples/blog/ui/article_list.wo), [`docs/examples/blog/ui/article_detail.wo`](../../../examples/blog/ui/article_detail.wo), [`docs/examples/ecommerce/apps/admin/ui/orders/orders.wo`](../../examples/ecommerce/apps/admin/ui/orders/orders.wo) (the test corpus), [`crates/rt/src/parser.rs:80–116`](../../../../crates/rt/src/parser.rs) (the parse-and-discard call site to replace).
 
 ## Goal
 

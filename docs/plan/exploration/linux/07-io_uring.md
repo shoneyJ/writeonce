@@ -2,15 +2,15 @@
 
 Ring-buffer based async I/O (Linux 5.1+, mature 5.11+). Two lock-free SPSC rings shared between userspace and kernel: submissions (SQEs) go in one, completions (CQEs) come out of the other. Batched, zero-syscall submission (with SQPOLL), zero-copy where the underlying op allows. Successor to `epoll` + `libaio` for the storage engine's WAL fsync path and — eventually — the HTTP server's accept/recv/send path.
 
-**Not on the runtime's critical path in phases 02–08.** Phase 02 uses `epoll`. `io_uring` comes in during [Phase 3 — In-Memory Engine](../runtime/database/03-inmemory-engine.md) for the WAL's group-commit fsync loop. This card is the reference for that phase.
+**Not on the runtime's critical path in phases 02–08.** Phase 02 uses `epoll`. `io_uring` comes in during [Phase 3 — In-Memory Engine](../../../runtime/database/03-inmemory-engine.md) for the WAL's group-commit fsync loop. This card is the reference for that phase.
 
 ## Kernel source
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/io_uring/`](../../../reference/linux/io_uring/) | Whole subsystem. Start with `io_uring.c` (ring setup + submission/completion) and `fs.c` (fsync op). |
-| [`reference/linux/io_uring/io_uring.c`](../../../reference/linux/io_uring/io_uring.c) | `SYSCALL_DEFINE2(io_uring_setup, ...)`, `SYSCALL_DEFINE6(io_uring_enter, ...)`, `SYSCALL_DEFINE4(io_uring_register, ...)`. |
-| [`reference/linux/include/uapi/linux/io_uring.h`](../../../reference/linux/include/uapi/linux/io_uring.h) | `struct io_uring_sqe`, `io_uring_cqe`, `io_uring_params`, every `IORING_*` flag. |
+| [`reference/linux/io_uring/`](../../../../.dev/reference/linux/io_uring/) | Whole subsystem. Start with `io_uring.c` (ring setup + submission/completion) and `fs.c` (fsync op). |
+| [`reference/linux/io_uring/io_uring.c`](../../../../.dev/reference/linux/io_uring/io_uring.c) | `SYSCALL_DEFINE2(io_uring_setup, ...)`, `SYSCALL_DEFINE6(io_uring_enter, ...)`, `SYSCALL_DEFINE4(io_uring_register, ...)`. |
+| [`reference/linux/include/uapi/linux/io_uring.h`](../../../../.dev/reference/linux/include/uapi/linux/io_uring.h) | `struct io_uring_sqe`, `io_uring_cqe`, `io_uring_params`, every `IORING_*` flag. |
 
 ## Man pages
 
@@ -90,7 +90,7 @@ Full working code is ~200 LOC including error handling — see `liburing` source
 
 ## Used by
 
-Phase 3 of the database series — see [`docs/runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md). Specifically the WAL fsync path: link `WRITE` → `FSYNC` SQEs, submit many per tick, reap completions to ack committed transactions. Also the natural upgrade target for the HTTP server once Phase 4 adds the native wire protocol.
+Phase 3 of the database series — see [`docs/runtime/database/03-inmemory-engine.md`](../../../runtime/database/03-inmemory-engine.md). Specifically the WAL fsync path: link `WRITE` → `FSYNC` SQEs, submit many per tick, reap completions to ack committed transactions. Also the natural upgrade target for the HTTP server once Phase 4 adds the native wire protocol.
 
 ## v1 port source
 

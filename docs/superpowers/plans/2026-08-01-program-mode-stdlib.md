@@ -4,7 +4,7 @@
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.
 
-**Goal:** Plan 9 — `.wo` becomes a systems language: `fn main` programs with exit codes, and the five capability modules (`env`, `fs`, `proc`, `net`, `time`, plus typed `json`) as safe wovm builtins with RAII handles.
+**Goal:** Plan 9 — `.wo` becomes a systems language: `fn main` programs with exit codes, and the six stdlib modules (`env`, `fs`, `proc`, `net`, `time`, `json`) as safe wovm builtins with RAII handles, plus the 22 core builtins as always-in-scope bare globals.
 
 **Architecture:** Plan 9 of the roadmap. Depends on plans 1–3 (toolchain) and plan 8 Task 1 (module resolver knows the stdlib namespaces) and Task 6 (`?T` — most stdlib returns are optional-typed). Runtime work is C builtin families in new `runtime/src/` modules; compiler work is thin (main detection, namespace binding). The spec's Part 2/3 tables are normative. Blocking discipline: program mode runs one shard where blocking builtins are legal; the same surface loop-integrates on server shards later (the shard-actor and HTTP plans own that side — this plan implements program mode only and keeps the builtin layer's seam clean for the other discipline).
 
@@ -46,11 +46,11 @@ docs/plan/oop-vm/07-systems-stdlib.md   per-function contracts: types, nil-vs-tr
 
 ### Task 2: `time` module
 
-**Concept & reason:** smallest module, unblocks every poll-loop fixture after it. `time.now()` exists (wall ms); add `time.mono() -> Int` (monotonic ms, CLOCK_MONOTONIC — interval math must not jump with wall-clock changes) and `time.sleep(ms)` (nanosleep; in program mode it blocks the shard, which is the point; EINTR from the shutdown signal returns early — the daemon loop's exit path).
+**Concept & reason:** smallest module, unblocks every poll-loop fixture after it. `time.now()` exists (wall ms); add `time.sleep(ms)` (nanosleep; in program mode it blocks the shard, which is the point; EINTR from the shutdown signal returns early — the daemon loop's exit path), `time.iso(ms) -> Text` (a stable textual instant — JSONL detection timestamps and MCP response fields need one), and `time.local(ms) -> {year, month, day, hour, minute, dow}` (broken-out calendar fields, including day-of-week, for cron next-fire computation; the record rides plan 8 Task 4's `typedef` records, no new type machinery). `time.mono()` is cut — 0 uses in the driving workload; parked post-iteration-12, returning when a workload needs monotonic math.
 
-- [ ] Failing fixtures: mono monotonicity across a sleep; sleep duration lower-bound; sleep cut short by SIGTERM with stopping() true after.
+- [ ] Failing fixtures: sleep duration lower-bound; sleep cut short by SIGTERM with stopping() true after; `iso`/`local` goldens run against a fixed injected clock (deterministic output, no wall-clock reads in the fixture), including a day-of-week boundary case.
 - [ ] Implement; green.
-- [ ] Record commit draft: `feat(runtime): time module — mono (CLOCK_MONOTONIC ms), sleep (EINTR-aware, shutdown cuts it short); poll-loop idiom complete.`
+- [ ] Record commit draft: `feat(runtime): time module — sleep (EINTR-aware, shutdown cuts it short), iso (stable textual instant), local (calendar record incl. dow); mono cut (0 uses); poll-loop idiom complete.`
 
 ### Task 3: `fs` module
 
@@ -84,7 +84,15 @@ docs/plan/oop-vm/07-systems-stdlib.md   per-function contracts: types, nil-vs-tr
 - [ ] Implement; green.
 - [ ] Record commit draft: `feat: typed json — decode-as against class-table kinds (?fields nil, unknown keys skip, mismatch = nil never trap), encode by kinds; undecodable targets diagnosed at compile time.`
 
-### Task 7: Corpus battery + acceptance
+### Task 7: Core builtins + `print_err`
+
+**Concept & reason:** the 22 bare-global builtins the sample calls at ~176 sites — `len`, `push`, `byte_at`, `starts_with`, `index_of`, `has`, `split`, `split_ws`, `join`, `parse_int`, `trim`, `slice`, `substr`, `pop`, `ends_with`, `last_index_of`, `to_lower`, `sort`, `char_of`, `shift`, `remove`, `reverse` — plus `print_err` (already named in Task 1's print family; it gets its builtin-id entry here). None of these are capability modules: no `use`, no namespace, always in scope, sharing the flat `WO_B_*` id space with `print`/`now`/`words`/`count`/`latest`. Each has a fixed-arity typed contract, resolved at compile time like every other builtin. The text/collection/map grouping is documentation only in the module doc, not a namespace. Out-of-range access — `byte_at`, `substr`, `slice`, `char_of`, `pop`/`shift`/`remove` past bounds — traps `T_BOUNDS` rather than returning a sentinel, matching the existing container builtins' contract. Higher-order builtins (`map`/`filter`/`reduce`) stay unadopted — the language has no function-value type (spec §1).
+
+- [ ] Failing fixtures: one golden per builtin exercising its typed contract; a bounds-trap fixture (`T_BOUNDS`) for every builtin that takes an index, length, or removal argument; `print_err` lands on stderr.
+- [ ] Implement builtin dispatch entries; green.
+- [ ] Record commit draft: `feat(runtime): core builtins — 22 bare-global text/collection/map operations + print_err, flat WO_B_* ids, fixed-arity typed contracts, T_BOUNDS on out-of-range access (no sentinels).`
+
+### Task 8: Corpus battery + acceptance
 
 **Concept & reason:** criteria 2 and 3 of the spec, gated. The `sys/` corpus runs everything above end to end plus the cross-module fixtures that mimic log-watcher's composites: a tail-poll fixture (write to a tempfile between polls, assert offset math via read_at), a probe fixture (flock-style: proc.run against a held lock file — using the real flock binary when present, skipped cleanly otherwise), a mini serve-loop fixture (accept one request, respond, exit on stopping). `just oop-accept` gains the sys corpus; the module doc's contract table gets a shipped-status column; CLAUDE.md commands note program mode.
 
@@ -95,6 +103,6 @@ docs/plan/oop-vm/07-systems-stdlib.md   per-function contracts: types, nil-vs-tr
 
 ## Plan self-review notes
 
-- **Spec coverage (Parts 2–3, criteria 2–3):** program mode T1, all five modules T2–T6 matching the spec tables exactly (one addition: `proc` result's `truncated` flag, recorded in the module doc), RAII proofs in T5 (fd battery) + ASan everywhere, corpus gate T7.
+- **Spec coverage (Parts 2–3, criteria 2–3):** program mode T1 (the `env` module, named as such, not left as loose prose), five further modules T2–T6 matching the spec's now-six-module Part 3 table exactly (one addition: `proc` result's `truncated` flag, recorded in the module doc), the 22 core builtins + `print_err` T7 (spec §1's core-builtins section), RAII proofs in T5 (fd battery) + ASan everywhere, corpus gate T8.
 - **Dependency honesty:** needs plan 8's modules (`use`), records, and `?T`; json (T6) shares the plan-6 codec with an either-order seam noted.
-- **Order rationale:** env/main first (nothing testable without an entry point), time second (fixtures need sleep/mono), fs/proc/net by increasing machinery, json last (needs records + codec), battery at the end.
+- **Order rationale:** env/main first (nothing testable without an entry point), time second (fixtures need sleep), fs/proc/net by increasing machinery, json next (needs records + codec), core builtins after (language primitives, independent of the other modules' machinery), battery at the end.

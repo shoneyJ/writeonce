@@ -1,6 +1,6 @@
 # PostgreSQL — storage subsystem reference
 
-These cards exist to make the Postgres backend a useful **library of patterns** for writeonce's persistent-storage phases (10–12) without inviting a multi-process port. Each card pulls one subsystem out of [`reference/postgresql/src/backend/`](../../../../reference/postgresql/src/backend/) — paths into the Postgres tree, the underlying *idea*, and the writeonce translation.
+These cards exist to make the Postgres backend a useful **library of patterns** for writeonce's persistent-storage phases (10–12) without inviting a multi-process port. Each card pulls one subsystem out of [`reference/postgresql/src/backend/`](../../../../.dev/reference/postgresql/src/backend/) — paths into the Postgres tree, the underlying *idea*, and the writeonce translation.
 
 The symlink is user-specific:
 
@@ -8,7 +8,7 @@ The symlink is user-specific:
 ln -s /home/shoney/projects/postgresql reference/postgresql
 ```
 
-Gitignored — see [`.gitignore`](../../../../.gitignore). Pair it with [`reference/linux`](../../../../reference/linux) and [`reference/go`](../../../../reference/go) if not already linked.
+Gitignored — see [`.gitignore`](../../../../.gitignore). Pair it with [`reference/linux`](../../../../.dev/reference/linux) and [`reference/go`](../../../../.dev/reference/go) if not already linked.
 
 ## Per-subsystem cards
 

@@ -1,6 +1,6 @@
 # 07 — Per-app policy composition
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) decision 7 (L36) and "Goal" (L26), [`./04-workspace-layout.md`](./04-workspace-layout.md) (where app-scope policies live), [`./06-shared-db-daemon.md`](./06-shared-db-daemon.md) (where composition is evaluated), [`docs/examples/blog/types/article.wo`](../../examples/blog/types/article.wo) and the other type files (existing global `policy read/write` blocks), [`docs/examples/ecommerce/apps/admin/ui/orders/orders.wo`](../../examples/ecommerce/apps/admin/ui/orders/orders.wo) L18 (a `role: Admin | Ops` set expression).
+**Context sources:** [`./00-overview.md`](./00-overview.md) decision 7 (L36) and "Goal" (L26), [`./04-workspace-layout.md`](./04-workspace-layout.md) (where app-scope policies live), [`./06-shared-db-daemon.md`](./06-shared-db-daemon.md) (where composition is evaluated), [`docs/examples/blog/types/article.wo`](../../../examples/blog/types/article.wo) and the other type files (existing global `policy read/write` blocks), [`docs/examples/ecommerce/apps/admin/ui/orders/orders.wo`](../../examples/ecommerce/apps/admin/ui/orders/orders.wo) L18 (a `role: Admin | Ops` set expression).
 
 ## Goal
 

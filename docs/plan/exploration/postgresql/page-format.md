@@ -8,11 +8,11 @@ Writeonce's phase 10 starts simpler — variable-length records, no pages. Phase
 
 | File | Responsibility |
 | --- | --- |
-| [`storage/page/bufpage.c`](../../../../reference/postgresql/src/backend/storage/page/bufpage.c) | Page initialization (`PageInit`), line-pointer manipulation, free-space accounting. |
-| [`storage/page/checksum.c`](../../../../reference/postgresql/src/backend/storage/page/checksum.c) | The page checksum algorithm — CRC32C-style with a Postgres-specific finalization. Optional, enabled at cluster init. |
-| [`storage/page/itemptr.c`](../../../../reference/postgresql/src/backend/storage/page/itemptr.c) | Item pointer (`ItemPointerData`) — `(block_number, offset_within_page)` 6-byte tuple address. The on-disk equivalent of writeonce's `(TypeName, SegmentOffset)`. |
-| [`include/storage/bufpage.h`](../../../../reference/postgresql/src/include/storage/bufpage.h) | The header-file definition. Read this first — it's the spec. |
-| [`storage/page/README`](../../../../reference/postgresql/src/backend/storage/page/README) | One-page overview of the slotted-page model and how checksums interact with WAL. |
+| [`storage/page/bufpage.c`](../../../../.dev/reference/postgresql/src/backend/storage/page/bufpage.c) | Page initialization (`PageInit`), line-pointer manipulation, free-space accounting. |
+| [`storage/page/checksum.c`](../../../../.dev/reference/postgresql/src/backend/storage/page/checksum.c) | The page checksum algorithm — CRC32C-style with a Postgres-specific finalization. Optional, enabled at cluster init. |
+| [`storage/page/itemptr.c`](../../../../.dev/reference/postgresql/src/backend/storage/page/itemptr.c) | Item pointer (`ItemPointerData`) — `(block_number, offset_within_page)` 6-byte tuple address. The on-disk equivalent of writeonce's `(TypeName, SegmentOffset)`. |
+| [`include/storage/bufpage.h`](../../../../.dev/reference/postgresql/src/include/storage/bufpage.h) | The header-file definition. Read this first — it's the spec. |
+| [`storage/page/README`](../../../../.dev/reference/postgresql/src/backend/storage/page/README) | One-page overview of the slotted-page model and how checksums interact with WAL. |
 
 ## The Postgres page header (24 bytes)
 

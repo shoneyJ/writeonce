@@ -1,10 +1,10 @@
 # 04 — Cutover: Remove tokio, axum, tower
 
-**Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./03-hand-rolled-http.md`](./03-hand-rolled-http.md), [`../01-problem.md`](../01-problem.md).
+**Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./03-hand-rolled-http.md`](./03-hand-rolled-http.md), [`../01-problem.md`](../../01-problem.md).
 
 ## Goal
 
-Flip the `wo` binary off the tokio + axum stack and onto the phase-02 event loop + phase-03 HTTP server. Delete three dependencies from `crates/rt/Cargo.toml`. REST behaviour visible to [`reference/rest/blog.rest`](../../reference/rest/blog.rest) does not change — same status codes, same response bodies, same endpoint paths.
+Flip the `wo` binary off the tokio + axum stack and onto the phase-02 event loop + phase-03 HTTP server. Delete three dependencies from `crates/rt/Cargo.toml`. REST behaviour visible to [`reference/rest/blog.rest`](../../../.dev/reference/rest/blog.rest) does not change — same status codes, same response bodies, same endpoint paths.
 
 This is the first phase where the dependency count goes *down*. Phases 02 and 03 were additive; this one is the switch.
 
@@ -12,7 +12,7 @@ This is the first phase where the dependency count goes *down*. Phases 02 and 03
 
 1. **Atomic swap, single commit.** Don't run tokio and the new loop in parallel in production. Flip the binary's `main()` in one change. Phase 03 already gave us confidence the new stack works end-to-end via `http-smoke`.
 2. **Preserve the `Engine` trait surface.** `Arc<Mutex<Engine>>` stays exactly as `crates/rt/src/engine.rs` has it today. The routing layer in `crates/rt/src/server.rs` — the function that maps `service rest` blocks to axum `MethodRouter` — gets rewritten to emit phase-03 `Router::route(...)` calls instead. Same data flow, different transport.
-3. **No tokio — no async.** Handlers become synchronous `fn(&Request, &Engine) -> Response`. The single-threaded event loop [already assumes this](../runtime/database/02-wo-language.md#concurrency-model); removing `async fn` plumbing simplifies the code. `tokio::sync::Mutex` becomes `std::sync::Mutex` (fine in a single-threaded loop since lock contention is impossible).
+3. **No tokio — no async.** Handlers become synchronous `fn(&Request, &Engine) -> Response`. The single-threaded event loop [already assumes this](../../runtime/database/02-wo-language.md#concurrency-model); removing `async fn` plumbing simplifies the code. `tokio::sync::Mutex` becomes `std::sync::Mutex` (fine in a single-threaded loop since lock contention is impossible).
 4. **`signalfd` replaces `tokio::signal::ctrl_c()`.** Registered as another fd on the loop; reading a SIGINT cleanly exits the loop and closes outstanding connections.
 5. **`WO_LISTEN` env var semantics unchanged.** The `127.0.0.1:8080` default + the `WO_LISTEN=...` override stays exactly as today. Operators don't notice the change.
 
@@ -77,7 +77,7 @@ Twelve handlers total — one pair per `{list, get, create, update, delete}` × 
 
 1. **`cargo build`** at root — compiles with four deps (not seven).
 2. **`cargo test --lib`** — all 14 existing `rt` unit tests still pass. A new test in `src/server.rs` exercises the router build from a compiled catalog (no HTTP, just static registration).
-3. **End-to-end REST smoke — the 20-assertion battery from [`reference/rest/blog.rest`](../../reference/rest/blog.rest)** must pass byte-identical to Stage 2 today. Script:
+3. **End-to-end REST smoke — the 20-assertion battery from [`reference/rest/blog.rest`](../../../.dev/reference/rest/blog.rest)** must pass byte-identical to Stage 2 today. Script:
    ```bash
    WO_LISTEN=127.0.0.1:8765 cargo run --bin wo -- run docs/examples/blog &
    # ... curl each block, check expected status

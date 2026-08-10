@@ -1,6 +1,6 @@
 # wo-rt-c architecture — one memory address, two spaces, a million connections
 
-This document defines the runtime's architecture by following **one memory address** through user space, kernel space, and hardware, under a million connections reading and writing it concurrently — then suggests improvements. Companion docs: [`00-plan.md`](./00-plan.md) (the phases that build this), [`README.md`](../../../../prototypes/wo-rt-c/README.md) (phase-0 module map).
+This document defines the runtime's architecture by following **one memory address** through user space, kernel space, and hardware, under a million connections reading and writing it concurrently — then suggests improvements. Companion docs: [`00-plan.md`](./00-plan.md) (the phases that build this), [`README.md`](../../../../runtime/README.md) (phase-0 module map).
 
 ## The cast: one address
 

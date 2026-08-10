@@ -1,6 +1,6 @@
 # 01 — `.htmlx` format spec
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166), "Design decisions" (L28–37), [`reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/) (the v1 template engine that 90% of this phase ports), [`templates/article.htmlx`](../../../templates/article.htmlx) and [`templates/home.htmlx`](../../../templates/home.htmlx) (v1 concrete usage), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../examples/ecommerce/shared/components/order-row.htmlx) (the live-binding workload this format must serve).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166), "Design decisions" (L28–37), [`reference/crates/wo-htmlx/`](../../../../.dev/reference/crates/wo-htmlx/) (the v1 template engine that 90% of this phase ports), [`templates/article.htmlx`](../../../../templates/article.htmlx) and [`templates/home.htmlx`](../../../../templates/home.htmlx) (v1 concrete usage), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../../examples/ecommerce/shared/components/order-row.htmlx) (the live-binding workload this format must serve).
 
 ## Goal
 
@@ -8,7 +8,7 @@ Lock the exact `.htmlx` grammar — every v1 Mustache construct unchanged plus t
 
 ## Design decisions (locked)
 
-1. **Mustache constructs carry through unchanged.** `{{path}}`, `{{#each xs as y}}…{{/each}}`, `{{#if cond}}…{{/if}}`, `{{#when cond}}…{{/when}}`, `{{> partial arg=val}}`. The v1 parser already handles all of these; the new parser inherits them verbatim. See [`reference/crates/wo-htmlx/src/parser.rs`](../../../reference/crates/wo-htmlx/src/parser.rs) (173 LOC) and the AST in [`ast.rs`](../../../reference/crates/wo-htmlx/src/ast.rs) (18 LOC).
+1. **Mustache constructs carry through unchanged.** `{{path}}`, `{{#each xs as y}}…{{/each}}`, `{{#if cond}}…{{/if}}`, `{{#when cond}}…{{/when}}`, `{{> partial arg=val}}`. The v1 parser already handles all of these; the new parser inherits them verbatim. See [`reference/crates/wo-htmlx/src/parser.rs`](../../../../.dev/reference/crates/wo-htmlx/src/parser.rs) (173 LOC) and the AST in [`ast.rs`](../../../../.dev/reference/crates/wo-htmlx/src/ast.rs) (18 LOC).
 2. **`<wo:live>` is a parsed structured node, not HTML passthrough.** The parser recognises the `<wo:` prefix, captures attributes (`source`, `key`, optional `sort`, `filter`), and recursively parses the body as a normal `.htmlx` subtree. No nesting in this phase — error at parse if a `<wo:live>` contains another `<wo:live>`.
 3. **`wo:bind="field"` is an HTML attribute, parsed but emitted verbatim.** SSR writes the attribute through; the consumer is the client runtime. The parser records each `(element, field)` pair into the manifest; nothing else changes about element rendering.
 4. **Helpers are a closed Rust enum.** v1 invocation forms (`{{relative ts}}`, `{{#if (eq for "ops")}}`, `{{> money amount=x}}`) carry through. The registered set is fixed for this phase: `relative`, `eq`, `markdown`, `code`, `money`, `tag-chips`, `pill`, `image`, `stock-badge`, `list`. No author extensibility.
@@ -20,12 +20,12 @@ Lock the exact `.htmlx` grammar — every v1 Mustache construct unchanged plus t
 
 | File | Responsibility | Port source |
 | --- | --- | --- |
-| `mod.rs` | Re-exports `Template`, `Manifest`, `LiveSubscription`, `BindSite`, `ParseError`, `RenderError` | [`reference/crates/wo-htmlx/src/lib.rs`](../../../reference/crates/wo-htmlx/src/lib.rs) (11 LOC) |
-| `ast.rs` | Adds `Node::Live { attrs, body }` and `wo_bind: Option<String>` on element nodes | [`reference/crates/wo-htmlx/src/ast.rs`](../../../reference/crates/wo-htmlx/src/ast.rs) (18 LOC) — extend by ~50 LOC |
-| `parser.rs` | Adds `<wo:` prefix recognition + attribute capture; rest unchanged | [`reference/crates/wo-htmlx/src/parser.rs`](../../../reference/crates/wo-htmlx/src/parser.rs) (173 LOC) — extend by ~90 LOC |
-| `value.rs` | Path resolution against a context Value | [`reference/crates/wo-htmlx/src/value.rs`](../../../reference/crates/wo-htmlx/src/value.rs) (122 LOC) — copied verbatim |
-| `registry.rs` | Closed helper-fn registry | [`reference/crates/wo-htmlx/src/registry.rs`](../../../reference/crates/wo-htmlx/src/registry.rs) (121 LOC) — extend by ~60 LOC for new helpers |
-| `render.rs` | Emits HTML; wraps `<wo:live>` body in `<div data-wo-subscription="…">` for the runtime | [`reference/crates/wo-htmlx/src/render.rs`](../../../reference/crates/wo-htmlx/src/render.rs) (140 LOC) — extend by ~70 LOC |
+| `mod.rs` | Re-exports `Template`, `Manifest`, `LiveSubscription`, `BindSite`, `ParseError`, `RenderError` | [`reference/crates/wo-htmlx/src/lib.rs`](../../../../.dev/reference/crates/wo-htmlx/src/lib.rs) (11 LOC) |
+| `ast.rs` | Adds `Node::Live { attrs, body }` and `wo_bind: Option<String>` on element nodes | [`reference/crates/wo-htmlx/src/ast.rs`](../../../../.dev/reference/crates/wo-htmlx/src/ast.rs) (18 LOC) — extend by ~50 LOC |
+| `parser.rs` | Adds `<wo:` prefix recognition + attribute capture; rest unchanged | [`reference/crates/wo-htmlx/src/parser.rs`](../../../../.dev/reference/crates/wo-htmlx/src/parser.rs) (173 LOC) — extend by ~90 LOC |
+| `value.rs` | Path resolution against a context Value | [`reference/crates/wo-htmlx/src/value.rs`](../../../../.dev/reference/crates/wo-htmlx/src/value.rs) (122 LOC) — copied verbatim |
+| `registry.rs` | Closed helper-fn registry | [`reference/crates/wo-htmlx/src/registry.rs`](../../../../.dev/reference/crates/wo-htmlx/src/registry.rs) (121 LOC) — extend by ~60 LOC for new helpers |
+| `render.rs` | Emits HTML; wraps `<wo:live>` body in `<div data-wo-subscription="…">` for the runtime | [`reference/crates/wo-htmlx/src/render.rs`](../../../../.dev/reference/crates/wo-htmlx/src/render.rs) (140 LOC) — extend by ~70 LOC |
 | `manifest.rs` | Walks the AST, collects subscriptions + bind sites, serialises JSON | new (~150 LOC) |
 
 Total: ~835 LOC (585 ported + ~250 new).

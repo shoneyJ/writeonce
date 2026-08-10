@@ -1,6 +1,6 @@
 # 02 — Event Loop on `epoll`
 
-**Context sources:** [`../01-problem.md`](../01-problem.md), [`../02-recovery.md`](../02-recovery.md), [`./linux/00-linux.md`](./linux/00-linux.md), [`./done/01-scafolding-crates.md`](./done/01-scafolding-crates.md).
+**Context sources:** [`../01-problem.md`](../../01-problem.md), [`../02-recovery.md`](../../02-recovery.md), [`./linux/00-linux.md`](../exploration/linux/00-linux.md), [`./done/01-scafolding-crates.md`](01-scafolding-crates.md).
 
 ## Goal
 
@@ -10,8 +10,8 @@ Nothing is removed in this phase. The module sits alongside the tokio-backed axu
 
 ## Design decisions (locked)
 
-1. **`epoll`, not `io_uring`, on day one.** `epoll` is ubiquitous (Linux 2.6+), well-understood, and every primitive we need (eventfd, timerfd, signalfd, inotify, accepted sockets) already integrates with it via `epoll_ctl`. `io_uring` is a natural follow-on phase once the event-loop abstraction exists — [`00-linux.md`](./linux/00-linux.md) calls it out for that role.
-2. **Single-threaded, edge-triggered.** Matches [02-wo-language.md § Concurrency Model](../runtime/database/02-wo-language.md#concurrency-model). Every fd registered with `EPOLLET`; the loop reads until `EAGAIN`. No worker pool, no cross-thread state.
+1. **`epoll`, not `io_uring`, on day one.** `epoll` is ubiquitous (Linux 2.6+), well-understood, and every primitive we need (eventfd, timerfd, signalfd, inotify, accepted sockets) already integrates with it via `epoll_ctl`. `io_uring` is a natural follow-on phase once the event-loop abstraction exists — [`00-linux.md`](../exploration/linux/00-linux.md) calls it out for that role.
+2. **Single-threaded, edge-triggered.** Matches [02-wo-language.md § Concurrency Model](../../runtime/database/02-wo-language.md#concurrency-model). Every fd registered with `EPOLLET`; the loop reads until `EAGAIN`. No worker pool, no cross-thread state.
 3. **`libc` is the only new dependency.** `libc = "0.2"` added to `crates/rt/Cargo.toml`. No `nix`, no `mio`. Direct `unsafe extern "C"` calls against the kernel surface.
 4. **Module, not crate (yet).** Lives at `crates/rt/src/runtime/` so phase 03 can call into it cheaply. Extraction to the empty `crates/event/` sibling is deferred until a second caller appears outside `rt` — likely when [`sub`](../../crates/sub/) starts consuming the loop for subscription delivery.
 
@@ -21,17 +21,17 @@ Nothing is removed in this phase. The module sits alongside the tokio-backed axu
 
 | File | Responsibility | Port source |
 | --- | --- | --- |
-| `mod.rs` | Re-exports `EventLoop`, `Event`, `Interest`, `Token`, `EventFd`, `TimerFd`, `SignalFd` | [`reference/crates/wo-event/src/lib.rs`](../../reference/crates/wo-event/src/lib.rs) (9 LOC) |
-| `netpoll_epoll.rs` | `EventLoop { fd, events }` — `new()`, `register(raw_fd, interest, token)`, `wait_once(timeout) -> &[Event]`, `deregister(raw_fd)` | [`reference/crates/wo-event/src/epoll.rs`](../../reference/crates/wo-event/src/epoll.rs) (183 LOC); [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) for idiom |
-| `eventfd.rs` | `EventFd { fd }` — counter semaphore for cross-fd wake-up (subscription dispatch, shutdown signal) | [`reference/crates/wo-event/src/eventfd.rs`](../../reference/crates/wo-event/src/eventfd.rs) (66 LOC) |
-| `timerfd.rs` | `TimerFd { fd }` — oneshot + periodic timers as fds for the loop | [`reference/crates/wo-event/src/timerfd.rs`](../../reference/crates/wo-event/src/timerfd.rs) (91 LOC) |
-| `signalfd.rs` | `SignalFd { fd }` — SIGINT / SIGTERM / SIGHUP delivered as fd reads for graceful shutdown without a tokio signal handler | [`reference/crates/wo-event/src/signalfd.rs`](../../reference/crates/wo-event/src/signalfd.rs) (62 LOC) |
+| `mod.rs` | Re-exports `EventLoop`, `Event`, `Interest`, `Token`, `EventFd`, `TimerFd`, `SignalFd` | [`reference/crates/wo-event/src/lib.rs`](../../../.dev/reference/crates/wo-event/src/lib.rs) (9 LOC) |
+| `netpoll_epoll.rs` | `EventLoop { fd, events }` — `new()`, `register(raw_fd, interest, token)`, `wait_once(timeout) -> &[Event]`, `deregister(raw_fd)` | [`reference/crates/wo-event/src/epoll.rs`](../../../.dev/reference/crates/wo-event/src/epoll.rs) (183 LOC); [`reference/go/src/runtime/netpoll_epoll.go`](../../../.dev/reference/go/src/runtime/netpoll_epoll.go) for idiom |
+| `eventfd.rs` | `EventFd { fd }` — counter semaphore for cross-fd wake-up (subscription dispatch, shutdown signal) | [`reference/crates/wo-event/src/eventfd.rs`](../../../.dev/reference/crates/wo-event/src/eventfd.rs) (66 LOC) |
+| `timerfd.rs` | `TimerFd { fd }` — oneshot + periodic timers as fds for the loop | [`reference/crates/wo-event/src/timerfd.rs`](../../../.dev/reference/crates/wo-event/src/timerfd.rs) (91 LOC) |
+| `signalfd.rs` | `SignalFd { fd }` — SIGINT / SIGTERM / SIGHUP delivered as fd reads for graceful shutdown without a tokio signal handler | [`reference/crates/wo-event/src/signalfd.rs`](../../../.dev/reference/crates/wo-event/src/signalfd.rs) (62 LOC) |
 
 Total: ~410 LOC lifted and adapted. The v1 code already compiles standalone in `reference/crates/wo-event/` and has unit tests; the port is near-verbatim plus namespace cleanups.
 
 ### Why `runtime/` not `event/`
 
-Go's equivalent code lives at [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) alongside siblings like `netpoll_kqueue.go` (macOS/BSD), `netpoll_io_uring.go` (if/when Go adds it), and the shared `netpoll.go` interface. The directory name "runtime" signals that this is the layer beneath user code — scheduler / netpoll / syscall shims — and the filename prefix `netpoll_<flavour>` makes each implementation alternative visible at a glance. Adopting the same convention in writeonce makes porting ideas bidirectional: a reader who knows Go's layout can find the writeonce equivalent by trimming the `.go` extension and swapping it for `.rs`. When Phase 3's io_uring arrives it'll land as `netpoll_io_uring.rs` next to the epoll one; a cross-platform stub would be `netpoll.rs`. Module boundary and naming both match. See [`docs/plan/assembly/00-overview.md`](./assembly/00-overview.md) for why we stop short of mirroring Go's assembly conventions.
+Go's equivalent code lives at [`reference/go/src/runtime/netpoll_epoll.go`](../../../.dev/reference/go/src/runtime/netpoll_epoll.go) alongside siblings like `netpoll_kqueue.go` (macOS/BSD), `netpoll_io_uring.go` (if/when Go adds it), and the shared `netpoll.go` interface. The directory name "runtime" signals that this is the layer beneath user code — scheduler / netpoll / syscall shims — and the filename prefix `netpoll_<flavour>` makes each implementation alternative visible at a glance. Adopting the same convention in writeonce makes porting ideas bidirectional: a reader who knows Go's layout can find the writeonce equivalent by trimming the `.go` extension and swapping it for `.rs`. When Phase 3's io_uring arrives it'll land as `netpoll_io_uring.rs` next to the epoll one; a cross-platform stub would be `netpoll.rs`. Module boundary and naming both match. See [`docs/plan/assembly/00-overview.md`](../exploration/assembly/00-overview.md) for why we stop short of mirroring Go's assembly conventions.
 
 ### `Cargo.toml` change
 

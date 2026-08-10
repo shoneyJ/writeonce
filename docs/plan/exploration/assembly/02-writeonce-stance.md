@@ -8,7 +8,7 @@ Each Go asm category from [`01-go-runtime-asm.md`](./01-go-runtime-asm.md) maps 
 
 | Go asm need | What writeonce uses | Why it covers the gap |
 | --- | --- | --- |
-| Scheduler stack switching (`gogo`, `mcall`, `systemstack`) | — nothing — | Single-threaded event loop through phases 02–08 (see Phase 2 [Concurrency Model](../runtime/database/02-wo-language.md#concurrency-model)). [Phase 09](../09-concurrency-scaleout.md) introduces **thread-per-core** scaling for the 10k-user ecommerce workload — but still no Go-style stack switching: each thread runs its own event loop, connections are pinned for their lifetime, and cross-thread work is message-passing, not scheduler-stealing. No goroutines, no `g0`, even at scale. |
+| Scheduler stack switching (`gogo`, `mcall`, `systemstack`) | — nothing — | Single-threaded event loop through phases 02–08 (see Phase 2 [Concurrency Model](../../../runtime/database/02-wo-language.md#concurrency-model)). [Phase 09](../../09-concurrency-scaleout.md) introduces **thread-per-core** scaling for the 10k-user ecommerce workload — but still no Go-style stack switching: each thread runs its own event loop, connections are pinned for their lifetime, and cross-thread work is message-passing, not scheduler-stealing. No goroutines, no `g0`, even at scale. |
 | Preemption (`asyncPreempt`) | — nothing — | No preemption through phases 02–08. Phase 09's thread-per-core model keeps this property: handlers run to completion on whichever thread owns their connection. |
 | Atomic operations (`Load`, `Store`, `Cas`, `Xadd`, ...) | [`std::sync::atomic`](https://doc.rust-lang.org/std/sync/atomic/) | The compiler emits the right instruction per target — `LOCK CMPXCHG` on x86, `LDXR/STXR` on ARM, `LR.W/SC.W` on RISC-V. Ordering is in the type signature (`Ordering::Acquire`, `Release`, `SeqCst`). |
 | Memory barriers (`MFENCE` etc.) | [`std::sync::atomic::fence(Ordering)`](https://doc.rust-lang.org/std/sync/atomic/fn.fence.html) | One call, one fence, arch-neutral. |
@@ -72,4 +72,4 @@ No asm has been written under this policy yet. The expectation is it stays that 
 - [`00-overview.md`](./00-overview.md) — why runtimes ever need asm at all (three categories).
 - [`01-go-runtime-asm.md`](./01-go-runtime-asm.md) — Go's asm inventory, by file.
 - [`../linux/04-signalfd.md`](../linux/04-signalfd.md) — the specific primitive that obviates Go's `sigtramp` asm.
-- [`../02-event-loop-epoll.md`](../02-event-loop-epoll.md) — phase 02, where the `runtime/` module actually lands.
+- [`../02-event-loop-epoll.md`](../../done/02-event-loop-epoll.md) — phase 02, where the `runtime/` module actually lands.

@@ -5,8 +5,10 @@ emits, as of plan 2 tasks 2–8. Code ranges are reserved per stage
 (`compiler/src/diag.ml`): `WO-E0xx` lexing, `WO-E1xx` parsing, `WO-E2xx`
 types, `WO-E3xx` ownership, `WO-W2xx` warnings from the types stage. This
 is an enumeration of codes already in use, not an archaeology dig — see
-"Completeness method" below for how that was verified, and "Reserved,
-not yet emitted" for codes the source declares but no check yet raises.
+"Completeness method" below for how that was verified, "Reserved,
+not yet emitted" for codes the source declares but no check yet raises,
+and "Unreachable by design" for the one code (WO-E205) that isn't merely
+unimplemented — it has no legal call site in the milestone grammar.
 One code (WO-E214) is emitted by the driver (`compiler/bin/main.ml`),
 not one of the four stage modules — a Task 8 review finding — see its
 row in the types table below for why it still uses that range.
@@ -44,12 +46,11 @@ half of the story ("moved here" / "borrowed here" / etc.).
 ### Reserved, not yet emitted
 
 `type_mismatch_code` (WO-E201), `bad_arity_code` (WO-E203),
-`unknown_fn_code` (WO-E204), `unsatisfied_interface_code` (WO-E205),
-`non_exhaustive_switch_code` (WO-E208), `invalid_builtin_code` (WO-E209),
-`module_not_imported_code` (WO-E210), `nullable_used_without_check_code`
-(WO-E211), `nullable_assign_mismatch_code` (WO-E212), and
-`missing_nil_check_code` (WO-E213) are declared in `types.ml` — the
-range is reserved — but as of Task 7 nothing in the front end ever
+`unknown_fn_code` (WO-E204), `non_exhaustive_switch_code` (WO-E208),
+`invalid_builtin_code` (WO-E209), `module_not_imported_code` (WO-E210),
+`nullable_used_without_check_code` (WO-E211), `nullable_assign_mismatch_code`
+(WO-E212), and `missing_nil_check_code` (WO-E213) are declared in `types.ml`
+— the range is reserved — but as of Task 7 nothing in the front end ever
 raises them; there is no call site and therefore no real example
 message to catalog. They read like placeholders for checks Task 6's own
 plan brief named (type mismatch, bad arity, unsatisfied interface, …)
@@ -57,6 +58,21 @@ that the shipped typechecker doesn't yet implement. Listed here so a
 conformance fixture (plan 3) or a future reader doesn't assume one of
 these codes is reachable today; move a code up into the table above in
 the same commit that wires its first real emission site.
+
+### Unreachable by design
+
+`unsatisfied_interface_code` (WO-E205) is declared in `types.ml` but does not
+belong in the list above — it is not a pending implementation, it is
+unreachable by design given the milestone grammar. Structural interface
+satisfaction has exactly one legal home: a site where a value is used at an
+interface-typed position (a field, parameter, or return typed as an
+interface). There is no `implements` keyword by doctrine — satisfaction is
+structural, checked where the value is used, not declared — and the
+milestone grammar declares no interfaces and exercises no interface-typed
+positions, so the check has nowhere to fire. This is not a gap in shipped
+work; it costs the milestone nothing. The check starts firing the moment a
+future milestone introduces an interface-typed position — no interim
+workaround is owed before then.
 
 ## WO-E3xx — ownership / MVS (Task 7, `compiler/src/owner.ml`)
 

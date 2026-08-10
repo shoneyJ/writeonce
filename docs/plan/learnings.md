@@ -3,7 +3,7 @@
 What the work actually taught, independent of whether it shipped. Recorded so
 the same wall is not hit twice. Newest first within each section.
 
-Status board: [`00-kanban.md`](00-kanban.md) · Rejections: [`discarded.md`](discarded.md)
+Status board: [`00-status.md`](../00-status.md) · Rejections: [`discarded.md`](discarded.md)
 
 ## Testing and verification
 

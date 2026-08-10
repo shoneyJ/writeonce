@@ -1,8 +1,8 @@
 # 09 — Scale-out: thread-per-core for 10k concurrent users
 
-> **Kanban: 🔄 in progress** — 09a/09b/09c ✅ shipped (+ keep-alive and io_uring group-commit follow-ups, measured in the shipped notes below); 09d/09e/09f ⬜ not started. Board: [00-kanban.md](00-kanban.md)
+> **Status: 🔄 in progress** — 09a/09b/09c ✅ shipped (+ keep-alive and io_uring group-commit follow-ups, measured in the shipped notes below); 09d/09e/09f ⬜ not started. Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) (last single-threaded phase), [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) (the "single-threaded" policy we're now refining), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) (original concurrency stance), [`docs/examples/ecommerce/`](../examples/ecommerce/) (the target workload), [`./linux/`](./linux/) (kernel primitives), [`reference/go/src/runtime/`](../../reference/go/src/runtime/) (precedent for a runtime that scales across threads).
+**Context sources:** [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) (last single-threaded phase), [`./assembly/02-writeonce-stance.md`](./exploration/assembly/02-writeonce-stance.md) (the "single-threaded" policy we're now refining), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) (original concurrency stance), [`docs/examples/ecommerce/`](../examples/ecommerce/) (the target workload), [`./linux/`](./exploration/linux/) (kernel primitives), [`reference/go/src/runtime/`](../../.dev/reference/go/src/runtime/) (precedent for a runtime that scales across threads).
 
 ## Context
 
@@ -18,23 +18,23 @@ Serve the ecommerce sample at 10,000 concurrent websocket subscribers + 1,000 ch
 
 ## Design decisions (locked)
 
-1. **Thread-per-core, not M:N.** `N` OS threads pinned to `N` cores via `sched_setaffinity(cpu_set_t)`. Each thread runs its own event loop (the [phase-02 `runtime/` module](./02-event-loop-epoll.md)) plus a local shard of engine state. Pinned for the thread's lifetime; a connection accepted on thread K stays on thread K forever. Precedent: Seastar / ScyllaDB / Redis Cluster.
-2. **Shared-nothing state.** No cross-thread mutable access to the catalog, engine rows, or subscription registry. Communication is message-passing over single-producer-single-consumer ring buffers (crossbeam-style, built on `std::sync::atomic`, per [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) — still no asm). If thread A needs to touch data owned by thread B, it sends a message; B processes it on its own tick.
+1. **Thread-per-core, not M:N.** `N` OS threads pinned to `N` cores via `sched_setaffinity(cpu_set_t)`. Each thread runs its own event loop (the [phase-02 `runtime/` module](./done/02-event-loop-epoll.md)) plus a local shard of engine state. Pinned for the thread's lifetime; a connection accepted on thread K stays on thread K forever. Precedent: Seastar / ScyllaDB / Redis Cluster.
+2. **Shared-nothing state.** No cross-thread mutable access to the catalog, engine rows, or subscription registry. Communication is message-passing over single-producer-single-consumer ring buffers (crossbeam-style, built on `std::sync::atomic`, per [`./assembly/02-writeonce-stance.md`](./exploration/assembly/02-writeonce-stance.md) — still no asm). If thread A needs to touch data owned by thread B, it sends a message; B processes it on its own tick.
 3. **SO_REUSEPORT for listener-side load balancing.** Every thread binds a socket with `SO_REUSEPORT` on the same `:8080` — the kernel distributes incoming SYNs across the `N` listener sockets with consistent hashing on the connection 4-tuple. No user-space accept-thread bottleneck. Linux ≥ 3.9 is fine; ≥ 4.5 adds `BPF` filters for custom routing if we ever need session-affinity.
-4. **Per-thread io_uring ring.** Each thread gets its own `io_uring_setup` ring with `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_SQPOLL` ([per `./linux/07-io_uring.md`](./linux/07-io_uring.md)). No ring sharing across threads — simpler ordering, no contention.
+4. **Per-thread io_uring ring.** Each thread gets its own `io_uring_setup` ring with `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_SQPOLL` ([per `./linux/07-io_uring.md`](./exploration/linux/07-io_uring.md)). No ring sharing across threads — simpler ordering, no contention.
 5. **Shard key: customer id (modulo N).** The ecommerce schema is customer-centric — one customer's orders + purchase edges + cart live on the same shard. Cross-customer queries (admin `list orders`) fan out; same-customer operations (checkout) are local. Blog shard key would be `author.id` for the same reason.
 6. **Cross-shard transactions via 2PC.** A checkout that updates inventory on shard A and customer balance on shard B uses two-phase commit between the two engine threads. Phase 4's transaction coordinator (from [`../runtime/database/02-wo-language.md`](../runtime/database/02-wo-language.md) § Cross-Paradigm Transaction Coordinator) already handles this pattern for sql+doc+graph inside one process; it generalises cleanly to cross-thread.
 7. **No Go-style goroutines.** Connections are not tasks that migrate. Each connection's state machine runs on its owning thread's event loop, just as it does in the single-threaded model — the difference is there are now `N` event loops running concurrently.
 
 ## What we copy from Go, what we don't
 
-Read [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) and [`reference/go/src/runtime/proc.go`](../../reference/go/src/runtime/proc.go) for the shape; copy the **ideas** about fd-to-loop mapping and atomic-counter-based wake-up. Do **not** copy:
+Read [`reference/go/src/runtime/netpoll_epoll.go`](../../.dev/reference/go/src/runtime/netpoll_epoll.go) and [`reference/go/src/runtime/proc.go`](../../.dev/reference/go/src/runtime/proc.go) for the shape; copy the **ideas** about fd-to-loop mapping and atomic-counter-based wake-up. Do **not** copy:
 
 | Go feature | Why writeonce skips it |
 | --- | --- |
 | Goroutines (M:N scheduling, work stealing) | Goroutines pay context-switch + GC-scan costs the thread-per-core model avoids. Scylla benchmarks consistently beat Go-style runtimes at the same hardware. |
 | Shared heap + GC | No heap GC — Rust ownership. Data is partitioned across threads, not shared with locks. |
-| `gogo` / `mcall` / `systemstack` asm | No scheduler-controlled stack switching. See [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md). |
+| `gogo` / `mcall` / `systemstack` asm | No scheduler-controlled stack switching. See [`./assembly/02-writeonce-stance.md`](./exploration/assembly/02-writeonce-stance.md). |
 | `cgo` boundary | Rust is the only language. `libc` is already ABI-compatible via `extern "C"`. |
 | `asyncPreempt` preemption | Handlers run to completion on their owning thread. Back-pressure comes from bounded per-thread queues, not preemption. |
 
@@ -43,8 +43,8 @@ And what we **do** copy:
 | Go pattern | Writeonce translation |
 | --- | --- |
 | Per-P netpoller (the `pp.pollDesc` model) | Per-thread `EventLoop` (the phase-02 `runtime::EventLoop`) |
-| `netpollBreak` (fd wake-up via sendto) | Per-thread `eventfd` — one fd per thread, write to it to wake a sleeping `epoll_wait`. See [`./linux/02-eventfd.md`](./linux/02-eventfd.md). |
-| `findrunnable` (what to do when idle) | Per-thread idle-state: drain in-process message queues, run compaction, run periodic timers (from [`./linux/03-timerfd.md`](./linux/03-timerfd.md)). |
+| `netpollBreak` (fd wake-up via sendto) | Per-thread `eventfd` — one fd per thread, write to it to wake a sleeping `epoll_wait`. See [`./linux/02-eventfd.md`](./exploration/linux/02-eventfd.md). |
+| `findrunnable` (what to do when idle) | Per-thread idle-state: drain in-process message queues, run compaction, run periodic timers (from [`./linux/03-timerfd.md`](./exploration/linux/03-timerfd.md)). |
 | `runtime.GOMAXPROCS` | `WO_THREADS` env var (defaults to `std::thread::available_parallelism()`). |
 
 ## Linux primitives this phase leans on (beyond the phase-02/03/08 set)
@@ -53,13 +53,13 @@ Reference cards already exist for most; this phase adds the ones that are cross-
 
 | Primitive | Use | Reference |
 | --- | --- | --- |
-| `SO_REUSEPORT` | N listener sockets on the same port; kernel load-balances accepts | [`reference/linux/net/core/sock_reuseport.c`](../../reference/linux/net/core/sock_reuseport.c) — worth adding `linux/12-so-reuseport.md` |
-| `sched_setaffinity` + `cpu_set_t` | Pin each thread to its core | [`reference/linux/kernel/sched/core.c`](../../reference/linux/kernel/sched/core.c) |
-| `futex(2)` | Fallback cross-thread wait if per-thread eventfd wake-up isn't enough | [`reference/linux/kernel/futex/`](../../reference/linux/kernel/futex/) — worth `linux/13-futex.md` |
-| `membarrier(2)` | Process-wide memory barrier when a rebalance migrates state between threads | [`reference/linux/kernel/sched/membarrier.c`](../../reference/linux/kernel/sched/membarrier.c) |
-| `io_uring` with `IORING_SETUP_SINGLE_ISSUER` | One ring per thread, pinned | [`./linux/07-io_uring.md`](./linux/07-io_uring.md) |
-| `eventfd` per thread | Cross-thread wake-up — thread A writes to thread B's eventfd to deliver a message | [`./linux/02-eventfd.md`](./linux/02-eventfd.md) |
-| `mmap(MAP_HUGETLB)` | Per-thread arena allocator backed by 2 MB pages for cache locality | [`./linux/08-mmap.md`](./linux/08-mmap.md) |
+| `SO_REUSEPORT` | N listener sockets on the same port; kernel load-balances accepts | [`reference/linux/net/core/sock_reuseport.c`](../../.dev/reference/linux/net/core/sock_reuseport.c) — worth adding `linux/12-so-reuseport.md` |
+| `sched_setaffinity` + `cpu_set_t` | Pin each thread to its core | [`reference/linux/kernel/sched/core.c`](../../.dev/reference/linux/kernel/sched/core.c) |
+| `futex(2)` | Fallback cross-thread wait if per-thread eventfd wake-up isn't enough | [`reference/linux/kernel/futex/`](../../.dev/reference/linux/kernel/futex/) — worth `linux/13-futex.md` |
+| `membarrier(2)` | Process-wide memory barrier when a rebalance migrates state between threads | [`reference/linux/kernel/sched/membarrier.c`](../../.dev/reference/linux/kernel/sched/membarrier.c) |
+| `io_uring` with `IORING_SETUP_SINGLE_ISSUER` | One ring per thread, pinned | [`./linux/07-io_uring.md`](./exploration/linux/07-io_uring.md) |
+| `eventfd` per thread | Cross-thread wake-up — thread A writes to thread B's eventfd to deliver a message | [`./linux/02-eventfd.md`](./exploration/linux/02-eventfd.md) |
+| `mmap(MAP_HUGETLB)` | Per-thread arena allocator backed by 2 MB pages for cache locality | [`./linux/08-mmap.md`](./exploration/linux/08-mmap.md) |
 
 ## Sub-phase sequence
 
@@ -130,9 +130,9 @@ If the "single core per process, shard across processes" argument ([Redis Cluste
 
 - [`./exploration/c-runtime/00-plan.md`](./exploration/c-runtime/00-plan.md) — the C prototype's phased evolution (threads → arena → io_uring → WAL → recovery); the executable proving ground for 09a's thread-per-core skeleton and 09c's per-shard WAL before the Rust work starts.
 - [`./08-sendfile-static-assets.md`](./08-sendfile-static-assets.md) — last prerequisite phase; feature-complete single-threaded runtime.
-- [`./assembly/02-writeonce-stance.md`](./assembly/02-writeonce-stance.md) — updated to reference this phase's thread-per-core model; still no asm.
+- [`./assembly/02-writeonce-stance.md`](./exploration/assembly/02-writeonce-stance.md) — updated to reference this phase's thread-per-core model; still no asm.
 - [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model) — the stance this plan refines.
-- [`reference/go/src/runtime/proc.go`](../../reference/go/src/runtime/proc.go) — Go's scheduler, for contrast.
-- [`reference/go/src/runtime/netpoll_epoll.go`](../../reference/go/src/runtime/netpoll_epoll.go) — per-P netpoller, the idea we borrow.
-- [`reference/linux/net/core/sock_reuseport.c`](../../reference/linux/net/core/sock_reuseport.c) — kernel load balancer.
-- [`reference/linux/kernel/sched/core.c`](../../reference/linux/kernel/sched/core.c) — affinity syscalls.
+- [`reference/go/src/runtime/proc.go`](../../.dev/reference/go/src/runtime/proc.go) — Go's scheduler, for contrast.
+- [`reference/go/src/runtime/netpoll_epoll.go`](../../.dev/reference/go/src/runtime/netpoll_epoll.go) — per-P netpoller, the idea we borrow.
+- [`reference/linux/net/core/sock_reuseport.c`](../../.dev/reference/linux/net/core/sock_reuseport.c) — kernel load balancer.
+- [`reference/linux/kernel/sched/core.c`](../../.dev/reference/linux/kernel/sched/core.c) — affinity syscalls.

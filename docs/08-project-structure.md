@@ -82,7 +82,7 @@ Unchanged from CLAUDE.md's description: `rt` is the monolithic Stage-2 runtime p
 ### `.dev/reference/` — read-only study material
 
 - `crates/` — the 13 v1 `wo-*` crates, a nested Cargo workspace (build with `cd .dev/reference/crates && cargo build`). Preserved per the wo-seg migration plan ([`runtime/database/07-wo-seg-migration.md`](runtime/database/07-wo-seg-migration.md)).
-- `colibri/`, `llama-cpp/` — vendored study trees (zero-dep C inference engine; MoE runtime) — see [`plan/exploration/colibri/`](plan/exploration/colibri/).
+- `colibri/`, `llama-cpp/` — vendored study trees (zero-dep C inference engine; MoE runtime) — see [`.dev/reference/colibri/`](.dev/reference/colibri/).
 - `linux/`, `go/` — per-developer symlinks to kernel and Go sources (gitignored; recreate per `CLAUDE.md`).
 - `rest/` — `.rest` HTTP files driving manual smoke against a running runtime; plan 6's blog smoke scripts the same sequences.
 

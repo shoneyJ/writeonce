@@ -1,8 +1,8 @@
 # 14 — MVC UI implementation: model = class, view = htmlx + scss, controller = .wo
 
-> **Kanban: ⏸ parked (frontend)** — backend focus first; design stays current. Board: [00-kanban.md](00-kanban.md)
+> **Status: ⏸ parked (frontend)** — backend focus first; design stays current. Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) (the design this plan implements), [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) / [`02-ui-compiler.md`](./exploration/ui/02-ui-compiler.md) / [`03-client-runtime.md`](./exploration/ui/03-client-runtime.md) (the three UI-track pieces this plan sequences, each with port sources and LOC budgets), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the class methods controllers call: 13a/13b; the LIVE deltas views consume: 13c), [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) (the reference MVC triplet), [`reference/crates/wo-htmlx/`](../../reference/crates/wo-htmlx/) (the v1 template engine, primary port source).
+**Context sources:** [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) (the design this plan implements), [`./exploration/ui/01-htmlx-format-spec.md`](./exploration/ui/01-htmlx-format-spec.md) / [`02-ui-compiler.md`](./exploration/ui/02-ui-compiler.md) / [`03-client-runtime.md`](./exploration/ui/03-client-runtime.md) (the three UI-track pieces this plan sequences, each with port sources and LOC budgets), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the class methods controllers call: 13a/13b; the LIVE deltas views consume: 13c), [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) (the reference MVC triplet), [`reference/crates/wo-htmlx/`](../../.dev/reference/crates/wo-htmlx/) (the v1 template engine, primary port source).
 
 ## Context
 
@@ -86,5 +86,5 @@ Execute [`exploration/ui/03-client-runtime.md`](./exploration/ui/03-client-runti
 - [`./exploration/ui/08-mvc-structure.md`](./exploration/ui/08-mvc-structure.md) — the design; its exit criteria are satisfied by 14c/14b/14f respectively.
 - [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) — 13a/13b gate 14e; 13c gates 14f; 13d's exit criterion is this plan's end-to-end target.
 - [`./exploration/ui/00-overview.md`](./exploration/ui/00-overview.md) — the UI track's master frame (per-app binaries, shared DB daemon) that 14d's asset/serving choices stay compatible with.
-- [`reference/crates/wo-htmlx/`](../../reference/crates/wo-htmlx/) — primary port source (585 LOC), per ui/01.
+- [`reference/crates/wo-htmlx/`](../../.dev/reference/crates/wo-htmlx/) — primary port source (585 LOC), per ui/01.
 - [`../examples/pricing/ui/pricing/`](../examples/pricing/ui/pricing/) — the reference triplet every sub-phase tests against.

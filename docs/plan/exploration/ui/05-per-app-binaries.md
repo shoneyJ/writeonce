@@ -1,6 +1,6 @@
 # 05 — Per-app static binaries (`wo build apps/X`)
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Goal" (L21–23), "Design decisions" 3–4 (L32–33), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`./04-workspace-layout.md`](./04-workspace-layout.md), [`./06-shared-db-daemon.md`](./06-shared-db-daemon.md) (the wire URL contract this phase consumes), [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../examples/ecommerce/apps/storefront/wo.toml).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "Goal" (L21–23), "Design decisions" 3–4 (L32–33), [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md), [`./02-ui-compiler.md`](./02-ui-compiler.md), [`./03-client-runtime.md`](./03-client-runtime.md), [`./04-workspace-layout.md`](./04-workspace-layout.md), [`./06-shared-db-daemon.md`](./06-shared-db-daemon.md) (the wire URL contract this phase consumes), [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../../examples/ecommerce/apps/storefront/wo.toml).
 
 ## Goal
 
@@ -11,7 +11,7 @@
 1. **One Cargo build per app, dynamic Cargo project templating.** `wo build apps/<X>` materialises a Cargo project under `target/wo-build/<X>/`, fills `[bin] name = "<X>"`, copies/generates `app_config.rs`, and invokes `cargo build --release`. The resulting binary is copied to `target/wo/<X>`.
 2. **No per-app Rust source generation beyond config.** The same `crates/app` is linked into every app binary. The only generated Rust file is `app_config.rs` containing the route table, embedded templates, and embedded runtime asset. Avoids exploding cargo metadata across N apps.
 3. **`include_bytes!` bakes templates + runtime + CSS at compile time.** A Cargo `build.rs` writes `app_config.rs` enumerating every compiled `.htmlx`, every `.css` from `apps/<X>/ui/<screen>/<screen>.css` and `shared/components/*.css`, plus the runtime JS via `RUNTIME_JS` from phase 03.
-4. **Connection target precedence: `WO_DB` env > `[database].url` from manifest > error.** The app refuses to start if neither is set. Anchored in [`./00-overview.md`](./00-overview.md) "Goal" (L23) and [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../examples/ecommerce/apps/storefront/wo.toml) L21–26.
+4. **Connection target precedence: `WO_DB` env > `[database].url` from manifest > error.** The app refuses to start if neither is set. Anchored in [`./00-overview.md`](./00-overview.md) "Goal" (L23) and [`docs/examples/ecommerce/apps/storefront/wo.toml`](../../../examples/ecommerce/apps/storefront/wo.toml) L21–26.
 5. **HTTP listener address comes from `[server] listen`.** Different from the database URL — the database URL is what this binary connects *to*; `[server].listen` is what the binary itself exposes to browsers. `WO_LISTEN` env var overrides for ops.
 
 ## Scope

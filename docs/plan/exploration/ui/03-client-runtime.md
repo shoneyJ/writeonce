@@ -1,6 +1,6 @@
 # 03 — Client runtime
 
-**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166) and decisions 1–2, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the manifest schema this runtime consumes), [`reference/crates/wo-sub/src/lib.rs`](../../../reference/crates/wo-sub/src/lib.rs) (the v1 frame model the wire format mirrors), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../examples/ecommerce/shared/components/order-row.htmlx) (the live workload the runtime must update without reload).
+**Context sources:** [`./00-overview.md`](./00-overview.md) §§ "`.htmlx` with live subscriptions — target format" (L127–166) and decisions 1–2, [`./01-htmlx-format-spec.md`](./01-htmlx-format-spec.md) (the manifest schema this runtime consumes), [`reference/crates/wo-sub/src/lib.rs`](../../../../.dev/reference/crates/wo-sub/src/lib.rs) (the v1 frame model the wire format mirrors), [`docs/examples/ecommerce/shared/components/order-row.htmlx`](../../../examples/ecommerce/shared/components/order-row.htmlx) (the live workload the runtime must update without reload).
 
 ## Goal
 

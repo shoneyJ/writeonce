@@ -2,7 +2,7 @@
 
 Two apps (customer **storefront** + ops **admin**) sharing one database, built from a common pool of types + business logic. Mirrors the Nx / Angular workspace pattern: `apps/*` for deployable binaries, `shared/*` for libraries imported across apps.
 
-> This project is a **docs artifact** — illustrative `.wo` source showing what a production-shaped writeonce workspace looks like. The master plan for the compiler + client runtime + per-app build is at [`../../plan/ui/00-overview.md`](../../plan/ui/00-overview.md). Sub-phases UI/01–07 implement each piece.
+> This project is a **docs artifact** — illustrative `.wo` source showing what a production-shaped writeonce workspace looks like. The master plan for the compiler + client runtime + per-app build is at [`../../plan/ui/00-overview.md`](../../plan/exploration/ui/00-overview.md). Sub-phases UI/01–07 implement each piece.
 
 ## Layout
 
@@ -101,7 +101,7 @@ The current runtime at [`crates/rt/`](../../../crates/rt/) is a single-process S
 - `.htmlx` compilation from `##ui` blocks (UI sub-phases 01–03)
 - Per-app policy composition (UI sub-phase 07)
 
-So `cargo run --bin wo -- run docs/examples/ecommerce` today walks the whole tree, finds every `.wo` file under `shared/` + `apps/`, parses the types, and serves the union REST API on :8080 — treating the monorepo as one giant app. Useful for exercising the types; not reflective of the production shape. See [`docs/plan/ui/00-overview.md`](../../plan/ui/00-overview.md) for the sub-phase sequence that gets each piece online.
+So `cargo run --bin wo -- run docs/examples/ecommerce` today walks the whole tree, finds every `.wo` file under `shared/` + `apps/`, parses the types, and serves the union REST API on :8080 — treating the monorepo as one giant app. Useful for exercising the types; not reflective of the production shape. See [`docs/plan/ui/00-overview.md`](../../plan/exploration/ui/00-overview.md) for the sub-phase sequence that gets each piece online.
 
 ## Comparison with the blog sample
 
@@ -109,8 +109,8 @@ The [`blog` sample](../blog/) is still a single-app layout (`types/`, `ui/`, `lo
 
 ## Source pointers
 
-- **Master plan:** [`../../plan/ui/00-overview.md`](../../plan/ui/00-overview.md)
+- **Master plan:** [`../../plan/ui/00-overview.md`](../../plan/exploration/ui/00-overview.md)
 - **Language spec the `##ui`/`##app`/`policy` blocks obey:** [`../../runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md)
 - **Wire protocol the app binaries speak to the DB daemon:** [`../../runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md)
-- **v1 template engine that `.htmlx` compilation will reuse:** [`../../../reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/)
+- **v1 template engine that `.htmlx` compilation will reuse:** [`../../../.dev/reference/crates/wo-htmlx/`](../../../.dev/reference/crates/wo-htmlx/)
 - **Checkout transaction that's the canonical cross-paradigm test:** [`shared/logic/checkout.wo`](shared/logic/checkout.wo)

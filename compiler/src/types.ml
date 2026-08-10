@@ -2,7 +2,7 @@
    Two-pass:
    1. Collect all declarations (classes, interfaces, free fns, typedefs)
    2. Typecheck bodies with full symbol tables.
-   Produces typed AST + per-class field-kind table + interface satisfaction set. *)
+   Produces typed AST + per-class field-kind table. *)
 
 open Ast
 

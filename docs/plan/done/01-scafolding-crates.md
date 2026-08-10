@@ -1,6 +1,6 @@
 # 01 — Scaffolding the Crate Tree
 
-**Context sources:** [`../../CLAUDE.md`](../../CLAUDE.md), [`../../README.md`](../../README.md), [`../../crates/README.md`](../../crates/README.md), [`../runtime/database.md`](../runtime/database.md), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md).
+**Context sources:** [`../../CLAUDE.md`](../../../CLAUDE.md), [`../../README.md`](../../../README.md), [`../../crates/README.md`](../../../crates/README.md), [`../runtime/database.md`](../../runtime/database.md), [`../runtime/database/07-wo-seg-migration.md`](../../runtime/database/07-wo-seg-migration.md).
 
 ## Goal
 
@@ -18,11 +18,11 @@ Lay out the full `crates/` directory tree that the 7-phase `.wo` runtime design 
 4. **No `wo-` prefix.** New runtime crates are `ql`, `value`, `engine`, etc. — not `wo-ql`, `wo-value`. The prefix is redundant inside the project's own `wo` namespace and noisy in imports (`use ql::Parser` beats `use wo_ql::Parser`). The v1 crates in `reference/crates/` keep their `wo-` prefix — the distinct prefix makes the v1/v2 split visible at a glance.
 5. **Workspace membership: root `Cargo.toml` lists every new crate as a member.** `reference/crates` stays `exclude`-d (nested workspace, separate v1 code).
 
-Rationale and alternatives considered: see [`../../CLAUDE.md`](../../CLAUDE.md) "What's in `rt` today vs. what the empty crates promise" and the recorded `AskUserQuestion` answers that preceded this plan.
+Rationale and alternatives considered: see [`../../CLAUDE.md`](../../../CLAUDE.md) "What's in `rt` today vs. what the empty crates promise" and the recorded `AskUserQuestion` answers that preceded this plan.
 
 ## Crate map
 
-All names are stable — documented in [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md) (Phase 2–5) and derived from [`../runtime/database/06-lowcode-fullstack.md`](../runtime/database/06-lowcode-fullstack.md) component tables (Phase 6).
+All names are stable — documented in [`../runtime/database/07-wo-seg-migration.md`](../../runtime/database/07-wo-seg-migration.md) (Phase 2–5) and derived from [`../runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md) component tables (Phase 6).
 
 | Phase | Crate | One-line purpose |
 | --- | --- | --- |

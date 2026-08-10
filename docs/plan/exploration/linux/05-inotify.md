@@ -6,9 +6,9 @@ Filesystem event notifications as a file descriptor. `inotify_add_watch(dir, mas
 
 | Path | What |
 | --- | --- |
-| [`reference/linux/fs/notify/inotify/inotify_user.c`](../../../reference/linux/fs/notify/inotify/inotify_user.c) | `SYSCALL_DEFINE1(inotify_init1, ...)`, `SYSCALL_DEFINE3(inotify_add_watch, ...)`, `SYSCALL_DEFINE2(inotify_rm_watch, ...)`. |
-| [`reference/linux/fs/notify/inotify/inotify_fsnotify.c`](../../../reference/linux/fs/notify/inotify/inotify_fsnotify.c) | The fsnotify backend that feeds events into the fd. |
-| [`reference/linux/include/uapi/linux/inotify.h`](../../../reference/linux/include/uapi/linux/inotify.h) | `struct inotify_event`, `IN_*` masks. |
+| [`reference/linux/fs/notify/inotify/inotify_user.c`](../../../../.dev/reference/linux/fs/notify/inotify/inotify_user.c) | `SYSCALL_DEFINE1(inotify_init1, ...)`, `SYSCALL_DEFINE3(inotify_add_watch, ...)`, `SYSCALL_DEFINE2(inotify_rm_watch, ...)`. |
+| [`reference/linux/fs/notify/inotify/inotify_fsnotify.c`](../../../../.dev/reference/linux/fs/notify/inotify/inotify_fsnotify.c) | The fsnotify backend that feeds events into the fd. |
+| [`reference/linux/include/uapi/linux/inotify.h`](../../../../.dev/reference/linux/include/uapi/linux/inotify.h) | `struct inotify_event`, `IN_*` masks. |
 
 ## Man pages
 
@@ -81,8 +81,8 @@ unsafe {
 
 ## Used by
 
-[`07-inotify-content-watcher.md`](../07-inotify-content-watcher.md) — the Stage-3 hot-reload feature. Future `sub` crate — the register-macro subscription model in [`00-linux.md § Database Subscription`](./00-linux.md#database-subscription).
+[`07-inotify-content-watcher.md`](../../07-inotify-content-watcher.md) — the Stage-3 hot-reload feature. Future `sub` crate — the register-macro subscription model in [`00-linux.md § Database Subscription`](./00-linux.md#database-subscription).
 
 ## v1 port source
 
-[`reference/crates/wo-watch/src/lib.rs`](../../../reference/crates/wo-watch/src/lib.rs) (280 LOC) — already does recursive watch setup, event parsing, and path resolution via a `wd → PathBuf` map.
+[`reference/crates/wo-watch/src/lib.rs`](../../../../.dev/reference/crates/wo-watch/src/lib.rs) (280 LOC) — already does recursive watch setup, event parsing, and path resolution via a `wd → PathBuf` map.

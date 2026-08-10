@@ -1,6 +1,6 @@
 # 16 — PostgreSQL mirror: RAM-authoritative database, Postgres as the backup
 
-> **Kanban: 🔄 in progress (Track 3 — Storage & durability)** — 16a ✅, 16b ✅ shipped; 16c–16f ⬜. Board: [00-kanban.md](00-kanban.md)
+> **Status: 🔄 in progress (Track 3 — Storage & durability)** — 16a ✅, 16b ✅ shipped; 16c–16f ⬜. Board: [00-status.md](../00-status.md)
 
 **Context sources:** [`README.md` § persistent database](../../README.md) (the product goal this implements: *"reads and writes database to RAM, persist data to postgres SQL"*), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md) (RAM-resident doctrine: disk sits behind the read path, never in front), [`./09-concurrency-scaleout.md`](./09-concurrency-scaleout.md) (per-shard WAL + ack-after-fsync this rides behind), [`./13-class-model-live-pricing.md`](./13-class-model-live-pricing.md) (the Product/Price worked example; `@table(name: "prices")` names the mirrored table), [`../runtime/database/07-wo-seg-migration.md`](../runtime/database/07-wo-seg-migration.md) (the dual-write precedent), `reference/postgresql/` (research symlink — `src/include/libpq/` for the wire protocol), PostgreSQL docs *Frontend/Backend Protocol*.
 

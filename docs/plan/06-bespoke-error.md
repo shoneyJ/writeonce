@@ -1,6 +1,6 @@
 # 06 — Bespoke Error Type
 
-> **Kanban: ⬜ not started** — Track 1 (runtime foundations). Board: [00-kanban.md](00-kanban.md)
+> **Status: ⬜ not started** — Track 1 (runtime foundations). Board: [00-status.md](../00-status.md)
 
 **Context sources:** [`./05-hand-rolled-json.md`](./05-hand-rolled-json.md), [`../01-problem.md`](../01-problem.md).
 

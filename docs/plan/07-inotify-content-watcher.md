@@ -1,12 +1,12 @@
 # 07 — `inotify` Content Watcher
 
-> **Kanban: ⬜ not started** — Track 1 (runtime foundations). Board: [00-kanban.md](00-kanban.md)
+> **Status: ⬜ not started** — Track 1 (runtime foundations). Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./linux/00-linux.md`](./linux/00-linux.md) § File Watching, [`../02-recovery.md`](../02-recovery.md) § No AWS Infrastructure.
+**Context sources:** [`./02-event-loop-epoll.md`](./done/02-event-loop-epoll.md), [`./linux/00-linux.md`](./exploration/linux/00-linux.md) § File Watching, [`../02-recovery.md`](../02-recovery.md) § No AWS Infrastructure.
 
 ## Goal
 
-First Stage-3 capability. When a `.wo` source file under the active project directory changes, `inotify` fires on the phase-02 event loop and the runtime hot-reloads the affected schema — parser re-run, catalog refreshed, live routes updated in-place. Maps to [`00-linux.md`](./linux/00-linux.md)'s "watch the content directory for file creates, modifications, and deletes. Triggers re-indexing and subscriber notification when articles change. **Replaces the S3 + Lambda event pipeline entirely.**"
+First Stage-3 capability. When a `.wo` source file under the active project directory changes, `inotify` fires on the phase-02 event loop and the runtime hot-reloads the affected schema — parser re-run, catalog refreshed, live routes updated in-place. Maps to [`00-linux.md`](./exploration/linux/00-linux.md)'s "watch the content directory for file creates, modifications, and deletes. Triggers re-indexing and subscriber notification when articles change. **Replaces the S3 + Lambda event pipeline entirely.**"
 
 Also the first real second consumer of the phase-02 `EventLoop` beyond the HTTP listener — validates the abstraction under cross-feature load.
 
@@ -26,7 +26,7 @@ Also the first real second consumer of the phase-02 `EventLoop` beyond the HTTP 
 | File | Responsibility | Port source |
 | --- | --- | --- |
 | `mod.rs` | Re-exports `Watcher`, `WatchEvent` | — |
-| `inotify.rs` | Raw wrappers: `init()`, `add_watch(path, mask)`, `read_events() -> Vec<RawEvent>`. Registers on the `EventLoop`. | [`reference/crates/wo-watch/src/lib.rs`](../../reference/crates/wo-watch/src/lib.rs) (280 LOC) — v1 already does exactly this |
+| `inotify.rs` | Raw wrappers: `init()`, `add_watch(path, mask)`, `read_events() -> Vec<RawEvent>`. Registers on the `EventLoop`. | [`reference/crates/wo-watch/src/lib.rs`](../../.dev/reference/crates/wo-watch/src/lib.rs) (280 LOC) — v1 already does exactly this |
 | `recursive.rs` | Walks the project root, calls `add_watch` for every directory matching `types/\|ui/\|logic/\|tests/` or containing `*.wo` | ~80 new LOC |
 | `debounce.rs` | Coalesces bursts per-watch-descriptor, fires a `TimerFd` for the 150 ms settle window | ~100 new LOC |
 | `reload.rs` | On debounced fire: re-discover, re-parse, re-compile, `ArcSwap::store(new_catalog)` | ~80 new LOC |
@@ -87,16 +87,16 @@ for event in loop_.wait_once(None)? {
    # wait 200 ms
    # observe: `curl :8080/api/articles` response shape reflects new field (no restart)
    ```
-4. **`[wo]` log lines** match the spec in [00-linux.md](./linux/00-linux.md) — one line per debounced change, showing the relative path and event kind.
+4. **`[wo]` log lines** match the spec in [00-linux.md](./exploration/linux/00-linux.md) — one line per debounced change, showing the relative path and event kind.
 5. **All 14 `rt` unit tests still pass.** `reference/rest/blog.rest` 20-assertion battery still green.
 6. **No fd leak** — `ls -la /proc/$PID/fd` before and after ten consecutive edits shows the same count.
 
 ## Non-scope
 
 - **No cross-platform fallback.** `kqueue` and `ReadDirectoryChangesW` are not on the roadmap. Linux only.
-- **No `fanotify`.** [00-linux.md](./linux/00-linux.md) lists it as "useful if watching needs to span mount points" — writeonce projects live in one directory tree; `inotify` is enough.
+- **No `fanotify`.** [00-linux.md](./exploration/linux/00-linux.md) lists it as "useful if watching needs to span mount points" — writeonce projects live in one directory tree; `inotify` is enough.
 - **No incremental reparse.** Full recompile per settled change. If a real project hits the full-recompile wall, phase 09+ can add a dependency-graph-aware rebuilder.
-- **No subscription push.** Phase 07 only detects and reloads. Notifying connected clients (the `register! { #{blog-title} => notify(fd) }` model in [00-linux.md](./linux/00-linux.md)) is phase 09 once `sub` activates.
+- **No subscription push.** Phase 07 only detects and reloads. Notifying connected clients (the `register! { #{blog-title} => notify(fd) }` model in [00-linux.md](./exploration/linux/00-linux.md)) is phase 09 once `sub` activates.
 
 ## Verification
 

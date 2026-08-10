@@ -1,12 +1,12 @@
 # UI track — `.htmlx` live templates + Angular-style monorepo
 
-**Context sources:** [`docs/examples/ecommerce/ui/`](../../examples/ecommerce/ui/) (current `##ui` screens — storefront, order_tracker, admin_orders), [`docs/examples/ecommerce/types/`](../../examples/ecommerce/types/) + [`docs/examples/ecommerce/logic/`](../../examples/ecommerce/logic/) (the shared-schema + shared-fn anchor), [`reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/) (v1 template engine — `{{path}}`, `{{#each}}`, `{{> partial}}`, `data-bind` attributes), [`templates/`](../../../templates/) (v1 blog's concrete `.htmlx` usage), [`docs/runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md) (Phase 6's `##ui` + `##app` block spec).
+**Context sources:** [`docs/examples/ecommerce/ui/`](../../examples/ecommerce/ui/) (current `##ui` screens — storefront, order_tracker, admin_orders), [`docs/examples/ecommerce/types/`](../../examples/ecommerce/types/) + [`docs/examples/ecommerce/logic/`](../../examples/ecommerce/logic/) (the shared-schema + shared-fn anchor), [`reference/crates/wo-htmlx/`](../../../../.dev/reference/crates/wo-htmlx/) (v1 template engine — `{{path}}`, `{{#each}}`, `{{> partial}}`, `data-bind` attributes), [`templates/`](../../../../templates/) (v1 blog's concrete `.htmlx` usage), [`docs/runtime/database/06-lowcode-fullstack.md`](../../../runtime/database/06-lowcode-fullstack.md) (Phase 6's `##ui` + `##app` block spec).
 
 ## Context
 
 Three threads converge into one plan:
 
-1. **`##ui` needs a concrete output format.** Phase 6's spec says screens "compile to a render tree" served as SSR HTML with a thin client runtime, but the actual template format isn't named. The v1 `.htmlx` engine at [`reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/) already speaks `{{bindings}}`, `{{#each}}`, `{{> partials}}`, and `data-bind` attributes — it's 90% of what the new runtime needs and already has a working parser + renderer. Adopting it (and extending it with live-subscription semantics) is cheaper than inventing a new format.
+1. **`##ui` needs a concrete output format.** Phase 6's spec says screens "compile to a render tree" served as SSR HTML with a thin client runtime, but the actual template format isn't named. The v1 `.htmlx` engine at [`reference/crates/wo-htmlx/`](../../../../.dev/reference/crates/wo-htmlx/) already speaks `{{bindings}}`, `{{#each}}`, `{{> partials}}`, and `data-bind` attributes — it's 90% of what the new runtime needs and already has a working parser + renderer. Adopting it (and extending it with live-subscription semantics) is cheaper than inventing a new format.
 
 2. **The samples want a home that matches how real frontends are organised.** The ecommerce sample today is one flat directory with `types/`, `logic/`, and `ui/` beside each other. A real deployment has *multiple apps* against the same data: a customer storefront, an admin dashboard, a fulfillment console, maybe a read-only analytics viewer. Each has its own routes, its own policies, its own ideal binary shape. Angular (via Nx / Angular CLI workspaces) solved this with `apps/*` + `libs/*` on top of a shared root config — writeonce adopts the same shape.
 
@@ -61,11 +61,11 @@ Read before writing each sub-phase:
 
 | Source | Why |
 | --- | --- |
-| [`reference/crates/wo-htmlx/src/parser.rs`](../../../reference/crates/wo-htmlx/src/parser.rs) + [`render.rs`](../../../reference/crates/wo-htmlx/src/render.rs) | The v1 template engine's exact surface — what parses, what renders, what the AST looks like. ~500 LOC total. |
-| [`templates/article.htmlx`](../../../templates/article.htmlx), [`templates/home.htmlx`](../../../templates/home.htmlx) | Concrete usage of the v1 format — how `{{path}}` and `data-bind` actually read in real templates. |
+| [`reference/crates/wo-htmlx/src/parser.rs`](../../../../.dev/reference/crates/wo-htmlx/src/parser.rs) + [`render.rs`](../../../../.dev/reference/crates/wo-htmlx/src/render.rs) | The v1 template engine's exact surface — what parses, what renders, what the AST looks like. ~500 LOC total. |
+| [`templates/article.htmlx`](../../../../templates/article.htmlx), [`templates/home.htmlx`](../../../../templates/home.htmlx) | Concrete usage of the v1 format — how `{{path}}` and `data-bind` actually read in real templates. |
 | [`docs/examples/ecommerce/ui/{storefront,order_tracker,admin_orders}.wo`](../../examples/ecommerce/ui/) | The `##ui` side — what the declarative DSL promises to produce. These screens are the target of the first compiler pass. |
-| [`docs/runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md) | Phase 6's full-stack block spec — `##ui`, `##app`, `##policy`, `##service`, `##logic` — already designed but not yet compiled. |
-| [`docs/runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md) | Phase 4's wire protocol — what the per-app binary speaks to the shared DB over. |
+| [`docs/runtime/database/06-lowcode-fullstack.md`](../../../runtime/database/06-lowcode-fullstack.md) | Phase 6's full-stack block spec — `##ui`, `##app`, `##policy`, `##service`, `##logic` — already designed but not yet compiled. |
+| [`docs/runtime/database/04-client-api.md`](../../../runtime/database/04-client-api.md) | Phase 4's wire protocol — what the per-app binary speaks to the shared DB over. |
 | [Nx monorepo docs](https://nx.dev/concepts/more-concepts/why-monorepos) | Background on the apps/libs split pattern; shape of `nx.json`. |
 
 ## Target layout
@@ -204,10 +204,10 @@ After all seven sub-phases land:
 
 ## Cross-references
 
-- [`../09-concurrency-scaleout.md`](../09-concurrency-scaleout.md) — when the shared DB daemon needs to handle 10k connections across multiple apps, that plan's thread-per-core model applies to the daemon process.
+- [`../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) — when the shared DB daemon needs to handle 10k connections across multiple apps, that plan's thread-per-core model applies to the daemon process.
 - [`../assembly/02-writeonce-stance.md`](../assembly/02-writeonce-stance.md) — still no asm. The client runtime is vanilla JS, no WASM.
-- [`../../runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md) — Phase 6's full-stack block spec that this track implements.
-- [`../../runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md) — the wire protocol per-app binaries speak to the shared DB over.
+- [`../../runtime/database/06-lowcode-fullstack.md`](../../../runtime/database/06-lowcode-fullstack.md) — Phase 6's full-stack block spec that this track implements.
+- [`../../runtime/database/04-client-api.md`](../../../runtime/database/04-client-api.md) — the wire protocol per-app binaries speak to the shared DB over.
 - [`../../examples/ecommerce/ui/admin_orders.wo`](../../examples/ecommerce/ui/admin_orders.wo) — the motivating workload: a live ops table bound to the order stream.
-- [`reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/) — the template engine ~90% of this track will reuse.
-- [`templates/`](../../../templates/) — v1 blog's actual `.htmlx` files; the format this track extends.
+- [`reference/crates/wo-htmlx/`](../../../../.dev/reference/crates/wo-htmlx/) — the template engine ~90% of this track will reuse.
+- [`templates/`](../../../../templates/) — v1 blog's actual `.htmlx` files; the format this track extends.
