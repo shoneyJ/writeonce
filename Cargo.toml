@@ -5,7 +5,7 @@
 # docs/plan/done/01-scafolding-crates.md. They are commented out of the
 # workspace until their phase activates — uncomment each one as code lands.
 #
-# The v1 writeonce blog crates at `reference/crates/` are a separate nested
+# The v1 writeonce blog crates at `.dev/reference/crates/` are a separate nested
 # workspace, excluded here so the root build stays focused on the new runtime.
 
 [workspace]
@@ -32,7 +32,7 @@ members = [
     # "crates/app",      # phase 06 target — ##app manifest
 ]
 exclude = [
-    "reference/crates",
+    ".dev/reference/crates",
 ]
 
 [workspace.dependencies]

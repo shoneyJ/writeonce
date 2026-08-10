@@ -3,6 +3,7 @@
   "recommendations": [
     "bierner.markdown-mermaid",   // renders ```mermaid blocks in the markdown preview
     "rust-lang.rust-analyzer",
-    "humao.rest-client"           // reference/rest/*.rest files
+    "humao.rest-client",          // .dev/reference/rest/*.rest files
+    "ms-vscode.cpptools"          // C debugging (launch.json cppdbg configs, runtime/)
   ]
 }

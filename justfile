@@ -4,16 +4,16 @@
 hello:
     cargo run --bin wo -- run docs/examples/hello
 
-# C runtime reference (prototypes/wo-rt-c): build, serve, CRUD round-trip, shut down
+# C runtime reference (runtime/): build, serve, CRUD round-trip, shut down
 # Phase A: thread-per-core — each connection hashes to one shard (SO_REUSEPORT),
 # so a list may land on a different shard than the create. The counters on /
 # show the spread. WO_THREADS=4 keeps the demo output readable.
 rt-c-demo port="8085" threads="4":
     #!/usr/bin/env bash
     set -euo pipefail
-    make -C prototypes/wo-rt-c
+    make -C runtime
     data=$(mktemp -d /tmp/wo-demo-XXXXXX)
-    WO_PORT={{port}} WO_THREADS={{threads}} WO_DATA=$data ./prototypes/wo-rt-c/wo-rt &
+    WO_PORT={{port}} WO_THREADS={{threads}} WO_DATA=$data ./runtime/wo-rt &
     server=$!
     trap 'kill $server 2>/dev/null; sleep 0.3; rm -rf $data' EXIT
     base=http://127.0.0.1:{{port}}
@@ -26,18 +26,36 @@ rt-c-demo port="8085" threads="4":
     curl -s "$base/api/notes"; echo
     echo "--- spread:"; curl -s "$base/"; echo
 
+# wovm VM core (runtime/src): build the binary
+wovm-build:
+    make -C runtime wovm
+
+# wovm full gate: unit suite (ASan+UBSan), ISO dispatch flavor, CLI smoke
+wovm-test:
+    make -C runtime test
+    make -C runtime test-iso
+    bash runtime/test/cli_smoke.sh
+
+# woc compiler front (compiler/): build the executable
+woc-build:
+    dune build --root compiler
+
+# woc gate: unit tests (test_diag) + golden suite (runner, WOC_BLESS=1 to update)
+woc-test:
+    dune runtest --root compiler
+
 # phase-F benchmark: reads, durable writes, 10k idle conns (scaled geometry)
 rt-c-bench port="8085" threads="8" conns="64":
     #!/usr/bin/env bash
     set -euo pipefail
-    make -C prototypes/wo-rt-c clean >/dev/null
-    make -C prototypes/wo-rt-c CFLAGS="-O2 -Wall -Wextra -std=c11 -DSLOTS_PER_SHARD=262144" wo-rt bench >/dev/null
+    make -C runtime clean >/dev/null
+    make -C runtime CFLAGS="-O2 -Wall -Wextra -std=c11 -DSLOTS_PER_SHARD=262144" wo-rt bench >/dev/null
     data=$(mktemp -d /tmp/wo-bench-XXXXXX)
-    WO_PORT={{port}} WO_THREADS={{threads}} WO_DATA=$data ./prototypes/wo-rt-c/wo-rt >/dev/null 2>&1 &
+    WO_PORT={{port}} WO_THREADS={{threads}} WO_DATA=$data ./runtime/wo-rt >/dev/null 2>&1 &
     server=$!
-    trap 'kill $server 2>/dev/null; sleep 0.3; rm -rf $data; make -C prototypes/wo-rt-c clean >/dev/null; make -C prototypes/wo-rt-c wo-rt bench >/dev/null' EXIT
+    trap 'kill $server 2>/dev/null; sleep 0.3; rm -rf $data; make -C runtime clean >/dev/null; make -C runtime wo-rt bench >/dev/null' EXIT
     base=127.0.0.1; for _ in $(seq 1 40); do curl -s "http://$base:{{port}}/healthz" >/dev/null && break; sleep 0.25; done
-    B=./prototypes/wo-rt-c/bench/bench
+    B=./runtime/bench/bench
     echo "wo-rt-c ({{threads}} shards, durable WAL):"
     $B $base {{port}} {{conns}} 5 /healthz
     $B $base {{port}} {{conns}} 5 /
