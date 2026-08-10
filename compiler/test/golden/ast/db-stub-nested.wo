@@ -1,0 +1,5 @@
+fn sync_nested() {
+  let wrapped = wrap(select Product { price > 5 })
+  let arr = data[select Product { price > 5 }]
+  let done_marker = 1
+}

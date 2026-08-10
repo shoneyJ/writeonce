@@ -1,0 +1,17 @@
+1:1 CLASS Widget
+  2:3 METHOD describe(mut active: Bool) -> Text
+    3:5 IF active
+      4:7 LET inner = Widget { active: false }
+      5:7 RETURN "on-plain"
+    7:5 WHILE active
+      8:7 ASSIGN active = false
+    10:5 FOR part IN active
+      11:7 RETURN "loop"
+    13:5 IF Widget { active: true }.active
+      14:7 RETURN "on-parenthesized"
+    16:5 IF make(Widget { active: true })
+      17:7 RETURN "on-call-arg"
+    19:5 IF items[Widget { active: true }]
+      20:7 RETURN "on-index"
+    22:5 LET w = Widget { active: true, label: "hello" }
+    23:5 RETURN "off"

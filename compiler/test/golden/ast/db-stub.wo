@@ -1,0 +1,7 @@
+fn sync() {
+  insert Product { sku: "A1", price: 10 }
+  select Product { sku == "A1" }
+  let rows = select Product { price > 5 }
+  INSERT Product { sku: "A2" }
+  SELECT Product { sku == "A2" }
+}

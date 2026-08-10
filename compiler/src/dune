@@ -1,0 +1,5 @@
+; compiler/src/dune — woc library (Task 2 onward adds modules per plan)
+; OCaml stdlib only: no Menhir, no ppx, no opam libraries.
+(library
+  (name woc_lib)
+  (modules diag token ast lexer parser types dump))

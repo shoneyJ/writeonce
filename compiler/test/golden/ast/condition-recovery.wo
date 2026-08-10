@@ -1,0 +1,6 @@
+fn broken_cond() {
+  if 1 + {
+    return 1
+  }
+  let w = Widget { a: 1 }
+}

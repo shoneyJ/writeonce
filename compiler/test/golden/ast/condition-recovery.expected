@@ -1,0 +1,2 @@
+1:1 METHOD broken_cond()
+  5:3 LET w = Widget { a: 1 }

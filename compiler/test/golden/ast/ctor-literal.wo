@@ -1,0 +1,25 @@
+class Widget {
+  fn describe(mut active: Bool) -> Text {
+    if active {
+      let inner = Widget { active: false }
+      return "on-plain"
+    }
+    while active {
+      active = false
+    }
+    for part in active {
+      return "loop"
+    }
+    if (Widget { active: true }).active {
+      return "on-parenthesized"
+    }
+    if make(Widget { active: true }) {
+      return "on-call-arg"
+    }
+    if items[Widget { active: true }] {
+      return "on-index"
+    }
+    let w = Widget { active: true, label: "hello" }
+    return "off"
+  }
+}

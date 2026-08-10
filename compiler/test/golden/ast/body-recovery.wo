@@ -1,0 +1,6 @@
+fn oops() {
+  let ok1 = 1
+  let bad1 = ;
+  let ok2 = 2
+  return bad2 +
+}

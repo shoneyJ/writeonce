@@ -1,0 +1,4 @@
+1:1 METHOD sync_nested()
+  2:3 LET wrapped = wrap(DB_STUB(IDENT(select) IDENT(Product) LBRACE IDENT(price) GT INT(5) RBRACE))
+  3:3 LET arr = data[DB_STUB(IDENT(select) IDENT(Product) LBRACE IDENT(price) GT INT(5) RBRACE)]
+  4:3 LET done_marker = 1

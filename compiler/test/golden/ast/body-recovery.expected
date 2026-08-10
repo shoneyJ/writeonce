@@ -1,0 +1,3 @@
+1:1 METHOD oops()
+  2:3 LET ok1 = 1
+  4:3 LET ok2 = 2

@@ -1,0 +1,26 @@
+1:1 CLASS Calc
+  2:3 FIELD items: multi Item
+  4:3 METHOD run(mut total: Int, step: Int) -> Int
+    5:5 LET base: Int = 10
+    6:5 LET label = "sum"
+    7:5 ASSIGN total = total + base * 2 - 1
+    8:5 LET neg = -total
+    9:5 IF total > 100
+      10:7 ASSIGN label = label .. "-big"
+    11:7 ELSE
+      11:12 IF total > 50
+        12:7 ASSIGN label = label .. "-mid"
+      13:7 ELSE
+        14:7 ASSIGN label = label .. "-small"
+    16:5 WHILE total > 0
+      17:7 ASSIGN total = total - step
+    19:5 FOR item IN self.items
+      20:7 EXPR item.touch()
+      21:7 ASSIGN total = total + item.count
+    23:5 IF neg > 0
+      24:7 RETURN
+    26:5 LET first = self.items[0]
+    27:5 LET cache = PriceCache { entries: total, note: label }
+    28:5 RETURN latest(self.items).amount
+32:1 METHOD add(a: Int, b: Int) -> Int
+  33:3 RETURN a + b
