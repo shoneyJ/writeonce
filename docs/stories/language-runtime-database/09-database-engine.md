@@ -6,8 +6,10 @@
 ## Goals
 
 - The language's oldest promise executes on the new runtime: every class is
-  a table. `insert` and `select` stop trapping (`DB_STUB` retires) and run
-  against class-shaped row storage inside the VM's shards.
+  a table, every `ref`/`multi` field a relation — the `@`-annotations
+  (`@table`, `@unique`) are the built-in ORM, mapped at compile time with no
+  external layer. `insert` and `select` stop trapping (`DB_STUB` retires)
+  and run against class-shaped row storage inside the VM's shards.
 - Data survives anything: a typed write-ahead log with ack-after-fsync,
   parallel boot replay, and a crash battery proving no committed row is
   ever lost and no half-applied transaction ever visible.
@@ -45,6 +47,11 @@
 - Doctrine: RAM is authoritative; the WAL makes it durable; indexes drift
   unless writes go through the row API — the Rust runtime learned this
   lesson, the C engine enforces it.
+- Annotations, not macros: `@table`/`@unique` are compiler-known and
+  resolved at compile time; user-defined macros stay rejected (systems-track
+  verdict table). A `ref T` field compiles to a typed row id (FK); `multi T`
+  to the owning-side collection edge — the relation model the examples
+  (pricing's `Product`/`Price`) already write.
 - The wo-db overlap manifest keeps the C++ prototype and this engine
   answer-compatible where features overlap.
 

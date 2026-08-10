@@ -16,7 +16,7 @@
 
 - What to achieve?
     - **Given** the blog sample's `service` declarations,
-    - **when** the compiled binary boots and `reference/rest/blog.rest`
+    - **when** the compiled binary boots and `.dev/reference/rest/blog.rest`
       runs against it,
     - **then** every request in the smoke file answers as documented —
       including the intentional 501/405/404 responses.
@@ -36,7 +36,7 @@
 ## Out Of Scope
 
 - WebSocket/live subscriptions and UI (the parked `##ui` story).
-- The management plane endpoints (iteration 11 builds them on this
+- The management plane endpoints (iteration 12 builds them on this
   machinery).
 
 ## Info

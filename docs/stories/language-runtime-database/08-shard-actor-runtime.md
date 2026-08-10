@@ -11,6 +11,10 @@
   state never exists.
 - The language grows `spawn` and message send; garbage collection stays
   per-shard, so no global pause appears at any core count.
+- The `@gc` story completes here: the Bacon–Rajan cycle collector (staged
+  out of iteration 2) lands on the shard's own event loop — the per-tick
+  budget host it was always specified to run on — retiring iteration 2's
+  documented cycle leak.
 
 ## Acceptance Criteria
 
@@ -29,11 +33,17 @@
     - **when** code attempts to send it cross-shard,
     - **then** the compiler rejects it — aliased references cannot cross
       heap boundaries.
+- What to achieve?
+    - **Given** a cyclic `@gc` object graph that becomes garbage,
+    - **when** the shard's budgeted collection ticks run,
+    - **then** the cycle is freed within the configured budget, no pause
+      exceeds the configured slice, and iteration 2's must-leak fixture
+      flips to must-collect.
 
 ## Out Of Scope
 
-- Fibers/green threads (recorded in the blue-green vision §3; extends this
-  scheduler later).
+- Fibers/green threads — iteration 11 extends this scheduler; research at
+  `docs/plan/exploration/fibers/00-fibers.md`.
 - Cross-shard transactions (the database iteration's 2PC concern, later).
 
 ## Info
@@ -48,4 +58,6 @@
 - Execute the existing plan: `docs/superpowers/plans/2026-08-01-shard-actor-vm-runtime.md`
   (pinned-worker scheduler, shard-stamped heaps, MPSC mailbox rings + mail
   eventfds, send-as-move with home-routed frees, gc pacing per tick,
-  spawn/send surface, actor corpus).
+  spawn/send surface, actor corpus) — plus the cycle-collector task
+  adopted from iteration 2's plan: possible-cycle buffer on RC decrement,
+  trial-deletion scan under the per-tick budget.

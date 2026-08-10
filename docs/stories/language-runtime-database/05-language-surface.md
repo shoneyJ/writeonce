@@ -48,6 +48,6 @@
 
 ## Proposed Solution
 
-- Execute the existing plan: `compiler/plan/2026-08-01-haxe-parity-language.md`
+- Execute the existing plan: `docs/plan/compiler/2026-08-01-haxe-parity-language.md`
   (nine tasks, each shipping its fixtures and error-catalog entries in the
   same task).

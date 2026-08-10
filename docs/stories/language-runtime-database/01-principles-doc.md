@@ -5,16 +5,18 @@
 
 ## Goals
 
-- The repo gains `docs/00-principles.md`: one page stating the twelve
+- The repo gains `docs/00-principles.md`: one page stating the thirteen
   writeonce principles — the doctrine every later iteration links back to
   instead of re-arguing.
-- The twelve: one binary is the whole system; zero dependencies (kernel
+- The thirteen: one binary is the whole system; zero dependencies (kernel
   primitives only); memory safety without a GC tax (MVS ownership, opt-in
   `@gc`, per-shard collection); no inheritance ever; thread-per-core shards
   with ownership moves; the runtime never stops (blue-green slots, embedded
   source); RAM authoritative + WAL durable; samples force the grammar;
   Linux is the target; capabilities are typed builtins (no FFI); plain
-  diagnostics are the product; the runtime is a recipe box.
+  diagnostics are the product; the runtime is a recipe box; statically
+  typed all the way to the register (no `Dynamic`, untagged VM slots,
+  annotations as the compile-time ORM).
 
 ## Acceptance Criteria
 
@@ -44,6 +46,7 @@
 
 ## Proposed Solution
 
-- Author the page with the twelve principles in the order listed in the
-  governing spec; verify every link resolves; add the CLAUDE.md pointer
+- Author the page with the thirteen principles in the order listed in the
+  governing spec (the thirteenth — static typing — added 2026-08-08 by
+  story amendment); verify every link resolves; add the CLAUDE.md pointer
   line; record the commit draft in `.dev/commit.md`.

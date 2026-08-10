@@ -35,7 +35,7 @@
 ## Out Of Scope
 
 - Anything beyond the milestone grammar (iteration 5 grows the surface).
-- Hot reload / deployment mechanics (iteration 11 — but the self-exec
+- Hot reload / deployment mechanics (iteration 12 — but the self-exec
   trailer this iteration ships is its foundation).
 
 ## Info
@@ -48,7 +48,7 @@
 
 ## Proposed Solution
 
-- Execute the existing plan: `compiler/plan/2026-08-01-wob-emit-e2e-single-binary.md`
+- Execute the existing plan: `docs/plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md`
   (emitter with ownership lowering + drop maps + vtables, corpus harness,
   pricing corpus, ownership/trap corpora, gc pump e2e, `woc build` trailer,
   `just oop-accept` gate over the five spec success criteria).
