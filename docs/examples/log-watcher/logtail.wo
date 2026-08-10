@@ -1,0 +1,157 @@
+-- logtail.wo — LogTail.hx, file for file: bounded tail reads over `fs`.
+-- One poll = read at most CHUNK new tail bytes, judge only complete lines
+-- (plan 02: never scan a file front to back; torn final line held back).
+--
+-- The three Haxe imports (sys.FileSystem, sys.io.File, sys.io.FileSeek)
+-- collapse into one `use fs`: stat carries the inode, read_at takes the
+-- offset as a parameter (no seek state), and the file handle lives and dies
+-- inside the builtin — RAII instead of the open/try/close dance.
+
+use fs
+
+-- LogTail.hx:6-11. Field defaults replace LogTail.newState(): construction
+-- is the brace literal `TailState {}`, the defaults fill in.
+typedef TailState = {
+  offset:          Int  = 0     -- next read position (past last complete line)
+  ino:             Int  = -1    -- inode at last poll, -1 before first sight
+  last_level:      Text = ""    -- level of the last complete entry, "" if none
+  last_newline_at: Int  = 0     -- ms clock when complete lines last arrived
+}
+
+typedef PollResult = {
+  exists:     Bool
+  new_lines:  Int
+  bytes_read: Int
+}
+
+const CHUNK = 65536
+
+-- `now` is injected (ms) so tests can drive synthetic time. LogTail.hx:28-75.
+pub fn poll(path: Text, mut st: TailState, now: Int) -> PollResult {
+  let stat = fs.stat(path);
+  if stat == nil { return PollResult { exists: false, new_lines: 0, bytes_read: 0 }; }
+
+  if st.ino == -1 {
+    -- first sight: start at most CHUNK before EOF; a partial first line is
+    -- read as a continuation, which is acceptable
+    st.ino = stat.inode;
+    st.offset = 0;
+    if stat.size > CHUNK { st.offset = stat.size - CHUNK; }
+  } else if stat.inode != st.ino or stat.size < st.offset {
+    -- rotation (rename/recreate or truncate): restart from the top
+    st.ino = stat.inode;
+    st.offset = 0;
+    st.last_level = "";
+  }
+  if stat.size - st.offset > CHUNK { st.offset = stat.size - CHUNK; }  -- burst: jump to tail
+  if stat.size <= st.offset { return PollResult { exists: true, new_lines: 0, bytes_read: 0 }; }
+
+  -- Shrunk between stat and read (the Haxe Eof catch): read_at returns what
+  -- is actually there; the next poll re-syncs.
+  let chunk = fs.read_at(path, st.offset, stat.size - st.offset);
+  if len(chunk) == 0 { return PollResult { exists: true, new_lines: 0, bytes_read: 0 }; }
+
+  -- only complete lines count: cut at the last newline, hold the rest
+  let nl = last_index_of(chunk, "\n");
+  if nl == -1 { return PollResult { exists: true, new_lines: 0, bytes_read: len(chunk) }; }
+
+  let lines = split(substr(chunk, 0, nl + 1), "\n");
+  pop(lines);                                  -- empty piece after the final newline
+  st.offset = st.offset + nl + 1;
+  for line in lines {
+    -- relaxed rule (service-health): timestamped app logs must classify
+    -- too, or their errors never trip the alert rule
+    let lv = classify_loose(sanitize(line));
+    if lv != nil { st.last_level = lv; }       -- else continuation: inherits
+  }
+  if len(lines) > 0 { st.last_newline_at = now; }
+  return PollResult { exists: true, new_lines: len(lines), bytes_read: len(chunk) };
+}
+
+-- Strict prefix rule for demo/test logs. LogTail.hx:77-82.
+pub fn classify(line: Text) -> ?Text {
+  if starts_with(line, "info")  { return "info"; }
+  if starts_with(line, "warn")  { return "warn"; }
+  if starts_with(line, "error") { return "error"; }
+  return nil;
+}
+
+-- Real app logs put a timestamp first ("2026-07-22T15:40:00 - error: …");
+-- the relaxed rule also accepts the level after a leading token. Haxe used
+-- an EReg (LogTail.hx:87, ~/^\S+\s+-\s+(info|warn|error)\b/); with no regex
+-- in the language the same rule is spelled out: token, lone dash, level
+-- with a word boundary. Callers pass a sanitized line — ANSI codes hide
+-- the prefix.
+pub fn classify_loose(line: Text) -> ?Text {
+  let lv = classify(line);
+  if lv != nil { return lv; }
+  let tokens = split_ws(line);
+  if len(tokens) < 3 { return nil; }
+  if tokens[1] != "-" { return nil; }
+  return level_bounded(tokens[2]);
+}
+
+-- The regex's \b: "error:" and "error," carry the level; "errors" does not.
+fn level_bounded(tok: Text) -> ?Text {
+  for lv in ["info", "warn", "error"] {
+    if starts_with(tok, lv) {
+      if len(tok) == len(lv) { return lv; }
+      if is_word_byte(byte_at(tok, len(lv))) { return nil; }
+      return lv;
+    }
+  }
+  return nil;
+}
+
+fn is_word_byte(c: Int) -> Bool {
+  if c >= 48 and c <= 57 { return true; }      -- 0-9
+  if c >= 65 and c <= 90 { return true; }      -- A-Z
+  if c >= 97 and c <= 122 { return true; }     -- a-z
+  return c == 95;                              -- _
+}
+
+-- Tools.hx:24-34, moved here beside its heaviest caller (poll). Log lines
+-- can carry ANSI color sequences and stray control bytes; they would break
+-- classification and produce invalid JSON at the client. Strip ESC[…letter
+-- sequences, drop other C0 bytes (tab stays). The Haxe EReg becomes an
+-- explicit byte scan.
+pub fn sanitize(line: Text) -> Text {
+  let out = "";
+  let i = 0;
+  while i < len(line) {
+    let c = byte_at(line, i);
+    if c == 27 and i + 1 < len(line) and byte_at(line, i + 1) == 91 {
+      i = i + 2;                               -- skip ESC [
+      while i < len(line) {
+        let f = byte_at(line, i);
+        i = i + 1;
+        if (f >= 65 and f <= 90) or (f >= 97 and f <= 122) { break; }
+      }
+      continue;
+    }
+    if c >= 32 or c == 9 { out = out + char_of(c); }
+    i = i + 1;
+  }
+  return out;
+}
+
+-- Last <= n complete lines from the final CHUNK bytes of the file. A
+-- cut-off first line is acceptable (same as first-sight poll); an
+-- unterminated final line is dropped. nil when the file is missing.
+-- LogTail.hx:98-120.
+pub fn last_lines(path: Text, n: Int) -> ?multi Text {
+  let stat = fs.stat(path);
+  if stat == nil { return nil; }
+  let start = 0;
+  if stat.size > CHUNK { start = stat.size - CHUNK; }
+  if stat.size - start <= 0 { return []; }
+  let chunk = fs.read_at(path, start, stat.size - start);
+  if len(chunk) == 0 { return []; }
+  let nl = last_index_of(chunk, "\n");
+  if nl == -1 { return []; }
+  let lines = split(substr(chunk, 0, nl + 1), "\n");
+  pop(lines);                                  -- empty piece after the final newline
+  if start > 0 and len(lines) > 0 { shift(lines); }   -- cut-off first line
+  if len(lines) > n { return slice(lines, len(lines) - n, len(lines)); }
+  return lines;
+}

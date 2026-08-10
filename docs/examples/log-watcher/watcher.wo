@@ -1,0 +1,64 @@
+-- watcher.wo — Watcher.hx, file for file. One watched log. Service mode
+-- (live=true) reports ALERT/CLEAR transitions continuously; cron mode is
+-- driven by the supervisor via done()/result().
+
+-- Watcher.hx:3-7 — the Haxe enum is a tagged union.
+type CronResult = Ok | ErrorFinal | Miss
+  -- Ok:         completed, last entry not error
+  -- ErrorFinal: completed with error as the last entry -> alert
+  -- Miss:       log never produced content during the window
+
+class Watcher {
+  -- Haxe `(default, null)` — public read, owner-only write — is `pub(read)`.
+  pub(read) path:        Text
+  pub(read) alerted:     Bool = false
+  pub(read) saw_content: Bool = false
+
+  -- The constructor body (Watcher.hx:23-30) is gone: `st` self-initializes
+  -- through TailState's field defaults; construction is the brace literal.
+  st:           TailState = TailState {}
+  quiet_ms:     Int                      -- quietPeriod, seconds -> ms
+  poll_ms:      Int                      -- pollInterval, seconds -> ms
+  live:         Bool
+  activated_at: Int                      -- ms
+  last_poll_at: Int = 0                  -- 0 = never polled; first due() is true
+                                         -- (Haxe used NEGATIVE_INFINITY)
+
+  fn due(now: Int) -> Bool {
+    return now - self.last_poll_at >= self.poll_ms;
+  }
+
+  fn tick(now: Int) {
+    self.last_poll_at = now;
+    let r = poll(self.path, self.st, now);      -- exclusive borrow of st for the call
+    if r.new_lines > 0 { self.saw_content = true; }
+    if self.live == false { return; }
+    -- the alert rule (README): last entry is error and nothing follows
+    if self.alerted == false and self.saw_content and self.st.last_level == "error" and now - self.st.last_newline_at >= self.quiet_ms {
+      self.alerted = true;
+      print("ALERT ${self.path}: last entry is error, quiet for ${self.quiet_ms / 1000}s");
+      return;
+    }
+    if self.alerted and self.st.last_level != "error" {
+      self.alerted = false;
+      print("CLEAR ${self.path}: new ${self.st.last_level} entries arrived");
+    }
+  }
+
+  -- cron mode: the job is judged complete after a quiet period — from the
+  -- last write if the log produced content, else from activation (a miss)
+  fn done(now: Int) -> Bool {
+    if self.saw_content { return now - self.st.last_newline_at >= self.quiet_ms; }
+    return now - self.activated_at >= self.quiet_ms;
+  }
+
+  fn result() -> CronResult {
+    if self.saw_content == false { return Miss; }
+    if self.st.last_level == "error" { return ErrorFinal; }
+    return Ok;
+  }
+
+  fn last_level() -> Text {
+    return self.st.last_level;
+  }
+}

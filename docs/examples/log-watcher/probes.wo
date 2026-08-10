@@ -1,0 +1,36 @@
+-- probes.wo — Flock.hx + Pgrep.hx as static fns over `proc` (the spec's
+-- `Flock.held` / `Pgrep.alive` pattern is what the `static` adoption is
+-- for). Args-array only: no shell-string form exists, so command injection
+-- is unrepresentable (systems-track spec Part 3).
+
+use fs
+use proc
+
+class Flock {
+  -- flock(1) probe: is an exclusive lock currently held on `path`?
+  -- Exit 1 = -n conflict = held; 0 = acquired-and-released = free. Anything
+  -- else (66 unreadable file, spawn failure = no flock binary) = unknown ->
+  -- report free, so the supervisor falls back to watching normally (the
+  -- safe direction). The exists() guard keeps the probe read-only: flock -n
+  -- would O_CREAT a missing lock file, and a missing file means nobody
+  -- holds it anyway. Flock.hx:1-12.
+  static fn held(path: Text) -> Bool {
+    if fs.exists(path) == false { return false; }
+    let r = try proc.run("flock", ["-n", path, "true"]) catch (e) nil;
+    if r == nil { return false; }
+    return r.code == 1;
+  }
+}
+
+class Pgrep {
+  -- pgrep(1) probe: is any process whose command line contains `needle`
+  -- alive? Exit 0 = yes; 1 = no; spawn failure (no pgrep binary) = unknown
+  -- -> report not running, the same safe direction as Flock.held. The Haxe
+  -- `try new Process catch return false` is the same shape with the trap
+  -- surface instead of Dynamic. Pgrep.hx:1-12.
+  static fn alive(needle: Text) -> Bool {
+    let r = try proc.run("pgrep", ["-f", "--", needle]) catch (e) nil;
+    if r == nil { return false; }
+    return r.code == 0;
+  }
+}

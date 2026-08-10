@@ -1,0 +1,11 @@
+name        = "log-watcher"
+version     = "0.1.0"
+description = "The Haxe log-watcher ported file-for-file: the systems-track sample workload (program mode + fs/proc/net/time/json)"
+
+# A free `fn main` makes this a PROGRAM (systems-track spec Part 2): one
+# shard, blocking builtins legal, exit code = main's return value. No [app]
+# listen — the mcp subcommand takes its port from config.json, like the
+# original.
+
+[runtime]
+wo = ">= 0.1"

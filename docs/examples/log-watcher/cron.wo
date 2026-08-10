@@ -1,0 +1,305 @@
+-- cron.wo — Cron.hx, file for file. Read-only parser for a cron.d-format
+-- directory (plan 03). The directory is always a parameter so tests and
+-- demos run on fixtures without root.
+--
+-- Haxe leaned on three ERegs (ws split, env-line, redirect) and on Date for
+-- next-fire. The regexes are spelled out as scans; Date forces the one
+-- time-module addition this sample discovers: time.local(ms) ->
+-- { year, month (1-12), day, hour, minute, dow (0-6, Sunday 0) } in the
+-- host timezone — cron semantics are local time.
+
+use fs
+use time
+
+typedef CronEntry = {
+  schedule:  Text          -- 5-field expression, aliases expanded
+  user:      Text
+  command:   Text          -- verbatim, redirections included
+  log_path:  Text
+  lock_path: ?Text         -- flock lock file, nil for un-flocked commands
+  src_file:  Text
+  src_line:  Int
+}
+
+typedef Skipped = {
+  src_file: Text
+  src_line: Int
+  reason:   Text
+}
+
+typedef ParseResult = {
+  entries: multi CronEntry
+  skipped: multi Skipped
+}
+
+-- Cron.hx:25-33 (private typedef Fields).
+typedef Fields = {
+  minute: multi Bool
+  hour:   multi Bool
+  dom:    multi Bool
+  month:  multi Bool
+  dow:    multi Bool
+  dom_r:  Bool             -- dom field restricted (not "*")
+  dow_r:  Bool
+}
+
+const FILE_CAP = 1048576   -- cron.d files are small; cap read_all anyway
+
+pub fn parse_dir(dir: Text) -> ParseResult {
+  let res = ParseResult { entries: [], skipped: [] };
+  if fs.exists(dir) == false { return res; }
+  let names = try fs.list(dir) catch (e) nil;
+  if names == nil {
+    skip(res, dir, 0, "unreadable directory");
+    return res;
+  }
+  sort(names);
+  for name in names {
+    if index_of(name, ".") >= 0 { continue; }  -- cron ignores dotted names
+    let st = fs.stat("${dir}/${name}");
+    if st == nil { continue; }
+    if st.dir { continue; }
+    parse_file("${dir}/${name}", res);
+  }
+  return res;
+}
+
+fn parse_file(path: Text, mut res: ParseResult) {
+  let content = try fs.read_all(path, FILE_CAP) catch (e) nil;
+  if content == nil {
+    skip(res, path, 0, "unreadable");
+    return;
+  }
+  let line_no = 0;
+  for raw in split(content, "\n") {
+    line_no = line_no + 1;
+    let line = trim(raw);
+    if line == "" or starts_with(line, "#") { continue; }
+    if is_env_line(line) { continue; }
+    parse_job(line, path, line_no, res);
+  }
+}
+
+fn skip(mut res: ParseResult, src_file: Text, src_line: Int, reason: Text) {
+  push(res.skipped, Skipped { src_file: src_file, src_line: src_line, reason: reason });
+}
+
+-- Cron.hx:53's ^[A-Za-z_][A-Za-z0-9_]*\s*= — a NAME= assignment line.
+fn is_env_line(line: Text) -> Bool {
+  let c0 = byte_at(line, 0);
+  if is_word_byte(c0) == false or (c0 >= 48 and c0 <= 57) { return false; }
+  let i = 1;
+  while i < len(line) and is_word_byte(byte_at(line, i)) { i = i + 1; }
+  while i < len(line) and (byte_at(line, i) == 32 or byte_at(line, i) == 9) { i = i + 1; }
+  return i < len(line) and byte_at(line, i) == 61;     -- '='
+}
+
+fn parse_job(line: Text, src_file: Text, src_line: Int, mut res: ParseResult) {
+  let tokens = split_ws(line);
+  let schedule = "";
+  let rest: multi Text = [];
+  if starts_with(tokens[0], "@") {
+    if tokens[0] == "@reboot" { skip(res, src_file, src_line, "@reboot out of scope"); return; }
+    let expanded = alias_of(tokens[0]);
+    if expanded == nil { skip(res, src_file, src_line, "unknown alias ${tokens[0]}"); return; }
+    schedule = expanded;
+    rest = slice(tokens, 1, len(tokens));
+  } else {
+    if len(tokens) < 7 { skip(res, src_file, src_line, "malformed: too few fields"); return; }
+    schedule = join(slice(tokens, 0, 5), " ");
+    rest = slice(tokens, 5, len(tokens));
+  }
+  if parse_expr(schedule) == nil { skip(res, src_file, src_line, "malformed schedule: ${schedule}"); return; }
+  if len(rest) < 2 { skip(res, src_file, src_line, "malformed: missing command"); return; }
+  let command = join(slice(rest, 1, len(rest)), " ");
+  let log_path = find_log(command);
+  if log_path == nil { skip(res, src_file, src_line, "not watchable (no plain .log redirection)"); return; }
+  push(res.entries, CronEntry {
+    schedule: schedule, user: rest[0], command: command,
+    log_path: log_path, lock_path: find_lock(command),
+    src_file: src_file, src_line: src_line,
+  });
+}
+
+-- The log path is the first redirection target that is a plain .log path
+-- (plan 03 watchability convention: no $VARs, no pipes). Cron.hx:54's
+-- redirect EReg becomes a scan: at each '>' take the token that follows —
+-- the &>/2>/>> prefixes all end in the same '>'.
+fn find_log(command: Text) -> ?Text {
+  let i = 0;
+  while i < len(command) {
+    if byte_at(command, i) != 62 { i = i + 1; continue; }        -- '>'
+    let j = i + 1;
+    if j < len(command) and byte_at(command, j) == 62 { j = j + 1; }  -- '>>'
+    while j < len(command) and (byte_at(command, j) == 32 or byte_at(command, j) == 9) { j = j + 1; }
+    let k = j;
+    while k < len(command) and byte_at(command, k) != 32 and byte_at(command, k) != 9 { k = k + 1; }
+    let target = substr(command, j, k - j);
+    if ends_with(target, ".log") and index_of(target, "$") == -1 { return target; }
+    i = k;
+    if i == j { i = j + 1; }                    -- trailing '>' with no target
+  }
+  return nil;
+}
+
+-- A flock-wrapped command notes its lock file: the lock path is the first
+-- absolute path after `flock`, before any -c (no flock option takes an
+-- absolute-path value, so e.g. `-w 600` is skipped naturally). Cron.hx:134-143.
+fn find_lock(command: Text) -> ?Text {
+  let tokens = split_ws(command);
+  if tokens[0] != "flock" and ends_with(tokens[0], "/flock") == false { return nil; }
+  let i = 1;
+  while i < len(tokens) {
+    if tokens[i] == "-c" { return nil; }
+    if starts_with(tokens[i], "/") { return tokens[i]; }
+    i = i + 1;
+  }
+  return nil;
+}
+
+-- Next fire time (ms) strictly after `from_ms`, or nil if none within a
+-- year (also nil for an invalid expression). Cron.hx:147-166, minute-
+-- resolution forward scan.
+pub fn next_fire(expr: Text, from_ms: Int) -> ?Int {
+  let f = parse_expr(expr);
+  if f == nil { return nil; }
+  let t = (from_ms / 60000) * 60000 + 60000;
+  let limit = t + 366 * 24 * 3600 * 1000;
+  while t < limit {
+    let d = time.local(t);
+    if f.month[d.month] == false { t = t + 86400000; continue; }
+    let day_ok = false;
+    if f.dom_r and f.dow_r {
+      day_ok = f.dom[d.day] or f.dow[d.dow];    -- vixie quirk: restricted dom
+    } else {                                    -- AND dow match on either (OR)
+      day_ok = f.dom[d.day] and f.dow[d.dow];
+    }
+    if day_ok == false or f.hour[d.hour] == false {
+      t = (t / 3600000) * 3600000 + 3600000;    -- next hour
+      continue;
+    }
+    if f.minute[d.minute] == false { t = t + 60000; continue; }
+    return t;
+  }
+  return nil;
+}
+
+fn parse_expr(expr: Text) -> ?Fields {
+  let e = trim(expr);
+  if starts_with(e, "@") {
+    let a = alias_of(e);
+    if a == nil { return nil; }
+    e = a;
+  }
+  let p = split_ws(e);
+  if len(p) != 5 { return nil; }
+  let minute = parse_field(p[0], 0, 59, NoNames);
+  let hour   = parse_field(p[1], 0, 23, NoNames);
+  let dom    = parse_field(p[2], 1, 31, NoNames);
+  let month  = parse_field(p[3], 1, 12, MonthNames);
+  let dow    = parse_field(p[4], 0, 7,  DowNames);
+  if minute == nil or hour == nil or dom == nil or month == nil or dow == nil { return nil; }
+  if dow[7] { dow[0] = true; }                  -- 7 is Sunday too
+  return Fields {
+    minute: minute, hour: hour, dom: dom, month: month, dow: dow,
+    dom_r: p[2] != "*", dow_r: p[4] != "*",
+  };
+}
+
+-- Cron.hx:190-222. `names` selected the lookup map in Haxe; a union selects
+-- the switch here.
+type NameKind = NoNames | MonthNames | DowNames
+
+fn parse_field(spec: Text, lo: Int, hi: Int, names: NameKind) -> ?multi Bool {
+  let res: multi Bool = [];
+  let fill = 0;
+  while fill <= hi { push(res, false); fill = fill + 1; }
+  for part in split(spec, ",") {
+    let step = 1;
+    let range = part;
+    let slash = index_of(part, "/");
+    if slash >= 0 {
+      range = substr(part, 0, slash);
+      let s = parse_int(substr(part, slash + 1, len(part) - slash - 1));
+      if s == nil { return nil; }
+      if s < 1 { return nil; }
+      step = s;
+    }
+    let a: ?Int = nil;
+    let b: ?Int = nil;
+    if range == "*" {
+      a = lo;
+      b = hi;
+    } else {
+      let dash = index_of(range, "-");
+      if dash >= 0 {
+        a = value(substr(range, 0, dash), names);
+        b = value(substr(range, dash + 1, len(range) - dash - 1), names);
+      } else {
+        a = value(range, names);
+        b = a;
+        if slash >= 0 { b = hi; }               -- "n/step" means "n-hi/step"
+      }
+    }
+    if a == nil or b == nil { return nil; }
+    if a < lo or b > hi or a > b { return nil; }
+    let v = a;
+    while v <= b { res[v] = true; v = v + step; }
+  }
+  return res;
+}
+
+fn value(tok: Text, names: NameKind) -> ?Int {
+  let n = parse_int(tok);
+  if n != nil { return n; }
+  let key = substr(to_lower(tok), 0, 3);
+  switch names {
+    case NoNames:    return nil;
+    case MonthNames: return month_of(key);
+    case DowNames:   return dow_of(key);
+  }
+}
+
+-- Cron.hx:38-51 — the three static maps become exhaustive-by-default
+-- switches (no map literals needed for fixed tables).
+fn alias_of(tok: Text) -> ?Text {
+  switch tok {
+    case "@hourly":               return "0 * * * *";
+    case "@daily", "@midnight":   return "0 0 * * *";
+    case "@weekly":               return "0 0 * * 0";
+    case "@monthly":              return "0 0 1 * *";
+    case "@yearly", "@annually":  return "0 0 1 1 *";
+    default:                      return nil;
+  }
+}
+
+fn month_of(key: Text) -> ?Int {
+  switch key {
+    case "jan": return 1;
+    case "feb": return 2;
+    case "mar": return 3;
+    case "apr": return 4;
+    case "may": return 5;
+    case "jun": return 6;
+    case "jul": return 7;
+    case "aug": return 8;
+    case "sep": return 9;
+    case "oct": return 10;
+    case "nov": return 11;
+    case "dec": return 12;
+    default:    return nil;
+  }
+}
+
+fn dow_of(key: Text) -> ?Int {
+  switch key {
+    case "sun": return 0;
+    case "mon": return 1;
+    case "tue": return 2;
+    case "wed": return 3;
+    case "thu": return 4;
+    case "fri": return 5;
+    case "sat": return 6;
+    default:    return nil;
+  }
+}

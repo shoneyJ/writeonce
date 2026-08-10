@@ -1,0 +1,124 @@
+-- main.wo — Main.hx, file for file: subcommand dispatch, config decode.
+-- A free `fn main(args) -> Int` makes this project a PROGRAM (systems-track
+-- spec Part 2): `wo run` executes it, the return value is the exit code,
+-- blocking builtins are legal on the single shard.
+--
+-- Main.hx:5-7's `#if portable` linker pragma has no equivalent and needs
+-- none: `woc build` produces a self-contained static binary by doctrine.
+-- Util.hx is gone entirely: print flushes on newline (spec Part 2), which
+-- is the only thing Util.say existed to do.
+
+use fs
+use env
+use time
+use json
+
+-- config.json, decoded typed: Main.hx:50-61's Dynamic field-poking becomes
+-- one checked decode — missing optional fields are fine, a shape mismatch
+-- yields nil, never a trap. Field names are the wire format (camelCase);
+-- values are seconds on the wire, ms internally.
+typedef FileConfig = {
+  ?pollInterval:   Int
+  ?quietPeriod:    Int
+  ?rescanInterval: Int
+  ?detections:     Text
+  ?services:       multi Text
+  ?logs:           multi Text
+  ?mcp:            McpConfig
+}
+typedef McpConfig = { ?port: Int, ?apiKey: Text }
+
+fn main(args: multi Text) -> Int {
+  if len(args) >= 2 and args[0] == "watch" {
+    let quiet_s = 10;
+    if len(args) >= 3 {
+      let q = parse_int(args[2]);
+      if q != nil { quiet_s = q; }
+    }
+    let poll_s = 2;
+    if len(args) >= 4 {
+      let p = parse_int(args[3]);
+      if p != nil { poll_s = p; }
+    }
+    let w = Watcher { path: args[1], quiet_ms: quiet_s * 1000,
+         poll_ms: poll_s * 1000, live: true, activated_at: time.now() };
+    print("watching ${args[1]} (quiet ${quiet_s}s, poll ${poll_s}s)");
+    while true {
+      if env.stopping() { return 0; }
+      w.tick(time.now());
+      time.sleep(poll_s * 1000);
+    }
+  }
+
+  if len(args) >= 2 and args[0] == "run" {
+    let cfg = SupConfig {};                     -- field defaults = Main.hx:21's literal
+    if len(args) >= 3 {
+      if load_config(args[2], cfg) == false { return 1; }
+    }
+    print("supervising ${args[1]} (poll ${cfg.poll_ms / 1000}s, quiet ${cfg.quiet_ms / 1000}s, rescan ${cfg.rescan_ms / 1000}s)");
+    let sup = Supervisor { cron_dir: args[1], cfg: cfg };
+    sup.init();
+    return sup.run();
+  }
+
+  if len(args) >= 3 and args[0] == "mcp" {
+    let raw = fs.read_all(args[2], 1048576);
+    if raw == nil {
+      print_err("config error: cannot read ${args[2]}");
+      return 1;
+    }
+    let j = json.decode(raw) as FileConfig;
+    if j == nil {
+      print_err("config error: ${args[2]} is not valid JSON");
+      return 1;
+    }
+    -- the key may live outside the config file (systemd EnvironmentFile / .env)
+    let api_key = env.get("LOG_WATCHER_API_KEY");
+    let port: ?Int = nil;
+    if j.mcp != nil {
+      if j.mcp.apiKey != nil { api_key = j.mcp.apiKey; }
+      port = j.mcp.port;
+    }
+    if port == nil or api_key == nil {
+      print_err("config error: mcp.port and an api key (mcp.apiKey or LOG_WATCHER_API_KEY) are required");
+      return 1;
+    }
+    let extra: multi Text = [];
+    if j.logs != nil {
+      for p in j.logs { push(extra, p); }
+    }
+    if j.services != nil {
+      for s in j.services { push(extra, s); }
+    }
+    let mcp = Mcp { tools: Tools { cron_dir: args[1], extra_logs: extra }, api_key: api_key };
+    print("mcp server on 127.0.0.1:${port} (${args[1]})");
+    return mcp.serve(port);
+  }
+
+  print_err("usage:");
+  print_err("  log-watcher watch <logfile> [quietPeriod] [pollInterval]   continuous service watch");
+  print_err("  log-watcher run <cron.d-dir> [config.json]                 supervisor (cron + services)");
+  print_err("  log-watcher mcp <cron.d-dir> <config.json>                 MCP server (127.0.0.1, Bearer auth)");
+  return 1;
+}
+
+fn load_config(path: Text, mut cfg: SupConfig) -> Bool {
+  let raw = fs.read_all(path, 1048576);
+  if raw == nil {
+    print_err("config error: cannot read ${path}");
+    return false;
+  }
+  let j = json.decode(raw) as FileConfig;
+  if j == nil {
+    print_err("config error: ${path} is not valid JSON");
+    return false;
+  }
+  if j.pollInterval != nil   { cfg.poll_ms   = j.pollInterval * 1000; }
+  if j.quietPeriod != nil    { cfg.quiet_ms  = j.quietPeriod * 1000; }
+  if j.rescanInterval != nil { cfg.rescan_ms = j.rescanInterval * 1000; }
+  if j.detections != nil     { cfg.detections = j.detections; }
+  if j.services != nil {
+    for s in j.services { push(cfg.services, s); }
+  }
+  return true;
+}
