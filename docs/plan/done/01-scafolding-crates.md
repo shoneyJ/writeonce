@@ -15,8 +15,8 @@ Lay out the full `crates/` directory tree that the 7-phase `.wo` runtime design 
 1. **Scope: all 7 phases.** 14 new empty library crates covering Phases 2 → 6 land in one pass. `rt` (already shipping Stage 2) is the 15th.
 2. **`rt` stays monolithic.** Today's Stage 2 code — lexer / parser / AST / compile / engine / server — stays inside `crates/rt/` and continues to satisfy the 14 existing unit tests. Code migrates into the new crates as each phase activates, not in this pass.
 3. **Contents: `Cargo.toml` + `src/lib.rs` doc-comment only.** Each `lib.rs` is one module-level `//!` doc block pointing at the phase doc, naming the responsibilities, and flagging which modules in `rt` migrate here later. No placeholder types, no stub traits.
-4. **No `wo-` prefix.** New runtime crates are `ql`, `value`, `engine`, etc. — not `wo-ql`, `wo-value`. The prefix is redundant inside the project's own `wo` namespace and noisy in imports (`use ql::Parser` beats `use wo_ql::Parser`). The v1 crates in `reference/crates/` keep their `wo-` prefix — the distinct prefix makes the v1/v2 split visible at a glance.
-5. **Workspace membership: root `Cargo.toml` lists every new crate as a member.** `reference/crates` stays `exclude`-d (nested workspace, separate v1 code).
+4. **No `wo-` prefix.** New runtime crates are `ql`, `value`, `engine`, etc. — not `wo-ql`, `wo-value`. The prefix is redundant inside the project's own `wo` namespace and noisy in imports (`use ql::Parser` beats `use wo_ql::Parser`). The v1 crates in `.dev/reference/crates/` keep their `wo-` prefix — the distinct prefix makes the v1/v2 split visible at a glance.
+5. **Workspace membership: root `Cargo.toml` lists every new crate as a member.** `.dev/reference/crates` stays `exclude`-d (nested workspace, separate v1 code).
 
 Rationale and alternatives considered: see [`../../CLAUDE.md`](../../CLAUDE.md) "What's in `rt` today vs. what the empty crates promise" and the recorded `AskUserQuestion` answers that preceded this plan.
 
@@ -53,7 +53,7 @@ All names are stable — documented in [`../runtime/database/07-wo-seg-migration
 | `crates/README.md` with the phase-mapped inventory | ✅ |
 | `cargo build` at root (compiles 15 crates) | ✅ |
 | `cargo test --lib` at root (14 existing `rt` tests) | ✅ |
-| `cd reference/crates && cargo build && cargo test` (v1 still green) | ✅ |
+| `cd .dev/reference/crates && cargo build && cargo test` (v1 still green) | ✅ |
 | `cargo run --bin wo -- run docs/examples/blog` (Stage 2 still serves) | ✅ |
 
 ## Non-scope

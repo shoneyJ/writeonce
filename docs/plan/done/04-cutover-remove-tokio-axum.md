@@ -4,7 +4,7 @@
 
 ## Goal
 
-Flip the `wo` binary off the tokio + axum stack and onto the phase-02 event loop + phase-03 HTTP server. Delete three dependencies from `crates/rt/Cargo.toml`. REST behaviour visible to [`reference/rest/blog.rest`](../../reference/rest/blog.rest) does not change — same status codes, same response bodies, same endpoint paths.
+Flip the `wo` binary off the tokio + axum stack and onto the phase-02 event loop + phase-03 HTTP server. Delete three dependencies from `crates/rt/Cargo.toml`. REST behaviour visible to [`.dev/reference/rest/blog.rest`](../../.dev/reference/rest/blog.rest) does not change — same status codes, same response bodies, same endpoint paths.
 
 This is the first phase where the dependency count goes *down*. Phases 02 and 03 were additive; this one is the switch.
 
@@ -77,13 +77,13 @@ Twelve handlers total — one pair per `{list, get, create, update, delete}` × 
 
 1. **`cargo build`** at root — compiles with four deps (not seven).
 2. **`cargo test --lib`** — all 14 existing `rt` unit tests still pass. A new test in `src/server.rs` exercises the router build from a compiled catalog (no HTTP, just static registration).
-3. **End-to-end REST smoke — the 20-assertion battery from [`reference/rest/blog.rest`](../../reference/rest/blog.rest)** must pass byte-identical to Stage 2 today. Script:
+3. **End-to-end REST smoke — the 20-assertion battery from [`.dev/reference/rest/blog.rest`](../../.dev/reference/rest/blog.rest)** must pass byte-identical to Stage 2 today. Script:
    ```bash
    WO_LISTEN=127.0.0.1:8765 cargo run --bin wo -- run docs/examples/blog &
    # ... curl each block, check expected status
    ```
 4. **Graceful shutdown.** SIGINT on the process exits cleanly (no panic, no orphan fds). Validate with `strace -f -e signalfd4,close` on shutdown.
-5. **`cd reference/crates && cargo build && cargo test`** still green.
+5. **`cd .dev/reference/crates && cargo build && cargo test`** still green.
 6. **Dep audit.** `cargo tree -p rt --depth 1` shows `libc` as the only non-transitive external dep beyond `anyhow`, `serde`, `serde_json`.
 
 ## Non-scope
@@ -107,11 +107,11 @@ cargo test --lib                                    # 14 + any new server.rs tes
 WO_LISTEN=127.0.0.1:8765 cargo run --bin wo -- run docs/examples/blog &
 PID=$!
 sleep 2
-# every block in reference/rest/blog.rest, via curl, checking %{http_code}
+# every block in .dev/reference/rest/blog.rest, via curl, checking %{http_code}
 # (copy-paste the 20-assertion script from the Stage 2 turn that verified blog.rest)
 kill $PID
 
-cd reference/crates && cargo build && cargo test    # v1 untouched
+cd .dev/reference/crates && cargo build && cargo test    # v1 untouched
 ```
 
 ## After this phase
