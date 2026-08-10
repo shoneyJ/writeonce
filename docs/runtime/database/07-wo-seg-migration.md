@@ -44,7 +44,7 @@ Each transition is reversible — flip one feature flag or swap one trait object
 
 ## Proposed Crate Layout
 
-Port the C++ prototype (`prototypes/wo-db/src/*`) to Rust, split along the natural seams. New-runtime crates are unprefixed; v1 crates keep `wo-` in `reference/crates/`.
+Port the C++ prototype (`prototypes/wo-db/src/*`) to Rust, split along the natural seams. New-runtime crates are unprefixed; v1 crates keep `wo-` in `.dev/reference/crates/`.
 
 | Crate | Purpose | Prototype source | Phase |
 | --- | --- | --- | --- |
@@ -60,9 +60,9 @@ Port the C++ prototype (`prototypes/wo-db/src/*`) to Rust, split along the natur
 
 All 15 crates (these 14 plus the existing `rt` binary crate) now exist as empty skeletons in `crates/`. See [`crates/README.md`](../../../crates/README.md) and [`docs/plan/done/01-scafolding-crates.md`](../../plan/done/01-scafolding-crates.md) for the scaffolding plan that landed them.
 
-Today's `reference/crates/wo-seg` and `reference/crates/wo-index` remain in the v1 nested workspace for the entire migration window. They disappear only at the end of Phase D.
+Today's `.dev/reference/crates/wo-seg` and `.dev/reference/crates/wo-index` remain in the v1 nested workspace for the entire migration window. They disappear only at the end of Phase D.
 
-`reference/crates/wo-store` evolves but survives — it becomes the writeonce-specific glue layer (trait, article domain model, content-directory cold-start) whose backend is swappable.
+`.dev/reference/crates/wo-store` evolves but survives — it becomes the writeonce-specific glue layer (trait, article domain model, content-directory cold-start) whose backend is swappable.
 
 ## Phase A — Abstract the Article Store
 

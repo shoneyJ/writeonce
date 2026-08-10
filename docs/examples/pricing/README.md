@@ -10,7 +10,7 @@ A `Price` class and a `Product` class with methods — products have prices — 
 
 ## Layout
 
-The UI follows **MVC** ([`docs/plan/exploration/ui/08-mvc-structure.md`](../../plan/exploration/ui/08-mvc-structure.md)), with the same screen anatomy as the v1 Angular app (`reference/writeonce-app/src/app/article/`) collapsed into the single binary: the **model** is the class itself, the **view** is plain `.htmlx` with external `.scss`, and the **controller** is a `.wo` file that binds the model into the view and is the only place UI may call class methods.
+The UI follows **MVC** ([`docs/plan/exploration/ui/08-mvc-structure.md`](../../plan/exploration/ui/08-mvc-structure.md)), with the same screen anatomy as the v1 Angular app (`.dev/reference/writeonce-app/src/app/article/`) collapsed into the single binary: the **model** is the class itself, the **view** is plain `.htmlx` with external `.scss`, and the **controller** is a `.wo` file that binds the model into the view and is the only place UI may call class methods.
 
 ```
 pricing/

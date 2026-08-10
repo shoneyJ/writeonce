@@ -112,5 +112,5 @@ The [`blog` sample](../blog/) is still a single-app layout (`types/`, `ui/`, `lo
 - **Master plan:** [`../../plan/ui/00-overview.md`](../../plan/ui/00-overview.md)
 - **Language spec the `##ui`/`##app`/`policy` blocks obey:** [`../../runtime/database/06-lowcode-fullstack.md`](../../runtime/database/06-lowcode-fullstack.md)
 - **Wire protocol the app binaries speak to the DB daemon:** [`../../runtime/database/04-client-api.md`](../../runtime/database/04-client-api.md)
-- **v1 template engine that `.htmlx` compilation will reuse:** [`../../../reference/crates/wo-htmlx/`](../../../reference/crates/wo-htmlx/)
+- **v1 template engine that `.htmlx` compilation will reuse:** [`../../../.dev/reference/crates/wo-htmlx/`](../../../.dev/reference/crates/wo-htmlx/)
 - **Checkout transaction that's the canonical cross-paradigm test:** [`shared/logic/checkout.wo`](shared/logic/checkout.wo)
