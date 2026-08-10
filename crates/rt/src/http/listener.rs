@@ -1,6 +1,6 @@
 //! Non-blocking TCP listener — `socket(2)` + `bind(2)` + `listen(2)` + `accept4(2)`.
 //!
-//! Adapted from `reference/crates/wo-http/src/listener.rs`. The v1 hand-rolled
+//! Adapted from `.dev/reference/crates/wo-http/src/listener.rs`. The v1 hand-rolled
 //! IPv4 parser had a byte-order bug for non-localhost addresses; here we
 //! defer to `std::net::SocketAddr` (stdlib, no extra crate) and convert the
 //! resulting octets to a `sockaddr_in` correctly.

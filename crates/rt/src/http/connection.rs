@@ -10,7 +10,7 @@
 //!     any buffered pipelined request); `Connection: close` goes to Done.
 //!   Done    → loop closes the fd.
 //!
-//! Adapted from `reference/crates/wo-http/src/connection.rs`. The owning
+//! Adapted from `.dev/reference/crates/wo-http/src/connection.rs`. The owning
 //! [`EventLoop`] supplies `read`/`write` readiness via edge-triggered
 //! `epoll`; this struct is the per-fd part of the state.
 //!

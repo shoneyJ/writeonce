@@ -1,6 +1,6 @@
 //! Method + URL pattern → handler dispatch.
 //!
-//! Combined adaptation of `reference/crates/wo-route/src/{router,pattern}.rs`.
+//! Combined adaptation of `.dev/reference/crates/wo-route/src/{router,pattern}.rs`.
 //! Handler shape is `Fn(&Request, &RouteParams) -> Response`, captured as a
 //! boxed closure so each route closes over its own state (typically an
 //! `Arc<Mutex<Engine>>` — see `crates/rt/src/server.rs`).

@@ -4,7 +4,7 @@
 //! fd becomes readable when the timer expires; reading drains the
 //! expiration count.
 //!
-//! Ported from `reference/crates/wo-event/src/timerfd.rs`. Adds `oneshot`
+//! Ported from `.dev/reference/crates/wo-event/src/timerfd.rs`. Adds `oneshot`
 //! and `periodic` constructors that match the API in the phase-02 plan.
 
 use std::io;

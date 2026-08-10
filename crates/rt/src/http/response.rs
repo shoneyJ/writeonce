@@ -1,6 +1,6 @@
 //! HTTP/1.1 response builder + serializer.
 //!
-//! Adapted from `reference/crates/wo-http/src/response.rs`. Adds:
+//! Adapted from `.dev/reference/crates/wo-http/src/response.rs`. Adds:
 //!   * `Status` constants for the codes the REST samples assert on
 //!     (200/201/204/400/404/405/500/501).
 //!   * `Response::json(&serde_json::Value)` matching the cutover-handler

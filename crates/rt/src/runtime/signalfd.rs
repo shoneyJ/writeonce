@@ -5,7 +5,7 @@
 //!
 //! Blocks the captured signals in the calling thread's mask, so the
 //! kernel routes them to the signalfd instead of running default handlers.
-//! Ported from `reference/crates/wo-event/src/signalfd.rs`.
+//! Ported from `.dev/reference/crates/wo-event/src/signalfd.rs`.
 
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};

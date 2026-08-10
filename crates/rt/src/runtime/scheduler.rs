@@ -10,7 +10,7 @@
 //! Per plan 09a, **engine state stays globally shared** (`Arc<Mutex<Engine>>`
 //! inside the per-thread `Router`s) — one thing at a time; the sharded engine
 //! is 09b. The C proving ground for this exact sequence is
-//! `prototypes/wo-rt-c` phase A (see `docs/plan/exploration/c-runtime/`).
+//! `runtime` phase A (see `docs/plan/exploration/c-runtime/`).
 //!
 //! Shutdown: signals are blocked in `main` before any worker spawns (the
 //! mask is inherited), so only worker 0 — which owns the `signalfd` — ever

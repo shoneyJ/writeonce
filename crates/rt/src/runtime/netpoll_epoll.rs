@@ -1,6 +1,6 @@
 //! `epoll`-backed event loop. Single-threaded, edge-triggered.
 //!
-//! Ported from `reference/crates/wo-event/src/epoll.rs`. Differences:
+//! Ported from `.dev/reference/crates/wo-event/src/epoll.rs`. Differences:
 //!   * `Token` is a newtype rather than a `u64` alias.
 //!   * `Interest` is a struct exposing `READABLE`, `WRITABLE`, `READ_WRITE`
 //!     constants, matching the API in `docs/plan/02-event-loop-epoll.md`.

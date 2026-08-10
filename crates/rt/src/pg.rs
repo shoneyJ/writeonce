@@ -14,7 +14,7 @@
 //!   * literal/identifier escaping for SQL the mirror generates
 //!
 //! Protocol reference: PostgreSQL docs “Frontend/Backend Protocol” and
-//! `reference/postgresql/src/include/libpq/` (research symlink).
+//! `.dev/reference/postgresql/src/include/libpq/` (research symlink).
 //!
 //! Blocking I/O is deliberate: the only caller is the dedicated `wo-pg`
 //! mirror thread (plan 16b) — never a shard worker.

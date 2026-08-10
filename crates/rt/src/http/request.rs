@@ -1,6 +1,6 @@
 //! Incremental HTTP/1.1 request parser.
 //!
-//! Adapted from `reference/crates/wo-http/src/request.rs`. v1 only parsed
+//! Adapted from `.dev/reference/crates/wo-http/src/request.rs`. v1 only parsed
 //! request headers (the v1 blog is read-only HTML). The phase-04 cutover
 //! needs JSON request bodies, so this parser also drains a
 //! `Content-Length`-delimited body. Chunked transfer encoding is not

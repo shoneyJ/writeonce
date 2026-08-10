@@ -4,7 +4,7 @@
 //! event loop to come back and run something writes a `1` to the eventfd,
 //! which becomes readable on the loop's next `wait_once`.
 //!
-//! Ported from `reference/crates/wo-event/src/eventfd.rs` with an added
+//! Ported from `.dev/reference/crates/wo-event/src/eventfd.rs` with an added
 //! `AsRawFd` impl so callers can drop the fd straight into `EventLoop`.
 
 use std::io;

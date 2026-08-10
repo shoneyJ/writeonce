@@ -1,5 +1,5 @@
 //! Raw io_uring — no liburing, kernel ABI structs defined by hand, exactly
-//! the sequence proven in C (`prototypes/wo-rt-c/wo-rt.c` ring_init/enter;
+//! the sequence proven in C (`runtime/wo-rt.c` ring_init/enter;
 //! card: `docs/plan/exploration/linux/07-io_uring.md`).
 //!
 //! Scope (this phase): the **storage ring** for per-shard group commit —

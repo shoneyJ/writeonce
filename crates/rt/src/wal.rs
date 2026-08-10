@@ -1,6 +1,6 @@
 //! Per-shard write-ahead log — plan 09c (`docs/plan/09-concurrency-scaleout.md`)
 //! + the durability core of plan 11, ported from the proven C sequence
-//! (`prototypes/wo-rt-c` phases D/E, `docs/plan/exploration/c-runtime/00-plan.md`).
+//! (`runtime` phases D/E, `docs/plan/exploration/c-runtime/00-plan.md`).
 //!
 //! One `shard-<t>.rwal` per worker. Frame format (identical shape to the C
 //! prototype): `u32 len | u32 crc32(payload) | payload | u32 COMMIT` — a

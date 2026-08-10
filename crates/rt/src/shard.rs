@@ -16,7 +16,7 @@
 //! coordination. Creates are always local (the receiving shard mints from
 //! its own stride); reads/updates/deletes hop at most once; lists fan out
 //! to every shard and merge. The C proving ground for the wake mechanism is
-//! `prototypes/wo-rt-c` (eventfd broadcast); the mailbox-per-thread design
+//! `runtime` (eventfd broadcast); the mailbox-per-thread design
 //! is plan 09 decision 2 and 09d's one-message-per-thread fan-out shape.
 
 use std::cell::RefCell;
