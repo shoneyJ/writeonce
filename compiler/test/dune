@@ -22,10 +22,16 @@
 ; target at the same relative path inside the sandbox) guarantees
 ; "../bin/woc" resolves from this test's cwd exactly the way runner.ml
 ; assumes.
+; Task 8: (source_tree fixtures) is the same freshness/dependency need
+; as (source_tree golden) above, for compiler/test/fixtures/driver/ --
+; the multi-file CLI-smoke fixtures (directory discovery, cross-file
+; symbols, diagnostic ordering) that run_cli exercises against the
+; actual woc binary rather than the single-.wo-file golden framework.
 (test
  (name runner)
  (modules runner)
  (libraries woc_lib)
  (deps
   (source_tree golden)
+  (source_tree fixtures)
   ../bin/woc))

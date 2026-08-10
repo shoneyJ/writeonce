@@ -1,0 +1,7 @@
+== MOVES ==
+== DROPS ==
+== RC ==
+== RESIDUAL ==
+22:22 RESIDUAL BORROW_X bag.items[i] vs BORROW_X bag.items[j]
+24:24 RESIDUAL BORROW_X bag.items[i] vs BORROW_S bag.items[j]
+32:14 RESIDUAL BORROW_X bag.items[i] vs BORROW_X bag.items[k]

@@ -1,0 +1,65 @@
+class Item {
+  n: Int
+}
+
+fn size(it: Item) -> Int {
+  return it.n
+}
+
+class Bag {
+  items: multi Item
+
+  fn tidy(take spare: Item, flag: Bool) {
+    let extra = Item { n: 2 }
+    if flag {
+      let inner = Item { n: 3 }
+      spare = inner
+    }
+    while flag {
+      let tick = Item { n: 4 }
+    }
+    for it in self.items {
+      let seen = Item { n: 5 }
+    }
+  }
+}
+
+fn pick(take a: Item, take b: Item, flag: Bool) -> Int {
+  let total = 0
+  if flag {
+    let tmp = Item { n: 1 }
+    total = total + size(tmp)
+  }
+  if total > 0 {
+    return total
+  }
+  total = total + size(a)
+  return total
+}
+
+fn store(take r: Item) -> Int {
+  insert into rows values (1)
+  return 0
+}
+
+fn eat(take it: Item) -> Int {
+  return 0
+}
+
+fn conditional_move(take a: Item, flag: Bool) -> Int {
+  if flag {
+    let gone = eat(a)
+  }
+  return 0
+}
+
+fn self_assign(take a: Item) -> Int {
+  a = a
+  return 0
+}
+
+fn reinit_after_move(take a: Item) -> Int {
+  let gone = eat(a)
+  a = Item { n: 7 }
+  return 0
+}

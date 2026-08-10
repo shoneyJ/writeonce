@@ -1,0 +1,11 @@
+== MOVES ==
+14:14 MOVE a LET
+15:25 MOVE b CTOR(item)
+16:17 MOVE c ARG(it)
+17:10 MOVE bag RETURN
+== DROPS ==
+10:3 RETURN [it]
+16:16 LIVE-MASK [bag, held]
+17:3 RETURN [held]
+== RC ==
+== RESIDUAL ==

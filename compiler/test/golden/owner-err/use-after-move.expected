@@ -1,0 +1,6 @@
+owner-err/use-after-move.wo:11:24: error WO-E301: use of `b` after it was moved
+  let second = consume(b)
+                       ^
+  owner-err/use-after-move.wo:10:23: `b` moved here
+    let first = consume(b)
+                        ^

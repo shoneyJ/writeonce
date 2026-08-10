@@ -1,0 +1,6 @@
+owner-err/move-while-borrowed.wo:15:18: error WO-E302: cannot move `b` while `b.inner` is borrowed
+  return consume(b)
+                 ^
+  owner-err/move-while-borrowed.wo:14:3: `alias` borrows `b.inner` here
+    let alias = b.inner
+    ^

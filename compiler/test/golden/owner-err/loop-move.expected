@@ -1,0 +1,6 @@
+owner-err/loop-move.wo:12:29: error WO-E301: use of `b` after it was moved on the previous loop iteration
+    total = total + consume(b)
+                            ^
+  owner-err/loop-move.wo:12:29: `b` is moved here, once per iteration
+      total = total + consume(b)
+                              ^

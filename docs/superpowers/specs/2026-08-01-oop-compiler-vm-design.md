@@ -91,17 +91,17 @@ Grammar stays plan-13 compatible — `class` = fields + `fn`, no inheritance. Ne
 
 ```wo
 interface Priced {
-  fn current_price() -> Money
+  fn current_price() -> Int
 }
 
 @table(name: "products")
 class Product {                    -- default: owned, borrow-checked
   id:     Id
-  sku:    SKU @unique
+  sku:    Text @unique
   name:   Text
   prices: multi Price
 
-  fn current_price() -> Money {    -- satisfies Priced structurally
+  fn current_price() -> Int {      -- satisfies Priced structurally
     return latest(self.prices).amount;
   }
 
@@ -112,7 +112,7 @@ class Product {                    -- default: owned, borrow-checked
 
 @gc
 class PriceCache {                 -- reference semantics, freely aliased
-  entries: map<SKU, Money>
+  entries: map<Text, Int>
 }
 ```
 
@@ -163,7 +163,7 @@ struct wo_hdr {
 
 > Normative format reference (pinned by plan 1): [`docs/plan/oop-vm/00-wob-format.md`](../../plan/oop-vm/00-wob-format.md) · machine-readable twin: [`runtime/src/wob.h`](../../../runtime/src/wob.h)
 
-**Registers:** untyped 64-bit slots. The language is statically typed — the compiler knows every slot's type, so no tagging and no NaN-boxing. Scalars inline (`Int`/`Money`/`Timestamp` = i64, `Bool`), heap values as pointers (the header supplies the class at runtime for interface dispatch and traps).
+**Registers:** untyped 64-bit slots. The language is statically typed — the compiler knows every slot's type, so no tagging and no NaN-boxing. Scalars inline (`Int`/`Timestamp` = i64, `Bool`), heap values as pointers (the header supplies the class at runtime for interface dispatch and traps).
 
 **`.wob` module format:** magic + version, then sections — constant pool (texts, numerics), class table (field layout, size, `@gc` bit, drop plan), interface table, per-(class, interface) vtables, method code (arg count, register count, bytecode), line table (for error reporting). The loader `mmap`s the file, bounds-validates every index once, and links class ids.
 

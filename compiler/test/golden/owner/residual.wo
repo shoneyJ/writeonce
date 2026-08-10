@@ -1,0 +1,33 @@
+class Item {
+  n: Int
+}
+
+class Bag {
+  items: multi Item
+}
+
+fn swap(mut a: Item, mut b: Item) -> Int {
+  return 0
+}
+
+fn bump(mut a: Item, b: Item) -> Int {
+  return 0
+}
+
+fn look(a: Item, b: Item) -> Int {
+  return 0
+}
+
+fn shuffle(mut bag: Bag, i: Int, j: Int) -> Int {
+  let dyn_pair = swap(bag.items[i], bag.items[j])
+  let const_pair = swap(bag.items[0], bag.items[1])
+  let mixed_pair = bump(bag.items[i], bag.items[j])
+  let shared_pair = look(bag.items[i], bag.items[j])
+  return dyn_pair + const_pair + mixed_pair + shared_pair
+}
+
+fn shuffle_via_aliases(mut bag: Bag, i: Int, k: Int) -> Int {
+  let r = bag.items[i]
+  let s = bag.items[k]
+  return swap(r, s)
+}

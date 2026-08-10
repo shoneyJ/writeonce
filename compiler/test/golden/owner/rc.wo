@@ -1,0 +1,37 @@
+@gc
+class Cache {
+  n: Int
+}
+
+class Holder {
+  cache: Cache
+}
+
+fn touch(c: Cache) -> Int {
+  return c.n
+}
+
+fn balanced(h: Holder) -> Int {
+  let c = h.cache
+  return touch(c)
+}
+
+fn escaping(h: Holder) -> Cache {
+  let c = h.cache
+  return c
+}
+
+fn fresh() -> Int {
+  let c = Cache { n: 1 }
+  return touch(c)
+}
+
+fn replace(mut c: Cache) -> Int {
+  return 0
+}
+
+fn clobbered(h: Holder) -> Int {
+  let c = h.cache
+  let n = replace(h.cache)
+  return touch(c) + n
+}

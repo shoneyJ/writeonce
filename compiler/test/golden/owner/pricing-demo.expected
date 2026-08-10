@@ -1,0 +1,6 @@
+== MOVES ==
+26:12 MOVE other RETURN
+== DROPS ==
+22:5 OVERWRITE self.prices
+== RC ==
+== RESIDUAL ==

@@ -8,5 +8,5 @@ class Good {
 }
 
 interface Broken2 {
-  fn oops(x Text) -> Money
+  fn oops(x Text) -> Int
 }

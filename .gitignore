@@ -69,4 +69,9 @@ docs/examples/agent-loop/
 docs/examples/mcp-think/
 docs/plan/exploration/
 docs/plan/oop-vm/
+# docs/plan/oop-vm/ carries the compiler<->VM normative contracts
+# (.wob format, error catalog) both plan tracks cite -- carve it back
+# out of the blanket docs/plan/ ignore above; the other rules here are
+# untouched.
+!docs/plan/oop-vm/
 docs/superpowers/plans/

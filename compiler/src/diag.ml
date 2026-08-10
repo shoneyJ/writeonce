@@ -58,6 +58,7 @@ let lexing_prefix = "WO-E0"
 let parsing_prefix = "WO-E1"
 let types_prefix = "WO-E2"
 let ownership_prefix = "WO-E3"
+let warning_prefix = "WO-W"
 
 type severity =
   | Error

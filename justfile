@@ -26,6 +26,14 @@ rt-c-demo port="8085" threads="4":
     curl -s "$base/api/notes"; echo
     echo "--- spread:"; curl -s "$base/"; echo
 
+# woc compiler front (compiler/): build the executable
+woc-build:
+    dune build --root compiler
+
+# woc gate: unit tests (test_diag) + golden suite (runner, WOC_BLESS=1 to update)
+woc-test:
+    dune runtest --root compiler
+
 # phase-F benchmark: reads, durable writes, 10k idle conns (scaled geometry)
 rt-c-bench port="8085" threads="8" conns="64":
     #!/usr/bin/env bash

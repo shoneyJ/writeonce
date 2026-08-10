@@ -77,6 +77,16 @@ let kind_label (k : Token.kind) : string =
   | Token.Newline -> "NEWLINE"
   | Token.Eof -> "EOF"
 
+(* Multi-file dump layout (Task 8, bin/main.ml). Every dump_* function
+   above still renders exactly one file's contribution — that contract
+   doesn't change. When a --dump-* flag's <path> resolves to more than
+   one discovered file, main.ml prints each file's dump_* output one
+   after another in sorted discovery order, each preceded by this
+   separator line naming the file. For a single file, main.ml never
+   calls this, so every dump's stdout stays byte-identical to every
+   pre-Task-8 golden fixture. *)
+let file_header (path : string) : string = Printf.sprintf "=== %s ===\n" path
+
 let dump_tokens (toks : Token.t list) : string =
   let lines =
     List.map
@@ -273,3 +283,152 @@ let dump_decl : Ast.decl -> string list = function
 let dump_ast (prog : Ast.program) : string =
   let lines = List.concat_map dump_decl prog.decls in
   match lines with [] -> "" | _ -> String.concat "\n" lines ^ "\n"
+
+(* dump_owner — the ownership pass's four emitter tables (Task 7).
+
+   Four fixed sections in a fixed order, each listing its entries in
+   source order (LINE:COL first, same convention as every other dump
+   here); a section with no entries still prints its header, so the
+   format is stable and a golden diff shows an emptied table as a real
+   change. Node ids are not printed — the tables carry them for plan 3
+   (Owner.move_site.mv_node and friends), but ids churn goldens exactly
+   the way dump_ast's module doc describes, so positions are the
+   rendering surface.
+
+     == MOVES ==      one line per real ownership transfer
+                      "LINE:COL MOVE <place> <how>", where <how> is
+                      LET / ASSIGN / RETURN / ARG(param) / CTOR(field).
+                      Copy-classed and @gc-classed transfers are absent
+                      by design (a register copy and an rc site
+                      respectively, not a transfer).
+
+     == DROPS ==      deterministic destruction, plus the frame's drop
+                      map at trap-capable sites:
+                        SCOPE <label> [..]  owned locals of a scope that
+                                            are live where it ends
+                        RETURN [..]         owned locals to drop before
+                                            this return leaves the frame
+                        OVERWRITE <place>   the value an assignment
+                                            replaces (absent when the
+                                            assignment's target and value
+                                            are the same storage, e.g.
+                                            `a = a`: dropping there would
+                                            destroy what was just stored)
+                        JOIN-DROP <label> [..]
+                                            join normalization: locals the
+                                            *other* branch of an `if` moved
+                                            and this one did not, dropped at
+                                            the named branch's end so both
+                                            paths leave the merge in the one
+                                            state the join records. Without
+                                            these, a conditionally moved
+                                            value would leak on the path
+                                            that kept it
+                        LIVE-MASK [..]      everything live at a call /
+                                            DB_STUB, `:gc` tagging the
+                                            entries that need a decrement
+                                            rather than a DROP
+                      Lists are in destruction order (innermost scope
+                      first, reverse declaration order inside a scope).
+                      A SCOPE entry is anchored at its *construct's* own
+                      position (the `fn`/`if`/`else`/`while`/`for` token):
+                      this AST carries no end positions at all (ast.ml's
+                      single-point convention), so a SCOPE line can sort
+                      ahead of the lines for sites inside that same scope.
+                      Label plus construct position is what identifies the
+                      block; source order is only here to keep the
+                      rendering deterministic.
+
+     == RC ==       "LINE:COL ACQUIRE|RELEASE <place> ELIDED|KEPT" for
+                      @gc reference counting. ELIDED marks a pair the
+                      emitter may skip because increment and decrement
+                      are provably balanced inside one scope.
+
+     == RESIDUAL ==   "LINE:COL RESIDUAL <op> <place> vs <op> <place>" —
+                      the sites static proof could not settle, so the
+                      emitter wraps them in runtime borrow ops
+                      (runtime/src/borrow.c) and the VM traps on a real
+                      violation. Each <op> is BORROW_X (an exclusive
+                      access: a `mut` argument, a mutating receiver, or an
+                      assignment target) or BORROW_S (a live shared
+                      borrow); at least one side is always BORROW_X, since
+                      two shared readers never conflict. A move is never a
+                      residual side — a move names a whole local, and a
+                      whole local either provably overlaps another place or
+                      is provably disjoint from it. Places are rendered
+                      *canonically*: an access written through a borrow
+                      binding (`r`, from `let r = bag.items[i]`) prints as
+                      the storage it names (`bag.items[i]`), so two
+                      bindings into one container read as the aliasing pair
+                      they are. The operand node ids in the table
+                      (Owner.rs_a_node / rs_b_node) are the precise key.
+                      Several entries may name the *same* canonical
+                      operand: a reborrow chain produces more than one
+                      genuine unprovable pair over one statement (an
+                      exclusive access against the pairwise partner, and
+                      again against a shared borrow still live through the
+                      chain). The emitter MUST therefore coalesce guards
+                      **per operand**, not emit one acquire/release pair per
+                      table entry — doing the latter asks for both
+                      wo_borrow_excl and wo_borrow_shared on the same
+                      object and self-traps on legal code, the case where
+                      the runtime indices differ after all. *)
+
+let move_kind_str : Owner.move_kind -> string = function
+  | Owner.MvLet -> "LET"
+  | Owner.MvAssign -> "ASSIGN"
+  | Owner.MvReturn -> "RETURN"
+  | Owner.MvArg name -> Printf.sprintf "ARG(%s)" name
+  | Owner.MvCtorField name -> Printf.sprintf "CTOR(%s)" name
+
+let drop_item_str (i : Owner.drop_item) : string =
+  match i.Owner.di_kind with
+  | Owner.LOwned -> i.Owner.di_name
+  | Owner.LGc -> i.Owner.di_name ^ ":gc"
+
+let drop_items_str (items : Owner.drop_item list) : string =
+  "[" ^ String.concat ", " (List.map drop_item_str items) ^ "]"
+
+let acc_kind_str : Owner.acc_kind -> string = function
+  | Owner.AShared -> "BORROW_S"
+  | Owner.AExcl -> "BORROW_X"
+  | Owner.AMove -> "MOVE"
+
+let owner_pos_str (p : Ast.pos) : string = Printf.sprintf "%d:%d" p.Ast.line p.Ast.col
+
+let dump_owner (t : Owner.tables) : string =
+  let move_line (m : Owner.move_site) =
+    Printf.sprintf "%s MOVE %s %s" (owner_pos_str m.Owner.mv_pos) m.Owner.mv_place
+      (move_kind_str m.Owner.mv_kind)
+  in
+  let drop_line (d : Owner.drop_site) =
+    let pos = owner_pos_str d.Owner.dr_pos in
+    match d.Owner.dr_kind with
+    | Owner.DScope label ->
+      Printf.sprintf "%s SCOPE %s %s" pos label (drop_items_str d.Owner.dr_items)
+    | Owner.DReturn -> Printf.sprintf "%s RETURN %s" pos (drop_items_str d.Owner.dr_items)
+    | Owner.DOverwrite ->
+      Printf.sprintf "%s OVERWRITE %s" pos
+        (String.concat ", " (List.map (fun (i : Owner.drop_item) -> i.Owner.di_name) d.Owner.dr_items))
+    | Owner.DBranchJoin label ->
+      Printf.sprintf "%s JOIN-DROP %s %s" pos label (drop_items_str d.Owner.dr_items)
+    | Owner.DLiveMask -> Printf.sprintf "%s LIVE-MASK %s" pos (drop_items_str d.Owner.dr_items)
+  in
+  let rc_line (r : Owner.rc_site) =
+    Printf.sprintf "%s %s %s %s" (owner_pos_str r.Owner.rc_pos)
+      (match r.Owner.rc_op with Owner.RcAcquire -> "ACQUIRE" | Owner.RcRelease -> "RELEASE")
+      r.Owner.rc_place
+      (if r.Owner.rc_elided then "ELIDED" else "KEPT")
+  in
+  let res_line (r : Owner.residual_site) =
+    Printf.sprintf "%s RESIDUAL %s %s vs %s %s" (owner_pos_str r.Owner.rs_pos)
+      (acc_kind_str r.Owner.rs_a_kind) r.Owner.rs_a (acc_kind_str r.Owner.rs_b_kind) r.Owner.rs_b
+  in
+  let section header lines = (header :: lines) in
+  let lines =
+    section "== MOVES ==" (List.map move_line t.Owner.moves)
+    @ section "== DROPS ==" (List.map drop_line t.Owner.drops)
+    @ section "== RC ==" (List.map rc_line t.Owner.rcs)
+    @ section "== RESIDUAL ==" (List.map res_line t.Owner.residuals)
+  in
+  String.concat "\n" lines ^ "\n"

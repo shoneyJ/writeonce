@@ -15,11 +15,11 @@ type Order {
   line_items:   [{
     product:    ref Product
     qty:        Int @check(> 0)
-    unit_price: Money                           -- captured at checkout time
+    unit_price: Int                             -- captured at checkout time
   }]
 
   -- Computed: re-evaluated on read. Flip to `@materialized` if it gets hot.
-  total:        Money = sum(line_items.*.qty * line_items.*.unit_price)
+  total:        Int = sum(line_items.*.qty * line_items.*.unit_price)
 
   placed_at:    Timestamp = now()
   paid_at:      Timestamp?

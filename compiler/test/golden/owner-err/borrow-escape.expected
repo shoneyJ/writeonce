@@ -1,0 +1,20 @@
+owner-err/borrow-escape.wo:9:16: error WO-E304: borrow of `other` cannot be stored in `self.box` — borrows cannot outlive their scope
+    self.box = other
+               ^
+  owner-err/borrow-escape.wo:8:12: `other` is borrowed here — declare it `take other: T` to pass ownership in
+    fn adopt(other: Box) {
+             ^
+
+owner-err/borrow-escape.wo:18:10: error WO-E304: borrow of `h.box` escapes `leak` — borrows cannot outlive their scope
+  return h.box
+         ^
+  owner-err/borrow-escape.wo:17:9: `h` is borrowed here — declare it `take h: T` to pass ownership in
+  fn leak(h: Holder) -> Box {
+          ^
+
+owner-err/borrow-escape.wo:22:15: error WO-E304: borrow of `h.box` cannot be passed to `take b` — borrows cannot outlive their scope
+  return keep(h.box)
+              ^
+  owner-err/borrow-escape.wo:21:10: `h` is borrowed here — declare it `take h: T` to pass ownership in
+  fn stash(h: Holder) -> Int {
+           ^

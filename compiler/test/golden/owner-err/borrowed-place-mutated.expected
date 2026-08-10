@@ -1,0 +1,13 @@
+owner-err/borrowed-place-mutated.wo:15:16: error WO-E303: cannot mutate `h.box` while `h.box` is borrowed
+  return touch(h.box)
+               ^
+  owner-err/borrowed-place-mutated.wo:14:3: `alias` borrows `h.box` here
+    let alias = h.box
+    ^
+
+owner-err/borrowed-place-mutated.wo:20:3: error WO-E303: cannot mutate `h.box` while `h.box` is borrowed
+  h.box = fresh
+  ^
+  owner-err/borrowed-place-mutated.wo:19:3: `alias` borrows `h.box` here
+    let alias = h.box
+    ^

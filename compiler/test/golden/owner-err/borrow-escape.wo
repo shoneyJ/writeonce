@@ -1,0 +1,23 @@
+class Box {
+  n: Int
+}
+
+class Holder {
+  box: Box
+
+  fn adopt(other: Box) {
+    self.box = other
+  }
+}
+
+fn keep(take b: Box) -> Int {
+  return 0
+}
+
+fn leak(h: Holder) -> Box {
+  return h.box
+}
+
+fn stash(h: Holder) -> Int {
+  return keep(h.box)
+}

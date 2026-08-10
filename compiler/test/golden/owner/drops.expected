@@ -1,0 +1,23 @@
+== MOVES ==
+16:15 MOVE inner ASSIGN
+51:20 MOVE a ARG(it)
+57:7 MOVE a ASSIGN
+62:18 MOVE a ARG(it)
+== DROPS ==
+12:3 SCOPE BODY [extra, spare]
+16:7 OVERWRITE spare
+18:5 SCOPE WHILE [tick]
+21:5 SCOPE FOR [seen]
+29:3 SCOPE THEN [tmp]
+31:25 LIVE-MASK [tmp, b, a]
+34:5 RETURN [b, a]
+36:23 LIVE-MASK [b, a]
+37:3 RETURN [b, a]
+41:3 LIVE-MASK [r]
+42:3 RETURN [r]
+46:3 RETURN [it]
+50:3 JOIN-DROP ELSE [a]
+58:3 RETURN [a]
+64:3 RETURN [a]
+== RC ==
+== RESIDUAL ==

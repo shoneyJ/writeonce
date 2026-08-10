@@ -1,0 +1,18 @@
+class Item {
+  n: Int
+}
+
+class Bag {
+  item: Item
+}
+
+fn stash(take it: Item) -> Int {
+  return 0
+}
+
+fn build(take a: Item, take b: Item, take c: Item) -> Bag {
+  let held = a
+  let bag = Bag { item: b }
+  let n = stash(c)
+  return bag
+}

@@ -97,15 +97,50 @@ and symbols = {
 }
 
 (* Builtin scalars *)
-let builtin_scalars = ["Int"; "Bool"; "Text"; "Money"; "Timestamp"; "Id"; "SKU"]
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"]
 
 let is_builtin_scalar name = List.mem name builtin_scalars
+
+let rec has_recursive_structure (cls : class_info) : bool =
+  List.exists (fun (_, ty, _, _) ->
+    match ty with
+    | Ast.Scalar name -> name = cls.name  (* direct self-reference *)
+    | Ast.Ref name -> name = cls.name
+    | Ast.Multi name -> name = cls.name  (* multi Self *)
+    | Ast.Map (k, v) -> k = cls.name || v = cls.name  (* map<_, Self> / map<Self, _> *)
+    | Ast.Nullable inner -> has_recursive_structure_type inner cls.name
+  ) cls.fields
+
+and has_recursive_structure_type (ty : Ast.field_ty) (cls_name : string) : bool =
+  match ty with
+  | Ast.Scalar name -> name = cls_name
+  | Ast.Ref name -> name = cls_name
+  | Ast.Multi name -> name = cls_name
+  | Ast.Map (k, v) -> k = cls_name || v = cls_name
+  | Ast.Nullable inner -> has_recursive_structure_type inner cls_name
+
+(* @unique field -> persistent identity (plan's "When NOT to emit": a
+   class with a @unique field should not get the @gc suggestion even if
+   it also has recursive/shared structure). Annotation *names* only, per
+   Ast.field's own doc comment -- "unique" is what parse_field stores for
+   a bare `@unique`. *)
+let has_unique_field (cls : class_info) : bool =
+  List.exists (fun (_, _, _, anns) -> List.mem "unique" anns) cls.fields
 
 let is_gc_class (syms : symbols) name =
   try
     let cls = StringMap.find name syms.classes in
     cls.is_gc
   with Not_found -> false
+
+let gc_suggestion_code = Diag.warning_prefix ^ "201"    (* WO-W201 *)
+
+let suggest_gc_annotation ~file (cls : class_info) (collector : Diag.Collector.t) : unit =
+  if not cls.is_gc && Option.is_none cls.table && not (has_unique_field cls)
+     && has_recursive_structure cls then
+    Diag.Collector.add collector
+      (Diag.warning ~code:gc_suggestion_code ~file ~line:cls.pos.line ~col:cls.pos.col
+         ~message:(Printf.sprintf "%s has recursive/shared structure that borrow checker cannot prove. Consider adding @gc if this is an ephemeral in-memory cache. If this maps to a database table, keep owned (default)." cls.name) ())
 
 (* wob_kind_of_typ: maps internal typ to .wob field kind *)
 let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
@@ -140,11 +175,13 @@ let nullable_used_without_check_code = Diag.types_prefix ^ "11"
 let nullable_assign_mismatch_code = Diag.types_prefix ^ "12"
 let missing_nil_check_code = Diag.types_prefix ^ "13"
 
+let unknown_type_name_code = Diag.types_prefix ^ "25"  (* WO-E225 *)
+
 (* ============================================================
    Pass 1: Declaration Collection
    ============================================================ *)
 
-let collect_declarations (_prog : program) (_collector : Diag.Collector.t) : symbols =
+let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) : symbols =
   let classes = ref StringMap.empty in
   let interfaces = ref StringMap.empty in
   let free_fns = ref StringMap.empty in
@@ -176,7 +213,8 @@ let collect_declarations (_prog : program) (_collector : Diag.Collector.t) : sym
           id = c.id;
           pos = c.pos;
         } in
-        classes := StringMap.add c.name info !classes
+        classes := StringMap.add c.name info !classes;
+        suggest_gc_annotation ~file info collector
     | Ast.Interface i ->
         let methods = List.map (fun (m : Ast.method_sig) ->
           { name = m.name;
@@ -203,7 +241,7 @@ let collect_declarations (_prog : program) (_collector : Diag.Collector.t) : sym
           pos = f.pos;
         } in
         free_fns := StringMap.add f.name info !free_fns
-  ) _prog.decls;
+  ) prog.decls;
 
   { classes = !classes; interfaces = !interfaces; free_fns = !free_fns;
     typedefs = !typedefs; modules = !modules }
@@ -217,13 +255,47 @@ type expr_type_result = {
   is_nil : bool;
 }
 
-let typecheck_program (_prog : program) (syms : symbols) (_collector : Diag.Collector.t) : unit =
+(* WO-E225's "known type" set: builtin, a declared class, or a declared
+   interface. *)
+let is_known_type_name (syms : symbols) (name : string) : bool =
+  is_builtin_scalar name
+  || StringMap.mem name syms.classes
+  || StringMap.mem name syms.interfaces
+
+let rec scalar_name_of (ft : field_ty) : string option =
+  match ft with
+  | Scalar name -> Some name
+  | Nullable inner -> scalar_name_of inner
+  | Ref _ | Multi _ | Map _ -> None
+
+(* Checked once per field declaration (not at every access/use site), so
+   the diagnostic lands at the field's own declaration position and
+   never fires more than once for the same bad field. Runs over the raw
+   AST rather than `syms.classes` because class_info's fields tuple
+   doesn't carry a pos (see Ast.field for that); run from Pass 2 (after
+   collect_declarations has fully built `syms`) so a field typed with a
+   class declared later in the same file is not a false positive. *)
+let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
+    (prog : program) : unit =
+  List.iter (function
+    | Ast.Class c ->
+        List.iter (fun (f : Ast.field) ->
+          match scalar_name_of f.ty with
+          | Some name when not (is_known_type_name syms name) ->
+              Diag.Collector.add collector
+                (Diag.error ~code:unknown_type_name_code ~file
+                   ~line:f.pos.line ~col:f.pos.col
+                   ~message:(Printf.sprintf "unknown type `%s`" name) ())
+          | _ -> ()
+        ) c.fields
+    | Ast.Interface _ | Ast.Fn _ -> ()
+  ) prog.decls
+
+let typecheck_program ~file (prog : program) (syms : symbols) (collector : Diag.Collector.t) : unit =
+  check_field_types ~file syms collector prog;
   let rec resolve_field_ty (ft : field_ty) : typ =
     match ft with
-    | Scalar name ->
-        if is_builtin_scalar name then TScalar name
-        else if is_gc_class syms name then TScalar name
-        else TScalar name
+    | Scalar name -> TScalar name
     | Ref name -> TRef name
     | Multi inner_name -> TMulti (TScalar inner_name)
     | Map (k_name, v_name) -> TMap (TScalar k_name, TScalar v_name)
@@ -244,15 +316,26 @@ let typecheck_program (_prog : program) (syms : symbols) (_collector : Diag.Coll
         let base_res = typecheck_expr env base in
         (match base_res.typ with
          | TScalar class_name ->
-             (try
-                let cls = StringMap.find class_name syms.classes in
-                let (_, field_ty, _, _) = List.find (fun (fname, _, _, _) -> fname = field_name) cls.fields in
-                { typ = resolve_field_ty field_ty; is_nil = false }
-              with Not_found ->
-                Diag.Collector.add _collector
-                  (Diag.error ~code:unknown_field_code ~file:"" ~line:e.pos.line ~col:e.pos.col
-                     ~message:(Printf.sprintf "unknown field `%s` on `%s`" field_name class_name) ());
-                { typ = TScalar "Int"; is_nil = false })
+             (* Only a *declared* class can be checked for a missing field.
+                typecheck_expr falls back to `TScalar "Int"` for everything
+                it cannot type yet (an unresolved builtin call such as the
+                spec's own `latest(...)`, an indexed element), so reporting
+                on a non-class base turned every one of those placeholders
+                into a bogus "unknown field" error -- spec section 3's
+                `latest(self.prices).amount` was one. Precision here comes
+                back when builtin signatures land; Task 7 surfaced this by
+                being the first stage to run the typechecker over a whole
+                method body from the CLI. *)
+             (match StringMap.find_opt class_name syms.classes with
+              | None -> { typ = TScalar "Int"; is_nil = false }
+              | Some cls ->
+                (match List.find_opt (fun (fname, _, _, _) -> fname = field_name) cls.fields with
+                 | Some (_, field_ty, _, _) -> { typ = resolve_field_ty field_ty; is_nil = false }
+                 | None ->
+                     Diag.Collector.add collector
+                       (Diag.error ~code:unknown_field_code ~file ~line:e.pos.line ~col:e.pos.col
+                          ~message:(Printf.sprintf "unknown field `%s` on `%s`" field_name class_name) ());
+                     { typ = TScalar "Int"; is_nil = false }))
          | _ -> { typ = TScalar "Int"; is_nil = false })
     | Index (base, idx) ->
         let _ = typecheck_expr env base in
@@ -272,14 +355,14 @@ let typecheck_program (_prog : program) (syms : symbols) (_collector : Diag.Coll
            let provided = List.map (fun (n, _) -> n) fields in
            List.iter (fun (fname, _, _, _) ->
              if not (List.mem fname provided) then
-               Diag.Collector.add _collector
-                 (Diag.error ~code:incomplete_ctor_code ~file:"" ~line:e.pos.line ~col:e.pos.col
+               Diag.Collector.add collector
+                 (Diag.error ~code:incomplete_ctor_code ~file ~line:e.pos.line ~col:e.pos.col
                     ~message:(Printf.sprintf "missing field `%s` in constructor of `%s`" fname class_name) ())
            ) cls.fields;
            { typ = TScalar class_name; is_nil = false }
          with Not_found ->
-           Diag.Collector.add _collector
-             (Diag.error ~code:unknown_type_code ~file:"" ~line:e.pos.line ~col:e.pos.col
+           Diag.Collector.add collector
+             (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
                 ~message:(Printf.sprintf "unknown type `%s` in constructor" class_name) ());
            { typ = TScalar "Int"; is_nil = false })
     | DbStub _ -> { typ = TVoid; is_nil = false }
@@ -316,17 +399,20 @@ let typecheck_program (_prog : program) (syms : symbols) (_collector : Diag.Coll
         env
   in
 
-  let typecheck_method (env : typ StringMap.t) (m : method_info) : bool =
+  (* `self` is bound to the *enclosing class name*, not a literal "Self":
+     "Self" is not a declared class, so every `self.field` access used to
+     miss and report a bogus unknown-field error. *)
+  let typecheck_method ~(self_class : string) (env : typ StringMap.t) (m : method_info) : bool =
     let param_env = List.fold_left (fun acc (name, ty, _) ->
       StringMap.add name (resolve_field_ty ty) acc) env m.params in
-    let env_with_self = StringMap.add "self" (TScalar "Self") param_env in
+    let env_with_self = StringMap.add "self" (TScalar self_class) param_env in
     let _ = List.fold_left typecheck_stmt env_with_self m.body in
     false
   in
 
   StringMap.iter (fun _name cls ->
     let method_env = StringMap.empty in
-    List.iter (fun m -> ignore (typecheck_method method_env m)) cls.methods
+    List.iter (fun m -> ignore (typecheck_method ~self_class:cls.name method_env m)) cls.methods
   ) syms.classes;
 
   StringMap.iter (fun _name (fn : free_fn_info) ->
@@ -341,9 +427,9 @@ let typecheck_program (_prog : program) (syms : symbols) (_collector : Diag.Coll
    Entry point
    ============================================================ *)
 
-let typecheck (_prog : program) (_collector : Diag.Collector.t) : symbols * unit =
-  let syms = collect_declarations _prog _collector in
-  let () = typecheck_program _prog syms _collector in
+let typecheck ~file (prog : program) (collector : Diag.Collector.t) : symbols * unit =
+  let syms = collect_declarations ~file prog collector in
+  let () = typecheck_program ~file prog syms collector in
   (syms, ())
 
 (* ============================================================

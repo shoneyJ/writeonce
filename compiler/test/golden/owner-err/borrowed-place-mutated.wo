@@ -1,0 +1,22 @@
+class Box {
+  n: Int
+}
+
+class Holder {
+  box: Box
+}
+
+fn touch(mut b: Box) -> Int {
+  return 0
+}
+
+fn stale_arg(mut h: Holder) -> Int {
+  let alias = h.box
+  return touch(h.box)
+}
+
+fn stale_assign(mut h: Holder, take fresh: Box) -> Int {
+  let alias = h.box
+  h.box = fresh
+  return 0
+}

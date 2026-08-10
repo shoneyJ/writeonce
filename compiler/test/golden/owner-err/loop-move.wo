@@ -1,0 +1,15 @@
+class Box {
+  n: Int
+}
+
+fn consume(take b: Box) -> Int {
+  return 0
+}
+
+fn drain(take b: Box, times: Int) -> Int {
+  let total = 0
+  while total < times {
+    total = total + consume(b)
+  }
+  return total
+}

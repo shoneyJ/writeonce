@@ -1,0 +1,13 @@
+class Box {
+  n: Int
+}
+
+fn consume(take b: Box) -> Int {
+  return b.n
+}
+
+fn run(take b: Box) -> Int {
+  let x = consume(b)
+  let y = consume(b)
+  return x + y
+}

@@ -1,0 +1,16 @@
+class Inner {
+  n: Int
+}
+
+class Box {
+  inner: Inner
+}
+
+fn consume(take b: Box) -> Int {
+  return 1
+}
+
+fn run(take b: Box) -> Int {
+  let alias = b.inner
+  return consume(b)
+}

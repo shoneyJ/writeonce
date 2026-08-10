@@ -14,13 +14,13 @@
 class Price {
   id:       Id
   product:  ref Product                  -- owning product (foreign key)
-  amount:   Money                        -- minor units (cents); stdlib scalar
+  amount:   Int                          -- minor units (cents)
   currency: Text = "EUR"
   at:       Timestamp = now()
 
   -- Method: implicit `self` receiver, like Go methods — no class hierarchy,
   -- just behavior attached to a row. Pure computation, so no `in txn`.
-  fn discounted(pct: Int) -> Money {
+  fn discounted(pct: Int) -> Int {
     return self.amount * (100 - pct) / 100;
   }
 

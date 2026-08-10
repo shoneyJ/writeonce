@@ -1,0 +1,19 @@
+class Item {
+  n: Int
+}
+
+class Bag {
+  items: multi Item
+}
+
+fn swap(mut a: Item, mut b: Item) -> Int {
+  return 0
+}
+
+fn same_local(take it: Item) -> Int {
+  return swap(it, it)
+}
+
+fn same_index(mut bag: Bag, i: Int) -> Int {
+  return swap(bag.items[i], bag.items[i])
+}

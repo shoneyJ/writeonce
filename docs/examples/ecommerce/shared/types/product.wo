@@ -5,9 +5,9 @@
 
 type Product {
   id:         Id
-  sku:        SKU @unique
+  sku:        Text @unique
   name:       Text
-  price:      Money                         -- minor units (cents); `Money` is a stdlib scalar
+  price:      Int                           -- minor units (cents)
 
   meta: {                                   -- embedded document
     description: Markdown

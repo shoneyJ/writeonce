@@ -1,0 +1,13 @@
+owner-err/double-mut.wo:14:19: error WO-E303: cannot borrow `it` as `mut` twice in the same call
+  return swap(it, it)
+                  ^
+  owner-err/double-mut.wo:14:15: `it` first borrowed here
+    return swap(it, it)
+                ^
+
+owner-err/double-mut.wo:18:29: error WO-E303: cannot borrow `bag.items[i]` as `mut` twice in the same call
+  return swap(bag.items[i], bag.items[i])
+                            ^
+  owner-err/double-mut.wo:18:15: `bag.items[i]` first borrowed here
+    return swap(bag.items[i], bag.items[i])
+                ^

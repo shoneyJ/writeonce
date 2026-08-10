@@ -37,6 +37,8 @@ module Lexer = Woc_lib.Lexer
 module Ast = Woc_lib.Ast
 module Parser = Woc_lib.Parser
 module Dump = Woc_lib.Dump
+module Types = Woc_lib.Types
+module Owner = Woc_lib.Owner
 
 let read_file path =
   let ic = open_in_bin path in
@@ -777,11 +779,708 @@ let () =
   check "cli smoke: --dump-ast stdout still carries the surviving decls on exit 1"
     (stdout = Dump.dump_ast prog)
 
+(* ---- CLI smoke: multi-file driver (Task 8) ----------------------------
+
+   Everything above runs the CLI against a single file. These pin the
+   two new driver behaviors end to end, through the actual woc binary,
+   against fixtures under test/fixtures/driver/ rather than
+   test/golden/ -- see test/dune's comment on why: run_golden_dir's
+   one-.wo-file-per-fixture contract doesn't fit a fixture that *is*
+   several files compiling as one program. *)
+
+let () =
+  (* Cross-file symbol resolution: a_uses.wo (discovered first,
+     alphabetically) types a field as `Box`, a class declared only in
+     b_declares.wo (discovered second). Compiled alone, a_uses.wo must
+     fail WO-E225 unknown-type -- the control proving this is a real
+     check, not one that would pass vacuously. Compiled as the
+     directory (both files, one program), it must be clean: every
+     file's declare-pass runs before any file's body-check, so
+     discovery order can't matter for whether the symbol resolves. *)
+  let alone = "fixtures/driver/crossfile/a_uses.wo" in
+  let exit_code, _, stderr = run_cli [ alone ] in
+  check "crossfile control: a_uses.wo alone fails (Box isn't declared here)"
+    (exit_code = 1);
+  check "crossfile control: it's WO-E225 unknown-type, not something else"
+    (find_substring ~needle:"WO-E225" stderr <> None
+    && find_substring ~needle:"unknown type `Box`" stderr <> None);
+  let dir = "fixtures/driver/crossfile" in
+  let exit_code, _, stderr = run_cli [ dir ] in
+  check "crossfile: the directory (both files, merged symbols) compiles clean"
+    (exit_code = 0 && stderr = "")
+
+let () =
+  (* Same directory, --dump-ast: proves both files were actually
+     discovered and parsed (not e.g. an empty file list "compiling
+     clean" vacuously), each under its own file_header. *)
+  let dir = "fixtures/driver/crossfile" in
+  let _, stdout, _ = run_cli [ "--dump-ast"; dir ] in
+  check "crossfile --dump-ast: both files' headers appear"
+    (find_substring ~needle:"=== fixtures/driver/crossfile/a_uses.wo ===" stdout <> None
+    && find_substring ~needle:"=== fixtures/driver/crossfile/b_declares.wo ===" stdout <> None);
+  check "crossfile --dump-ast: both classes actually got dumped"
+    (find_substring ~needle:"CLASS Holder" stdout <> None
+    && find_substring ~needle:"CLASS Box" stdout <> None)
+
+let () =
+  (* Diagnostic ordering, discriminating (review follow-up, Important
+     3): the old version of this fixture had both files erroring at
+     the *same* pipeline stage (lexing), with the driver already
+     visiting files in sorted order for that stage -- insertion order
+     and (file, line, col) order coincided, so a broken sort could have
+     passed unnoticed. Here aaa_ownership.wo (sorts FIRST) has only a
+     *late*-stage error (WO-E301, found during the owner-analysis pass,
+     which runs over every file only after parse_all and typecheck_all
+     have both finished for every file) and zzz_lex.wo (sorts SECOND)
+     has only an *early*-stage error (WO-E001, found during parse_all,
+     the very first per-file pass). That means zzz_lex.wo's diagnostic
+     is *inserted into the collector first*, chronologically -- raw
+     insertion order is [zzz, aaa], the exact reverse of the required
+     [aaa, zzz] output order. Only a real (file, line, col) sort, not
+     insertion order, can produce the required order here. *)
+  let dir = "fixtures/driver/order" in
+  let exit_code, _, stderr = run_cli [ dir ] in
+  check "diagnostic order: exits 1 (one ownership error, one lex error)"
+    (exit_code = 1);
+  let aaa_idx = find_substring ~needle:"aaa_ownership.wo:11:19: error WO-E301" stderr in
+  let zzz_idx = find_substring ~needle:"zzz_lex.wo:1:1: error WO-E001" stderr in
+  check "diagnostic order: both files' diagnostics are present"
+    (aaa_idx <> None && zzz_idx <> None);
+  check
+    "diagnostic order: aaa_ownership.wo's *later-inserted* ownership error still prints \
+     first (file-sorts-first wins over insertion order)"
+    (match (aaa_idx, zzz_idx) with Some a, Some z -> a < z | _ -> false)
+
+let () =
+  (* Cross-file symbol collision (review follow-up, Important 2):
+     a_first.wo and b_second.wo both declare `class Dup`, with
+     different fields, so a silent first-wins merge would let
+     b_second.wo's own field (`s: Text`) typecheck against
+     a_first.wo's shape without anyone being told the two `Dup`s were
+     never the same class. b_second.wo sorts *after* a_first.wo, so it
+     is the one reported (declaring second is what makes it the
+     collision), with a_first.wo as the related "first declared here"
+     site -- deterministic, not order-of-Hashtbl-iteration dependent,
+     since the outer walk is over the same sorted-by-discovery file
+     list every other multi-file check relies on. *)
+  let dir = "fixtures/driver/collision" in
+  let exit_code, _, stderr = run_cli [ dir ] in
+  check "collision: exits 1" (exit_code = 1);
+  check "collision: WO-E214 reported at the second (later-declaring) file"
+    (find_substring ~needle:"b_second.wo:1:1: error WO-E214: class `Dup` already declared in"
+       stderr
+    <> None);
+  check "collision: names the first-declaring file by path"
+    (find_substring ~needle:"already declared in `fixtures/driver/collision/a_first.wo`" stderr
+    <> None);
+  check "collision: related site points back at a_first.wo's own declaration"
+    (find_substring ~needle:"fixtures/driver/collision/a_first.wo:1:1: `Dup` first declared here"
+       stderr
+    <> None)
+
+(* ---- direct typechecker assertions (Task 6b) --------------------------
+
+   No golden "types" stage exists yet: that would need `--dump-types`
+   wired into bin/main.ml and a diagnostics-aware dump_symbols in
+   dump.ml, neither of which the nullable-types-implementation plan's
+   New Requirements section asks for (it only names WO-W201/WO-E225 and
+   the scalar-list correction) -- building that CLI/dump plumbing now
+   would be scope creep beyond this task. These assertions instead pin
+   the Types.typecheck contract directly against the Collector, the
+   same way the lexer/parser sections above do. *)
+
+let typecheck_str ~file src =
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file src in
+  let prog = Parser.parse collector ~file toks in
+  let syms, () = Types.typecheck ~file prog collector in
+  (syms, collector)
+
+let () =
+  (* Money/SKU/Float carry no special status -- all three are ordinary
+     unknown types now (WO-E225 fires on them as fields). Float went for
+     the same phantom-scalar reason Money/SKU did: no float-literal syntax
+     in the lexer and no float kind in wob, so no Float value could ever
+     be written or represented. Timestamp stays a real builtin. *)
+  check "Money is no longer a builtin scalar" (not (Types.is_builtin_scalar "Money"));
+  check "SKU is no longer a builtin scalar" (not (Types.is_builtin_scalar "SKU"));
+  check "Float is not a builtin scalar" (not (Types.is_builtin_scalar "Float"));
+  check "Timestamp is a builtin scalar" (Types.is_builtin_scalar "Timestamp")
+
+let () =
+  (* class Node { next: Node } -- direct self-reference, no @gc, no
+     @table, no @unique field: WO-W201 must fire, at the class's own
+     (real) file/line/col, and a warning-only run must still exit 0
+     (Diag.Collector's severity-keyed exit-code contract). *)
+  let path = "node.wo" in
+  let _, collector = typecheck_str ~file:path "class Node {\n  next: Node\n}\n" in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "gc-suggestion: exactly one diagnostic (WO-W201)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "gc-suggestion: code is WO-W201" (d.Diag.code = "WO-W201");
+    check "gc-suggestion: severity is Warning" (d.Diag.severity = Diag.Warning);
+    check "gc-suggestion: real file/line/col (node.wo:1:1, the `class` token)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 1 && d.Diag.site.Diag.col = 1)
+  | _ -> check "gc-suggestion: exactly one diagnostic" false);
+  check_eq "gc-suggestion: a warning-only run exits 0, not 1" ~expected:0
+    ~actual:(Diag.Collector.exit_code collector) string_of_int
+
+let () =
+  (* @gc class Cache { next: Cache } -- same recursive shape as above,
+     but already @gc: WO-W201 must NOT fire. *)
+  let _, collector = typecheck_str ~file:"cache.wo" "@gc\nclass Cache {\n  next: Cache\n}\n" in
+  check_eq "gc-suggestion: @gc class reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* @table(...) class Node2 { next: Node2 } -- recursive, but DB-backed
+     via @table: WO-W201 must NOT fire (plan: "@table -> must be owned"). *)
+  let _, collector =
+    typecheck_str ~file:"node2.wo"
+      "@table(name: \"nodes\")\nclass Node2 {\n  next: Node2\n}\n"
+  in
+  check_eq "gc-suggestion: @table class reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* class Node3 { id: Id @unique; next: Node3 } -- recursive, but has a
+     @unique field (persistent identity): WO-W201 must NOT fire (plan's
+     "When NOT to emit" list, second bullet). *)
+  let _, collector =
+    typecheck_str ~file:"node3.wo"
+      "class Node3 {\n  id: Id @unique\n  next: Node3\n}\n"
+  in
+  check_eq "gc-suggestion: class with a @unique field reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* class Point { x: Int; y: Int } -- a plain data struct, no
+     recursive/shared fields: WO-W201 must NOT fire either. *)
+  let _, collector =
+    typecheck_str ~file:"point.wo" "class Point {\n  x: Int\n  y: Int\n}\n"
+  in
+  check_eq "gc-suggestion: simple data struct reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* class Calc { items: multi Item } (golden/ast/body-statements.wo's own
+     shape) -- a `multi` field of an UNRELATED type, not `multi Self`.
+     has_recursive_structure must key off self-reference, not "any multi
+     field": a bare `Ast.Multi _ -> true` would spuriously fire WO-W201
+     on every plain data class that merely holds a collection. *)
+  let _, collector =
+    typecheck_str ~file:"calc.wo" "class Calc {\n  items: multi Item\n}\n"
+  in
+  check_eq "gc-suggestion: unrelated `multi Item` field reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* class Bucket { entries: map<Text, Item> } -- same over-trigger risk
+     for `map`, neither side self-referential. *)
+  let _, collector =
+    typecheck_str ~file:"bucket.wo" "class Bucket {\n  entries: map<Text, Item>\n}\n"
+  in
+  check_eq "gc-suggestion: unrelated `map<Text, Item>` field reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* class Tree { children: multi Tree } -- `multi Self` must still fire
+     (the plan's own literal example of the heuristic). *)
+  let path = "tree.wo" in
+  let _, collector =
+    typecheck_str ~file:path "class Tree {\n  children: multi Tree\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "gc-suggestion: `multi Self` still fires WO-W201" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] -> check "gc-suggestion: `multi Self` diagnostic is WO-W201" (d.Diag.code = "WO-W201")
+  | _ -> check "gc-suggestion: `multi Self` exactly one diagnostic" false
+
+let () =
+  (* class BadExample { code: INVALID_TYPE } -- INVALID_TYPE is not a
+     builtin, class, or interface: WO-E225 must fire, at
+     the field's own real file/line/col, and this (an actual Error) must
+     exit 1. *)
+  let path = "bad-example.wo" in
+  let _, collector =
+    typecheck_str ~file:path "class BadExample {\n  code: INVALID_TYPE\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "unknown-type: exactly one diagnostic (WO-E225)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "unknown-type: code is WO-E225" (d.Diag.code = "WO-E225");
+    check "unknown-type: severity is Error" (d.Diag.severity = Diag.Error);
+    check "unknown-type: real file/line/col (bad-example.wo:2:3, the `code` field)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 2 && d.Diag.site.Diag.col = 3)
+  | _ -> check "unknown-type: exactly one diagnostic" false);
+  check_eq "unknown-type: an error run exits 1" ~expected:1
+    ~actual:(Diag.Collector.exit_code collector) string_of_int
+
+let () =
+  (* class Product { id: Id; sku: SKU; price: Money } -- SKU/Money are
+     ordinary unknown types (not a builtin, class, or interface), so both
+     fields must trip WO-E225. *)
+  let _, collector =
+    typecheck_str ~file:"product.wo"
+      "class Product {\n  id: Id\n  sku: SKU\n  price: Money\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "unknown-type fields (SKU, Money): exactly two diagnostics" ~expected:2
+    ~actual:(List.length diags) string_of_int;
+  check "unknown-type fields (SKU, Money): both are WO-E225"
+    (List.for_all (fun d -> d.Diag.code = "WO-E225") diags)
+
+let () =
+  (* class Ring { next: ?Ring } -- INVALID_TYPE's sibling case through the
+     ?T nullable wrapper this plan is named after: an unknown type inside
+     `?T` must still be caught, and a *known* one (here, Ring itself)
+     must not be a false positive. Also exercises forward references: B
+     is declared after A and must resolve since Pass 2 runs after all of
+     Pass 1 has completed. *)
+  let _, collector =
+    typecheck_str ~file:"ring.wo"
+      "class A {\n  b: B\n}\nclass B {\n  x: Int\n}\n"
+  in
+  check_eq "forward reference (A.b: B, B declared later): reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int;
+  let _, collector2 =
+    typecheck_str ~file:"nullable-unknown.wo" "class Ring {\n  next: ?GHOST\n}\n"
+  in
+  let diags2 = Diag.Collector.diagnostics collector2 in
+  check_eq "unknown type inside ?T: exactly one WO-E225" ~expected:1
+    ~actual:(List.length diags2) string_of_int;
+  match diags2 with
+  | [ d ] -> check "unknown type inside ?T: code is WO-E225" (d.Diag.code = "WO-E225")
+  | _ -> check "unknown type inside ?T: exactly one diagnostic" false
+
+(* ---- direct ownership-pass assertions (Task 7) ------------------------
+
+   golden/owner-err/ already pins the *rendered* text of every must-fail
+   fixture (code, message, both sites, source excerpts). These assertions
+   pin the parts a rendered blob cannot state as a contract: that exactly
+   the intended WO-E3xx code fires, that the second site is really a
+   `related` entry on the same diagnostic rather than a separate one, that
+   the exemptions (@gc, scalars) produce nothing at all, and that the four
+   emitter tables carry real AST node ids (positions are what goldens
+   pin, ids are what plan 3 keys on). *)
+
+let owner_str ~file src =
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file src in
+  let prog = Parser.parse collector ~file toks in
+  let syms, () = Types.typecheck ~file prog collector in
+  let tables = Owner.analyze ~file prog syms collector in
+  (tables, collector)
+
+let is_ownership_code (code : string) =
+  String.length code >= 5 && String.sub code 0 5 = Diag.ownership_prefix
+
+let ownership_diags collector =
+  Diag.Collector.diagnostics collector
+  |> List.filter (fun (d : Diag.t) -> is_ownership_code d.Diag.code)
+
+let all_diags collector = Diag.Collector.diagnostics collector
+
+(* Analyzes a fixture from golden/owner-err/ and returns its ownership
+   diagnostics; also asserts no *other* stage complained, so a fixture can
+   never pass its ownership assertions while quietly tripping a WO-E2xx. *)
+let owner_err_fixture name =
+  let path = "golden/owner-err/" ^ name ^ ".wo" in
+  let _, collector = owner_str ~file:path (read_file path) in
+  let all = Diag.Collector.diagnostics collector in
+  let own = List.filter (fun (d : Diag.t) -> is_ownership_code d.Diag.code) all in
+  check_eq (name ^ ": every diagnostic is an ownership diagnostic")
+    ~expected:(List.length all) ~actual:(List.length own) string_of_int;
+  own
+
+(* A two-site ownership error: the code, the primary site's line/col, and
+   the single related site's line/col. *)
+let check_site tag ~code ~line ~col ~rel_line ~rel_col (d : Diag.t) =
+  check (tag ^ ": code is " ^ code) (d.Diag.code = code);
+  check (tag ^ ": severity is Error") (d.Diag.severity = Diag.Error);
+  check_eq (tag ^ ": primary line") ~expected:line ~actual:d.Diag.site.Diag.line string_of_int;
+  check_eq (tag ^ ": primary col") ~expected:col ~actual:d.Diag.site.Diag.col string_of_int;
+  match d.Diag.related with
+  | [ r ] ->
+    check_eq (tag ^ ": related line") ~expected:rel_line ~actual:r.Diag.site.Diag.line
+      string_of_int;
+    check_eq (tag ^ ": related col") ~expected:rel_col ~actual:r.Diag.site.Diag.col string_of_int;
+    check (tag ^ ": related site carries a label") (r.Diag.label <> "")
+  | rs ->
+    check_eq (tag ^ ": exactly one related site") ~expected:1 ~actual:(List.length rs)
+      string_of_int
+
+let single tag (ds : Diag.t list) (f : Diag.t -> unit) =
+  match ds with
+  | [ d ] -> f d
+  | _ ->
+    check_eq (tag ^ ": exactly one ownership error") ~expected:1 ~actual:(List.length ds)
+      string_of_int
+
+(* Same shape for table entries: assert there is exactly one, then assert
+   things about it. *)
+let single_site tag (xs : 'a list) (f : 'a -> unit) =
+  match xs with
+  | [ x ] -> f x
+  | _ -> check_eq (tag ^ ": exactly one") ~expected:1 ~actual:(List.length xs) string_of_int
+
+let () =
+  (* `consume(b)` twice: the second one uses a moved value. Sites are the
+     two `b` argument tokens, 11:24 and 10:23. *)
+  single "use-after-move" (owner_err_fixture "use-after-move") (fun d ->
+      check_site "use-after-move" ~code:"WO-E301" ~line:11 ~col:24 ~rel_line:10 ~rel_col:23 d)
+
+let () =
+  (* `let alias = b.inner` borrows into b; `consume(b)` then moves b out
+     from under that borrow. Primary at the moved argument (15:18),
+     related at the borrowing `let` (14:3). *)
+  single "move-while-borrowed" (owner_err_fixture "move-while-borrowed") (fun d ->
+      check_site "move-while-borrowed" ~code:"WO-E302" ~line:15 ~col:18 ~rel_line:14 ~rel_col:3 d)
+
+let () =
+  (* Two provable aliases: `swap(it, it)` (same root) and
+     `swap(bag.items[i], bag.items[i])` (same root *and* the same runtime
+     index expression, so the analysis proves the alias rather than
+     deferring to a runtime check — contrast golden/owner/residual.wo). *)
+  match owner_err_fixture "double-mut" with
+  | [ a; b ] ->
+    check_site "double-mut (same local)" ~code:"WO-E303" ~line:14 ~col:19 ~rel_line:14 ~rel_col:15 a;
+    check_site "double-mut (same runtime index)" ~code:"WO-E303" ~line:18 ~col:29 ~rel_line:18
+      ~rel_col:15 b
+  | ds ->
+    check_eq "double-mut: exactly two ownership errors" ~expected:2 ~actual:(List.length ds)
+      string_of_int
+
+let () =
+  (* The same rule across statements rather than inside one call: a
+     let-bound alias keeps its borrow alive, so the borrowed place may be
+     neither exclusively re-borrowed (`touch(h.box)`) nor assigned to
+     (`h.box = fresh`) while the alias is in scope. *)
+  match owner_err_fixture "borrowed-place-mutated" with
+  | [ arg; assign ] ->
+    check_site "borrowed-place-mutated (`mut` argument)" ~code:"WO-E303" ~line:15 ~col:16
+      ~rel_line:14 ~rel_col:3 arg;
+    check_site "borrowed-place-mutated (assignment)" ~code:"WO-E303" ~line:20 ~col:3 ~rel_line:19
+      ~rel_col:3 assign
+  | ds ->
+    check_eq "borrowed-place-mutated: exactly two ownership errors" ~expected:2
+      ~actual:(List.length ds) string_of_int
+
+let () =
+  (* The three ways a borrow can escape (spec rule 3): stored into a
+     field, returned, moved out to a `take` parameter. *)
+  match owner_err_fixture "borrow-escape" with
+  | [ store; ret; take ] ->
+    check_site "borrow-escape (stored in a field)" ~code:"WO-E304" ~line:9 ~col:16 ~rel_line:8
+      ~rel_col:12 store;
+    check_site "borrow-escape (returned)" ~code:"WO-E304" ~line:18 ~col:10 ~rel_line:17 ~rel_col:9
+      ret;
+    check_site "borrow-escape (moved to a `take` parameter)" ~code:"WO-E304" ~line:22 ~col:15
+      ~rel_line:21 ~rel_col:10 take;
+    (* spec section 6's own wording for this diagnostic *)
+    check "borrow-escape: names the place and the function it escapes"
+      (Option.is_some (find_substring ~needle:"borrow of `h.box` escapes `leak`" ret.Diag.message))
+  | ds ->
+    check_eq "borrow-escape: exactly three ownership errors" ~expected:3 ~actual:(List.length ds)
+      string_of_int
+
+let () =
+  (* The loop fixpoint's reason for existing: the move is legal on the
+     first iteration and a use-after-move on every later one, so both
+     sites land on the same token — the message says so. *)
+  single "loop-move" (owner_err_fixture "loop-move") (fun d ->
+      check_site "loop-move" ~code:"WO-E301" ~line:12 ~col:29 ~rel_line:12 ~rel_col:29 d;
+      check "loop-move: message names the previous iteration"
+        (Option.is_some (find_substring ~needle:"previous loop iteration" d.Diag.message)))
+
+let () =
+  (* @gc is exempt from all of it (spec rule 5): the exact shape that is
+     WO-E301 above is silent here, and produces no move-table entries
+     either — a @gc transfer is an rc site, not a move. *)
+  let src =
+    "@gc\n\
+     class Cache {\n\
+    \  n: Int\n\
+     }\n\
+     \n\
+     fn keep(take c: Cache) -> Int {\n\
+    \  return 0\n\
+     }\n\
+     \n\
+     fn twice(take c: Cache) -> Int {\n\
+    \  let a = keep(c)\n\
+    \  let b = keep(c)\n\
+    \  return a + b\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"gc-exempt.wo" src in
+  check_eq "@gc exemption: no ownership diagnostics" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  check_eq "@gc exemption: no move-table entries" ~expected:0
+    ~actual:(List.length tables.Owner.moves) string_of_int
+
+let () =
+  (* Scalars are copied, never moved: same shape, nothing reported and
+     nothing in any table. *)
+  let src =
+    "fn add(take n: Int) -> Int {\n\
+    \  return n\n\
+     }\n\
+     \n\
+     fn twice(take n: Int) -> Int {\n\
+    \  let a = add(n)\n\
+    \  let b = add(n)\n\
+    \  return a + b\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"scalar-exempt.wo" src in
+  check_eq "scalar exemption: no ownership diagnostics" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  check_eq "scalar exemption: no move-table entries" ~expected:0
+    ~actual:(List.length tables.Owner.moves) string_of_int;
+  check_eq "scalar exemption: no drop-table entries" ~expected:0
+    ~actual:(List.length tables.Owner.drops) string_of_int
+
+let () =
+  (* `?T` carries T's ownership exactly — nil is just a value, so the
+     use-after-move fires through the nullable wrapper too. *)
+  let src =
+    "class Box {\n\
+    \  n: Int\n\
+     }\n\
+     \n\
+     fn consume(take b: ?Box) -> Int {\n\
+    \  return 0\n\
+     }\n\
+     \n\
+     fn run(take b: ?Box) -> Int {\n\
+    \  let x = consume(b)\n\
+    \  let y = consume(b)\n\
+    \  return x + y\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"nullable.wo" src in
+  single "?T ownership" (ownership_diags coll) (fun d ->
+      check "?T ownership: `?Box` is moved and use-after-move fires"
+        (d.Diag.code = "WO-E301" && d.Diag.site.Diag.line = 11));
+  check_eq "?T ownership: the first `?Box` pass is a real transfer" ~expected:1
+    ~actual:(List.length tables.Owner.moves) string_of_int
+
+let () =
+  (* Every decision golden must be completely clean — no ownership error,
+     and no WO-E2xx/WO-W2xx either, so a table golden can never drift into
+     documenting the output of a broken program. *)
+  List.iter
+    (fun name ->
+      let path = "golden/owner/" ^ name ^ ".wo" in
+      let _, coll = owner_str ~file:path (read_file path) in
+      check_eq ("decision golden " ^ name ^ ": reports nothing") ~expected:0
+        ~actual:(List.length (all_diags coll)) string_of_int)
+    [ "moves"; "drops"; "rc"; "residual"; "pricing-demo" ]
+
+let () =
+  (* The tables are keyed by AST node id for plan 3 (goldens can only pin
+     positions — ids churn), so assert the ids are actually populated. *)
+  let path = "golden/owner/moves.wo" in
+  let tables, _ = owner_str ~file:path (read_file path) in
+  check_eq "moves table: four transfers (LET, CTOR field, `take` arg, RETURN)" ~expected:4
+    ~actual:(List.length tables.Owner.moves) string_of_int;
+  check "moves table: every entry carries a real AST node id"
+    (List.for_all (fun (m : Owner.move_site) -> m.Owner.mv_node > 0) tables.Owner.moves);
+  check "drops table: every entry carries a real AST node id"
+    (List.for_all (fun (d : Owner.drop_site) -> d.Owner.dr_node > 0) tables.Owner.drops);
+  check "drops table: every listed local names its declaring node (names alone shadow)"
+    (List.for_all
+       (fun (d : Owner.drop_site) ->
+         List.for_all (fun (i : Owner.drop_item) -> i.Owner.di_node > 0) d.Owner.dr_items)
+       tables.Owner.drops);
+  let rc_path = "golden/owner/rc.wo" in
+  let rc_tables, _ = owner_str ~file:rc_path (read_file rc_path) in
+  check "rc table: every entry carries a real AST node id"
+    (List.for_all (fun (r : Owner.rc_site) -> r.Owner.rc_node > 0) rc_tables.Owner.rcs);
+  check "rc table: the balanced pair is elided, the escaping one kept"
+    (List.exists (fun (r : Owner.rc_site) -> r.Owner.rc_elided) rc_tables.Owner.rcs
+    && List.exists (fun (r : Owner.rc_site) -> not r.Owner.rc_elided) rc_tables.Owner.rcs);
+  let res_path = "golden/owner/residual.wo" in
+  let res_tables, _ = owner_str ~file:res_path (read_file res_path) in
+  check_eq "residual table: only the runtime-index pairs are residual" ~expected:3
+    ~actual:(List.length res_tables.Owner.residuals) string_of_int;
+  check "residual table: every entry names its region and both operand nodes"
+    (List.for_all
+       (fun (r : Owner.residual_site) ->
+         r.Owner.rs_node > 0 && r.Owner.rs_a_node > 0 && r.Owner.rs_b_node > 0
+         && r.Owner.rs_a_node <> r.Owner.rs_b_node)
+       res_tables.Owner.residuals)
+
+(* ---- review follow-ups (Task 7 review, 1 critical + 5 important) ------
+
+   Each block below pins one reviewed defect at the level the golden text
+   cannot state: an *absent* table entry, or a verdict (ELIDED vs KEPT)
+   that would still render as a plausible-looking line if it flipped. *)
+
+let drop_sites_of tables kind_matches =
+  List.filter (fun (d : Owner.drop_site) -> kind_matches d.Owner.dr_kind) tables.Owner.drops
+
+let names_of (d : Owner.drop_site) =
+  List.map (fun (i : Owner.drop_item) -> i.Owner.di_name) d.Owner.dr_items
+
+let () =
+  (* CRITICAL: a double-`mut` reached through two `let`-bound aliases used to
+     compare the syntactic roots `r` and `s`, conclude Disjoint, and emit
+     neither a diagnostic nor a residual site — so nobody, compiler or VM,
+     enforced the rule. Canonicalized places make it identical to the direct
+     `swap(bag.items[i], bag.items[k])` form. *)
+  let path = "golden/owner/residual.wo" in
+  let tables, coll = owner_str ~file:path (read_file path) in
+  check_eq "aliased double-mut: no diagnostic (unprovable, so the VM decides)" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  let via_alias =
+    List.filter (fun (r : Owner.residual_site) -> r.Owner.rs_pos.Ast.line = 32)
+      tables.Owner.residuals
+  in
+  single_site "aliased double-mut: exactly one residual site" via_alias (fun r ->
+      check "aliased double-mut: both sides exclusive"
+        (r.Owner.rs_a_kind = Owner.AExcl && r.Owner.rs_b_kind = Owner.AExcl);
+      check "aliased double-mut: rendered canonically, not as the alias names"
+        (r.Owner.rs_a = "bag.items[i]" && r.Owner.rs_b = "bag.items[k]"));
+  check "residual table: a move is never a residual side (a whole local always decides)"
+    (List.for_all
+       (fun (r : Owner.residual_site) ->
+         r.Owner.rs_a_kind <> Owner.AMove && r.Owner.rs_b_kind <> Owner.AMove)
+       tables.Owner.residuals);
+  check "residual table: at least one side of every pair is exclusive"
+    (List.for_all
+       (fun (r : Owner.residual_site) ->
+         r.Owner.rs_a_kind = Owner.AExcl || r.Owner.rs_b_kind = Owner.AExcl)
+       tables.Owner.residuals)
+
+let () =
+  (* Using a borrow alongside the container it borrows from is what the
+     binding is for, so it must stay silent — the guard that keeps the
+     critical fix above from turning every `for` cursor into a conflict. *)
+  let src =
+    "class Item {\n\
+    \  n: Int\n\
+     }\n\
+     \n\
+     class Bag {\n\
+    \  items: multi Item\n\
+     \n\
+    \  fn eat(mut e: Item) -> Int {\n\
+    \    self.items = self.items\n\
+    \    return 0\n\
+    \  }\n\
+     }\n\
+     \n\
+     fn cursor_reuse(mut bag: Bag) -> Int {\n\
+    \  let total = 0\n\
+    \  for it in bag.items {\n\
+    \    total = total + bag.eat(it)\n\
+    \  }\n\
+    \  return total\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"cursor.wo" src in
+  let in_loop =
+    List.filter (fun (d : Diag.t) -> d.Diag.site.Diag.line = 17) (ownership_diags coll)
+  in
+  check_eq "cursor reuse: passing the cursor to a method on its own container is silent"
+    ~expected:0 ~actual:(List.length in_loop) string_of_int;
+  check_eq "cursor reuse: and needs no runtime borrow either" ~expected:0
+    ~actual:(List.length tables.Owner.residuals) string_of_int
+
+let () =
+  let path = "golden/owner/drops.wo" in
+  let tables, _ = owner_str ~file:path (read_file path) in
+  (* IMPORTANT: conditionally moved value. The join records Moved, so the
+     path that did *not* move it must drop it at that branch's end or the
+     value leaks. `conditional_move` has no `else`, so the drop is anchored
+     at the `if` itself (line 50). *)
+  let joins = drop_sites_of tables (function Owner.DBranchJoin _ -> true | _ -> false) in
+  single_site "join normalization: exactly one JOIN-DROP in this fixture" joins (fun d ->
+      check "join normalization: on the implicit else branch"
+        (d.Owner.dr_kind = Owner.DBranchJoin "ELSE");
+      check_eq "join normalization: anchored at the `if`" ~expected:50
+        ~actual:d.Owner.dr_pos.Ast.line string_of_int;
+      check "join normalization: drops the value the then-branch moved" (names_of d = [ "a" ]));
+  check "join normalization: and the value is not dropped again on the moving path"
+    (not
+       (List.exists
+          (fun (d : Owner.drop_site) ->
+            d.Owner.dr_kind = Owner.DReturn && d.Owner.dr_pos.Ast.line = 53)
+          tables.Owner.drops));
+  (* IMPORTANT: `a = a` used to record OVERWRITE for the value it replaces
+     *and* keep `a` live — two drops of one value. *)
+  let overwrites = drop_sites_of tables (fun k -> k = Owner.DOverwrite) in
+  check "self-assignment: records no OVERWRITE (target and value are one storage)"
+    (not (List.exists (fun (d : Owner.drop_site) -> d.Owner.dr_pos.Ast.line = 57) overwrites));
+  check "self-assignment: the value is still dropped exactly once, at the return"
+    (List.exists
+       (fun (d : Owner.drop_site) ->
+         d.Owner.dr_kind = Owner.DReturn && d.Owner.dr_pos.Ast.line = 58 && names_of d = [ "a" ])
+       tables.Owner.drops);
+  (* IMPORTANT: re-initialising a moved-out local makes it live again, so it
+     must reappear in a later drop set (self-found bug 1, now pinned). *)
+  check "re-init after move: the reassigned local is dropped at the return"
+    (List.exists
+       (fun (d : Owner.drop_site) ->
+         d.Owner.dr_kind = Owner.DReturn && d.Owner.dr_pos.Ast.line = 64 && names_of d = [ "a" ])
+       tables.Owner.drops);
+  check "re-init after move: no OVERWRITE, since the moved-out local held nothing"
+    (not (List.exists (fun (d : Owner.drop_site) -> d.Owner.dr_pos.Ast.line = 63) overwrites))
+
+let () =
+  (* IMPORTANT: a `mut` argument means the callee may replace what the place
+     holds. For a @gc place that invalidates rc elision — the elided
+     increment would leave the alias as the last reference to a freed
+     object. The clobber therefore has to happen before the ownership class
+     is consulted, since @gc arguments create no access entry at all. *)
+  let path = "golden/owner/rc.wo" in
+  let tables, _ = owner_str ~file:path (read_file path) in
+  let at line =
+    List.filter (fun (r : Owner.rc_site) -> r.Owner.rc_pos.Ast.line = line) tables.Owner.rcs
+  in
+  single_site "rc: `balanced` has one ACQUIRE" (at 15) (fun r ->
+      check "rc: an alias whose source is never clobbered is ELIDED" r.Owner.rc_elided);
+  single_site "rc: `clobbered` has one ACQUIRE" (at 34) (fun r ->
+      check "rc: an alias whose source root is passed `mut` is KEPT"
+        (not r.Owner.rc_elided))
+
+let () =
+  let path = "golden/owner/moves.wo" in
+  let exit_code, stdout, stderr = run_cli [ "--dump-owner"; path ] in
+  check "cli smoke: --dump-owner on a clean file exits 0" (exit_code = 0);
+  check "cli smoke: clean-file --dump-owner writes nothing to stderr" (stderr = "");
+  let tables, _ = owner_str ~file:path (read_file path) in
+  check "cli smoke: --dump-owner stdout matches the in-process table dump exactly"
+    (stdout = Dump.dump_owner tables)
+
+let () =
+  let path = "golden/owner-err/use-after-move.wo" in
+  let exit_code, stdout, stderr = run_cli [ "--dump-owner"; path ] in
+  check "cli smoke: an ownership-error file exits 1, not 0" (exit_code = 1);
+  check "cli smoke: the WO-E301 diagnostic goes to stderr"
+    (Option.is_some (find_substring ~needle:"WO-E301" stderr));
+  check "cli smoke: stdout still carries the tables on exit 1"
+    (Option.is_some (find_substring ~needle:"== RESIDUAL ==" stdout))
+
 (* ---- golden-directory walk ------------------------------------------ *)
 
 (* Each stage directory under golden/ names one `woc --dump-*` flag.
-   "tokens" (Task 3) and "ast" (Task 4) exist today; later tasks add
-   "types", "owner" alongside their own dump function in dump.ml. *)
+   "tokens" (Task 3), "ast" (Task 4) and "owner" (Task 7) exist today; a
+   later task may add "types" alongside its own dump function in dump.ml.
+
+   "owner-err" is the one stage whose produced text is *not* a dump: it is
+   the fully rendered diagnostic report (the same text --dump-owner writes
+   to stderr, source excerpts and related sites included). The ownership
+   must-fail suite's whole contract is the message — both sites, the right
+   code, no unrelated noise from earlier stages — so the golden has to pin
+   the rendering, not a table. *)
 let run_stage ~stage ~file ~src : string =
   match stage with
   | "tokens" ->
@@ -793,6 +1492,13 @@ let run_stage ~stage ~file ~src : string =
     let toks = Lexer.tokenize collector ~file src in
     let prog = Parser.parse collector ~file toks in
     Dump.dump_ast prog
+  | "owner" ->
+    let tables, _ = owner_str ~file src in
+    Dump.dump_owner tables
+  | "owner-err" ->
+    let _, collector = owner_str ~file src in
+    let lookup f = if f = file then Some src else None in
+    Diag.Collector.render_all collector lookup ^ "\n"
   | other ->
     failwith (Printf.sprintf "runner: unknown golden stage directory %S" other)
 

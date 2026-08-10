@@ -1,264 +1,450 @@
-# Nullable Types (`?T`) Implementation Plan
+# Nullable Types (`?T`) + Constrained `@gc` Implementation Plan
 
-## Current State
+> **Rewritten 2026-08-10** as an honest status record plus a handoff, after an
+> audit found this doc's own status table claiming `?T` was "Implemented
+> with nullable handling" when the enforcement semantics do not exist. See
+> `.dev/commit.md` (subject: `refactor(compiler): drop Money/SKU/Float and
+> the abstract-type allowlist; correct the nullable-types plan doc`) for the
+> change that produced this rewrite.
 
-| Component 10 of the plan mentions "05-language-surface.md" and "07-logwatcher-proof.md" which might think "wait, there's no types.ml yet" - that's Task 6, which is where nullable types will be properly handled.
+## Status
 
-### Existing Files
-- **Lexer** (`lexer.ml`): ✅ Has `Question` token (`?`) - line 266
-- **Token** (`token.ml`): Has `Question` kind - line 60
-- **AST** (`ast.ml`): `field_ty` has `Scalar`, `Ref`, `Multi`, `Map` - **missing `Nullable`**
-- **Parser** (`parser.ml`): `parse_field_ty` handles `ref`, `multi`, `map`, scalar - **doesn't handle `?` prefix**
-- **Dump** (`dump.ml`): Handles existing field types - needs update
-- **Typechecker** (`types.ml`): Not yet created (Task 6)
+`?T` is **plumbed but not enforced**. Every stage that carries the syntax
+through the pipeline shipped; the one stage that would give it meaning —
+forced handling in the typechecker — did not.
+
+| Component | Status |
+|-----------|--------|
+| **Lexer** (`lexer.ml`) | Shipped — has `Question` token (`?`) |
+| **Token** (`token.ml`) | Shipped — has `Question` kind |
+| **AST** (`ast.ml`) | Shipped — `field_ty` has a `Nullable` variant |
+| **Parser** (`parser.ml`) | Shipped — parses the `?` prefix in all three positions: field types, return types, parameters |
+| **Dump** (`dump.ml`) | Shipped — renders `?T` as `?` + inner type |
+| **Typechecker semantics** (`types.ml`) | **NOT shipped.** `?T` round-trips through every stage above as inert syntax. The typechecker never enforces the `?T`/`T` boundary: no null-narrowing, no forced-handling diagnostic, no distinction in practice between a `?T` field and a `T` field. |
+
+**Evidence (re-run 2026-08-10):**
+
+```wo
+class Box { v: ?Int }
+fn take_it(b: Box) -> Int { return b.v; }
+```
+
+`woc` on this file exits **0** with **zero diagnostics**. `take_it` returns
+`b.v` — a `?Int` — from a function declared to return `Int`, with no null
+check anywhere. This is the entire point of `?T` (forced handling: you may
+not use a possibly-nil value where a never-nil value is required), and it is
+completely unenforced.
+
+## Handoff
+
+`?T` forced handling — null-narrowing control flow, the `WO-E211`/`WO-E212`/
+`WO-E213` diagnostics below, and boxed scalar cells for nullable scalars — is
+owned by `docs/plan/compiler/2026-08-01-haxe-parity-language.md` **Task 6**,
+not this doc. That task is the **next work item** on the compiler track: it
+blocks the log-watcher port (story iterations 5–6), which uses `?T`
+throughout in place of the Haxe original's sentinel values. This doc stops
+claiming ownership of that work.
+
+## Dead-code register
+
+Ten `WO-E2xx` codes are declared as named constants in `types.ml` with no
+call site anywhere in the front end — `grep '~code:'` finds exactly five
+sites (`WO-W201`, `WO-E202`, `WO-E206`, `WO-E207`, `WO-E225`); the other ten
+declared constants are never referenced by a `Diag.error`/`Diag.warning`
+call. `docs/plan/oop-vm/01-error-catalog.md`'s "Reserved, not yet emitted"
+section already lists all ten; this table adds *why* each is dead and who,
+if anyone, is expected to wire it:
+
+| Code | Meaning | Why it's dead |
+|------|---------|----------------|
+| `WO-E201` `type_mismatch` | operand/assignment type mismatch | Named in `docs/plan/compiler/2026-08-01-woc-compiler-front.md` Task 6's own must-fail list ("type mismatch, unknown field, bad arity, unsatisfied interface, incomplete constructor") — a gap in already-shipped work, not blocked on any future feature. `Binary`/`Unary` in `types.ml` don't check operand types at all. |
+| `WO-E203` `bad_arity` | wrong argument count at a call | Same Task 6 brief, same gap: `Call (_callee, args)` in `types.ml` type-checks each argument expression but never compares the count (or types) against the callee's signature. |
+| `WO-E204` `unknown_fn` | call names a free function that doesn't resolve | `Call`'s callee is never looked up in `syms.free_fns` at all — not blocked on modules; even a same-file unresolved call goes unchecked today. Gap in shipped work. |
+| `WO-E205` `unsatisfied_interface` | a class doesn't structurally satisfy an interface | **Called out explicitly**: this is the most consequential of the ten. `types.ml`'s own header comment (line 5) claims the pass "Produces typed AST + per-class field-kind table + interface satisfaction set," and the Task 6 brief names this as a required check ("calling an interface method on a non-satisfying class is an error naming the missing/mismatched signature") — but no code path ever calls `Diag.error ~code:unsatisfied_interface_code`. Structural interface satisfaction is entirely unenforced. Gap in shipped work, not deferred to a future plan. |
+| `WO-E208` `non_exhaustive_switch` | a `switch` expression doesn't cover every case | Genuinely blocked: no `switch` keyword exists in `token.ml`/`lexer.ml`/`parser.ml` yet. Owned by haxe-parity Task 3 (`switch` as expression). |
+| `WO-E209` `invalid_builtin` | a builtin call (`now`, `latest`, `count`, `words`, `print`, …) used with the wrong signature | Task 6's brief promises builtin-signature checking "matching the VM's builtin table," but `Call` has zero builtin special-casing — every callee is treated identically. Gap in shipped work. |
+| `WO-E210` `module_not_imported` | a name used from a module that was never `use`d | Genuinely blocked: no `use`/module concept exists anywhere in the parser yet. Owned by haxe-parity Task 1 (Modules). |
+| `WO-E211` `nullable_used_without_check` | a `?T` value used where `T` is required, unnarrowed | Genuinely blocked on the `?T`/`T` enforcement this doc hands off above. Owned by haxe-parity Task 6. |
+| `WO-E212` `nullable_assign_mismatch` | assigning across the `?T`/`T` boundary without narrowing | Same as `WO-E211`. Owned by haxe-parity Task 6. |
+| `WO-E213` `missing_nil_check` | narrowing control flow itself | Same as `WO-E211`/`WO-E212`. Owned by haxe-parity Task 6. |
+
+Five of the ten (`E201`, `E203`, `E204`, `E205`, `E209`) need **no new
+language feature** — they are checks the shipped Task 6 typechecker's own
+brief already promised and never wired. The other five (`E208`, `E210`,
+`E211`, `E212`, `E213`) are genuinely blocked on features that don't exist
+yet, each owned by a specific haxe-parity task as noted above.
+
+## Narrowing notes
+
+- **`WO-W201` shipped a self-reference-only heuristic.** The "Heuristic for
+  `has_recursive_structure`" section below lists four bullets; the actual
+  `has_recursive_structure` in `types.ml` implements only the first two
+  (a field of the class's own type, directly or through `ref`/`multi`/
+  `map<_, Self>`). The other two — a cycle *through other classes*, and "used
+  as `@gc` ref elsewhere in the same module" — are not implemented. The
+  function only ever compares a field's referenced type name against the
+  class's own name; it has no transitive/cross-class analysis.
+- **`WO-E225` covers bare class fields only.** `check_field_types` walks
+  `Ast.Class` fields exclusively (this does include `type X {}` declarations,
+  which parse to `Ast.Class` too — but never method parameters, return
+  types, or the element types of `multi T`/`map<K,V>`, because
+  `scalar_name_of` returns `None` for `Ref | Multi | Map`). A method
+  returning `Money`, a parameter typed `SKU`, or a field typed
+  `map<SKU, Money>` never triggered `WO-E225` even before this change removed
+  those names — and the same asymmetry holds for any future unknown type
+  name today.
+- **The "not typedef" clause is meaningless.** `is_known_type_name` has no
+  "or a declared typedef" disjunct, and adding one would be a no-op:
+  `typedefs` is declared in the `symbols` record, initialized to an empty
+  map, and threaded from pass 1 into pass 2 — but nothing ever populates it.
+  `type X { ... }` parses to `Ast.Class`, the same declaration form `class`
+  uses, so typedef-shaped declarations are already resolved through the
+  classes clause instead. There is no code path that could ever populate
+  `typedefs`, so no fix is missing here — the field itself is dead weight.
+
+## Additions this doc missed
+
+- **`WO-E214`** (cross-file collision) exists and is emitted — from the
+  *driver* (`compiler/bin/main.ml`), not `types.ml`, when the same class or
+  interface name is declared in two files a directory discovers. It reuses
+  the `WO-E2xx` range because it's a symbol-table concern, not a lexing,
+  parsing, or ownership one. Shipped as part of driver polish
+  (`docs/plan/compiler/2026-08-01-woc-compiler-front.md` Task 8); this doc
+  never mentioned it.
+- **A Task 7 ownership pass exists.** `compiler/src/owner.ml` (MVS flow
+  analysis, `WO-E3xx` two-site diagnostics, the moves/drops/rc/residual
+  tables behind `--dump-owner`) is fully implemented. This doc predates it
+  and never referenced it.
 
 ---
 
-## Required Changes
+## New Requirements
 
-### 1. AST (`ast.ml`) - Add Nullable Variant
+### 1. Diagnostic-Assisted `@gc` Inference (WO-W201)
 
-**Minimal Change (Option A):**
-```ocaml
-type field_ty =
-  | Scalar of string
-  | Ref of string
-  | Multi of string
-  | Map of string * string
-  | Nullable of field_ty   (* NEW: ?T wrapper *)
+**Goal:** Keep explicit `@gc` but add compiler diagnostic when borrow checker cannot prove safety.
+
+**New Diagnostic:**
+```
+WO-W201: <ClassName> has recursive/shared structure that borrow checker cannot prove.
+         Consider adding @gc if this is an ephemeral in-memory cache.
+         If this maps to a database table, keep owned (default).
 ```
 
-**Full Refactor (Option B - Recommended):**
-```ocaml
-type field_ty =
-  | Scalar of string
-  | Ref of string
-  | Multi of string
-  | Map of string * string
-  | Nullable of field_ty   (* NEW: ?T wrapper *)
+**When to emit:**
+- Class has fields that form recursive structures (e.g., `map<K, V>`, `multi T` where T is the same class)
+- Class has fields that are borrowed in ways the borrow checker cannot prove safe
+- Class is used in patterns typical of caches/registries (stored in `map`, passed as `@gc` ref)
 
-(* Update these to use field_ty for consistency *)
-type param = {
-  id : int;
-  pos : pos;
-  name : string;
-  conv : param_conv;
-  ty : field_ty;  (* was: string *)
-}
+**When NOT to emit:**
+- Class has `@table` annotation → must be owned (DB-backed)
+- Class has `@unique` field → persistent identity
+- Class is a simple data struct (no recursive/shared patterns)
 
-type method_sig = {
-  id : int;
-  pos : pos;
-  name : string;
-  params : param list;
-  ret : field_ty option;  (* was: string option *)
-}
-
-type method_decl = {
-  ...
-  ret : field_ty option;  (* was: string option *)
-}
-```
-
-**Decision**: **Option B** - Full refactor for consistency. The typechecker (Task 6) needs resolved types anyway.
+Shipped, with the narrower heuristic recorded above under "Narrowing notes."
 
 ---
 
-#### 3. Parser (`parser.ml`) - Parse `?` Prefix
+### 2. Scalar Type Corrections
 
-**Changes needed in `parse_field_ty` (line 312):**
+**Current (Wrong):**
 ```ocaml
-let parse_field_ty (st : state) : Ast.field_ty =
-  let nullable = ref false in
-  if accept st Token.Question then nullable := true;
-  let base_ty = 
-    match peek st with
-    | Token.Ident "ref" ->
-        ignore (advance st);
-        Ast.Ref (expect_ident st "ref target type")
-    | Token.Ident "multi" ->
-        ignore (advance st);
-        Ast.Multi (expect_ident st "multi target type")
-    | Token.Ident "map" ->
-        ignore (advance st);
-        expect st Token.Lt "'<'";
-        let k = expect_ident st "map key type" in
-        expect st Token.Comma "','";
-        let v = expect_ident st "map value type" in
-        expect st Token.Gt "'>'";
-        Ast.Map (k, v)
-    | Token.Ident name ->
-        ignore (advance st);
-        Ast.Scalar name
-    | _ -> unexpected st "a field type"
-  in
-  if !nullable then Ast.Nullable base_ty else base_ty
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Money"; "Timestamp"; "Id"; "SKU"]
 ```
 
-**Parse `?` prefix for return types (line 442):**
+> **Historical record — do not edit to match current reality.** This block
+> documents the bug Task 6b found (`Money`/`SKU` as bare builtins, no
+> `Float`), not the code as it exists today. Its correction below has since
+> been corrected again — see the note that follows.
+
+**Corrected (as of this change, 2026-08-10):**
 ```ocaml
-let parse_ret_type (st : state) : Ast.field_ty option =
-  let nullable = ref false in
-  if accept st Token.Question then nullable := true;
-  if accept st Token.Arrow then begin
-    let t = parse_field_ty st in  (* parse_field_ty now returns field_ty *)
-    Some (if !nullable then Ast.Nullable t else t)
-  end else None
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"]
 ```
 
-**Parse `?` prefix for parameters:**
-```ocaml
-let parse_param (st : state) : Ast.param =
-  let pos = peek_pos st in
-  let conv =
-    if accept st Token.KwMut then Ast.Mut
-    else if accept st Token.KwTake then Ast.Take
-    else Ast.Borrow
-  in
-  let name = expect_ident st "parameter name" in
-  expect st Token.Colon "':'";
-  let ty = parse_field_ty st in  (* now returns field_ty *)
-  { Ast.id = fresh_id st; pos; name; conv; ty }
-```
+**Changes, in order:**
+1. Task 6b: removed `Money`, `SKU` (they had no `abstract` declaration to
+   back them — magic strings) and added `Float` (documented as "IEEE 754
+   double / f64").
+2. This change (2026-08-10): removed `Float` too. It had the identical
+   phantom-scalar defect from the opposite direction — `token.ml` has no
+   float-literal kind and `wob.h` has no float representation, so `ratio:
+   Float` typechecked while no `Float` value could ever be written or
+   represented. `Money`/`SKU` also stay removed; the stopgap allowlist that
+   let them resolve (`abstract_types`/`is_abstract_type`) is deleted
+   outright, not emptied. `builtin_scalars` is now exactly the five names
+   that work end to end: `Int`, `Bool`, `Text`, `Timestamp`, `Id`.
 
-#### 4. Dump (`dump.ml`) - Render Nullable Types
+**The `abstract` feature itself is rejected**, not deferred. The
+systems-track verdict table's `abstract` row flips **adopt → reject**
+(`docs/superpowers/specs/2026-08-01-systems-track-design.md`): a distinct
+scalar type adds a conversion surface without buying safety this language
+needs, and the compiler's own `Money`/`SKU` stopgap allowlist is the
+concrete proof the cost was real. Domain scalars are plain `Int`/`Text`.
+Haxe-parity Task 7 keeps only `is`. No allowlist has a future to be revived
+into — re-adding `Float` requires float literals in the lexer *and* a float
+kind in `.wob` landing together; re-adding `abstract` requires the keyword
+itself to lex and parse, which plan 8 Task 9's reject-row enforcement now
+actively blocks.
+
+---
+
+### Updated Built-in Scalar List (in `types.ml`)
 
 ```ocaml
-let rec field_ty_str : Ast.field_ty -> string = function
-  | Ast.Scalar s -> s
-  | Ast.Ref s -> "ref " ^ s
-  | Ast.Multi s -> "multi " ^ s
-  | Ast.Map (k, v) -> "map<" ^ k ^ ", " ^ v ^ ">"
-  | Ast.Nullable t -> "?" ^ field_ty_str t  (* NEW *)
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"]
 ```
 
 ---
 
-### Typechecker Integration (Task 6 - `types.ml`)
+### Updated Built-in Scalar Table
 
-When Task 6 creates `types.ml`, it must handle:
+| Type | Description | Runtime Representation |
+|------|-------------|------------------------|
+| `Int` | 64-bit signed integer | i64 |
+| `Bool` | Boolean | i64 (0/1) |
+| `Text` | UTF-8 string | pointer + length |
+| `Timestamp` | Milliseconds since epoch | i64 |
+| `Id` | Opaque identifier | i64 |
 
-1. **Field-kind derivation**:
-   - `Nullable t` → `WO_K_NULLABLE` (new .wob kind = 6)
-   - Payload kind = `t`'s kind (SCALAR, OWNED, GCREF, TEXT, MULTI, MAP)
-
-2. **Expression typing**:
-   - Optional chaining: `x?.field` → requires `x : ?T`
-   - Nil checks: `if x != nil then ...` narrows type from `?T` to `T`
-   - Null coalescing: `x ?? default` → requires `x : ?T`, `default : T`
-
-3. **Builtin signatures** (update for nullable returns):
-   - `map_get` → returns `?V`
-   - `fs.stat` → returns `?{size, inode, mtime}`
-   - `json.decode` → returns `?T`
-   - `env.get` → returns `?Text`
-   - `proc.run` → returns `?{code, out, err}`
-
-4. **Type compatibility rules**:
-   - `T` → `?T` (implicit upcast)
-   - `?T` → `?T` (exact match)
-   - `?T` → `T` (requires explicit nil check, WO-E2xx if missing)
+(`Float`'s row is deleted — see the Scalar Type Corrections section above
+for why.)
 
 ---
 
-### .wob Format Changes (Plan 3)
+## Updated Plan
 
-**In `runtime/src/wob.h`:**
-```c
-enum {
-    WO_K_SCALAR = 0,
-    WO_K_OWNED = 1,
-    WO_K_GCREF = 2,
-    WO_K_TEXT = 3,
-    WO_K_MULTI = 4,
-    WO_K_MAP = 5,
-    WO_K_NULLABLE = 6,  // NEW
-};
-#define WO_K_MAX 6u
+### New Tasks Added
+
+#### Task A: Diagnostic WO-W201 for `@gc` Suggestion
+
+**File:** `compiler/src/types.ml` (Pass 2 - typechecker)
+
+**Implementation:**
+```ocaml
+(* In typechecker, after analyzing class structure *)
+let suggest_gc_annotation (cls : class_info) : unit =
+  if cls.is_gc then ()  (* Already @gc *)
+  else if cls.table.is_some then ()  (* Has @table -> must be owned *)
+  else if has_recursive_structure cls then
+    Diag.Collector.add collector
+      (Diag.warning ~code:"WO-W201" ~file:cls.pos.file ~line:cls.pos.line ~col:cls.pos.col
+         ~message:(Printf.sprintf "%s has recursive/shared structure that borrow checker cannot prove. Consider adding @gc if this is an ephemeral in-memory cache. If this maps to a database table, keep owned (default)." cls.name) ())
 ```
 
-**Runtime representation:**
-- Nullable field = 2 slots: discriminant (uint32_t: 0=null, 1=present) + payload (T's kind)
-- For SCALAR payload: 16 bytes total (discriminant + i64)
-- For OWNED/GCREF payload: 16 bytes total (discriminant + pointer)
-- For TEXT/MULTI/MAP payload: 16 bytes total (discriminant + pointer)
+**Heuristic for `has_recursive_structure`** (as originally scoped — see
+"Narrowing notes" above for which two of these four actually shipped):
+- Class has a field of its own type (direct recursion)
+- Class has `multi Self` or `map<_, Self>` field
+- Class fields form a cycle through other classes
+- Class is used as `@gc` ref elsewhere in the same module
 
 ---
 
-## Implementation Tasks
+#### Task B: Fix Built-in Scalar List
 
-### Phase 1: AST & Parser (Immediate)
+**File:** `compiler/src/types.ml`
 
-- [ ] **Task 1a**: Update `ast.ml`
-  - Add `Nullable of field_ty` to `field_ty`
-  - Change `param.ty : string` → `field_ty`
-  - Change `method_sig.ret : string option` → `field_ty option`
-  - Change `method_decl.ret : string option` → `field_ty option`
-  - Update `param_conv` documentation
+**Change:**
+```ocaml
+(* Before *)
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Money"; "Timestamp"; "Id"; "SKU"]
 
-- [ ] **Task 1b**: Update `parser.ml`
-  - Modify `parse_field_ty` to handle `?` prefix
-  - Modify `parse_ret_type` to use `parse_field_ty` and handle `?`
-  - Modify `parse_param` to use `parse_field_ty`
-  - Update `parse_sig_head` to handle new return type
+(* After *)
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Float"; "Timestamp"; "Id"]
+```
 
-- [ ] **Task 1c**: Update `dump.ml`
-  - Update `field_ty_str` to handle `Nullable`
-  - Update `param_str`, `sig_str`, `dump_method_sig` for new types
+> **Historical record — do not edit to match current reality.** This is
+> Task 6b's own correction at the time it was made; `Float` has since been
+> removed too (this change, 2026-08-10), for the reason given in the
+> Scalar Type Corrections section above. The true current list is
+> `["Int"; "Bool"; "Text"; "Timestamp"; "Id"]`.
 
-### Phase 2: Typechecker (Task 6)
-
-- [ ] **Task 2a**: Create `types.ml` with:
-  - Two-pass symbol collection
-  - Field-kind derivation including `WO_K_NULLABLE`
-  - Expression typing with nullable handling
-  - Structural interface satisfaction
-  - Self mutability inference
-
-- [ ] **Task 2b**: Add WO-E2xx error codes for nullable violations:
-  - WO-E211: Nullable type used without nil check
-  - WO-E212: Non-nullable assigned nullable without check
-  - WO-E213: Missing nil check before field access on nullable
-
-### Phase 3: Tests
-
-- [ ] **Task 3a**: Add golden fixtures in `test/golden/ast/`:
-  - `nullable-field.wo` - `field: ?Text`
-  - `nullable-return.wo` - `fn foo() -> ?Int`
-  - `nullable-param.wo` - `fn foo(x: ?Int)`
-  - `nullable-nested.wo` - `?multi ?Text`, `?map<Int, ?Text>`
-
-- [ ] **Task 3b**: Add must-fail fixtures in `test/golden/types/` (when typechecker exists):
-  - Missing nil check
-  - Type mismatch with nullable
+`abstract` types are rejected outright (see above) — there is no allowlist
+to add validation for, stopgap or otherwise. An unknown scalar name (not a
+builtin, not a declared class, not a declared interface) is simply
+`WO-E225`, unconditionally.
 
 ---
 
-## Migration Notes
+### Updated Typechecker Tasks
 
-### Files to Modify
-1. `compiler/src/ast.ml` - Core type definitions
-2. `compiler/src/parser.ml` - Parsing logic
-3. `compiler/src/dump.ml` - Debug output
-4. `compiler/src/types.ml` - New file (Task 6)
-5. `compiler/src/dune` - Add `types` module
+#### Task 2a (Updated): Typechecker with New Diagnostics
 
-### Breaking Changes
-- `param.ty` changes from `string` to `field_ty`
-- `method_sig.ret` changes from `string option` to `field_ty option`
-- `method_decl.ret` changes from `string option` to `field_ty option`
-- Any code constructing `Ast.param`, `Ast.method_sig`, `Ast.method_decl` directly must be updated
+**File:** `compiler/src/types.ml`
 
-### Compatibility
-- Parser changes are backward compatible (existing code without `?` still works)
-- AST changes require updating downstream consumers (typechecker, emitter)
-- Dump format changes are additive
+**New WO-E Codes:**
+| Code | Trigger |
+|------|---------|
+| WO-E225 | Unknown type: not a builtin, not a declared class, not a declared interface |
+| WO-W201 | Class has recursive/shared structure, consider `@gc` |
+
+**Implementation Order (as shipped):**
+1. `builtin_scalars` correction (now the five that work — see above)
+2. WO-W201 diagnostic in class analysis pass
+3. WO-E225 for unknown scalar names
+
+(The stopgap `is_abstract_type` check that used to sit between steps 1 and 2
+is gone — see the Scalar Type Corrections section.)
+
+---
+
+### What Task 6b actually tested
+
+No `test/golden/types/` directory exists, and `woc` has no dump flag for the
+types stage at all — its dump flags are `--dump-tokens`, `--dump-ast`, and
+`--dump-owner`, nothing more. None of `gc-suggestion.wo`, `sku-scalar.wo`,
+`unknown-type.wo`, or `float-example.wo` (all named in an earlier version
+of this doc) was ever created as a fixture file. Task 6b instead asserted
+these behaviors directly in `compiler/test/runner.ml`, via `typecheck_str`
+over inline `.wo` source strings:
+
+- **WO-W201 (gc-suggestion):** checks named `"gc-suggestion: exactly one
+  diagnostic (WO-W201)"`, `"gc-suggestion: code is WO-W201"`, etc., run over
+  inline sources for a self-referential `Node`, an `@gc`-annotated `Cache`
+  (must NOT fire), an `@table`-annotated `Node2` (must NOT fire), a
+  `@unique`-fielded `Node3` (must NOT fire), a plain `Point` struct (must NOT
+  fire), unrelated `multi`/`map` fields on `Calc`/`Bucket` (must NOT fire —
+  the over-trigger risk), and a `multi Self`-fielded `Tree` (must fire).
+- **Scalar list:** `"Money is no longer a builtin scalar"`, `"SKU is no
+  longer a builtin scalar"`, `"Timestamp is a builtin scalar"`, and (as of
+  this change) `"Float is not a builtin scalar"`.
+- **WO-E225 (unknown type):** `"unknown-type: exactly one diagnostic
+  (WO-E225)"` over `class BadExample { code: INVALID_TYPE }`, and (as of
+  this change) `"unknown-type fields (SKU, Money): exactly two
+  diagnostics"` over `class Product { id: Id; sku: SKU; price: Money }`.
+
+### Updated Files
+
+What actually changed, across both Task 6b and this change:
+
+| File | Changes |
+|------|---------|
+| `compiler/src/types.ml` | `builtin_scalars` corrections (Task 6b: −Money/SKU +Float; this change: −Float too); WO-W201 diagnostic; WO-E225 unknown-type diagnostic; the `abstract_types`/`is_abstract_type` stopgap allowlist added by Task 6b, then deleted outright by this change |
+| `compiler/src/owner.ml` | `oclass_of`'s builtin-scalar branch (this change: dropped the `is_abstract_type` disjunct — behavior-neutral, the `else Copy` fallthrough already caught unknown names) |
+| `compiler/src/diag.ml` | `WO-W201` warning prefix; `WO-E225` (and the other reserved `WO-E2xx` codes) |
+| `compiler/test/runner.ml` | Direct assertions for WO-W201 and WO-E225 (see "What Task 6b actually tested" above); no fixture files |
+| `compiler/test/golden/ast/pricing-demo.{wo,expected}`, `compiler/test/golden/owner/pricing-demo.wo`, `compiler/test/golden/ast/two-error-recovery.wo` | This change: `Money` → `Int`, `SKU` → `Text` (pure rename; owner's golden `.expected` is byte-identical) |
+| `docs/plan/compiler/nullable-types-implementation.md` | This document |
+
+---
+
+### Verifying today
+
+There is no dump flag for the types stage to demonstrate any of this with.
+What actually exists:
+
+```bash
+just woc-test                       # dune runtest: test_diag + runner goldens/assertions
+compiler/_build/default/bin/woc <file.wo>   # real compiler, real exit code + diagnostics
+```
+
+To see the `?T` gap directly, run the probe under "Status" above through
+`woc` — exit 0, no diagnostics, despite returning a nullable value from a
+non-nullable-typed function.
+
+---
+
+### Updated `.wob` Format (Plan 3)
+
+No changes needed - abstract types compile to their underlying representation at runtime.
+
+---
+
+## Abstract Data Types — the container roster (recorded 2026-08-08; FUTURE — post story iteration 11)
+
+> **Scope note (2026-08-08):** the story's critical path is *compile and
+> run log-watcher* (iterations 3–7). log-watcher needs only `multi`, `map`,
+> and `Text`. Nothing in this roster is scheduled before story iteration 11
+> completes; it is the recorded candidate pool, not work.
+
+Two different "abstract" notions live in this plan; keep them apart:
+
+- **Abstract newtypes** (`abstract Money = Int`) — zero-cost compile-time
+  wrappers over a scalar representation. Covered above; verdict-table adopt
+  row.
+- **Abstract data types (ADTs)** — behavioral specifications of containers:
+  an ADT says *what operations exist and their semantics*; a data structure
+  says *how they are implemented*. A map is an ADT; a hash table and a
+  red-black tree are two data structures implementing it.
+
+Doctrine holds: containers are **runtime-provided native classes
+implemented in C**, not user-definable generics (OOP spec §3). The VM picks
+the backing data structure; the language exposes only the ADT's operations.
+Milestone 1 ships `multi` (list) and `map`. The globally accepted ADT
+roster below is the candidate pool for later milestones — names and
+semantics only, implementation deliberately unspecified:
+
+**Linear**
+
+| ADT | Semantics |
+|-----|-----------|
+| List | ordered sequence, indexable, duplicates allowed — **shipped as `multi`** |
+| Stack | LIFO: push, pop, peek |
+| Queue | FIFO: enqueue, dequeue |
+| Deque | insert/remove at both ends |
+| Priority queue | retrieve highest-priority element first |
+
+**Associative**
+
+| ADT | Semantics |
+|-----|-----------|
+| Set | unordered collection of unique elements |
+| Multiset (bag) | like a set, but counts duplicates |
+| Map (dictionary) | key → value lookups — **shipped as `map`** |
+| Multimap | one key maps to multiple values |
+
+**Hierarchical / connected**
+
+| ADT | Semantics |
+|-----|-----------|
+| Tree | nodes with parent-child relations |
+| Binary search tree | ordered tree: search, insert, delete |
+| Heap | partial ordering; the usual backing for a priority queue |
+| Graph | vertices plus edges, directed or undirected |
+| Trie | prefix tree for strings |
+
+**Other**
+
+| ADT | Semantics |
+|-----|-----------|
+| String | sequence of characters — **shipped as `Text`** |
+| Matrix / array | fixed-dimension indexed storage |
+| Union-find (disjoint set) | track partitions, merge groups |
+| Stream / iterator | sequential access to a lazily produced sequence |
+
+Selection rules when a later milestone adopts one:
+
+1. Only globally accepted ADTs from this roster — no bespoke container
+   inventions.
+2. Adoption is demand-driven: a sample workload must need it first
+   ("samples force the grammar", principles doc #8).
+3. Each adopted ADT lands as a native class with the same machinery `multi`
+   and `map` already use: header sentinel class id, kind-tagged elements,
+   builtin-table operations, drop/GC integration via `wo_drop_kind`.
+4. The ADT's operation set is normative in the format doc; the backing
+   structure stays a VM implementation detail and may change without a
+   language-surface change.
+
+---
+
+## Summary of Changes to Existing Plan
+
+| Section | Change |
+|---------|--------|
+| `builtin_scalars` | Task 6b: remove `"Money"`, `"SKU"`; add `"Float"`. This change (2026-08-10): remove `"Float"` too. Final list: `["Int"; "Bool"; "Text"; "Timestamp"; "Id"]`. |
+| Typechecker | Shipped: WO-W201 (`@gc` suggestion, self-reference-only heuristic) + WO-E225 (unknown type, bare class fields only). Still dead: ten reserved `WO-E2xx` codes — see "Dead-code register" above. |
+| `abstract` types | **Rejected**, not adopted. Verdict-table row flips adopt → reject; haxe-parity Task 7 keeps only `is`. No `Money`/`SKU`/any newtype re-declaration is coming. |
+| `?T` semantics | **Not implemented.** Plumbed through lexer/token/AST/parser/dump; typechecker enforcement (narrowing, forced handling, `WO-E211`–`WO-E213`) owned by haxe-parity Task 6 — the next work item. |
+| ADT roster | Globally accepted container ADTs recorded as the candidate pool for future native classes (section above); `multi`/`map`/`Text` mapped to List/Map/String |
+| Test fixtures | None added under `test/golden/types/` — Task 6b asserted behavior directly in `runner.ml` instead (see "What Task 6b actually tested") |
+| Documentation | This document, rewritten 2026-08-10 |
 
 ---
 
 ## References
 
-- [Task 6 Plan](2026-08-01-woc-compiler-front.md#task-6-typechecker) - Lines 107-115
-- [OOP Compiler VM Design](superpowers/specs/2026-08-01-oop-compiler-vm-design.md) - Section 3, "Nullable types"
-- [Systems Track Design](superpowers/specs/2026-08-01-systems-track-design.md) - Part 1, "Null<T> → ?T optional types"
-- [.wob Format](plan/oop-vm/00-wob-format.md) - Field kinds
+- [Error catalog](../oop-vm/01-error-catalog.md) — every `WO-E`/`WO-W` code `woc` actually emits, plus the "Reserved, not yet emitted" section this doc's dead-code register expands on
+- [Haxe-Parity Language plan](2026-08-01-haxe-parity-language.md) — Task 6 owns `?T` forced handling (the handoff above); Task 7 is reduced to `is` only
+- [OOP Compiler VM Design](../../superpowers/specs/2026-08-01-oop-compiler-vm-design.md) - Section 3
+- [Systems Track Design](../../superpowers/specs/2026-08-01-systems-track-design.md) - Part 1; the `abstract` row (adopt → reject)

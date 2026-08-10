@@ -71,6 +71,19 @@ list, and a pointer to the plan document that already sequences its tasks.
 
 - Acceptance criteria live in each iteration file; this story frames the
   outcome.
+- **Critical path (locked 2026-08-08): compile and run log-watcher.**
+  Iterations 3 → 4 → 5 → 6 → 7 are the committed line; nothing off that
+  line lands before iteration 7's acceptance. Iterations 8–11 follow.
+- **Future iterations, after iteration 11** (parked 2026-08-08 — recorded,
+  not scheduled):
+  - WO-W201 `@gc`-suggestion diagnostic refinement (self-reference-only
+    heuristic shipped; shared-structure analysis deferred).
+  - WO-E225 unknown-type validation broadened to `ref`/`multi`/`map`
+    element types and method/fn signatures.
+  - ADT container roster adoption (Stack, Queue, Set, Tree, Graph, … —
+    see the roster section in
+    `docs/plan/compiler/nullable-types-implementation.md`); log-watcher
+    needs only `multi`/`map`, so no ADT lands before iteration 7.
 - Recorded future stories, deliberately outside this one: the web framework
   as a `.wo` library over the recipe-box runtime; UI (`##ui` SSR + live
   patches); script-based destructive schema migrations; MCP/agent wrapper

@@ -4,7 +4,7 @@
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.
 
-**Goal:** Plan 8 — implement every **adopt** row of the systems-track spec's Haxe keyword verdict table: the language grows switch expressions, records, optionals, try/catch/throw, enum payloads, abstracts, static members, using-extensions, modules, `is`, `pub(read)`, build flags, and interpolation — with the reject rows enforced as diagnostics.
+**Goal:** Plan 8 — implement every **adopt** row of the systems-track spec's Haxe keyword verdict table: the language grows switch expressions, records, optionals, try/catch/throw, enum payloads, static members, using-extensions, modules, `is`, `pub(read)`, build flags, and interpolation — with the reject rows enforced as diagnostics. (`abstract` was an adopt row until 2026-08-10; it is now a reject row — see Task 7.)
 
 **Architecture:** Plan 8 of the roadmap. Depends on OOP plans 1–3 (woc + wovm + corpus). Overwhelmingly compiler work in `compiler/src/`; the VM changes are exactly three, called out in their tasks: catch frames (try/catch), variant objects (enum payloads), and boxed optionals for scalars. Everything else lowers onto existing opcodes. The spec's verdict table (`docs/superpowers/specs/2026-08-01-systems-track-design.md` Part 1) is normative — this plan sequences it.
 
@@ -77,17 +77,19 @@ docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
 
 **Concept & reason:** the null-safety story. `?T` admits nil; `T` never does — the diagnostic-enforced boundary. Representation: heap kinds use the zero word (the VM's existing null checks already trap on it — optionals make those unreachable by typing); scalar optionals box into a one-field cell (the VM piece — obj.c gains the box; format doc notes the convention). Narrowing: comparing against `null` narrows in the branch (`if x != null` makes `x` a `T` inside — Haxe's exact idiom); using a `?T` un-narrowed where `T` is required diagnoses. Stdlib returns (plan 9) and record `?fields` (Task 4) type as `?T` from here on.
 
+**Next work item:** this task is next up — `?T` is plumbed (lexer/token/AST/parser/dump) but unenforced (E211/E212/E213 dead, probe exits 0 with zero diagnostics per `docs/plan/compiler/nullable-types-implementation.md`), and it blocks the log-watcher port (story iterations 5–6), which uses optionals throughout in place of the Haxe original's sentinel values.
+
 - [ ] Failing fixtures: narrowing goldens; un-narrowed-use must-fail; nil propagation through record optional fields; boxed scalar optional round-trip; assignment of null to plain `T` must-fail.
 - [ ] Implement; green.
 - [ ] Record commit draft: `feat: ?T optionals — null-narrowing control flow, forced handling diagnostics, zero-word heap nil + boxed scalar cells; record ?fields and future stdlib returns typed ?T.`
 
-### Task 7: `abstract` newtypes + `is`
+### Task 7: `is`
 
-**Concept & reason:** type-safety sugar pair, compiler-only. Abstracts: `abstract Money = Int` — a distinct compile-time type over a scalar representation, zero-cost at runtime (registers hold the raw scalar); mixing `Money` and `Int` diagnoses unless the declaration lists explicit `from`/`to` conversions; the existing stdlib scalars (Money, SKU) re-declare in-language, removing magic. `is`: runtime test on union values (variant membership — reads the Task-4 tag) and interface values (vtable membership — reuses the loader's satisfaction data); statically-decidable `is` diagnoses as always-true/false instead of compiling to a runtime check.
+**Concept & reason:** runtime type test, compiler-only. `is`: runtime test on union values (variant membership — reads the Task-4 tag) and interface values (vtable membership — reuses the loader's satisfaction data); statically-decidable `is` diagnoses as always-true/false instead of compiling to a runtime check. `abstract` newtypes were this task's other half; dropped — see the systems-track verdict table (adopt → reject, 2026-08-10 money-sku-float-removal change): a distinct scalar type adds a conversion surface without buying safety this language needs, and the compiler's own Money/SKU stopgap allowlist proved the cost was real (compiler/src/types.ml). Domain scalars stay plain `Int`/`Text`.
 
-- [ ] Failing fixtures: abstract mixing must-fail + explicit-conversion golden; zero-cost proof (disassembly golden shows raw scalar ops); `is` on unions/interfaces; statically-known `is` must-fail.
+- [ ] Failing fixtures: `is` on unions/interfaces; statically-known `is` must-fail.
 - [ ] Implement; green.
-- [ ] Record commit draft: `feat(compiler): abstract newtypes (zero-cost, explicit from/to; Money/SKU de-magicked) + is on unions/interfaces with static-decidability diagnostic.`
+- [ ] Record commit draft: `feat(compiler): is on unions/interfaces with static-decidability diagnostic.`
 
 ### Task 8: `static` members, `using` extensions, `pub(read)` accessors
 
@@ -99,7 +101,7 @@ docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
 
 ### Task 9: `#if` build flags + reject-row enforcement + closeout
 
-**Concept & reason:** last adoptions and the table's other half. Build flags: `woc -D name` defines flags; `#if name / #else / #end` sections include/exclude at the token stream level (flag names only, no expression language — the spec's limit); undefined flags are false; nesting allowed. Reject enforcement: the keywords that would otherwise parse get targeted diagnostics with the table's reasons — `extends`/`implements`/`super`/`override` on class declarations, `cast`, `Dynamic`/`untyped` as type/expression, `macro`, `extern`, `operator` — each cites the spec section. Closeout: error catalog complete for the track, keyword table in the spec annotated with shipped status, `just oop-accept` runs the grown corpus, CLAUDE.md language notes synced.
+**Concept & reason:** last adoptions and the table's other half. Build flags: `woc -D name` defines flags; `#if name / #else / #end` sections include/exclude at the token stream level (flag names only, no expression language — the spec's limit); undefined flags are false; nesting allowed. Reject enforcement: the keywords that would otherwise parse get targeted diagnostics with the table's reasons — `extends`/`implements`/`super`/`override` on class declarations, `cast`, `Dynamic`/`untyped` as type/expression, `macro`, `extern`, `operator` — each cites the spec section. `abstract` joins this reject row too, but needs no diagnostic of its own: the keyword never lexes, so it is absent by construction, the same as `macro`/`extern`. Closeout: error catalog complete for the track, keyword table in the spec annotated with shipped status, `just oop-accept` runs the grown corpus, CLAUDE.md language notes synced.
 
 - [ ] Failing fixtures: #if inclusion/exclusion goldens (portable-style flag), nesting, undefined-flag default; one must-fail per reject keyword with the doctrine message.
 - [ ] Implement; full corpus green; docs synced.
@@ -109,6 +111,6 @@ docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
 
 ## Plan self-review notes
 
-- **Spec coverage (Part 1 + success criterion 1):** every adopt row has a task (modules T1, control/const/interp T2, switch T3, typedef+enum T4, try/catch/throw T5, optionals T6, abstract+is T7, static/using/pub(read) T8, #if T9); every reject row enforced in T9 or absent by construction. Criterion 1's "corpus coverage per row" is each task's fixture requirement.
+- **Spec coverage (Part 1 + success criterion 1):** every adopt row has a task (modules T1, control/const/interp T2, switch T3, typedef+enum T4, try/catch/throw T5, optionals T6, `is` T7, static/using/pub(read) T8, #if T9); every reject row enforced in T9 or absent by construction — `abstract` moved from adopt to reject on 2026-08-10, so T7 lost its other half. Criterion 1's "corpus coverage per row" is each task's fixture requirement.
 - **VM changes fenced:** exactly three (catch frames, variant objects, boxed scalar optionals), each with a format-doc update in its task; everything else is lowering.
 - **Order rationale:** modules first (everything imports), data shapes before optionals (records carry ?fields), try/catch after switch (arms reuse unified-type machinery), rejects last when all parse paths exist to hang diagnostics on.

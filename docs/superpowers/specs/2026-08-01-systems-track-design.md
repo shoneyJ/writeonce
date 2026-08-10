@@ -44,7 +44,7 @@ Every Haxe keyword (plus the contextual ones), one verdict each: **have** (write
 | `break` / `continue` | **adopt** | loop control |
 | `do` (do-while) | **adopt** | parity, trivial |
 | `static` | **adopt** | class-level `fn`/`const` — namespaced functions without instances (`Flock.held`, `Pgrep.alive` pattern) |
-| `abstract` | **adopt** | newtype over a scalar, zero-cost, unit-safe (`Money`, `SKU` become in-language, not magic stdlib scalars); `from`/`to` conversion rules explicit |
+| `abstract` | **reject** | a distinct scalar type adds a conversion surface without buying safety this language needs; domain scalars are plain `Int`/`Text` |
 | `using` | **adopt** | static extension methods — doctrine-safe reuse (composition sugar, the inheritance substitute) |
 | `import` / `package` | **adopt** | `use` + directory-as-module; stdlib namespaces (`fs`, `proc`, `net`, `time`, `env`, `json`) |
 | `is` | **adopt** | runtime type test restricted to union variants and interface values; a compile error on statically-known types |

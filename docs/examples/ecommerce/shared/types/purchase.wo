@@ -11,7 +11,7 @@ type Purchase link Customer -> Product {
   order:      ref Order                      -- FK so you can query
                                              -- `Customer.purchased{ order.status == Paid }`
   qty:        Int   @check(> 0)
-  unit_price: Money                          -- captured at checkout time
+  unit_price: Int                            -- captured at checkout time
   at:         Timestamp = now()
 
   policy read for role Admin
