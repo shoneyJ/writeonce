@@ -50,7 +50,8 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 8 | [Shard-actor runtime](08-shard-actor-runtime.md) | thread-per-core shards, per-shard heaps, ownership-move messaging |
 | 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
 | 10 | [HTTP service layer](10-http-service.md) | `service` blocks route to VM methods; REST parity with Stage 2 |
-| 11 | [Blue-green deploy](11-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
+| 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
+| 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable

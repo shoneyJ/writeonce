@@ -64,14 +64,29 @@
 /runtime/bench/goref/goref
 prototypes/llama-moe-stream/
 prototypes/wo-db/
+
+# NOTE (2026-08-10): `tests/` stays ignored, but story iteration 4 (plan 3)
+# lands the conformance corpus under `tests/corpus/` — un-ignore it in that
+# change, or the corpus will be invisible to git exactly as the docs below
+# were. See docs/plan/learnings.md, "check that a new document is actually
+# tracked".
 tests/
-docs/examples/agent-loop/
-docs/examples/mcp-think/
-docs/plan/exploration/
-docs/plan/oop-vm/
-# docs/plan/oop-vm/ carries the compiler<->VM normative contracts
-# (.wob format, error catalog) both plan tracks cite -- carve it back
-# out of the blanket docs/plan/ ignore above; the other rules here are
-# untouched.
-!docs/plan/oop-vm/
-docs/superpowers/plans/
+
+# Documentation is version-controlled — repo doctrine puts docs under `docs/`,
+# and ignoring them there defeats the point. These directories were ignored
+# until 2026-08-10, which silently cost the blue-green vision doc (recovered
+# from a session transcript) and left all seven forward-roadmap plan docs in
+# `docs/superpowers/plans/` existing only on one developer's disk. The rules
+# were also half-fiction: 33 of the 34 files under `docs/plan/exploration/`
+# were already tracked, so the rule only swallowed *new* files — the worst
+# possible failure mode. Do not re-add them.
+#   docs/examples/agent-loop/
+#   docs/examples/mcp-think/
+#   docs/plan/exploration/
+#   docs/plan/oop-vm/        (carries the .wob format + error-catalog contracts)
+#   docs/superpowers/plans/
+
+# Python bytecode — the agent-loop / mcp-think samples are Python, and
+# un-ignoring their directories above exposed these.
+__pycache__/
+*.pyc

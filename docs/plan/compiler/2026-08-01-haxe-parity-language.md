@@ -77,7 +77,7 @@ docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
 
 **Concept & reason:** the null-safety story. `?T` admits nil; `T` never does — the diagnostic-enforced boundary. Representation: heap kinds use the zero word (the VM's existing null checks already trap on it — optionals make those unreachable by typing); scalar optionals box into a one-field cell (the VM piece — obj.c gains the box; format doc notes the convention). Narrowing: comparing against `null` narrows in the branch (`if x != null` makes `x` a `T` inside — Haxe's exact idiom); using a `?T` un-narrowed where `T` is required diagnoses. Stdlib returns (plan 9) and record `?fields` (Task 4) type as `?T` from here on.
 
-**Next work item:** this task is next up — `?T` is plumbed (lexer/token/AST/parser/dump) but unenforced (E211/E212/E213 dead, probe exits 0 with zero diagnostics per `docs/plan/compiler/nullable-types-implementation.md`), and it blocks the log-watcher port (story iterations 5–6), which uses optionals throughout in place of the Haxe original's sentinel values.
+**First task of this plan:** iteration 4 (plan 3 — emitter, corpus, `woc build`) precedes plan 8; within plan 8 this task goes first — `?T` is plumbed (lexer/token/AST/parser/dump) but unenforced (E211/E212/E213 dead, probe exits 0 with zero diagnostics per `docs/plan/compiler/nullable-types-implementation.md`), and it blocks the log-watcher port (story iterations 5–6), which uses optionals throughout in place of the Haxe original's sentinel values.
 
 - [ ] Failing fixtures: narrowing goldens; un-narrowed-use must-fail; nil propagation through record optional fields; boxed scalar optional round-trip; assignment of null to plain `T` must-fail.
 - [ ] Implement; green.
