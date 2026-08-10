@@ -58,3 +58,11 @@
 # Phase-F bench binaries (sources are committed; builds are not)
 /runtime/bench/bench
 /runtime/bench/goref/goref
+prototypes/llama-moe-stream/
+prototypes/wo-db/
+tests/
+docs/examples/agent-loop/
+docs/examples/mcp-think/
+docs/plan/exploration/
+docs/plan/oop-vm/
+docs/superpowers/plans/
