@@ -1,6 +1,10 @@
 # Cargo build artifacts
 /target
 
+# Rust runtime (crates/rt/): compiled binary + build artifacts
+/crates/rt/target
+/crates/rt/Cargo.lock
+
 # C++ prototype build output
 /prototypes/*/build
 
