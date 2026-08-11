@@ -1,0 +1,5 @@
+-- Seed fixture: print/print_int, the smallest possible run/ case.
+fn main() {
+  print("hello")
+  print_int(42)
+}

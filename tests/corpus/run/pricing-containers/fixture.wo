@@ -1,0 +1,31 @@
+-- Pricing-demo corpus (plan 3, Task 3): container round-trips over the
+-- two container shapes the pricing demo's classes use -- a `multi`
+-- (docs/examples/pricing/types/product.wo's `prices: multi Price`) and a
+-- Text-keyed `map` (a SKU->price catalog, using `Text` directly since
+-- `SKU` was removed from the language on 2026-08-10). Exercises
+-- multi push/count/get and map set/get/has, per docs/plan/oop-vm/
+-- 08-builtin-surface.md's builtin table.
+class Item {
+  n: Int
+}
+
+class Catalog {
+  items:   multi Item
+  by_name: map<Text, Int>
+}
+
+fn main() {
+  let c = Catalog { items: multi_new(), by_name: map_new() }
+  push(c.items, Item { n: 10 })
+  push(c.items, Item { n: 20 })
+  push(c.items, Item { n: 30 })
+  print_int(count(c.items))
+  print_int(c.items[1].n)
+
+  set(c.by_name, "mug", 499)
+  set(c.by_name, "shirt", 1999)
+  print_int(count(c.by_name))
+  print_int(c.by_name["mug"])
+  print_int(has(c.by_name, "shirt"))
+  print_int(has(c.by_name, "hat"))
+}

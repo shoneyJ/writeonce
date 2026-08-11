@@ -1,0 +1,14 @@
+-- Runtime residual check: `get` on a `map` with a key that isn't present
+-- traps KEY (docs/plan/oop-vm/08-builtin-surface.md's `get` row: "a
+-- missing key traps KEY"). Unprovable at compile time -- the key is a
+-- runtime `Text` value -- so it traps rather than failing to compile:
+-- the hybrid boundary's runtime half.
+class Catalog {
+  prices: map<Text, Int>
+}
+
+fn main() {
+  let c = Catalog { prices: map_new() }
+  set(c.prices, "mug", 499)
+  print_int(c.prices["shirt"])
+}

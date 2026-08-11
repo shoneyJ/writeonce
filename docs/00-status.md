@@ -15,22 +15,19 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **parke
 
 ## ▶ NEXT PLAN
 
-**Story iteration 4 — single binary end-to-end.**
-Plan: [`compiler/plan/2026-08-01-wob-emit-e2e-single-binary.md`](plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md) ·
-Story slice: [`docs/stories/language-runtime-database/04-single-binary-e2e.md`](stories/language-runtime-database/04-single-binary-e2e.md)
+**Story iteration 5 — language surface (Haxe-parity adoptions).**
+Plan: [`plan/compiler/2026-08-01-haxe-parity-language.md`](plan/compiler/2026-08-01-haxe-parity-language.md) ·
+Story slice: [`docs/stories/language-runtime-database/05-language-surface.md`](stories/language-runtime-database/05-language-surface.md)
 
-The bytecode emitter, the three-kind conformance corpus, and `woc build`. This
-is the milestone where `.wo` source becomes a running self-contained binary —
-compiler front (iteration 3) and VM core (iteration 2) both shipped, so it is
-unblocked. Its inputs are the four ownership tables `owner.ml` now produces;
-`dump.ml`'s format-contract comments are normative for it, **including the
-requirement to coalesce borrow guards per operand**.
-
-Iteration 4 proves the pipeline on the **milestone grammar only** — the
-emitter, corpus, and `woc build` exercise the grammar iteration 3 already
-compiles, not the log-watcher sample, which still needs ~200 constructs the
-front end cannot yet parse (iterations 5–6 work). Iteration 4 must not be
-judged against the sample (gap-closure spec, §6).
+The language grows from milestone grammar to a daily-driver surface: every
+**adopt** row of the systems-track verdict table (switch expressions, typedef
+records, `?T` optionals, enum payloads, try/catch, statics, `using`, modules,
+`is`, `pub(read)`, `#if`) lands with a golden + must-fail fixture pair; every
+**reject** row refuses with a doctrine-citing diagnostic. **First task: `?T`
+forced handling (plan 8 Task 6)** — plumbed since iteration 3 but unenforced
+(`WO-E211`–`E213` dead), and the log-watcher port (iterations 6–7) uses
+optionals throughout in place of the Haxe original's sentinel values, so
+nothing else in this plan can land ahead of it.
 
 Two tracks run in this repo. The critical path is the **language track**:
 iterations 3 → 4 → 5 → 6 → 7, ending at *compile and run log-watcher*. The
@@ -50,12 +47,14 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 1 | [Principles doc](stories/language-runtime-database/01-principles-doc.md) | ✅ |
 | 2 | [VM core (`wovm`)](stories/language-runtime-database/02-vm-core.md) | ✅ |
 | 3 | [Compiler front (`woc`)](stories/language-runtime-database/03-compiler-front.md) | ✅ (known gaps below) |
-| 4 | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md) | 🔄 **next** |
-| 5 | [Language surface](stories/language-runtime-database/05-language-surface.md) | ⬜ |
+| 4 | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md) | ✅ (known gaps below) |
+| 5 | [Language surface](stories/language-runtime-database/05-language-surface.md) | 🔄 **next** |
 | 6 | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md) | ⬜ |
 | 7 | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md) | ⬜ acceptance |
+| 7b | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md) | ⬜ closes iteration 4's gate |
 | 8 | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md) | ⬜ |
 | 9 | [Database engine](stories/language-runtime-database/09-database-engine.md) | ⬜ |
+| 9b | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | ⬜ needs a spec first |
 | 10 | [HTTP service layer](stories/language-runtime-database/10-http-service.md) | ⬜ |
 | 11 | [Fibers](stories/language-runtime-database/11-fibers.md) | ⬜ |
 | 12 | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md) | ⬜ |
@@ -66,9 +65,9 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track | Item | Where |
 | --- | --- | --- |
-| Language | Iteration 4 — emitter, conformance corpus, `woc build` | [plan 3](plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md) |
+| Language | Iteration 5 — Haxe-parity language surface, `?T` forced handling first | [plan 8](plan/compiler/2026-08-01-haxe-parity-language.md) |
 
-Nothing else should be started until iteration 4 lands. Off-critical-path work
+Nothing else should be started until iteration 5 lands. Off-critical-path work
 is parked by explicit scope directive (2026-08-08).
 
 ---
@@ -86,6 +85,7 @@ is parked by explicit scope directive (2026-08-08).
 | ✅ | Error catalog | [`oop-vm/01-error-catalog.md`](plan/oop-vm/01-error-catalog.md) | 14 emitted codes + 10 reserved, each with the reason it is not yet emitted |
 | ✅ | log-watcher `.wo` sample | [`../examples/log-watcher/`](examples/log-watcher/README.md) | Eight-file port authored docs-first with its `.hx` mapping table; compiles for real in iteration 7 |
 | ✅ | Scalar cleanup | [`discarded.md`](plan/discarded.md) | `Money`/`SKU`/`Float` and the abstract allowlist removed; `abstract` flipped adopt → reject |
+| ✅ | `woc` emitter, corpus, single binary | [plan 3](plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md) | Tasks 1–6 + 8 (Task 7, a parity harness against the Rust runtime, **deferred by explicit user decision** — the two stacks diverge by design). Bytecode emitter (`emit.ml`) + disassembler (`disasm.ml`, `--dump-bc`); three-kind conformance harness (`scripts/oop-e2e.sh`, `just oop-e2e`) over `tests/corpus/{run,compile-fail,trap,gc}`; pricing-demo + ownership/trap corpora (19 fixtures); `@gc` cycle collector's post-exit pump (`WO_GC_BUDGET`/`WO_GC_TRACE`) + 2 gc fixtures (`gc/held-cycle` retired — see criterion-3 closure below); `woc build` single-binary output + relocation/corrupt-trailer smoke; `WO-E405` closing criterion 3's ASan leak (entry must return `Int`); `just oop-accept` wiring all five spec criteria + both unit gates into one command. 14 + 399 compiler checks; `oop-e2e` 25/25 against the release `wovm`. **Milestone-1 acceptance gate is fully green — all five criteria met** (see the dated acceptance note in `docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md`) |
 
 **Known gaps carried out of iteration 3** — recorded, not silently owed:
 
@@ -101,6 +101,46 @@ is parked by explicit scope directive (2026-08-08).
 - Six further narrowings (W201 heuristic, E225 reach, dead code after `return`,
   unresolved-callee drops, RC table ordering, residual b-side role) are listed
   in the plan-2 SDD ledger and in the affected files' own comments.
+
+**Known gaps carried out of iteration 4** — recorded, not silently owed:
+
+- **`WO-E205` (unsatisfied interface) is reachable but unenforced — a real
+  hybrid-boundary inversion, not just a dead code path.** A class that does
+  not structurally satisfy an interface it's passed as compiles clean (exit
+  0, zero diagnostics) even though the violation is statically provable, and
+  the mismatched call reaches `wovm` as an `ICALL` with no matching vtable
+  entry, trapping `WO_T_BOUNDS` (6) at runtime instead of failing at compile
+  time. Pinned by `tests/corpus/trap/unsatisfied-interface/`; when `WO-E205`
+  is wired, that fixture must move to `compile-fail/` in the same change.
+- **`set(m, k, v)`'s `@gc` retention gap on map keys/values is open** — the
+  twin of the `push` bug Task 5 fixed for `multi`. `set` has no equivalent
+  special case in `owner.ml`'s `analyze_call`, so a `@gc` key or value handed
+  to `set` is under-counted and the collector can free it while the map still
+  points at it. Nothing in the corpus exercises this yet. See
+  [`oop-vm/08-builtin-surface.md`](plan/oop-vm/08-builtin-surface.md).
+- **E201/E203 and seven other `WO-E2xx` codes remain declared but unemitted**
+  — see [`oop-vm/01-error-catalog.md`](plan/oop-vm/01-error-catalog.md).
+- **CLOSED — milestone-1's ASan gate (`just oop-accept`) failing on
+  `gc/held-cycle`.** Root cause (Task 8's finding, restated): `main.c`'s
+  entry-method return value (`uint64_t ret`, `src/main.c:158`) is stored
+  but never released, so `gc/held-cycle`'s "permanent external hold" was
+  actually a permanent refcount inflation — LeakSanitizer's "definite
+  leak" (1184 bytes / 3 allocations) was correctly reporting exactly
+  that, not a false positive. Fixing it by releasing `ret` was rejected:
+  the `.wob` method table carries no return-type/kind metadata, so
+  `main.c` has no way to know `ret` is a pointer rather than a scalar,
+  and adding that metadata is a format change out of scope here. Fixed
+  instead at the source: the systems-track spec already requires the
+  entry to return `Int` (its return value is the process exit code), so
+  a class-returning `main` was never legal — `WO-E405`
+  (`compiler/src/emit.ml`, `01-error-catalog.md`) now rejects it at
+  compile time, and `gc/held-cycle` is retired because its premise (an
+  externally-held cycle survives a *post-exit* pump) is no longer
+  expressible — see `oop-vm/02-corpus.md`'s "Retired" note for why, and
+  for where the scenario it meant to cover is actually proven
+  (`runtime/test/test_cycle.c`, plus a proper in-flight fixture scheduled
+  for story iteration 7b). Spec success criterion 3 is now **MET**;
+  `just oop-accept` passes all five criteria.
 
 ### Rust runtime track — Stage 2 shipped, maintained
 
@@ -135,8 +175,10 @@ Ecommerce sample (verified 2026-06-13): `api.rest` 17/17 expected statuses pass.
 | 5 | Haxe-parity language surface — **`?T` forced handling first**, then switch expressions, records, enum payloads, try/catch, statics, `using`, modules, `is`, `pub(read)`, `#if` | [plan 8](plan/compiler/2026-08-01-haxe-parity-language.md) |
 | 6 | Program mode + systems stdlib — `fn main`, exit codes, `fs`/`proc`/`net`/`time`/`json` | [plan 9](superpowers/plans/2026-08-01-program-mode-stdlib.md) |
 | 7 | log-watcher proof — the sample compiles and detects a silent death live | [plan 10](superpowers/plans/2026-08-01-log-watcher-sample.md) |
+| 7b | Inferred GC + incremental mark-sweep — `@gc` removed, GC-ness inferred, RC retired | [spec](superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md) — plan to be written |
 | 8 | Shard-actor runtime | [plan 4](superpowers/plans/2026-08-01-shard-actor-vm-runtime.md) |
 | 9 | Database engine binding | [plan 5](superpowers/plans/2026-08-01-db-engine-binding.md) |
+| 9b | `@table` + relations + language-integrated query | **no spec yet** — three open forks recorded in the iteration; brainstorm before planning |
 | 10 | HTTP service layer | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md) |
 | 11 | Fibers | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md) |
 | 12 | Blue-green deploy | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9–10 |

@@ -1,0 +1,22 @@
+-- Ownership suite (plan 2), as an end-user program: `b` is moved into
+-- `consume` on the first call, so the second call reads it after the
+-- move. Mirrors compiler/test/golden/owner-err/use-after-move.wo, the
+-- unit-test-shaped original this fixture gives a `main` and turns into a
+-- program the corpus harness actually runs through `woc --emit`.
+class Box {
+  n: Int
+}
+
+fn consume(take b: Box) -> Int {
+  return b.n
+}
+
+fn run(take b: Box) -> Int {
+  let first = consume(b)
+  let second = consume(b)
+  return first + second
+}
+
+fn main() {
+  print_int(run(Box { n: 1 }))
+}

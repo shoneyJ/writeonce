@@ -1,0 +1,34 @@
+-- Seed fixture: structural interface dispatch. Book and Toy satisfy
+-- Priced purely by having the method (no `implements` keyword by
+-- doctrine); `quote`'s call through the interface-typed parameter is
+-- ICALL by global vtable slot, not a direct method-index CALL.
+interface Priced {
+  fn current_price() -> Int
+}
+
+class Book {
+  base: Int
+
+  fn current_price() -> Int {
+    return self.base + 2
+  }
+}
+
+class Toy {
+  base: Int
+
+  fn current_price() -> Int {
+    return self.base * 3
+  }
+}
+
+fn quote(p: Priced) -> Int {
+  return p.current_price()
+}
+
+fn main() {
+  let b = Book { base: 10 }
+  let t = Toy { base: 5 }
+  print_int(quote(b))
+  print_int(quote(t))
+}

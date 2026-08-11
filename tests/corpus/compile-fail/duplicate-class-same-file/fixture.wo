@@ -1,0 +1,13 @@
+-- Canary fixture (Task 2 review, Important 2): pins the front-end fix
+-- landed in this same task. A second `class Dup` in one file used to be
+-- silently dropped by collect_declarations's bare StringMap.add; now it
+-- is WO-E215, reported at the later declaration.
+class Dup {
+  n: Int
+}
+class Dup {
+  s: Text
+}
+
+fn main() {
+}

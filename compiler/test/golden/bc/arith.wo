@@ -1,0 +1,29 @@
+-- Arithmetic, comparison and control-flow lowering.
+-- Covers the two operators the v1 instruction set has no opcode for and
+-- that the emitter therefore lowers rather than inventing: `%` becomes
+-- a - (a / b) * b, and `!=` becomes (a == b) == 0. `>` and `>=` reuse
+-- LT/LE with the operands swapped.
+fn compute(a: Int, b: Int) -> Int {
+  let sum = a + b
+  let diff = a - b
+  let prod = sum * diff
+  let quot = prod / b
+  let rem = prod % b
+  let neg = -rem
+  if sum == diff {
+    return neg
+  }
+  let changing = sum != diff
+  while changing {
+    changing = false
+  }
+  if sum > diff {
+    return quot + rem
+  }
+  return neg
+}
+
+fn main() {
+  print_int(compute(7, 3))
+  print("done")
+}

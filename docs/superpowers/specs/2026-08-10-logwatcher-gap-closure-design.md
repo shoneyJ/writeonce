@@ -120,18 +120,23 @@ gains an `env` row and the count becomes six.
 Both were asserted in the review doc; both are corrected at their real source
 rather than in the retired file.
 
-**Structural interface satisfaction is not implemented — and is unreachable by
-design, not owed.** `WO-E205` is declared and never emitted. The review listed
-satisfaction checking as *implemented*, which is false; but calling it a gap in
-shipped work is equally wrong. Satisfaction is structural — there is no
-`implements` keyword by doctrine — so the check has exactly one home: sites
-where a value is used at an interface-typed position. The milestone grammar has
-no such positions (no interface-typed fields, parameters, or returns are
-exercised), so the check cannot fire yet and its absence costs nothing. The
-error catalog re-files `WO-E205` as **unreachable until interface-typed
-positions exist**, and `types.ml`'s module header stops claiming it produces a
-satisfaction set. The log-watcher sample declares no interfaces, so this stays
-off the critical path.
+**Structural interface satisfaction is not implemented.** `WO-E205` is declared
+and never emitted. The review listed satisfaction checking as *implemented*,
+which is false. This amendment originally also called it *unreachable by
+design, not owed* — that half is wrong, and corrected here (plan 3 Task 4
+review, 2026-08-11): the check's one legal home, a site where a value is used
+at an interface-typed position, **is** exercised by the milestone grammar. An
+interface-typed parameter accepting a concrete class that doesn't structurally
+satisfy it compiles clean today, then reaches `wovm` as an `ICALL` with no
+matching vtable slot, which traps `WO_T_BOUNDS` at runtime instead of failing
+to compile — even though the violation is statically provable (the class's
+method set is fully known). See
+[`01-error-catalog.md`](../../plan/oop-vm/01-error-catalog.md)'s "Reachable but
+unenforced" section for the repro and
+`tests/corpus/trap/unsatisfied-interface/` for the pinned current behavior.
+This is an owed gap, not a design decision — it stays off the log-watcher
+critical path only because the sample declares no interfaces, not because the
+gap doesn't exist.
 
 **`?T` is plumbed, not enforced.** The review listed "Nullable types `?T`" as
 implemented — the same conflation already corrected in
@@ -160,7 +165,7 @@ against the sample.
 | [plan 9](../plans/2026-08-01-program-mode-stdlib.md) | Gains a core-builtins task covering the 22 bare globals plus `print_err`. `time` task gains `iso` and `local`, loses `mono`. `env` is named as a module rather than loose Part-2 prose. |
 | [plan 3](../../plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md) | Unchanged. |
 | [plan 10](../plans/2026-08-01-log-watcher-sample.md) | Acceptance gains the diagnostic-count gate: 307 → 0. |
-| [`01-error-catalog.md`](../../plan/oop-vm/01-error-catalog.md) | `WO-E205` re-filed as unreachable-by-design with its reason; `WO-E208`/`E210`/`E211`–`E213` keep their existing reserved entries. |
+| [`01-error-catalog.md`](../../plan/oop-vm/01-error-catalog.md) | `WO-E205` re-filed as **reachable but unenforced** — corrected 2026-08-11, see § 5 — with its repro; `WO-E208`/`E210`/`E211`–`E213` keep their existing reserved entries. |
 | [`docs/00-status.md`](../../00-status.md) | NEXT PLAN gains the milestone-grammar-only note; pending list gains the three cuts under the parked section. |
 | `docs/00-code-review.md` | Reduced to a stub: one paragraph saying its findings landed here and in the plans, pointing at `docs/00-status.md`. |
 
@@ -191,8 +196,9 @@ uncaught-trap surface exactly as it is today.
 1. The systems-track spec's Part 1 has a boolean-operator row and its Part 3
    lists six modules plus a core-builtins section covering all 22 names.
 2. Plans 8 and 9 reflect every addition and cut; plan 8 Task 7 is gone.
-3. `WO-E205` is documented as unreachable-by-design, and `types.ml`'s header no
-   longer claims a satisfaction set is produced.
+3. `WO-E205` is documented as reachable but unenforced (corrected 2026-08-11,
+   see § 5 — an earlier "unreachable-by-design" claim here was wrong), and
+   `types.ml`'s header no longer claims a satisfaction set is produced.
 4. `docs/00-code-review.md` is a stub; no second roadmap exists in the repo.
 5. The 307-diagnostic baseline is recorded in plan 10 as its acceptance gate.
 

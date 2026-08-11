@@ -142,11 +142,30 @@ let suggest_gc_annotation ~file (cls : class_info) (collector : Diag.Collector.t
       (Diag.warning ~code:gc_suggestion_code ~file ~line:cls.pos.line ~col:cls.pos.col
          ~message:(Printf.sprintf "%s has recursive/shared structure that borrow checker cannot prove. Consider adding @gc if this is an ephemeral in-memory cache. If this maps to a database table, keep owned (default)." cls.name) ())
 
+(* Ast.field_ty -> the internal resolved typ. Hoisted out of
+   typecheck_program (where it was a local closure) so the .wob emitter
+   can reach the same mapping instead of keeping a second copy of it;
+   the check pass still calls it under its old local name. *)
+let rec typ_of_field_ty (ft : field_ty) : typ =
+  match ft with
+  | Scalar name -> TScalar name
+  | Ref name -> TRef name
+  | Multi inner_name -> TMulti (TScalar inner_name)
+  | Map (k_name, v_name) -> TMap (TScalar k_name, TScalar v_name)
+  | Nullable inner -> TNullable (typ_of_field_ty inner)
+
 (* wob_kind_of_typ: maps internal typ to .wob field kind *)
 let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
   let kind_of = function
     | TScalar name ->
-        if is_builtin_scalar name then WO_K_SCALAR
+        (* Text is NOT a plain scalar slot: a Text field holds a heap
+           string, and the runtime's per-kind drop plan
+           (runtime/src/gc.c wo_drop_kind) only frees it under
+           WO_K_TEXT. Emitting WO_K_SCALAR here leaked every string a
+           class owned. Found by the emitter, this function's first
+           caller. *)
+        if name = "Text" then WO_K_TEXT
+        else if is_builtin_scalar name then WO_K_SCALAR
         else if is_gc_class syms name then WO_K_GCREF
         else WO_K_OWNED
     | TNullable _inner -> WO_K_NULLABLE
@@ -177,9 +196,30 @@ let missing_nil_check_code = Diag.types_prefix ^ "13"
 
 let unknown_type_name_code = Diag.types_prefix ^ "25"  (* WO-E225 *)
 
+(* Same-file counterpart to main.ml's cross-file WO-E214 (Task 8 review):
+   a duplicate class/interface/fn name declared twice *within one file*
+   was silently dropped by collect_declarations's StringMap.add (Task 1
+   review, "Known limitations" #6 -- no diagnostic at all). *)
+let duplicate_decl_code = Diag.types_prefix ^ "15"  (* WO-E215 *)
+
 (* ============================================================
    Pass 1: Declaration Collection
    ============================================================ *)
+
+(* Reported at the *later* declaration, with the first as the related
+   site -- exactly WO-E214's shape. The map keeps the first declaration
+   (a duplicate is never added), matching WO-E214's own first-wins rule
+   for the merged cross-file table. *)
+let report_duplicate_decl (collector : Diag.Collector.t) ~file ~(kind : string) ~(name : string)
+    ~(pos : pos) ~(first_pos : pos) : unit =
+  Diag.Collector.add collector
+    (Diag.error ~code:duplicate_decl_code ~file ~line:pos.line ~col:pos.col
+       ~message:(Printf.sprintf "%s `%s` already declared" kind name)
+       ~related:
+         [ Diag.related_site ~file ~line:first_pos.line ~col:first_pos.col
+             ~label:(Printf.sprintf "`%s` first declared here" name)
+         ]
+       ())
 
 let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) : symbols =
   let classes = ref StringMap.empty in
@@ -213,8 +253,13 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
           id = c.id;
           pos = c.pos;
         } in
-        classes := StringMap.add c.name info !classes;
-        suggest_gc_annotation ~file info collector
+        (match StringMap.find_opt c.name !classes with
+         | Some (existing : class_info) ->
+             report_duplicate_decl collector ~file ~kind:"class" ~name:c.name ~pos:c.pos
+               ~first_pos:existing.pos
+         | None ->
+             classes := StringMap.add c.name info !classes;
+             suggest_gc_annotation ~file info collector)
     | Ast.Interface i ->
         let methods = List.map (fun (m : Ast.method_sig) ->
           { name = m.name;
@@ -229,7 +274,11 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
           id = i.id;
           pos = i.pos;
         } in
-        interfaces := StringMap.add i.name info !interfaces
+        (match StringMap.find_opt i.name !interfaces with
+         | Some (existing : interface_info) ->
+             report_duplicate_decl collector ~file ~kind:"interface" ~name:i.name ~pos:i.pos
+               ~first_pos:existing.pos
+         | None -> interfaces := StringMap.add i.name info !interfaces)
     | Ast.Fn f ->
         let info = {
           name = f.name;
@@ -240,7 +289,11 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
           id = f.id;
           pos = f.pos;
         } in
-        free_fns := StringMap.add f.name info !free_fns
+        (match StringMap.find_opt f.name !free_fns with
+         | Some (existing : free_fn_info) ->
+             report_duplicate_decl collector ~file ~kind:"fn" ~name:f.name ~pos:f.pos
+               ~first_pos:existing.pos
+         | None -> free_fns := StringMap.add f.name info !free_fns)
   ) prog.decls;
 
   { classes = !classes; interfaces = !interfaces; free_fns = !free_fns;
@@ -293,14 +346,7 @@ let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
 
 let typecheck_program ~file (prog : program) (syms : symbols) (collector : Diag.Collector.t) : unit =
   check_field_types ~file syms collector prog;
-  let rec resolve_field_ty (ft : field_ty) : typ =
-    match ft with
-    | Scalar name -> TScalar name
-    | Ref name -> TRef name
-    | Multi inner_name -> TMulti (TScalar inner_name)
-    | Map (k_name, v_name) -> TMap (TScalar k_name, TScalar v_name)
-    | Nullable inner -> TNullable (resolve_field_ty inner)
-  in
+  let resolve_field_ty = typ_of_field_ty in
 
   let rec typecheck_expr (env : typ StringMap.t) (e : expr) : expr_type_result =
     match e.kind with

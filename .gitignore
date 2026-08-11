@@ -45,6 +45,12 @@
 #   ln -s <path-to-colibri>            .dev/reference/colibri
 #   ln -s <path-to-llama.cpp>          .dev/reference/llama-cpp
 #   ln -s <path-to-llvm-project>       .dev/reference/llvm-project
+#   ln -s <path-to-dotnet-runtime>     .dev/reference/dotnet-runtime
+#     (sparse clone -- only src/libraries/System.Linq:
+#      git clone --filter=blob:none --no-checkout --depth 1 \
+#        https://github.com/dotnet/runtime.git ~/projects/dotnet-runtime
+#      cd ~/projects/dotnet-runtime && git sparse-checkout init --cone \
+#        && git sparse-checkout set src/libraries/System.Linq && git checkout)
 
 # Agent-orchestration scratch (SDD ledgers, briefs, review packages)
 /.superpowers/
@@ -65,12 +71,12 @@
 prototypes/llama-moe-stream/
 prototypes/wo-db/
 
-# NOTE (2026-08-10): `tests/` stays ignored, but story iteration 4 (plan 3)
-# lands the conformance corpus under `tests/corpus/` — un-ignore it in that
-# change, or the corpus will be invisible to git exactly as the docs below
-# were. See docs/plan/learnings.md, "check that a new document is actually
-# tracked".
-tests/
+# `tests/` un-ignored 2026-08-11 (plan 3 Task 2): the conformance corpus
+# lands under `tests/corpus/` and must be tracked, not invisible to git
+# the way the docs below already were once. See docs/plan/learnings.md,
+# "check that a new document is actually tracked". No build artifacts
+# land under `tests/` — the harness's own scratch files use mktemp
+# outside the repo — so nothing needs re-ignoring beneath it.
 
 # Documentation is version-controlled — repo doctrine puts docs under `docs/`,
 # and ignoring them there defeats the point. These directories were ignored

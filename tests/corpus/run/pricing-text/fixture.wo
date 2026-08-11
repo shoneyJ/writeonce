@@ -1,0 +1,12 @@
+-- Pricing-demo corpus (plan 3, Task 3): text builtins -- `words`
+-- (whitespace token count) and `..` (CONCAT; `+` is arithmetic-only,
+-- never string addition -- docs/plan/oop-vm/08-builtin-surface.md).
+-- Mirrors the product name text docs/examples/pricing/types/product.wo
+-- carries (`name: Text`), reduced to what the two builtins need.
+fn main() {
+  let brand = "writeonce"
+  let noun = "ceramic mug"
+  let full = brand .. " " .. noun
+  print(full)
+  print_int(words(full))
+}

@@ -12,5 +12,6 @@ The normative contract documents both stacks cite. Landed by their named plan ta
 | `05-http-service.md` | route section, trap→HTTP table, JSON subset | 6 |
 | `06-ui-live.md` | delta frames, subscribe protocol, wo:live | 7 |
 | `07-systems-stdlib.md` | per-function nil-vs-trap contracts | 9 |
+| `08-builtin-surface.md` | builtin source names, container/call/entry rules the emitter enforces | 3 |
 
 Specs and plans: `docs/superpowers/{specs,plans}/`. Repo map: `docs/08-project-structure.md`.

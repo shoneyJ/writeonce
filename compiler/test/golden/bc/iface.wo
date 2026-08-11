@@ -1,0 +1,37 @@
+-- Structural interface dispatch: the interface section, the global slot
+-- numbering, and one vtable row per satisfying (class, interface) pair.
+-- Satisfaction is structural and Go-style (no `implements` keyword by
+-- doctrine), so Book and Toy each get a row purely by having the
+-- method. A call through an interface-typed parameter is ICALL by global
+-- slot id; a call on a known class is a direct CALL by method index.
+interface Priced {
+  fn current_price() -> Int
+}
+
+class Book {
+  base: Int
+
+  fn current_price() -> Int {
+    return self.base + 2
+  }
+}
+
+class Toy {
+  base: Int
+
+  fn current_price() -> Int {
+    return self.base * 3
+  }
+}
+
+fn quote(p: Priced) -> Int {
+  return p.current_price()
+}
+
+fn main() {
+  let b = Book { base: 10 }
+  let t = Toy { base: 5 }
+  print_int(quote(b))
+  print_int(quote(t))
+  print_int(b.current_price())
+}

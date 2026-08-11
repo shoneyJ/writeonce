@@ -1,0 +1,34 @@
+-- KNOWN GAP, pinned deliberately (Task 4 review, Important 2). `Rock`
+-- does not have a `current_price` method, so it does not structurally
+-- satisfy `Priced` -- and its full method set is known at compile time,
+-- so this violation IS provable statically. By the hybrid-boundary
+-- doctrine (provable -> compile-time, unprovable -> runtime) this ought
+-- to be WO-E205 (unsatisfied-interface) at the `quote(r)` call site.
+--
+-- It isn't: WO-E205 is declared in types.ml but has no call site today
+-- (docs/plan/oop-vm/01-error-catalog.md). This compiles clean (exit 0,
+-- zero diagnostics) and the unsatisfied call instead reaches `wovm` as
+-- an `ICALL` with no matching vtable entry, which traps `WO_T_BOUNDS`
+-- (6) -- "no vtable entry for receiver class". That is the CURRENT,
+-- observed behavior this fixture pins, not the desired one.
+--
+-- When WO-E205 is implemented, this exact program must start failing to
+-- *compile* instead -- move this fixture to compile-fail/ with
+-- fixture.code WO-E205 in the same change that wires the check, rather
+-- than leaving a stale trap/ fixture silently describing dead behavior.
+interface Priced {
+  fn current_price() -> Int
+}
+
+class Rock {
+  n: Int
+}
+
+fn quote(p: Priced) -> Int {
+  return p.current_price()
+}
+
+fn main() {
+  let r = Rock { n: 1 }
+  print_int(quote(r))
+}

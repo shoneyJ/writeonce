@@ -1,0 +1,32 @@
+-- The zero-cost-when-provable promise, as a pinned dump.
+--
+-- `proven` aliases a @gc reference out of a field and hands it to a
+-- function that only reads it. The owner pass proves the acquire and its
+-- release balanced inside one scope (compiler/test/golden/owner/rc.wo
+-- pins that as ELIDED), and nothing about the access is unprovable, so
+-- the emitted body must contain NO borrow op and NO rc op at all — the
+-- disassembly below is the evidence. `main` is the contrast: an escape
+-- into a field is a KEPT acquire, so RC_INC does appear there.
+@gc
+class Cache {
+  hits: Int
+}
+
+class Holder {
+  cache: Cache
+}
+
+fn read(c: Cache) -> Int {
+  return c.hits
+}
+
+fn proven(h: Holder) -> Int {
+  let c = h.cache
+  return read(c)
+}
+
+fn main() {
+  let cache = Cache { hits: 41 }
+  let h = Holder { cache: cache }
+  print_int(proven(h) + 1)
+}

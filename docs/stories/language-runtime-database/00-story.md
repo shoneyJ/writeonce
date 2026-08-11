@@ -5,7 +5,7 @@
 
 **AS** a developer building and operating my own products end to end
 
-**I WANT** a new programming language — with arithmetic, ownership-based memory safety, and garbage collection where I opt in — whose compiler, runtime, and database ship as a single never-stopping Linux binary that can update its own code in place
+**I WANT** a new programming language — with arithmetic, ownership-based memory safety, and garbage collection applied automatically wherever ownership alone cannot express the shape — whose compiler, runtime, and database ship as a single never-stopping Linux binary that can update its own code in place
 
 **TO** write an application once and run it forever: no external stack to assemble, no database server to operate, and deployments that swap code inside the running process with instant rollback.
 
@@ -15,8 +15,10 @@
   serves the API, and carries its own source — the "which commit is prod
   running?" class of questions disappears.
 - Memory safety without a GC tax: Rust-shaped borrowing (single owner,
-  second-class borrows) checked mostly at compile time, with per-class `@gc`
-  opt-in collected per shard — no global pause exists by construction.
+  second-class borrows) checked mostly at compile time, and where ownership
+  cannot express the shape the compiler decides — no annotation to write, and
+  collection stays per-shard so no global pause exists by construction
+  (iteration 7b; iterations 1–7 shipped a per-class `@gc` opt-in instead).
 - Updates are blue-green **inside** the runtime: propose, approve, compile
   in-process, atomic switch, previous version resident for instant rollback.
 - The runtime is a recipe box: once language + runtime + database exist, a
@@ -47,8 +49,10 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 5 | [Language surface](05-language-surface.md) | Haxe-parity adoptions: switch, records, optionals, try/catch, statics, modules… |
 | 6 | [Program mode + stdlib](06-program-mode-stdlib.md) | `fn main`, exit codes, `fs`/`proc`/`net`/`time`/`json` builtins |
 | 7 | [log-watcher proof](07-logwatcher-proof.md) | the driving workload compiled and detecting silent deaths live |
+| 7b | [Inferred GC + mark-sweep](07b-inferred-gc-mark-sweep.md) | `@gc` removed from the language; compiler infers GC-ness; RC replaced by incremental per-shard tri-color mark-sweep |
 | 8 | [Shard-actor runtime](08-shard-actor-runtime.md) | thread-per-core shards, per-shard heaps, ownership-move messaging |
 | 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
+| 9b | [`@table`, relations, query](09b-table-relations-query.md) | `@table` becomes real storage; typed `ref`/`backlink`/`multi` relations; compiler-checked LINQ-shaped queries lowered to engine ops |
 | 10 | [HTTP service layer](10-http-service.md) | `service` blocks route to VM methods; REST parity with Stage 2 |
 | 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
@@ -74,11 +78,17 @@ list, and a pointer to the plan document that already sequences its tasks.
   outcome.
 - **Critical path (locked 2026-08-08): compile and run log-watcher.**
   Iterations 3 → 4 → 5 → 6 → 7 are the committed line; nothing off that
-  line lands before iteration 7's acceptance. Iterations 8–11 follow.
+  line lands before iteration 7's acceptance. Then 7b, then 8–12 (with 9b after the database engine).
+- **Iteration 7b (inserted 2026-08-11)** sits after the critical path
+  deliberately: it delays nothing on the log-watcher line, and it must precede
+  iteration 8 because the collector should be settled before shards multiply.
+  It also closes iteration 4's one open gate clause and supersedes part of
+  iteration 2's memory model — neither is renumbered; both point here.
 - **Future iterations, after iteration 11** (parked 2026-08-08 — recorded,
   not scheduled):
-  - WO-W201 `@gc`-suggestion diagnostic refinement (self-reference-only
-    heuristic shipped; shared-structure analysis deferred).
+  - ~~WO-W201 `@gc`-suggestion diagnostic refinement~~ — **superseded by
+    iteration 7b**: the diagnostic is retired outright, because inference
+    replaces the suggestion it existed to make.
   - WO-E225 unknown-type validation broadened to `ref`/`multi`/`map`
     element types and method/fn signatures.
   - ADT container roster adoption (Stack, Queue, Set, Tree, Graph, … —

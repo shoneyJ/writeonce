@@ -1,0 +1,16 @@
+-- E2xx-range substitute for the briefed "unsatisfied interface": WO-E205
+-- is unreachable by design in the milestone grammar (no interface-typed
+-- position exists for structural satisfaction to check against --
+-- docs/plan/oop-vm/01-error-catalog.md's "Unreachable by design") -- a
+-- fixture expecting it could never pass, by construction, not merely by
+-- omission. This exercises the constructor check that does fire instead:
+-- a class literal that omits a declared field with no default.
+class Item {
+  n:     Int
+  label: Text
+}
+
+fn main() {
+  let it = Item { n: 1 }
+  print_int(it.n)
+}

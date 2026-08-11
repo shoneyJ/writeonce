@@ -40,9 +40,12 @@
 
 let usage_msg =
   "usage: woc <path>\n\
+   usage: woc --emit <path> -o <out.wob>\n\
+   usage: woc build <dir> -o <app> [--runtime <path>]\n\
    usage: woc --dump-tokens <path>\n\
    usage: woc --dump-ast <path>\n\
    usage: woc --dump-owner <path>\n\
+   usage: woc --dump-bc <path>\n\
    \n\
    Compiles writeonce (.wo) source. <path> is a single .wo file or a\n\
    directory: a directory is discovered recursively for every .wo file\n\
@@ -69,6 +72,28 @@ let usage_msg =
    source order (moves, scope-end drops, @gc rc sites, residual borrow\n\
    sites — see compiler/src/dump.ml for the format); lexing, parsing,\n\
    type and ownership (WO-E3xx) diagnostics print to stderr.\n\
+   \n\
+   --emit runs the whole pipeline and writes the `.wob` v1 image named\n\
+   by -o (docs/plan/oop-vm/00-wob-format.md). Every discovered file\n\
+   contributes to one image; the entry point is the zero-argument free\n\
+   fn `main`, if the program declares one. Nothing is written when any\n\
+   diagnostic is an error — bytecode for a program that does not compile\n\
+   is never produced.\n\
+   \n\
+   --dump-bc emits the same image and prints its disassembly to stdout\n\
+   (compiler/src/disasm.ml). Unlike the other dumps it prints nothing\n\
+   when the compile is not clean: a disassembly of a program that failed\n\
+   to compile would be describing bytecode nobody may run.\n\
+   \n\
+   build compiles <dir> like --emit, then produces one self-contained\n\
+   executable at -o: the wovm runtime binary (--runtime <path>, or\n\
+   runtime/wovm relative to the current directory when omitted) with the\n\
+   compiled .wob image and a fixed-size trailer appended, so the result\n\
+   runs standalone with no separate .wob file or argument (wovm finds the\n\
+   embedded image via /proc/self/exe -- see docs/plan/oop-vm/00-wob-format.md's\n\
+   \"single-binary trailer\" section). Nothing is written when the compile\n\
+   has diagnostics, when the program declares no zero-argument free fn\n\
+   named `main`, or when the runtime binary cannot be found.\n\
    \n\
    For a directory (or otherwise multi-file) path, every --dump-* flag\n\
    prints each file's own dump in turn, separated by a header line — see\n\
@@ -311,11 +336,161 @@ let check_only path =
   List.iter (fun (f, prog) -> ignore (Woc_lib.Owner.analyze ~file:f prog syms collector)) parsed;
   finish collector (build_lookup sources)
 
+(* ---- emit mode (plan 3, Task 1) --------------------------------------
+
+   The whole pipeline plus the emitter. Every discovered file feeds one
+   `.wob` image: class ids, interface slot ids and method indexes are
+   assigned in discovery-then-declaration order, and each file keeps its
+   own owner tables because node ids are minted per parse (unique within
+   a file, not across files). *)
+
+let compile_image path =
+  let sources = discover_and_read path in
+  let collector = Woc_lib.Diag.Collector.create () in
+  let parsed = parse_all collector sources in
+  let syms = typecheck_all collector parsed in
+  let units =
+    List.map
+      (fun (f, prog) ->
+        { Woc_lib.Emit.file = f; prog; tables = Woc_lib.Owner.analyze ~file:f prog syms collector })
+      parsed
+  in
+  let image = Woc_lib.Emit.emit ~syms collector units in
+  (collector, build_lookup sources, image)
+
+let write_file path contents =
+  try
+    let oc = open_out_bin path in
+    output_string oc contents;
+    close_out oc
+  with Sys_error msg ->
+    Printf.eprintf "woc: %s\n" msg;
+    exit 2
+
+let emit_mode path out =
+  let collector, lookup, image = compile_image path in
+  if Woc_lib.Diag.Collector.has_error collector then finish collector lookup
+  else begin
+    write_file out image;
+    finish collector lookup
+  end
+
+let dump_bc path =
+  let collector, lookup, image = compile_image path in
+  if not (Woc_lib.Diag.Collector.has_error collector) then
+    print_string (Woc_lib.Disasm.dump image);
+  finish collector lookup
+
+(* ---- build mode (plan 3, Task 6): the single self-contained binary ---
+
+   `woc build <dir> -o app` compiles like --emit, then glues together a
+   runnable executable: the wovm runtime binary, the freshly compiled
+   .wob image, and a fixed-size trailer so wovm's own startup
+   (runtime/src/main.c) can find the embedded image via /proc/self/exe
+   and ignore argv. Trailer layout is docs/plan/oop-vm/00-wob-format.md's
+   "single-binary trailer" section -- this writer and main.c's reader
+   must never disagree about it.
+
+   Edge cases, decided and documented alongside the trailer format:
+   - output path already exists: overwritten, but atomically (build to a
+     temp file next to -o, then rename over it) so a failed build never
+     clobbers a working binary with a partial one.
+   - a directory with no `main`: unlike --emit (where a .wob with no
+     entry is a legitimate artifact), `build`'s whole point is something
+     you can run, so this is a build-time error, not deferred to wovm's
+     own "module has no entry method" at run time.
+   - the --runtime binary is itself already a built single binary (has
+     its own trailer): its embedded payload is stripped before copying,
+     so rebuilding from a built binary doesn't chain payloads/trailers. *)
+
+let trailer_magic = 0x31544257l (* "WBT1" read as LE u32 (mirrors WOB_MAGIC's "WOB1") *)
+let trailer_size = 20 (* payload_off u64, payload_len u64, magic u32 *)
+let wob_off_entry = 40 (* WOB_OFF_ENTRY, runtime/src/wob.h *)
+
+let trailer_bytes ~(payload_off : int) ~(payload_len : int) : bytes =
+  let t = Bytes.create trailer_size in
+  Bytes.set_int64_le t 0 (Int64.of_int payload_off);
+  Bytes.set_int64_le t 8 (Int64.of_int payload_len);
+  Bytes.set_int32_le t 16 trailer_magic;
+  t
+
+(* If `rt` already carries a valid trailer of our own (i.e. it's itself
+   the output of a previous `woc build`), its embedded payload is dead
+   weight for a fresh build: return just the pristine runtime prefix.
+   Anything that doesn't look unambiguously like our own trailer (wrong
+   magic, or offsets that don't exactly account for every trailing byte)
+   is returned untouched -- the safe default when it's not certain. *)
+let strip_existing_trailer (rt : string) : string =
+  let n = String.length rt in
+  if n < trailer_size then rt
+  else if String.get_int32_le rt (n - 4) <> trailer_magic then rt
+  else
+    let payload_off = Int64.to_int (String.get_int64_le rt (n - trailer_size)) in
+    let payload_len = Int64.to_int (String.get_int64_le rt (n - trailer_size + 8)) in
+    if payload_off >= 0 && payload_off <= n - trailer_size
+       && payload_len = n - trailer_size - payload_off
+    then String.sub rt 0 payload_off
+    else rt
+
+let default_runtime_path = "runtime/wovm"
+
+let build_mode ~(runtime : string option) (path : string) (out : string) : unit =
+  let collector, lookup, image = compile_image path in
+  if Woc_lib.Diag.Collector.has_error collector then finish collector lookup
+  else begin
+    if String.get_int32_le image wob_off_entry = -1l then begin
+      Printf.eprintf
+        "woc: %s: no `main` entry point found; `build` requires a zero-argument free fn named \
+         `main`\n"
+        path;
+      exit 2
+    end;
+    let rt_path = match runtime with Some p -> p | None -> default_runtime_path in
+    if (not (Sys.file_exists rt_path)) || Sys.is_directory rt_path then begin
+      Printf.eprintf "woc: runtime binary not found at '%s' -- build it with: make -C runtime wovm\n"
+        rt_path;
+      exit 2
+    end;
+    let rt_bytes =
+      match read_source rt_path with
+      | Ok s -> strip_existing_trailer s
+      | Error msg ->
+        Printf.eprintf "woc: %s\n" msg;
+        exit 2
+    in
+    let tmp = out ^ ".woc-build.tmp" in
+    (* stale tmp from an interrupted earlier build must not survive: its
+       permission bits would leak through, since Open_creat on an
+       existing inode does not apply the requested mode *)
+    (try Sys.remove tmp with Sys_error _ -> ());
+    (try
+       let oc = open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o755 tmp in
+       output_string oc rt_bytes;
+       output_string oc image;
+       output_bytes oc
+         (trailer_bytes ~payload_off:(String.length rt_bytes) ~payload_len:(String.length image));
+       close_out oc
+     with Sys_error msg ->
+       (try Sys.remove tmp with Sys_error _ -> ());
+       Printf.eprintf "woc: %s\n" msg;
+       exit 2);
+    (try Sys.rename tmp out
+     with Sys_error msg ->
+       Printf.eprintf "woc: %s\n" msg;
+       exit 2);
+    finish collector lookup
+  end
+
 let () =
   match Sys.argv with
   | [| _; "--dump-tokens"; path |] -> dump_tokens path
   | [| _; "--dump-ast"; path |] -> dump_ast path
   | [| _; "--dump-owner"; path |] -> dump_owner path
+  | [| _; "--dump-bc"; path |] -> dump_bc path
+  | [| _; "--emit"; path; "-o"; out |] -> emit_mode path out
+  | [| _; "build"; path; "-o"; out |] -> build_mode ~runtime:None path out
+  | [| _; "build"; path; "-o"; out; "--runtime"; rt |] -> build_mode ~runtime:(Some rt) path out
+  | [| _; "build"; path; "--runtime"; rt; "-o"; out |] -> build_mode ~runtime:(Some rt) path out
   | [| _; path |] -> check_only path
   | _ ->
     prerr_string usage_msg;

@@ -1,0 +1,22 @@
+-- Ownership suite (plan 2), as an end-user program: `h` is a plain
+-- (borrowed) parameter, so returning `h.box` out of `leak` would let the
+-- borrow outlive the scope it was borrowed from. Mirrors the `leak` case
+-- of compiler/test/golden/owner-err/borrow-escape.wo, given a `main` that
+-- actually calls it.
+class Box {
+  n: Int
+}
+
+class Holder {
+  box: Box
+}
+
+fn leak(h: Holder) -> Box {
+  return h.box
+}
+
+fn main() {
+  let h = Holder { box: Box { n: 1 } }
+  let b = leak(h)
+  print_int(b.n)
+}

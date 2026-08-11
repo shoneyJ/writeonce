@@ -1,0 +1,22 @@
+-- Pricing-demo corpus (plan 3, Task 3): mirrors
+-- docs/examples/pricing/types/price.wo's `discounted` -- pure arithmetic,
+-- no txn machinery. Trimmed for milestone-1 grammar (docs/plan/oop-vm/
+-- 08-builtin-surface.md): `@table`, `id`/`product: ref Product`/
+-- `currency`/`at: Timestamp = now()` fields and the `service rest` block
+-- are all schema/runtime-layer surface the milestone-1 parser has no
+-- lowering for -- only the field `discounted` actually reads (`amount`)
+-- is kept. `Money` was removed from the language on 2026-08-10, so
+-- `amount` is a plain `Int` (minor units), same value the original used.
+class Price {
+  amount: Int
+
+  fn discounted(pct: Int) -> Int {
+    return self.amount * (100 - pct) / 100
+  }
+}
+
+fn main() {
+  let p = Price { amount: 200 }
+  print_int(p.discounted(25))
+  print_int(p.discounted(0))
+}

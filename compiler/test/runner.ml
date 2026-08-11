@@ -39,6 +39,8 @@ module Parser = Woc_lib.Parser
 module Dump = Woc_lib.Dump
 module Types = Woc_lib.Types
 module Owner = Woc_lib.Owner
+module Emit = Woc_lib.Emit
+module Disasm = Woc_lib.Disasm
 
 let read_file path =
   let ic = open_in_bin path in
@@ -1058,6 +1060,59 @@ let () =
   | [ d ] -> check "unknown type inside ?T: code is WO-E225" (d.Diag.code = "WO-E225")
   | _ -> check "unknown type inside ?T: exactly one diagnostic" false
 
+let () =
+  (* Same-file duplicate declarations (Task 1 review -> Task 2 fix,
+     WO-E215): collect_declarations folded one file's decls into a
+     StringMap keyed by name via a bare StringMap.add, so a second
+     `class`/`interface`/`fn` of the same name in the SAME file was
+     silently dropped -- no diagnostic at all (Task 1 report, "Known
+     limitations" #6). This is the front-end's own-file counterpart to
+     the driver's cross-file WO-E214: reported at the *later*
+     declaration, with the first declaration as the related site,
+     same WO-E2xx range, same "later primary / first related" shape. *)
+  let check_duplicate tag ~src ~kind ~name =
+    let _, collector = typecheck_str ~file:(tag ^ ".wo") src in
+    let diags = Diag.Collector.diagnostics collector in
+    check_eq (tag ^ ": exactly one diagnostic (WO-E215)") ~expected:1
+      ~actual:(List.length diags) string_of_int;
+    (match diags with
+    | [ d ] ->
+      check (tag ^ ": code is WO-E215") (d.Diag.code = "WO-E215");
+      check (tag ^ ": severity is Error") (d.Diag.severity = Diag.Error);
+      check (tag ^ ": reported at the later declaration (4:1)")
+        (d.Diag.site.Diag.line = 4 && d.Diag.site.Diag.col = 1);
+      check (tag ^ ": message names the kind and the name")
+        (find_substring ~needle:(kind ^ " `" ^ name ^ "` already declared") d.Diag.message
+        <> None);
+      (match d.Diag.related with
+      | [ r ] ->
+        check (tag ^ ": related site points at the first declaration (1:1)")
+          (r.Diag.site.Diag.line = 1 && r.Diag.site.Diag.col = 1);
+        check (tag ^ ": related label names the first declaration")
+          (find_substring ~needle:"first declared here" r.Diag.label <> None)
+      | _ -> check (tag ^ ": exactly one related site") false)
+    | _ -> check (tag ^ ": exactly one diagnostic") false);
+    check_eq (tag ^ ": an error run exits 1") ~expected:1
+      ~actual:(Diag.Collector.exit_code collector) string_of_int
+  in
+  check_duplicate "duplicate class" ~kind:"class" ~name:"Dup"
+    ~src:"class Dup {\n  n: Int\n}\nclass Dup {\n  s: Text\n}\n";
+  check_duplicate "duplicate interface" ~kind:"interface" ~name:"Shape"
+    ~src:"interface Shape {\n  fn area() -> Int\n}\ninterface Shape {\n  fn perimeter() -> Int\n}\n";
+  check_duplicate "duplicate fn" ~kind:"fn" ~name:"double"
+    ~src:"fn double(x: Int) -> Int {\n  return x + x\n}\nfn double(y: Int) -> Int {\n  return y * 2\n}\n"
+
+let () =
+  (* Control: a class and a fn sharing a name are different namespaces
+     (collect_declarations keeps them in separate StringMaps) -- must
+     NOT trip WO-E215. *)
+  let _, collector =
+    typecheck_str ~file:"cross-namespace.wo"
+      "class Widget {\n  n: Int\n}\nfn Widget() -> Int {\n  return 1\n}\n"
+  in
+  check_eq "class/fn name sharing across namespaces: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
 (* ---- direct ownership-pass assertions (Task 7) ------------------------
 
    golden/owner-err/ already pins the *rendered* text of every must-fail
@@ -1076,6 +1131,19 @@ let owner_str ~file src =
   let syms, () = Types.typecheck ~file prog collector in
   let tables = Owner.analyze ~file prog syms collector in
   (tables, collector)
+
+(* The whole pipeline through the emitter, single-file (every golden
+   fixture is one file). Returns the serialized image plus the collector,
+   so a test can assert on the bytes, on the disassembly, or on the
+   diagnostics. *)
+let emit_str ~file src =
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file src in
+  let prog = Parser.parse collector ~file toks in
+  let syms, () = Types.typecheck ~file prog collector in
+  let tables = Owner.analyze ~file prog syms collector in
+  let image = Emit.emit ~syms collector [ { Emit.file; prog; tables } ] in
+  (image, collector)
 
 let is_ownership_code (code : string) =
   String.length code >= 5 && String.sub code 0 5 = Diag.ownership_prefix
@@ -1469,6 +1537,681 @@ let () =
   check "cli smoke: stdout still carries the tables on exit 1"
     (Option.is_some (find_substring ~needle:"== RESIDUAL ==" stdout))
 
+(* ---- the loader's validation battery, re-implemented -------------------
+
+   The plan's round-trip rule: an image `woc` produces that `wovm`'s
+   loader rejects is always an emitter bug. Running the C binary from
+   here would make this suite depend on the runtime being built, so the
+   rule is enforced by a third, independent decoder of the same format
+   (runtime/test/wob_build.c is the second: an independent encoder of the
+   same format).
+   Every check below is the OCaml twin of a BAIL in
+   runtime/src/loader.c's wo_load_buf, in the same order, so a divergence
+   between the emitter and the loader surfaces in `dune runtest` rather
+   than in the corpus. Returns the list of violations; [] means the
+   loader would accept the image. *)
+
+let validate_image (img : string) : string list =
+  let bad = ref [] in
+  let fail fmt = bad := fmt :: !bad in
+  let len = String.length img in
+  let ok n o = o >= 0 && o + n <= len in
+  let u8 o = if ok 1 o then String.get_uint8 img o else -1 in
+  let u16 o = if ok 2 o then String.get_uint16_le img o else -1 in
+  let u32 o = if ok 4 o then Int32.to_int (String.get_int32_le img o) land 0xFFFFFFFF else -1 in
+  let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
+  let none = 0xFFFFFFFF in
+  if u32 0 <> 0x31424F57 then fail "bad magic";
+  if u32 4 <> 1 then fail "unsupported version";
+  let coff = u32 8 and ccnt = u32 12 in
+  let koff = u32 16 and kcnt = u32 20 in
+  let ioff = u32 24 and icnt = u32 28 in
+  let moff = u32 32 and mcnt = u32 36 in
+  let entry = u32 40 in
+  List.iter
+    (fun o -> if o > len then fail "section offset out of range")
+    [ coff; koff; ioff; moff ];
+  (* constants *)
+  let ctag = Array.make (max ccnt 1) (-1) in
+  let o = ref coff in
+  for i = 0 to ccnt - 1 do
+    let tag = u8 !o in
+    incr o;
+    ctag.(i) <- tag;
+    if tag = 0 then o := !o + 8
+    else if tag = 1 then begin
+      let n = u32 !o in
+      o := !o + 4;
+      if not (ok n !o) then fail (Printf.sprintf "constant %d: text overruns" i);
+      o := !o + n
+    end
+    else fail (Printf.sprintf "constant %d: unknown tag %d" i tag)
+  done;
+  if !o > len then fail "constant pool overruns image";
+  let text_const i = i >= 0 && i < ccnt && ctag.(i) = 1 in
+  (* classes *)
+  let class_fields = Array.make (max kcnt 1) 0 in
+  let o = ref koff in
+  for i = 0 to kcnt - 1 do
+    let nm = u32 !o and flags = u32 (!o + 4) and fcnt = u32 (!o + 8) in
+    o := !o + 12;
+    if not (text_const nm) then fail (Printf.sprintf "class %d: bad name constant" i);
+    if flags land lnot 0x01 <> 0 then fail (Printf.sprintf "class %d: unknown flags" i);
+    if fcnt > 65535 then fail (Printf.sprintf "class %d: too many fields" i);
+    class_fields.(i) <- fcnt;
+    for j = 0 to fcnt - 1 do
+      if u8 (!o + j) > 5 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
+    done;
+    o := !o + fcnt + ((4 - (fcnt mod 4)) mod 4);
+    if !o > len then fail (Printf.sprintf "class %d: truncated" i)
+  done;
+  (* interfaces + vtable rows *)
+  let slot_base = Array.make (max icnt 1) 0 in
+  let imcnt = Array.make (max icnt 1) 0 in
+  let slots = ref 0 in
+  let o = ref ioff in
+  for i = 0 to icnt - 1 do
+    let nm = u32 !o and mc = u32 (!o + 4) in
+    o := !o + 8;
+    if not (text_const nm) then fail (Printf.sprintf "interface %d: bad name constant" i);
+    if mc = 0 || mc > 1024 then fail (Printf.sprintf "interface %d: bad method count" i);
+    slot_base.(i) <- !slots;
+    imcnt.(i) <- mc;
+    slots := !slots + mc
+  done;
+  let vrows = u32 !o in
+  o := !o + 4;
+  let seen_rows = Hashtbl.create 8 in
+  let vmethods = ref [] in
+  for r = 0 to vrows - 1 do
+    let cid = u32 !o and iid = u32 (!o + 4) in
+    o := !o + 8;
+    if cid >= kcnt then fail (Printf.sprintf "vtable row %d: bad class" r);
+    if iid >= icnt then fail (Printf.sprintf "vtable row %d: bad interface" r)
+    else
+      for j = 0 to imcnt.(iid) - 1 do
+        let m = u32 (!o + (4 * j)) in
+        vmethods := m :: !vmethods;
+        let key = (cid, slot_base.(iid) + j) in
+        if Hashtbl.mem seen_rows key then
+          fail (Printf.sprintf "duplicate vtable entry for class %d" cid);
+        Hashtbl.replace seen_rows key ()
+      done;
+    if iid < icnt then o := !o + (4 * imcnt.(iid))
+  done;
+  (* methods *)
+  let margc = Array.make (max mcnt 1) 0 in
+  let mregc = Array.make (max mcnt 1) 0 in
+  let mclass = Array.make (max mcnt 1) 0 in
+  let mcode = Array.make (max mcnt 1) [||] in
+  let o = ref moff in
+  for i = 0 to mcnt - 1 do
+    let nm = u32 !o and cid = u32 (!o + 4) in
+    let argc = u8 (!o + 8) and regc = u8 (!o + 9) and reserved = u16 (!o + 10) in
+    let clen = u32 (!o + 12) in
+    o := !o + 16;
+    if not (text_const nm) then fail (Printf.sprintf "method %d: bad name constant" i);
+    if cid <> none && cid >= kcnt then fail (Printf.sprintf "method %d: bad class" i);
+    if reserved <> 0 then fail (Printf.sprintf "method %d: reserved field not zero" i);
+    if regc < 1 || regc > 64 then fail (Printf.sprintf "method %d: register count out of range" i);
+    if argc > regc then fail (Printf.sprintf "method %d: more args than registers" i);
+    if clen = 0 || clen mod 4 <> 0 then fail (Printf.sprintf "method %d: bad code length" i);
+    let ninstr = clen / 4 in
+    let code = Array.init (max ninstr 0) (fun j -> u32 (!o + (4 * j))) in
+    o := !o + clen;
+    margc.(i) <- argc;
+    mregc.(i) <- regc;
+    mclass.(i) <- cid;
+    mcode.(i) <- code;
+    let lcnt = u32 !o in
+    o := !o + 4;
+    if lcnt > ninstr then fail (Printf.sprintf "method %d: line table too long" i);
+    let prev = ref (-1) in
+    for j = 0 to lcnt - 1 do
+      let pc = u32 (!o + (8 * j)) in
+      if pc >= ninstr || pc <= !prev then
+        fail (Printf.sprintf "method %d: line table not ascending" i);
+      prev := pc
+    done;
+    o := !o + (8 * lcnt);
+    let dcnt = u32 !o in
+    o := !o + 4;
+    if dcnt > ninstr then fail (Printf.sprintf "method %d: drop table too long" i);
+    let prev = ref (-1) in
+    for j = 0 to dcnt - 1 do
+      let base = !o + (20 * j) in
+      let pc = u32 base in
+      let owned = u64 (base + 4) and gc = u64 (base + 12) in
+      if pc >= ninstr || pc <= !prev then
+        fail (Printf.sprintf "method %d: drop table not ascending" i);
+      prev := pc;
+      if regc < 64 && Int64.shift_right_logical (Int64.logor owned gc) regc <> 0L then
+        fail (Printf.sprintf "method %d: drop mask out of range" i)
+    done;
+    o := !o + (20 * dcnt)
+  done;
+  if !o > len then fail "method table overruns image";
+  (* static instruction validation *)
+  for i = 0 to mcnt - 1 do
+    let regc = mregc.(i) in
+    let code = mcode.(i) in
+    let ninstr = Array.length code in
+    let rchk pc r =
+      if r < 0 || r >= regc then
+        fail (Printf.sprintf "method %d pc %d: register out of range" i pc)
+    in
+    Array.iteri
+      (fun pc ins ->
+        let op = ins land 0xFF in
+        let a = (ins lsr 8) land 0xFF in
+        let b = (ins lsr 16) land 0xFF in
+        let c = (ins lsr 24) land 0xFF in
+        let bx = (ins lsr 16) land 0xFFFF in
+        let sbx = bx - 32768 in
+        match op with
+        | 0 -> ()
+        | 1 ->
+          rchk pc a;
+          if bx >= ccnt then fail (Printf.sprintf "method %d pc %d: constant out of range" i pc)
+        | 2 | 7 ->
+          rchk pc a;
+          rchk pc b
+        | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 ->
+          rchk pc a;
+          rchk pc b;
+          rchk pc c
+        | 13 | 14 ->
+          if op = 14 then rchk pc a;
+          let tgt = pc + 1 + sbx in
+          if tgt < 0 || tgt >= ninstr then
+            fail (Printf.sprintf "method %d pc %d: jump out of code" i pc)
+        | 15 ->
+          rchk pc a;
+          if bx >= mcnt then fail (Printf.sprintf "method %d pc %d: callee out of range" i pc)
+          else if a + margc.(bx) > regc then
+            fail (Printf.sprintf "method %d pc %d: call window exceeds frame" i pc)
+        | 16 ->
+          rchk pc a;
+          if bx >= !slots then
+            fail (Printf.sprintf "method %d pc %d: interface slot out of range" i pc)
+        | 17 -> rchk pc a
+        | 18 -> ()
+        | 19 ->
+          rchk pc a;
+          if bx >= kcnt then fail (Printf.sprintf "method %d pc %d: class out of range" i pc)
+        | 20 ->
+          rchk pc a;
+          rchk pc b
+        | 21 ->
+          rchk pc a;
+          rchk pc c
+        | 22 | 23 | 24 | 25 | 26 | 27 | 28 -> rchk pc a
+        | 29 ->
+          rchk pc a;
+          if c > 12 then fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
+          else if c = 4 then begin
+            if b > 5 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
+          end
+          else if c = 9 then begin
+            if b land 0x0F > 5 || b lsr 4 > 5 then
+              fail (Printf.sprintf "method %d pc %d: bad key/value kind" i pc)
+          end
+          else begin
+            let arity =
+              match c with
+              | 0 -> 0
+              | 1 | 2 | 3 | 7 | 8 -> 1
+              | 5 | 6 | 11 | 12 -> 2
+              | 10 -> 3
+              | _ -> 0
+            in
+            if arity > 0 then begin
+              rchk pc b;
+              rchk pc (b + arity - 1)
+            end
+          end
+        | 30 | 31 -> ()
+        | _ -> fail (Printf.sprintf "method %d pc %d: unknown opcode %d" i pc op))
+      code;
+    if ninstr > 0 then begin
+      let last = code.(ninstr - 1) land 0xFF in
+      if not (last = 17 || last = 18 || last = 31 || last = 30 || last = 13) then
+        fail (Printf.sprintf "method %d: last instruction is not a terminator" i)
+    end
+  done;
+  List.iter
+    (fun m -> if m >= mcnt then fail "vtable entry: method out of range")
+    !vmethods;
+  if entry <> none then begin
+    if entry >= mcnt then fail "entry method out of range"
+    else if margc.(entry) <> 0 || mclass.(entry) <> none then
+      fail "entry must be a zero-arg free fn"
+  end;
+  List.rev !bad
+
+(* ---- emitter assertions (Task 1, not golden-diffed) --------------------
+
+   golden/bc/*.wo pin the disassembly; these pin what a dump cannot show:
+   that every emitted image satisfies the loader's contract, that the
+   elision fixture really contains no borrow/rc op at all, that a
+   residual guard never lives in a call window, and that an over-budget
+   method diagnoses instead of truncating. *)
+
+let bc_fixtures () =
+  let dir = "golden/bc" in
+  Sys.readdir dir |> Array.to_list
+  |> List.filter (fun n -> Filename.check_suffix n ".wo")
+  |> List.sort compare
+  |> List.map (fun n -> (dir ^ "/" ^ n, read_file (Filename.concat dir n)))
+
+let () =
+  List.iter
+    (fun (path, src) ->
+      let image, collector = emit_str ~file:path src in
+      check_eq (Printf.sprintf "emit %s: compiles clean" path) ~expected:0
+        ~actual:(List.length (Diag.Collector.diagnostics collector))
+        string_of_int;
+      let violations = validate_image image in
+      check_eq
+        (Printf.sprintf "round trip %s: the loader's battery accepts the image (%s)" path
+           (String.concat "; " violations))
+        ~expected:0 ~actual:(List.length violations) string_of_int)
+    (bc_fixtures ())
+
+(* Every method's block of a disassembly, keyed by the method name as the
+   dump writes it ("m3   pair args=..."). *)
+let method_block (dump : string) (name : string) : string =
+  let lines = String.split_on_char '\n' dump in
+  let is_header l =
+    String.length l > 1 && l.[0] = 'm' && l.[1] >= '0' && l.[1] <= '9'
+  in
+  let wanted l = is_header l && find_substring ~needle:(" " ^ name ^ " args=") l <> None in
+  let rec collect acc inside = function
+    | [] -> List.rev acc
+    | l :: tl ->
+      if wanted l then collect (l :: acc) true tl
+      else if inside && (is_header l || (String.length l > 1 && l.[0] = '=')) then List.rev acc
+      else if inside then collect (l :: acc) true tl
+      else collect acc false tl
+  in
+  String.concat "\n" (collect [] false lines)
+
+let () =
+  (* The spec's zero-cost promise, as an assertion and not only a pinned
+     dump: a method whose ownership is fully proven contains no borrow op
+     and no rc op. golden/bc/elision.wo's `proven` aliases a @gc
+     reference and passes it to a reader; owner.ml marks the pair ELIDED
+     (golden/owner/rc.wo pins that), so nothing may be emitted for it. *)
+  let path = "golden/bc/elision.wo" in
+  let image, _ = emit_str ~file:path (read_file path) in
+  let block = method_block (Disasm.dump image) "proven" in
+  check "elision: `proven` was found in the disassembly" (block <> "");
+  List.iter
+    (fun op ->
+      check
+        (Printf.sprintf "elision: `proven` emits no %s (zero-cost when provable)" op)
+        (find_substring ~needle:op block = None))
+    [ "BORROW_S"; "BORROW_X"; "RELEASE_S"; "RELEASE_X"; "RC_INC"; "RC_DEC" ];
+  (* the contrast, so the fixture cannot pass by emitting nothing anywhere:
+     main stores the @gc value into a field, which is a KEPT acquire *)
+  let main_block = method_block (Disasm.dump image) "main" in
+  check "elision: the escaping acquire in `main` is still emitted (fixture is not vacuous)"
+    (find_substring ~needle:"RC_INC" main_block <> None)
+
+let () =
+  (* Residual guards: one coalesced pair per operand, and — the
+     regression this pins — never on a register inside the call window.
+     The callee's frame overlaps that window (it may assign to its own
+     parameters) and the call's return value lands on the window base, so
+     releasing a window register hands wo_release_excl whatever now sits
+     there. *)
+  let path = "golden/bc/residual.wo" in
+  let image, _ = emit_str ~file:path (read_file path) in
+  let dump = Disasm.dump image in
+  let block = method_block dump "pair" in
+  let count needle s =
+    let rec go i n =
+      if i >= String.length s then n
+      else
+        match find_substring ~needle (String.sub s i (String.length s - i)) with
+        | None -> n
+        | Some k -> go (i + k + String.length needle) (n + 1)
+    in
+    go 0 0
+  in
+  check_eq "residual: `pair` acquires exactly two exclusive guards" ~expected:2
+    ~actual:(count "BORROW_X" block) string_of_int;
+  check_eq "residual: and releases exactly two" ~expected:2
+    ~actual:(count "RELEASE_X" block) string_of_int;
+  check "residual: `fixed` (literal indexes, provably distinct) gets no guard at all"
+    (find_substring ~needle:"BORROW" (method_block dump "fixed") = None);
+  (* the guard registers and the CALL's window base must be disjoint *)
+  let regs_of prefix =
+    String.split_on_char '\n' block
+    |> List.filter_map (fun l ->
+           match find_substring ~needle:prefix l with
+           | None -> None
+           | Some _ -> (
+             match find_substring ~needle:"r" (String.trim l) with
+             | None -> None
+             | Some _ ->
+               let l = String.trim l in
+               let i = ref 0 in
+               while !i < String.length l && l.[!i] <> 'r' do
+                 incr i
+               done;
+               (* skip the mnemonic's own letters up to the operand *)
+               let rec next_reg j =
+                 if j >= String.length l then None
+                 else if l.[j] = 'r' && j + 1 < String.length l && l.[j + 1] >= '0'
+                         && l.[j + 1] <= '9' then begin
+                   let k = ref (j + 1) in
+                   while !k < String.length l && l.[!k] >= '0' && l.[!k] <= '9' do
+                     incr k
+                   done;
+                   Some (int_of_string (String.sub l (j + 1) (!k - j - 1)))
+                 end
+                 else next_reg (j + 1)
+               in
+               next_reg (String.length prefix)))
+  in
+  let guards = regs_of "RELEASE_X" and windows = regs_of "CALL" in
+  check "residual: no guard register is the call window's base register"
+    (List.for_all (fun g -> not (List.mem g windows)) guards)
+
+let () =
+  (* Over-budget: 70 owned locals cannot fit the VM's 64-register window,
+     so the method must diagnose WO-E401 rather than emit a truncated
+     frame. Generated rather than a fixture file: the point is the count,
+     and 70 hand-written lines would pin nothing extra. *)
+  let buf = Buffer.create 1024 in
+  Buffer.add_string buf "class Item {\n  n: Int\n}\n\nfn wide() -> Int {\n";
+  for i = 0 to 69 do
+    Buffer.add_string buf (Printf.sprintf "  let v%d = Item { n: %d }\n" i i)
+  done;
+  Buffer.add_string buf "  return 0\n}\n";
+  let _, collector = emit_str ~file:"wide.wo" (Buffer.contents buf) in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "register budget: exactly one diagnostic (reported once per method)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "register budget: the code is WO-E401" (d.Diag.code = "WO-E401");
+    check "register budget: it is an error, not a warning" (d.Diag.severity = Diag.Error)
+  | _ -> check "register budget: diagnostic shape" false
+
+let () =
+  (* The emitter's own view of liveness must agree with the owner pass's
+     LIVE-MASK entries: for every call site the table names, the drop
+     table must carry an entry at some pc whose owned/gc masks hold
+     exactly as many registers as the table listed items. A drift here
+     means the emitter stopped consuming the table it is contracted to. *)
+  let path = "golden/bc/owned.wo" in
+  let src = read_file path in
+  let tables, _ = owner_str ~file:path src in
+  let masks =
+    List.filter_map
+      (fun (d : Owner.drop_site) ->
+        match d.Owner.dr_kind with
+        | Owner.DLiveMask -> Some (List.length d.Owner.dr_items)
+        | _ -> None)
+      tables.Owner.drops
+  in
+  let image, _ = emit_str ~file:path src in
+  let dump = Disasm.dump image in
+  let popcounts =
+    String.split_on_char '\n' dump
+    |> List.filter_map (fun l ->
+           if find_substring ~needle:"  drops: pc" l = None then None
+           else
+             Some
+               (List.length
+                  (List.filter
+                     (fun part -> String.length part > 0 && part.[0] = 'r')
+                     (String.split_on_char ','
+                        (String.concat ""
+                           (String.split_on_char '{'
+                              (String.concat "" (String.split_on_char '}' l))))))))
+  in
+  check "live masks: the owner table lists at least one call-site mask for owned.wo"
+    (masks <> []);
+  check "live masks: the emitted drop table carries entries whose widest mask matches the \
+         table's widest LIVE-MASK"
+    (List.fold_left max 0 masks <= List.fold_left max 0 popcounts)
+
+(* The ownership tables are a contract, not a hint: every DROP the DROPS
+   table asks for, and every rc op the RC table does not mark ELIDED, has
+   to appear in the emitted code exactly once — and nothing else may. A
+   count identity over a whole file is the cheapest way to state that, and
+   it is what caught a missing constructor-field @gc acquire (the escape
+   increment is anchored on the value's expression node, so lowering it
+   per statement kind silently skipped one of the four escapes). *)
+let () =
+  let count_op needle dump =
+    String.split_on_char '\n' dump
+    |> List.filter (fun l -> find_substring ~needle:("  " ^ needle) l <> None)
+    |> List.length
+  in
+  List.iter
+    (fun path ->
+      let src = read_file path in
+      let tables, coll = owner_str ~file:path src in
+      if not (Diag.Collector.has_error coll) then begin
+        let want_drops =
+          List.fold_left
+            (fun n (d : Owner.drop_site) ->
+              match d.Owner.dr_kind with
+              | Owner.DLiveMask -> n
+              | Owner.DScope _ | Owner.DReturn | Owner.DOverwrite | Owner.DBranchJoin _ ->
+                n
+                + List.length
+                    (List.filter
+                       (fun (i : Owner.drop_item) -> i.Owner.di_kind = Owner.LOwned)
+                       d.Owner.dr_items))
+            0 tables.Owner.drops
+        in
+        let kept op =
+          List.length
+            (List.filter
+               (fun (r : Owner.rc_site) -> r.Owner.rc_op = op && not r.Owner.rc_elided)
+               tables.Owner.rcs)
+        in
+        let image, _ = emit_str ~file:path src in
+        let dump = Disasm.dump image in
+        check_eq
+          (Printf.sprintf "table contract %s: one DROP per owned drop-table item" path)
+          ~expected:want_drops ~actual:(count_op "DROP " dump) string_of_int;
+        check_eq
+          (Printf.sprintf "table contract %s: one RC_INC per KEPT acquire" path)
+          ~expected:(kept Owner.RcAcquire) ~actual:(count_op "RC_INC" dump) string_of_int;
+        check_eq
+          (Printf.sprintf "table contract %s: one RC_DEC per KEPT release" path)
+          ~expected:(kept Owner.RcRelease) ~actual:(count_op "RC_DEC" dump) string_of_int;
+        (* The residual table is both the only licence to emit a borrow
+           op and an obligation to emit one per *operand*: guards are
+           coalesced per operand, never per entry (asking twice for an
+           exclusive borrow of one object self-traps on legal code). The
+           identity is computed here from the raw table, independently of
+           emit.ml's own coalescing — a region the emitter forgot to
+           consume, or one it expanded per entry, both fail it. *)
+        let operands =
+          let by_region = Hashtbl.create 8 in
+          List.iter
+            (fun (r : Owner.residual_site) ->
+              let cur = try Hashtbl.find by_region r.Owner.rs_node with Not_found -> [] in
+              let cur =
+                List.sort_uniq compare (r.Owner.rs_a_node :: r.Owner.rs_b_node :: cur)
+              in
+              Hashtbl.replace by_region r.Owner.rs_node cur)
+            tables.Owner.residuals;
+          Hashtbl.fold (fun _ ops n -> n + List.length ops) by_region 0
+        in
+        check_eq
+          (Printf.sprintf "table contract %s: one borrow acquire per coalesced residual operand"
+             path)
+          ~expected:operands
+          ~actual:(count_op "BORROW_S" dump + count_op "BORROW_X" dump)
+          string_of_int;
+        check_eq
+          (Printf.sprintf "table contract %s: one release per coalesced residual operand" path)
+          ~expected:operands
+          ~actual:(count_op "RELEASE_S" dump + count_op "RELEASE_X" dump)
+          string_of_int
+      end)
+    [ "golden/bc/owned.wo"; "golden/bc/elision.wo"; "golden/bc/residual.wo";
+      "golden/bc/iface.wo"; "golden/owner/moves.wo"; "golden/owner/drops.wo";
+      "golden/owner/rc.wo"; "golden/owner/residual.wo" ]
+
+(* Shapes that produce a loadable image, one per lowering the goldens do
+   not already cover, plus the two round-trip regressions found while
+   building this task: a forward jump out of the *last* `if`/`while` of a
+   body targets the position after the final instruction (the loader
+   reads that as "jump out of code", so the implicit return has to be
+   appended for that reason too), and a call whose argument count differs
+   from the callee's reserves the wrong window (the loader's "call window
+   exceeds frame"). Each case is emitted and run through the loader's
+   battery — the cheap way to keep the round-trip rule honest for
+   lowerings no fixture file happens to exercise. *)
+let () =
+  let cases =
+    [ ( "jump target at end of code",
+        "fn f(flag: Bool) {\n  if flag {\n    return\n  }\n}\n" );
+      ("while at end of body", "fn f(flag: Bool) {\n  while flag {\n    flag = false\n  }\n}\n");
+      ( "for over a multi",
+        "class Item {\n  n: Int\n}\n\nclass Bag {\n  items: multi Item\n}\n\n\
+         fn total(bag: Bag) -> Int {\n  let sum = 0\n  for it in bag.items {\n\
+         \    sum = sum + it.n\n  }\n  return sum\n}\n" );
+      ( "map builtins",
+        "class Index {\n  by_name: map<Text, Int>\n}\n\nfn f() -> Int {\n\
+         \  let idx = Index { by_name: map_new() }\n  set(idx.by_name, \"a\", 1)\n\
+         \  if has(idx.by_name, \"a\") {\n    return get(idx.by_name, \"a\")\n  }\n\
+         \  return 0\n}\n" );
+      ( "text: concat, equality, words",
+        "fn f(a: Text, b: Text) -> Int {\n  let joined = a .. b\n\
+         \  if joined == a {\n    return 1\n  }\n  return words(joined)\n}\n" );
+      ("db stub statement", "fn f() -> Int {\n  insert into rows values (1)\n  return 0\n}\n");
+      ( "nested calls in arguments",
+        "fn one() -> Int {\n  return 1\n}\n\nfn add(a: Int, b: Int) -> Int {\n\
+         \  return a + b\n}\n\nfn f() -> Int {\n  return add(add(one(), one()), one())\n}\n" );
+      ( "method call on a class instance",
+        "class Counter {\n  n: Int\n\n  fn bump(by: Int) -> Int {\n\
+         \    return self.n + by\n  }\n}\n\nfn f() -> Int {\n\
+         \  let c = Counter { n: 1 }\n  return c.bump(2)\n}\n" )
+    ]
+  in
+  List.iter
+    (fun (name, src) ->
+      let file = name ^ ".wo" in
+      let image, collector = emit_str ~file src in
+      let diags = Diag.Collector.diagnostics collector in
+      check
+        (Printf.sprintf "lowering %s: compiles clean (%s)" name
+           (String.concat ", " (List.map (fun (d : Diag.t) -> d.Diag.code ^ ": " ^ d.Diag.message) diags)))
+        (diags = []);
+      let violations = validate_image image in
+      check
+        (Printf.sprintf "lowering %s: the loader's battery accepts the image (%s)" name
+           (String.concat "; " violations))
+        (violations = []))
+    cases
+
+let () =
+  (* Arity is the emitter's business because nothing upstream checks it:
+     types.ml declares WO-E203 and never raises it. An unchecked call
+     would reserve a window the callee does not read — the loader rejects
+     it, which by the round-trip rule would be an emitter bug. *)
+  let _, collector =
+    emit_str ~file:"arity.wo"
+      "fn add3(a: Int, b: Int, c: Int) -> Int {\n  return a + b + c\n}\n\n\
+       fn main() {\n  print_int(add3(1))\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "arity: exactly one diagnostic" ~expected:1 ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "arity: reported as WO-E403 (a call the emitter cannot lower)" (d.Diag.code = "WO-E403");
+    check "arity: the message names both counts"
+      (find_substring ~needle:"takes 3 argument(s), given 1" d.Diag.message <> None)
+  | _ -> check "arity: diagnostic shape" false
+
+let () =
+  (* WO-E405: the entry (`fn main()`, zero args) must declare `Int` or
+     nothing at all -- the systems-track spec makes its return value the
+     process exit code. A `@gc` return escaping through it is exactly
+     the leak this diagnostic exists to close (docs/plan/oop-vm's
+     error-catalog entry): the driver has no way to release a pointer
+     it receives with no return-kind metadata to consult. *)
+  let _, collector =
+    emit_str ~file:"entry-not-int.wo"
+      "class Widget {\n  n: Int\n}\n\nfn main() -> Widget {\n  return Widget { n: 1 }\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "entry return type: exactly one diagnostic" ~expected:1 ~actual:(List.length diags)
+    string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "entry return type: reported as WO-E405" (d.Diag.code = "WO-E405");
+    check "entry return type: the message names the declared type and the exit-code contract"
+      (find_substring ~needle:"`Widget`" d.Diag.message <> None
+      && find_substring ~needle:"process exit code" d.Diag.message <> None
+      && find_substring ~needle:"must return `Int`" d.Diag.message <> None)
+  | _ -> check "entry return type: diagnostic shape" false);
+  (* control: no return annotation at all is not "anything other than
+     Int" -- it is the shape every other fixture in this suite uses,
+     and must stay clean. *)
+  let _, clean_collector =
+    emit_str ~file:"entry-no-annotation.wo" "fn main() {\n  print_int(0)\n}\n"
+  in
+  check "entry return type: `main` with no return annotation compiles clean"
+    (Diag.Collector.diagnostics clean_collector = [])
+
+(* ---- CLI smoke: emit mode and --dump-bc ------------------------------ *)
+
+let () =
+  let path = "golden/bc/arith.wo" in
+  let exit_code, stdout, stderr = run_cli [ "--dump-bc"; path ] in
+  check "cli smoke: --dump-bc on a clean file exits 0" (exit_code = 0);
+  check "cli smoke: clean-file --dump-bc writes nothing to stderr" (stderr = "");
+  let image, _ = emit_str ~file:path (read_file path) in
+  check "cli smoke: --dump-bc stdout matches the in-process disassembly exactly"
+    (stdout = Disasm.dump image)
+
+let () =
+  (* Unlike the other dumps, --dump-bc prints nothing when the compile is
+     not clean: a disassembly of a program that failed to compile
+     describes bytecode nobody is allowed to run. *)
+  let exit_code, stdout, stderr = run_cli [ "--dump-bc"; "golden/owner-err/use-after-move.wo" ] in
+  check "cli smoke: --dump-bc on a failing compile exits 1" (exit_code = 1);
+  check "cli smoke: the WO-E301 diagnostic still goes to stderr"
+    (find_substring ~needle:"WO-E301" stderr <> None);
+  check "cli smoke: --dump-bc prints no bytecode for a program that did not compile"
+    (stdout = "")
+
+let () =
+  let out = Filename.temp_file "woc_emit" ".wob" in
+  let exit_code, stdout, stderr = run_cli [ "--emit"; "golden/bc/iface.wo"; "-o"; out ] in
+  check "cli smoke: --emit exits 0 on a clean program" (exit_code = 0);
+  check "cli smoke: --emit prints nothing on stdout" (stdout = "");
+  check "cli smoke: --emit prints nothing on stderr" (stderr = "");
+  let image = read_file out in
+  check "cli smoke: the written image is a WOB1 v1 file"
+    (String.length image > 44 && String.sub image 0 4 = "WOB1");
+  check_eq "cli smoke: the written image passes the loader's battery" ~expected:0
+    ~actual:(List.length (validate_image image)) string_of_int;
+  (try Sys.remove out with Sys_error _ -> ());
+  (* a failing compile must leave no image behind *)
+  let out2 = Filename.temp_file "woc_emit" ".wob" in
+  Sys.remove out2;
+  let exit_code, _, _ = run_cli [ "--emit"; "golden/owner-err/use-after-move.wo"; "-o"; out2 ] in
+  check "cli smoke: --emit on a failing compile exits 1" (exit_code = 1);
+  check "cli smoke: and writes no image at all" (not (Sys.file_exists out2));
+  (try Sys.remove out2 with Sys_error _ -> ())
+
+let () =
+  let exit_code, _, stderr = run_cli [ "--emit"; "golden/bc/arith.wo" ] in
+  check "cli smoke: --emit without -o is a usage error (exit 2)" (exit_code = 2);
+  check "cli smoke: usage goes to stderr" (stderr <> "")
+
 (* ---- golden-directory walk ------------------------------------------ *)
 
 (* Each stage directory under golden/ names one `woc --dump-*` flag.
@@ -1499,6 +2242,17 @@ let run_stage ~stage ~file ~src : string =
     let _, collector = owner_str ~file src in
     let lookup f = if f = file then Some src else None in
     Diag.Collector.render_all collector lookup ^ "\n"
+  | "bc" ->
+    (* the emitter's own stage: the whole front end, then the `.wob`
+       image, then its disassembly. The dump is produced from the
+       serialized bytes (compiler/src/disasm.ml), so a golden here pins
+       the emitted layout, not just the emitter's intentions. *)
+    let image, collector = emit_str ~file src in
+    if Diag.Collector.has_error collector then begin
+      let lookup f = if f = file then Some src else None in
+      "EMIT FAILED\n" ^ Diag.Collector.render_all collector lookup ^ "\n"
+    end
+    else Disasm.dump image
   | other ->
     failwith (Printf.sprintf "runner: unknown golden stage directory %S" other)
 

@@ -1,0 +1,25 @@
+-- Owned locals: the DROP placement and the drop-table masks the owner
+-- pass's DROPS table dictates. `twice` has an early return out of a
+-- nested scope, so its DROPs appear on both paths, and the drop table
+-- shows the frame's live owned registers at every call site (which is
+-- what makes a trap unwind without leaking).
+class Item {
+  n: Int
+}
+
+fn consume(take it: Item) -> Int {
+  return it.n
+}
+
+fn twice(take a: Item, flag: Bool) -> Int {
+  let extra = Item { n: 2 }
+  if flag {
+    let inner = Item { n: 3 }
+    return inner.n
+  }
+  return consume(a) + extra.n
+}
+
+fn main() {
+  print_int(twice(Item { n: 5 }, false))
+}

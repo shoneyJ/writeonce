@@ -1,0 +1,50 @@
+== CONSTANTS ==
+k0   TEXT "Cache"
+k1   TEXT "Holder"
+k2   TEXT "read"
+k3   TEXT "proven"
+k4   TEXT "main"
+k5   INT  41
+k6   INT  1
+== CLASSES ==
+c0   Cache flags=gc fields=[SCALAR]
+c1   Holder flags=- fields=[GCREF]
+== INTERFACES ==
+== VTABLES ==
+== METHODS ==
+m0   read args=1 regs=2 [free fn]
+  lines: 0->20
+  drops: (none)
+  0000  GETF      r1, r0, f0
+  0001  RET       r1
+m1   proven args=1 regs=3 [free fn]
+  lines: 0->24 1->25
+  drops: pc 1 owned={} gc={r1}
+  0000  GETF      r1, r0, f0
+  0001  MOVE      r2, r1
+  0002  CALL      r2, m0
+  0003  RET       r2
+m2   main args=0 regs=6 [free fn] [ENTRY]
+  lines: 0->29 3->30 7->31 13->28
+  drops: pc 3 owned={} gc={r0}
+  drops: pc 7 owned={r1} gc={r0}
+  drops: pc 14 owned={} gc={r0}
+  drops: pc 15 owned={} gc={}
+  0000  NEW       r0, c0
+  0001  LOADK     r1, k5
+  0002  SETF      r0, f0, r1
+  0003  NEW       r1, c1
+  0004  MOVE      r2, r0
+  0005  RC_INC    r2
+  0006  SETF      r1, f0, r2
+  0007  MOVE      r4, r1
+  0008  CALL      r4, m1
+  0009  MOVE      r3, r4
+  0010  LOADK     r5, k6
+  0011  ADD       r2, r3, r5
+  0012  BUILTIN   r2, r2, print_int
+  0013  DROP      r1
+  0014  RC_DEC    r0
+  0015  RET0
+== ENTRY ==
+m2

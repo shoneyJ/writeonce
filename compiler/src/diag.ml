@@ -48,6 +48,7 @@
      WO-E1xx  parsing    (Task 4, 5)
      WO-E2xx  types      (Task 6)
      WO-E3xx  ownership  (Task 7)
+     WO-E4xx  emitter    (plan 3 Task 1: bytecode/format limits)
 
    No codes are minted in this module — it only reserves the ranges.
    The prefixes below are the single documented source later stages
@@ -58,6 +59,7 @@ let lexing_prefix = "WO-E0"
 let parsing_prefix = "WO-E1"
 let types_prefix = "WO-E2"
 let ownership_prefix = "WO-E3"
+let emitter_prefix = "WO-E4"
 let warning_prefix = "WO-W"
 
 type severity =

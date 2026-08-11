@@ -40,6 +40,14 @@ test-iso: $(ISOBIN)
 wovm: src/main.c $(VMSRC) $(VMHDR)
 	$(CC) $(CFLAGS) -Isrc -o $@ src/main.c $(VMSRC)
 
+# ASan+UBSan wovm, same flags as the unit tests, for corpus fixtures that
+# need a sanitizer to prove a free actually happened (gc/ cycle fixtures) —
+# tasks 3/4 hand-built this each time because it didn't exist yet
+build/wovm_asan: src/main.c $(VMSRC) $(VMHDR) | build
+	$(CC) $(TCFLAGS) -Isrc -o $@ src/main.c $(VMSRC)
+
+wovm-asan: build/wovm_asan
+
 # fixture generator for the CLI smoke test
 build/mkwob: test/mkwob.c test/wob_build.c $(VMHDR) | build
 	$(CC) $(CFLAGS) -Isrc -Itest -o $@ test/mkwob.c test/wob_build.c
@@ -56,4 +64,4 @@ clean:
 	rm -f wo-rt bench/bench wovm
 	rm -rf build
 
-.PHONY: bench run clean test test-iso
+.PHONY: bench run clean test test-iso wovm-asan

@@ -1021,6 +1021,19 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
           a.ac_place AExcl)
     accesses;
   (* transfers last *)
+  (* `push`'s value argument (builtin `multi_push`) stores a @gc reference
+     inside the container permanently — an escape exactly like a ctor
+     field or a `take` argument. `push` is never a resolved callee (it has
+     no declared params), so `conv_of` defaults it to Borrow and the
+     ordinary Take-gated transfer above never fires for it; without this
+     the container holds the reference with no matching RC_INC, and the
+     collector frees the value out from under the container it still sits
+     in. Narrow to `push`'s own value slot (index 1) and to Gc places only
+     — an Owned element's move-on-push is a separate, pre-existing gap
+     this task does not touch. *)
+  let is_push_gc_value i =
+    resolved = None && i = 1 && match callee.kind with Ident "push" -> true | _ -> false
+  in
   List.iteri
     (fun i a ->
       match place_of a with
@@ -1028,8 +1041,9 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
       | Some p ->
         let pname, conv = conv_of i in
         if conv = Take then
-          if transfer ctx p ~what:(Printf.sprintf "cannot be passed to `take %s`" pname) then
-            record_move ctx p (MvArg pname))
+          (if transfer ctx p ~what:(Printf.sprintf "cannot be passed to `take %s`" pname) then
+             record_move ctx p (MvArg pname))
+        else if is_push_gc_value i && place_class ctx p = Gc then gc_escape ctx p)
     args;
   record_drop ctx ~node:call_e.id ~pos:call_e.pos ~kind:DLiveMask
     ~items:(mask_items (live_holders ctx))

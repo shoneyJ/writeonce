@@ -35,6 +35,7 @@ Study-tree notes:
 | Link | Points at | Why it's a reference |
 | --- | --- | --- |
 | `reference/llvm-project/` | `~/projects/llvm-project` (shallow clone) | Compiler-architecture study for the OCaml `woc` compiler: pass pipelines (`llvm/lib/Passes/`), IR design (`llvm/docs/LangRef.md`), Clang's lexer/parser/sema layering (`clang/lib/{Lex,Parse,Sema}/`), diagnostics machinery (`clang/include/clang/Basic/Diagnostic*.td`). Study-only — writeonce does NOT link against LLVM (zero-dep doctrine; `woc` emits `.wob` bytecode, no LLVM backend). |
+| `reference/dotnet-runtime/` | `~/projects/dotnet-runtime` (shallow + **sparse**: only `src/libraries/System.Linq`, 15 MB instead of multi-GB) | Query-surface study for story iteration 9b (`@table` relations + language-integrated query). Read `src/libraries/System.Linq/src/System/Linq/` for the operator set and how each is specified (`Where.cs`, `Select.cs`, `Join.cs`, `GroupBy.cs`, `OrderBy.cs`), and the `*.SpeedOpt.cs` files for how LINQ specializes when the source's shape is known. Study-only, and note the deliberate divergence: LINQ-to-Objects is *runtime* iterator composition over `IEnumerable`, while writeonce has no function values and forbids reflection — so writeonce takes the operator vocabulary and semantics, not the delegate/expression-tree machinery. |
 
 (The former separate `references/` directory was merged into `reference/`
 on 2026-08-08 — one home for all study trees.)

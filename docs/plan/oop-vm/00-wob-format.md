@@ -47,3 +47,80 @@ All integers little-endian; offsets are absolute file offsets.
 **Builtins:** now (ms), print (text), print_int, words (whitespace token count), multi_new/multi_push/multi_get/count/latest, map_new/map_set/map_get/map_has.
 
 **Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT.
+
+## Single-binary trailer (`woc build`, plan 3 Task 6)
+
+This section is **not part of the `.wob` format above** — `.wob` v1 is unchanged.
+It documents the wrapper a *deployable executable* carries: `woc build <dir> -o
+app` makes `app` by copying the `wovm` runtime binary and appending the
+compiled `.wob` image plus a small fixed-size trailer. `wovm`'s own startup
+(`runtime/src/main.c`) looks for this trailer in its own executable
+(`/proc/self/exe`) before falling back to the classic `wovm file.wob` argv
+contract, so the result runs standalone with no separate `.wob` file. Writer:
+`compiler/bin/main.ml`. Reader: `runtime/src/main.c`'s `load_self_embedded`.
+Append-based only, deliberately — no ELF section manipulation.
+
+**Layout** — the trailer is the fixed **last 20 bytes** of the file, all
+integers little-endian, found by seeking from the end (no scanning):
+
+```
+byte offset from EOF   size   field
+  -20                   8     payload_off  -- absolute file offset where the embedded .wob image starts
+  -12                   8     payload_len  -- length in bytes of the embedded .wob image
+   -4                   4     magic        -- 0x31544257 ("WBT1" read as LE u32, mirrors WOB_MAGIC's "WOB1")
+
+[ wovm runtime bytes (payload_off bytes) ][ .wob image (payload_len bytes) ][ trailer: payload_off | payload_len | magic ]
+^ byte 0                                  ^ byte payload_off                ^ byte payload_off+payload_len == file_size-20
+                                                                                                              file_size ^
+```
+
+**Reader algorithm** (`load_self_embedded`): open `/proc/self/exe`; if the
+file is shorter than 20 bytes, or its last 4 bytes don't equal the magic,
+there is no trailer — fall back to the argv `.wob` path unchanged. If the
+magic matches, `payload_off` and `payload_len` are validated to account for
+*every* trailing byte exactly (`payload_off + payload_len == file_size -
+20`, checked via a bounds-safe subtraction so a corrupt/huge value can't
+wrap the arithmetic and slip past); any mismatch is reported as a clear
+"corrupt trailer" error (exit 2) rather than a crash or silent
+misbehavior. On success, the executable is mmap'd and `wo_load_buf` parses
+the embedded region exactly as `wo_load_file` parses a standalone `.wob`
+today — argv is never consulted.
+
+**Runtime location (writer side):** `--runtime <path>` wins when given;
+otherwise the default is `runtime/wovm` resolved relative to the current
+working directory (the same repo-root-relative assumption every other
+`just`/build-tooling entry point in this repo already makes). A missing
+runtime binary is a build-time error naming the recipe: `make -C runtime
+wovm`. `woc build` never invokes or inspects the runtime binary beyond
+reading its bytes — it does not need to be executable *as run by woc*, only
+as run by whoever runs the produced artifact.
+
+**Edge cases decided for `woc build`** (each implemented deliberately, not
+left to fall out accidentally):
+
+- **Output path already exists:** overwritten, but atomically — the new
+  binary is assembled in a temp file (`<out>.woc-build.tmp`, freshly
+  created with mode `0755` each time so a stale temp file's permissions
+  can never leak through) next to `-o`, then renamed over it. A failed
+  build (bad compile, missing runtime, disk-full mid-write) never
+  clobbers a previously-working binary with a partial one.
+- **A directory with no `main`:** unlike `--emit` (where a `.wob` with no
+  entry method is a legitimate, already-specified artifact), `build`'s
+  entire purpose is something runnable, so a clean compile with no
+  zero-argument free fn named `main` is a **build-time error, no output
+  written** — not deferred to `wovm`'s own "module has no entry method"
+  message at run time. Detected by reading the compiled image's own
+  entry field (`WOB_OFF_ENTRY`, offset 40) rather than plumbing a new
+  return value through the emitter.
+- **`--runtime` itself already carries a trailer** (rebuilding from a
+  previously-built single binary): its embedded payload is *stripped*
+  before copying — the writer recognizes its own trailer on the input
+  runtime binary the same way the C reader does, and keeps only the
+  pristine runtime prefix (`payload_off` bytes). This makes `woc build
+  ... --runtime already-built-app -o new-app` produce a binary
+  byte-identical in size to building fresh from `runtime/wovm` directly,
+  instead of chaining stale payloads and bloating on every rebuild. Any
+  input that doesn't unambiguously look like our own trailer (wrong
+  magic, or offsets that don't exactly account for every trailing byte)
+  is left untouched and copied as-is — the safe default when it's not
+  certain.

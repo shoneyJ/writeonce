@@ -1,0 +1,16 @@
+-- Seed fixture: a direct method call (receiver's declared type is a
+-- concrete class, so the emitter dispatches by CALL/method index, not
+-- ICALL/vtable -- contrast with run/interface).
+class Counter {
+  n: Int
+
+  fn add(amount: Int) -> Int {
+    return self.n + amount
+  }
+}
+
+fn main() {
+  let c = Counter { n: 10 }
+  print_int(c.add(5))
+  print_int(c.add(32))
+}

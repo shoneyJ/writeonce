@@ -1,0 +1,21 @@
+-- Runtime trap: division by zero. DIV traps unconditionally on a zero
+-- divisor (docs/plan/oop-vm/08-builtin-surface.md, docs/plan/oop-vm/
+-- 00-wob-format.md) -- unprovable at compile time in general (the
+-- divisor is a runtime value; milestone-1 does no constant-folding
+-- either), so it traps rather than failing to compile.
+--
+-- Line assertion (harness's fixture.trap only carries the numeric code,
+-- not the line -- verified manually per this task's brief): wovm must
+-- report this trap at line 12, the `a / b` below. Proves line tables
+-- survive emission. The machine-enforced coverage for pc->line survival
+-- lives elsewhere, not in this corpus fixture: compiler/test/golden/bc's
+-- goldens pin the emitted line table, and runtime/test/test_vm.c's
+-- test_div_zero_traps_with_line asserts wovm reports the exact line for
+-- this same DIV0 case.
+fn divide(a: Int, b: Int) -> Int {
+  return a / b
+}
+
+fn main() {
+  print_int(divide(10, 0))
+}

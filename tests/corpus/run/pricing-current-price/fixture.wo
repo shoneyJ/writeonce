@@ -1,0 +1,31 @@
+-- Pricing-demo corpus (plan 3, Task 3): mirrors
+-- docs/examples/pricing/types/product.wo's `current_price` --
+-- `latest(self.prices).amount` through a `multi Price` field. Trimmed for
+-- milestone-1 grammar: `@unique` on `sku`, the `id`/`sku`/`name` fields
+-- (only `prices` is what `current_price` reads), `in txn` (no txn
+-- keyword in this grammar), and the `service rest` block. `Money`/`SKU`
+-- were removed from the language on 2026-08-10; nothing here needed
+-- them. (There is no `@table`, `owner`, or `Customer` in the original --
+-- Product has exactly id/sku/name/prices; an earlier draft of this
+-- comment wrongly borrowed fields from the unrelated, non-emittable
+-- compiler/test/golden/owner/pricing-demo.wo instead.)
+class Price {
+  amount: Int
+}
+
+class Product {
+  prices: multi Price
+
+  fn current_price() -> Int {
+    return latest(self.prices).amount
+  }
+}
+
+fn main() {
+  -- Fresh-container destination rule (08-builtin-surface.md): multi_new()
+  -- must land directly in a field of declared container type.
+  let prod = Product { prices: multi_new() }
+  push(prod.prices, Price { amount: 100 })
+  push(prod.prices, Price { amount: 150 })
+  print_int(prod.current_price())
+}

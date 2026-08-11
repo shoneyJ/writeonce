@@ -1,0 +1,153 @@
+-- 129 padding Int fields (p1..p129) push Node's instance size past the
+-- arena's 1024-byte size-class ceiling (runtime/src/obj.h), so instances
+-- allocate through plain malloc/free instead of the bump arena -- the
+-- same trick runtime/test/test_cycle.c uses (BIG=130) so ASan can prove
+-- a Node is actually freed, not just recycled inside the arena's own
+-- freelist where a sanitizer can never see it.
+@gc
+class Node {
+  peers: multi Node
+  p1: Int
+  p2: Int
+  p3: Int
+  p4: Int
+  p5: Int
+  p6: Int
+  p7: Int
+  p8: Int
+  p9: Int
+  p10: Int
+  p11: Int
+  p12: Int
+  p13: Int
+  p14: Int
+  p15: Int
+  p16: Int
+  p17: Int
+  p18: Int
+  p19: Int
+  p20: Int
+  p21: Int
+  p22: Int
+  p23: Int
+  p24: Int
+  p25: Int
+  p26: Int
+  p27: Int
+  p28: Int
+  p29: Int
+  p30: Int
+  p31: Int
+  p32: Int
+  p33: Int
+  p34: Int
+  p35: Int
+  p36: Int
+  p37: Int
+  p38: Int
+  p39: Int
+  p40: Int
+  p41: Int
+  p42: Int
+  p43: Int
+  p44: Int
+  p45: Int
+  p46: Int
+  p47: Int
+  p48: Int
+  p49: Int
+  p50: Int
+  p51: Int
+  p52: Int
+  p53: Int
+  p54: Int
+  p55: Int
+  p56: Int
+  p57: Int
+  p58: Int
+  p59: Int
+  p60: Int
+  p61: Int
+  p62: Int
+  p63: Int
+  p64: Int
+  p65: Int
+  p66: Int
+  p67: Int
+  p68: Int
+  p69: Int
+  p70: Int
+  p71: Int
+  p72: Int
+  p73: Int
+  p74: Int
+  p75: Int
+  p76: Int
+  p77: Int
+  p78: Int
+  p79: Int
+  p80: Int
+  p81: Int
+  p82: Int
+  p83: Int
+  p84: Int
+  p85: Int
+  p86: Int
+  p87: Int
+  p88: Int
+  p89: Int
+  p90: Int
+  p91: Int
+  p92: Int
+  p93: Int
+  p94: Int
+  p95: Int
+  p96: Int
+  p97: Int
+  p98: Int
+  p99: Int
+  p100: Int
+  p101: Int
+  p102: Int
+  p103: Int
+  p104: Int
+  p105: Int
+  p106: Int
+  p107: Int
+  p108: Int
+  p109: Int
+  p110: Int
+  p111: Int
+  p112: Int
+  p113: Int
+  p114: Int
+  p115: Int
+  p116: Int
+  p117: Int
+  p118: Int
+  p119: Int
+  p120: Int
+  p121: Int
+  p122: Int
+  p123: Int
+  p124: Int
+  p125: Int
+  p126: Int
+  p127: Int
+  p128: Int
+  p129: Int
+}
+
+-- Two @gc Nodes reference each other through "peers" (a multi -- the
+-- only way v1 can build a cycle at all: there is no nil literal, so a
+-- direct GCREF field can never be the first edge of a pair that needs
+-- the other to exist first). Both locals go out of scope at the end of
+-- main with nothing else referencing either: an abandoned cycle. Only
+-- the post-exit gc pump (runtime/src/main.c) frees them.
+fn main() {
+  let a = Node { peers: multi_new(), p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p6: 0, p7: 0, p8: 0, p9: 0, p10: 0, p11: 0, p12: 0, p13: 0, p14: 0, p15: 0, p16: 0, p17: 0, p18: 0, p19: 0, p20: 0, p21: 0, p22: 0, p23: 0, p24: 0, p25: 0, p26: 0, p27: 0, p28: 0, p29: 0, p30: 0, p31: 0, p32: 0, p33: 0, p34: 0, p35: 0, p36: 0, p37: 0, p38: 0, p39: 0, p40: 0, p41: 0, p42: 0, p43: 0, p44: 0, p45: 0, p46: 0, p47: 0, p48: 0, p49: 0, p50: 0, p51: 0, p52: 0, p53: 0, p54: 0, p55: 0, p56: 0, p57: 0, p58: 0, p59: 0, p60: 0, p61: 0, p62: 0, p63: 0, p64: 0, p65: 0, p66: 0, p67: 0, p68: 0, p69: 0, p70: 0, p71: 0, p72: 0, p73: 0, p74: 0, p75: 0, p76: 0, p77: 0, p78: 0, p79: 0, p80: 0, p81: 0, p82: 0, p83: 0, p84: 0, p85: 0, p86: 0, p87: 0, p88: 0, p89: 0, p90: 0, p91: 0, p92: 0, p93: 0, p94: 0, p95: 0, p96: 0, p97: 0, p98: 0, p99: 0, p100: 0, p101: 0, p102: 0, p103: 0, p104: 0, p105: 0, p106: 0, p107: 0, p108: 0, p109: 0, p110: 0, p111: 0, p112: 0, p113: 0, p114: 0, p115: 0, p116: 0, p117: 0, p118: 0, p119: 0, p120: 0, p121: 0, p122: 0, p123: 0, p124: 0, p125: 0, p126: 0, p127: 0, p128: 0, p129: 0 }
+  let b = Node { peers: multi_new(), p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p6: 0, p7: 0, p8: 0, p9: 0, p10: 0, p11: 0, p12: 0, p13: 0, p14: 0, p15: 0, p16: 0, p17: 0, p18: 0, p19: 0, p20: 0, p21: 0, p22: 0, p23: 0, p24: 0, p25: 0, p26: 0, p27: 0, p28: 0, p29: 0, p30: 0, p31: 0, p32: 0, p33: 0, p34: 0, p35: 0, p36: 0, p37: 0, p38: 0, p39: 0, p40: 0, p41: 0, p42: 0, p43: 0, p44: 0, p45: 0, p46: 0, p47: 0, p48: 0, p49: 0, p50: 0, p51: 0, p52: 0, p53: 0, p54: 0, p55: 0, p56: 0, p57: 0, p58: 0, p59: 0, p60: 0, p61: 0, p62: 0, p63: 0, p64: 0, p65: 0, p66: 0, p67: 0, p68: 0, p69: 0, p70: 0, p71: 0, p72: 0, p73: 0, p74: 0, p75: 0, p76: 0, p77: 0, p78: 0, p79: 0, p80: 0, p81: 0, p82: 0, p83: 0, p84: 0, p85: 0, p86: 0, p87: 0, p88: 0, p89: 0, p90: 0, p91: 0, p92: 0, p93: 0, p94: 0, p95: 0, p96: 0, p97: 0, p98: 0, p99: 0, p100: 0, p101: 0, p102: 0, p103: 0, p104: 0, p105: 0, p106: 0, p107: 0, p108: 0, p109: 0, p110: 0, p111: 0, p112: 0, p113: 0, p114: 0, p115: 0, p116: 0, p117: 0, p118: 0, p119: 0, p120: 0, p121: 0, p122: 0, p123: 0, p124: 0, p125: 0, p126: 0, p127: 0, p128: 0, p129: 0 }
+  push(a.peers, b)
+  push(b.peers, a)
+  print_int(count(a.peers))
+}

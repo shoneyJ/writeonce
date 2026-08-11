@@ -1,0 +1,26 @@
+-- Ownership suite (plan 2), as an end-user program: `bag.items[0]` passed
+-- twice as a `mut` parameter in the same call is a *provable* alias --
+-- same runtime index, same call -- so it fails at compile time. Contrast
+-- with tests/corpus/trap/exclusive-borrow-alias, the same shape with a
+-- runtime-variable index (i == j): the analysis can't prove that one
+-- either way, so it becomes a residual check the VM traps BORROW on
+-- instead. This is the hybrid boundary: provable violations fail here;
+-- unprovable ones trap there. Mirrors the `same_index` case of
+-- compiler/test/golden/owner-err/double-mut.wo.
+class Item {
+  n: Int
+}
+
+class Bag {
+  items: multi Item
+}
+
+fn swap(mut a: Item, mut b: Item) -> Int {
+  return a.n + b.n
+}
+
+fn main() {
+  let bag = Bag { items: multi_new() }
+  push(bag.items, Item { n: 1 })
+  print_int(swap(bag.items[0], bag.items[0]))
+}

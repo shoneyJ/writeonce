@@ -1,0 +1,28 @@
+-- Seed fixture: arithmetic (+ - * / %, unary -) and control flow (if,
+-- while, comparisons including the two operators the v1 instruction set
+-- has no opcode for: `%` lowers to `a - (a / b) * b`, `!=` lowers to
+-- `(a == b) == 0` -- see docs/plan/oop-vm/08-builtin-surface.md.
+fn compute(a: Int, b: Int) -> Int {
+  let sum = a + b
+  let diff = a - b
+  let prod = sum * diff
+  let quot = prod / b
+  let rem = prod % b
+  let neg = -rem
+  if sum == diff {
+    return neg
+  }
+  let changed = sum != diff
+  while changed {
+    changed = false
+  }
+  if sum > diff {
+    return quot + rem
+  }
+  return neg
+}
+
+fn main() {
+  print_int(compute(7, 3))
+  print("done")
+}

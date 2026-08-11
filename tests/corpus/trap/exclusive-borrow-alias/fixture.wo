@@ -1,0 +1,28 @@
+-- Canary fixture (Task 2 review, Important 2): a real runtime trap,
+-- proving the trap/ path end to end. `pair` takes two exclusive borrows
+-- through runtime indices (docs/plan/oop-vm/08-builtin-surface.md's
+-- residual-borrow case); calling it with i == j aliases the same
+-- element under two exclusive borrows, which the VM's runtime guard
+-- traps rather than silently corrupting.
+class Item {
+  n: Int
+}
+
+class Bag {
+  items: multi Item
+}
+
+fn touch(mut a: Item, mut b: Item) -> Int {
+  return a.n + b.n
+}
+
+fn pair(mut bag: Bag, i: Int, j: Int) -> Int {
+  return touch(bag.items[i], bag.items[j])
+}
+
+fn main() {
+  let bag = Bag { items: multi_new() }
+  push(bag.items, Item { n: 1 })
+  push(bag.items, Item { n: 2 })
+  print_int(pair(bag, 0, 0))
+}

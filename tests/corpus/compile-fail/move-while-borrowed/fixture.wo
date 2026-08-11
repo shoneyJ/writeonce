@@ -1,0 +1,25 @@
+-- Ownership suite (plan 2), as an end-user program: `alias` borrows
+-- `b.inner` while `b` itself is moved into `consume` -- a move while a
+-- live borrow of it still exists. Mirrors
+-- compiler/test/golden/owner-err/move-while-borrowed.wo, given a `main`
+-- that actually calls it.
+class Inner {
+  n: Int
+}
+
+class Box {
+  inner: Inner
+}
+
+fn consume(take b: Box) -> Int {
+  return 1
+}
+
+fn run(take b: Box) -> Int {
+  let alias = b.inner
+  return consume(b)
+}
+
+fn main() {
+  print_int(run(Box { inner: Inner { n: 1 } }))
+}

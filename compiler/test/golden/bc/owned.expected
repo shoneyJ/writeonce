@@ -1,0 +1,65 @@
+== CONSTANTS ==
+k0   TEXT "Item"
+k1   TEXT "consume"
+k2   TEXT "twice"
+k3   TEXT "main"
+k4   INT  2
+k5   INT  3
+k6   INT  5
+k7   INT  0
+== CLASSES ==
+c0   Item flags=- fields=[SCALAR]
+== INTERFACES ==
+== VTABLES ==
+== METHODS ==
+m0   consume args=1 regs=2 [free fn]
+  lines: 0->11
+  drops: pc 0 owned={r0} gc={}
+  drops: pc 2 owned={} gc={}
+  0000  GETF      r1, r0, f0
+  0001  DROP      r0
+  0002  RET       r1
+m1   twice args=2 regs=6 [free fn]
+  lines: 0->15 3->16 5->17 8->18 13->20
+  drops: pc 0 owned={r0} gc={}
+  drops: pc 3 owned={r0,r2} gc={}
+  drops: pc 8 owned={r0,r2,r3} gc={}
+  drops: pc 10 owned={r0,r2} gc={}
+  drops: pc 11 owned={r0} gc={}
+  drops: pc 12 owned={} gc={}
+  drops: pc 13 owned={r0,r2} gc={}
+  drops: pc 14 owned={r2} gc={}
+  drops: pc 19 owned={} gc={}
+  0000  NEW       r2, c0
+  0001  LOADK     r3, k4
+  0002  SETF      r2, f0, r3
+  0003  MOVE      r3, r1
+  0004  JZ        r3, -> 0013
+  0005  NEW       r3, c0
+  0006  LOADK     r4, k5
+  0007  SETF      r3, f0, r4
+  0008  GETF      r4, r3, f0
+  0009  DROP      r3
+  0010  DROP      r2
+  0011  DROP      r0
+  0012  RET       r4
+  0013  MOVE      r4, r0
+  0014  CALL      r4, m0
+  0015  MOVE      r3, r4
+  0016  GETF      r5, r2, f0
+  0017  ADD       r3, r3, r5
+  0018  DROP      r2
+  0019  RET       r3
+m2   main args=0 regs=4 [free fn] [ENTRY]
+  lines: 0->24 7->23
+  drops: (none)
+  0000  NEW       r1, c0
+  0001  LOADK     r3, k6
+  0002  SETF      r1, f0, r3
+  0003  LOADK     r2, k7
+  0004  CALL      r1, m1
+  0005  MOVE      r0, r1
+  0006  BUILTIN   r0, r0, print_int
+  0007  RET0
+== ENTRY ==
+m2

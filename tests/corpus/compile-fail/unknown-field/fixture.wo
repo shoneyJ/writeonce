@@ -1,0 +1,14 @@
+-- E2xx-range substitute for the briefed "type error": WO-E201
+-- (type-mismatch) is declared in types.ml but has no emission site in the
+-- milestone front end (docs/plan/oop-vm/01-error-catalog.md's "Reserved,
+-- not yet emitted") -- it can never fire, so a fixture expecting it could
+-- never pass. This exercises the type-adjacent check that does fire
+-- instead: a `.field` access naming a field its class doesn't declare.
+class Item {
+  n: Int
+}
+
+fn main() {
+  let it = Item { n: 1 }
+  print_int(it.price)
+}

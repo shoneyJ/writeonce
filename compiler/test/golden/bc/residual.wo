@@ -1,0 +1,64 @@
+-- The other half of the borrow story: where static proof fails, and only
+-- there, the emitter wraps the region in runtime borrow ops.
+--
+-- `pair` takes two exclusive borrows of elements reached through runtime
+-- indices, so `i == j` is unprovable (the canonical residual case from
+-- the spec's section 4). One BORROW_X / RELEASE_X pair per operand —
+-- coalesced per operand, never one pair per residual-table entry.
+-- `fixed` is the control: literal indices are provably distinct, so it
+-- gets no guards at all.
+class Item {
+  n: Int
+}
+
+class Bag {
+  items: multi Item
+}
+
+fn touch(mut a: Item, mut b: Item) -> Int {
+  return a.n + b.n
+}
+
+fn pair(mut bag: Bag, i: Int, j: Int) -> Int {
+  return touch(bag.items[i], bag.items[j])
+}
+
+fn fixed(mut bag: Bag) -> Int {
+  return touch(bag.items[0], bag.items[1])
+}
+
+-- Three exclusive aliases in one region: the pairwise check produces
+-- THREE residual entries (a-b, a-c, b-c) over THREE distinct operands.
+-- Per-operand coalescing must emit 3 guard pairs; a regression to one
+-- pair per table entry would emit 6 and self-trap by asking for two
+-- exclusive borrows of the same object. `pair` above cannot tell those
+-- two apart (one entry, two operands, 2 guards either way) — this can.
+fn touch3(mut a: Item, mut b: Item, mut c: Item) -> Int {
+  return a.n + b.n + c.n
+}
+
+fn triple(mut bag: Bag, i: Int, j: Int, k: Int) -> Int {
+  return touch3(bag.items[i], bag.items[j], bag.items[k])
+}
+
+-- An assignment is its own region: owner.ml anchors the residual sites
+-- it produces on the statement, not on a call. `s.n = 5` writes through
+-- one alias while another is live over a runtime index, so the SETF
+-- itself must be guarded.
+fn write_through(mut bag: Bag, i: Int, j: Int) -> Int {
+  let r = bag.items[i]
+  let s = bag.items[j]
+  s.n = 5
+  return r.n
+}
+
+fn main() {
+  let bag = Bag { items: multi_new() }
+  push(bag.items, Item { n: 1 })
+  push(bag.items, Item { n: 2 })
+  push(bag.items, Item { n: 3 })
+  print_int(pair(bag, 0, 1))
+  print_int(fixed(bag))
+  print_int(triple(bag, 0, 1, 2))
+  print_int(write_through(bag, 0, 1))
+}

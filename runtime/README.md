@@ -82,19 +82,19 @@ Single-shot RECV re-armed per request (multishot recv + buffer rings are a phase
 
 ## The wovm bytecode VM (runtime/src/)
 
-Milestone 1 of the OOP track (spec: [`docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md`](../docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md), plan 1: [`docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md`](../docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md)) — a register VM that executes `.wob` bytecode (format: [`docs/plan/oop-vm/00-wob-format.md`](../docs/plan/oop-vm/00-wob-format.md)) with the full milestone-1 memory model. C11, libc only, same doctrine as `wo-rt.c`.
+Milestone 1 of the OOP track (spec: [`docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md`](../docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md), plan 1: [`docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md`](../docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md)) — a register VM that executes `.wob` bytecode (format: [`docs/plan/oop-vm/00-wob-format.md`](../docs/plan/oop-vm/00-wob-format.md)) with the full milestone-1 memory model. C11, libc only, same doctrine as `wo-rt.c`. `wovm` doesn't produce `.wob` itself — that's the OCaml `woc` front end's job ([`compiler/README.md`](../compiler/README.md), plan 3); this directory is the VM, not the compiler.
 
 **Shipped features:**
 
 - **Register interpreter** — fixed 32-bit instructions, Lua-style window-overlap calls (callee r0 = caller slot A), dual dispatch: computed goto under GNU C, `switch` under `-DWO_ISO_C` (both flavors gated in CI so neither rots).
 - **Owned objects with a runtime borrow word** — shared-reader count / exclusive sentinel in every 16-byte header; violations trap `T_BORROW`. The compiler elides provable sites; the VM enforces the residual ones (hybrid model, spec §4).
-- **`@gc` reference counting + budgeted cycle collection** — rc at zero frees immediately; possible cycles buffer as candidates (Bacon–Rajan trial deletion), collected in budgeted epochs per shard — no stop-the-world by construction.
+- **`@gc` reference counting + budgeted cycle collection** — rc at zero frees immediately; possible cycles buffer as candidates (Bacon–Rajan trial deletion), collected in budgeted epochs per shard — no stop-the-world by construction. The `wovm` CLI pumps the collector to quiescence after the entry method returns (`WO_GC_BUDGET` steps per call, default 64; `WO_GC_TRACE=1` prints one stderr line per step) — scheduler-paced stepping between requests is sub-project 2, not this milestone.
 - **Deterministic drops** — kind-directed drop plans (scalar/owned/gcref/text/multi/map), recursive over class fields and container elements.
 - **Trap unwinding that never leaks** — per-method drop tables (pc → owned/gc register masks); a trap walks every frame and frees what was live; structured error `{code, method, line, message}` via line tables.
 - **Validating loader** — bounds-checked parse, aligned copies, const-string interning, full static validation (opcodes, registers, indexes, jump targets, terminators, builtin arity, call windows, sorted vtables); what the loader accepts, the interpreter trusts — no UB on any input.
 - **Structural interfaces** — `ICALL` binary-searches sorted (class, slot, method) vtable triples by receiver class.
 - **Native containers + builtins** — `multi`/`map` with element-kind tags; `now/print/print_int/words/multi_*/map_*`; `DB_STUB` traps "engine not linked" until the DB engine binds (plan 5).
-- **CLI contract** — `wovm app.wob`: exit 0 = ran; exit 1 = trap, one stderr line `trap CODE in METHOD at line N: MESSAGE`; exit 2 = usage/load failure. `WO_HEAP_MB` overrides the 64 MiB arena.
+- **CLI contract** — `wovm app.wob`: exit 0 = ran; exit 1 = trap, one stderr line `trap CODE in METHOD at line N: MESSAGE`; exit 2 = usage/load failure. `WO_HEAP_MB` overrides the 64 MiB arena. Run with no `.wob` argument, `wovm` also checks its own trailer for an appended image (`woc build`'s single-binary output, [`docs/plan/oop-vm/00-wob-format.md`](../docs/plan/oop-vm/00-wob-format.md)'s "single-binary trailer" section) — a recognized-but-corrupt trailer fails clearly on exit 2, never a crash.
 
 **File map:**
 
@@ -108,14 +108,14 @@ Milestone 1 of the OOP track (spec: [`docs/superpowers/specs/2026-08-01-oop-comp
 | `src/loader.h/.c` | `.wob` parse + full static validation + mmap file path |
 | `src/vm.h/.c` | the interpreter: dispatch, frames, traps, drop-map unwinding, `ICALL` |
 | `src/builtin.h/.c` | builtin dispatcher |
-| `src/main.c` | the `wovm` CLI |
+| `src/main.c` | the `wovm` CLI: arg parsing, self-embedded-trailer detection, the post-exit gc pump |
 | `test/t.h` | 20-line assert harness (no framework) |
 | `test/wob_build.h/.c` | in-memory `.wob` assembler — the second, independent encoding of the format; builder/loader disagreements fail tests |
 | `test/test_*.c` | 13 suites, one binary each, ASan+UBSan |
 | `test/mkwob.c` | fixture generator for the CLI smoke |
 | `test/cli_smoke.sh` | end-to-end exit-code/stderr-shape check |
 
-**Gates:** `just wovm-build` · `just wovm-test` (unit suites + ISO flavor + CLI smoke, all ASan-clean) · in `runtime/`: `make test`, `make test-iso`, `make wovm`.
+**Gates:** `just wovm-build` · `just wovm-test` (unit suites + ISO flavor + CLI smoke, all ASan-clean) · in `runtime/`: `make test`, `make test-iso`, `make wovm`, `make wovm-asan` (sanitized binary for corpus fixtures that need a leak/UB proof, e.g. `tests/corpus/gc/`). Across both halves: `just oop-e2e` (the `woc` + `wovm` conformance corpus, [`compiler/README.md`](../compiler/README.md)) and `just oop-accept` (milestone 1's full acceptance gate — spec success criteria + both unit suites, one command).
 
 ## Debugging
 
