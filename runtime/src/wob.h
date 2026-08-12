@@ -138,8 +138,22 @@ enum {
     WO_B_MAP_SET = 10,
     WO_B_MAP_GET = 11, /* missing key traps WO_T_KEY */
     WO_B_MAP_HAS = 12,
+    /* haxe-parity compiler Task 2: string interpolation's Int -> Text
+     * conversion (`"${count} lines"`). (i64) -> a fresh owned Text of
+     * its decimal rendering. */
+    WO_B_INT_TO_TEXT = 13,
+    /* haxe-parity compiler Task 4: enum payload variants. A payload
+     * union's variants are compiler-generated class-table entries; the
+     * variant TAG is the object header's existing class_id (no new
+     * header field, no new flag — docs/plan/oop-vm/00-wob-format.md,
+     * "enum payload variants"). (variant object) -> i64 tag: reads
+     * r[B]'s header class_id into r[A] so a switch over a payload
+     * union compares tags without a per-arm allocation. Traps
+     * WO_T_BOUNDS on a null receiver or a native class id — the same
+     * defense ICALL keeps for a miscompiled receiver. */
+    WO_B_VARIANT_TAG = 14,
 };
-#define WO_B_MAX 12u
+#define WO_B_MAX 14u
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {

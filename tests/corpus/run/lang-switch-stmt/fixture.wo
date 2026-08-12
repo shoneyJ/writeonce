@@ -1,0 +1,27 @@
+-- haxe-parity Task 3: `switch` in statement position -- "one construct,
+-- not two" (the brief's own words): this is the exact same `Ast.Switch`
+-- node as the value-yielding fixture, just reached as a bare
+-- `ExprStmt`, its value discarded. Each arm ends in a plain
+-- `print(...)` (an `ExprStmt`, not `return`) so this exercises the
+-- real discard-mode write-then-ignore path -- the register-aliasing
+-- bug this task's own ASan fixture (lang-switch-arm-drop) found lived
+-- exactly here (a statement-position switch's own placeholder `dst`
+-- colliding with an arm's own register), so a plain, ownership-free
+-- version of the same shape is worth pinning on its own.
+fn describe(n: Int) {
+  switch n {
+    case 1:
+      print("one");
+    case 2:
+      print("two");
+    default:
+      print("many");
+  }
+}
+
+fn main() -> Int {
+  describe(1);
+  describe(2);
+  describe(3);
+  return 0;
+}

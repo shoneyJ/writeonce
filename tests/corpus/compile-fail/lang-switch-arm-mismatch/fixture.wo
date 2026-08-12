@@ -1,0 +1,16 @@
+-- haxe-parity Task 3: arm-type unification. `default` yields `Int`
+-- while the earlier `case` arms yield `Text` -- the switch's own type
+-- is fixed by the first arm (types.ml's own "first wins" convention),
+-- so this is a real, statically-provable mismatch, not a guess.
+fn classify(n: Int) -> Text {
+  let label = switch n {
+    case 1: "one";
+    case 2: "two";
+    default: 0;
+  };
+  return label;
+}
+
+fn main() -> Int {
+  return 0;
+}

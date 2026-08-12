@@ -40,7 +40,8 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_WORDS] = 1,     [WO_B_MULTI_NEW] = 0, [WO_B_MULTI_PUSH] = 2,
     [WO_B_MULTI_GET] = 2, [WO_B_COUNT] = 1,     [WO_B_LATEST] = 1,
     [WO_B_MAP_NEW] = 0,   [WO_B_MAP_SET] = 3,   [WO_B_MAP_GET] = 2,
-    [WO_B_MAP_HAS] = 2,
+    [WO_B_MAP_HAS] = 2,   [WO_B_INT_TO_TEXT] = 1,
+    [WO_B_VARIANT_TAG] = 1,
 };
 
 static int vtab_cmp(const void *a, const void *b) {

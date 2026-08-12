@@ -1,0 +1,16 @@
+-- haxe-parity Task 4: WO-E208's union exhaustiveness rule -- a switch
+-- over a union with no `default` must cover every variant; the
+-- diagnostic names the missing ones (`Hi` here). Scalars/Text keep the
+-- unconditional default-required rule (lang-switch-missing-default).
+type Kind = Lo | Mid | Hi
+
+fn f(k: Kind) -> Int {
+  return switch k {
+    case Lo:  1;
+    case Mid: 2;
+  }
+}
+
+fn main() -> Int {
+  return 0
+}

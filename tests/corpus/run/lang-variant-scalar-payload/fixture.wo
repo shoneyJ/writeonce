@@ -1,0 +1,20 @@
+-- haxe-parity Task 4, fix round 2 (review NEW 1): escaping a SCALAR
+-- payload field is a COPY, never a move — there is no ownership to
+-- transfer, and the move-out's SETF-0 corrupted the subject (the
+-- reviewer's m3d probe read 0 where 5 lived on a re-switch). The
+-- second switch over the SAME subject must still see 5.
+type Ev = Tick | Wrap(n: Int)
+
+fn main() -> Int {
+  let v = Wrap(5)
+  let x = switch v {
+    case Tick: 0;
+    case Wrap(n): n;
+  }
+  print_int(x)
+  switch v {
+    case Tick: print("tick");
+    case Wrap(n): print_int(n);
+  }
+  return 0
+}

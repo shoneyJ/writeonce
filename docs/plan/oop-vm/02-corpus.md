@@ -38,6 +38,35 @@ placed directly inside a kind directory (not in its own subdirectory) is
 never picked up — no error, no run, it just silently does not exist as a
 fixture. If a fixture stops appearing in the tally, check that first.
 
+**`run/` and `compile-fail/` compile the fixture's own *directory*, not
+just `fixture.wo`** (haxe-parity Task 1, modules) — `woc --emit
+<fixture-dir> -o <scratch>.wob`, letting `woc`'s own multi-file discovery
+find every `.wo` file under it. For a fixture with no other `.wo` file
+beside `fixture.wo` (every fixture that predates modules, and the large
+majority since) this is behavior-identical to compiling `fixture.wo`
+alone. What it's *for*: a module fixture puts its extra module(s) in a
+**subdirectory** (`greet/greet.wo`, `secret/secret.wo`, `a/a.wo`, ...) —
+each subdirectory is its own module (a `.wo` file's module is its
+directory), so this is how a `run`/`compile-fail` fixture exercises a
+real `use` across module boundaries at all.
+
+**Guarded, not open season**: exactly one top-level `.wo` file
+(`fixture.wo` itself) is required directly inside the fixture's own
+directory — `scripts/oop-e2e.sh`'s `assert_one_top_level_wo` counts
+`<fixture-dir>/*.wo` (never recursing into subdirectories) and fails the
+fixture by name, before compiling anything, if that count isn't exactly
+1. Without this, a second `.wo` file dropped loose beside `fixture.wo`
+(not a module fixture's intentional subdirectory — a mistake, or worse)
+silently joins the compile as a second file in the *same* module (Task
+8's own discovery contract: every same-directory file is unconditionally
+visible to every other) — confirmed exploitable: an alphabetically-
+earlier stray `fn main` hijacks the fixture's own entry point with zero
+diagnostics, since free fns are excluded from the cross-file collision
+check (`01-error-catalog.md`'s WO-E214 row is classes/interfaces only).
+A subdirectory full of `.wo` files is unaffected by this guard — that's
+a different module by construction, exactly the shape a module fixture
+is supposed to have.
+
 ## `run/` — compiles, runs, exact stdout
 
 **Files:** `fixture.wo`, `fixture.out`.

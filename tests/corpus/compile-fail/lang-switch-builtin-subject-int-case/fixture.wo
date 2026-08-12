@@ -1,0 +1,20 @@
+-- haxe-parity Task 3, re-review fix (Critical 2 residual): the switch
+-- subject is a BUILTIN CALL, not a variable -- `int_to_text(n)` is
+-- confidently `Text` because the builtin's return type is declared.
+-- Before the fix, types.ml's `builtin_confident_ret` had no
+-- `int_to_text` entry (drifted from emit.ml's `builtin_ret`, which
+-- does), so the E201 check stayed silent while the emitter still
+-- chose EQS -- and EQS str_check'd the raw int case label at runtime:
+-- a zero-diagnostic compile that segfaulted the VM. This fixture pins
+-- the two tables back in sync.
+fn classify(n: Int) -> Int {
+  let v = switch int_to_text(n) {
+    case 1: 0;
+    default: 1;
+  };
+  return v;
+}
+
+fn main() -> Int {
+  return 0;
+}

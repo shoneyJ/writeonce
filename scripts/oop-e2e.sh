@@ -81,17 +81,51 @@ extract_error_codes() {
   grep -oE 'error (WO-E[0-9]+):' "$1" | sed -E 's/error (WO-E[0-9]+):/\1/'
 }
 
+# haxe-parity Task 1 review, IMPORTANT 3: compiling the fixture's own
+# directory (not just fixture.wo) means woc's own multi-file discovery
+# picks up *any* .wo file dropped there, not only fixture.wo -- a stray
+# second .wo directly beside fixture.wo silently joins the compile as a
+# second file in the SAME module (Task 8's own discovery contract: every
+# file sharing a directory is unconditionally visible to every other),
+# and its own free fns/classes are exactly as reachable as fixture.wo's
+# own. Confirmed exploitable: an alphabetically-earlier stray `fn main`
+# hijacks the fixture's entry point with zero diagnostics (free fns are
+# excluded from the cross-file collision check, docs/plan/oop-vm/
+# 01-error-catalog.md's WO-E214 row). A *subdirectory* full of .wo files
+# is a different module on purpose -- that's the whole point of a
+# module fixture (greet/, secret/, a/, b/, ...) -- so this only counts
+# files directly inside $1, never recursing into subdirectories.
+assert_one_top_level_wo() {
+  local dir="$1" name="$2"
+  local top_level=("$dir"/*.wo)
+  if [[ ${#top_level[@]} -ne 1 ]]; then
+    bad "$name" "expected exactly one top-level .wo file in $dir, found ${#top_level[@]} -- module fixtures belong in a subdirectory, not loose beside fixture.wo"
+    return 1
+  fi
+  return 0
+}
+
 run_fixture() {
   local dir="$1" name="run/$(basename "$1")"
   local prefix wob out err rc
 
   if [[ ! -f "$dir/fixture.wo" ]]; then bad "$name" "missing fixture.wo"; return; fi
   if [[ ! -f "$dir/fixture.out" ]]; then bad "$name" "missing fixture.out"; return; fi
+  assert_one_top_level_wo "$dir" "$name" || return
 
   prefix="$(tmp_prefix "$name")"
   wob="$prefix.wob" out="$prefix.out" err="$prefix.err"
 
-  timeout "$TIMEOUT" "$WOC" --emit "$dir/fixture.wo" -o "$wob" >/dev/null 2>"$err"
+  # Compile the fixture's own directory, not just fixture.wo directly:
+  # for a fixture with no other .wo file beside fixture.wo (every
+  # pre-haxe-parity fixture), woc's directory discovery finds exactly
+  # that one file, so this is behavior-identical to compiling
+  # "$dir/fixture.wo" on its own. It's what lets a fixture exercise a
+  # real cross-module `use` (haxe-parity Task 1) by adding a nested
+  # module directory (e.g. `greet/greet.wo`) beside fixture.wo — woc's
+  # own multi-file discovery (Task 8) then compiles both as one
+  # program, exactly like a real project layout would.
+  timeout "$TIMEOUT" "$WOC" --emit "$dir" -o "$wob" >/dev/null 2>"$err"
   rc=$?
   if [[ $rc -eq 124 ]]; then
     bad "$name" "woc timed out after ${TIMEOUT}s"
@@ -211,6 +245,7 @@ compile_fail_fixture() {
 
   if [[ ! -f "$dir/fixture.wo" ]]; then bad "$name" "missing fixture.wo"; return; fi
   if [[ ! -f "$dir/fixture.code" ]]; then bad "$name" "missing fixture.code"; return; fi
+  assert_one_top_level_wo "$dir" "$name" || return
 
   prefix="$(tmp_prefix "$name")"
   wob="$prefix.wob" err="$prefix.err"
@@ -221,7 +256,16 @@ compile_fail_fixture() {
     return
   fi
 
-  timeout "$TIMEOUT" "$WOC" --emit "$dir/fixture.wo" -o "$wob" >/dev/null 2>"$err"
+  # Compile the fixture's own directory, not just fixture.wo directly:
+  # for a fixture with no other .wo file beside fixture.wo (every
+  # pre-haxe-parity fixture), woc's directory discovery finds exactly
+  # that one file, so this is behavior-identical to compiling
+  # "$dir/fixture.wo" on its own. It's what lets a fixture exercise a
+  # real cross-module `use` (haxe-parity Task 1) by adding a nested
+  # module directory (e.g. `greet/greet.wo`) beside fixture.wo — woc's
+  # own multi-file discovery (Task 8) then compiles both as one
+  # program, exactly like a real project layout would.
+  timeout "$TIMEOUT" "$WOC" --emit "$dir" -o "$wob" >/dev/null 2>"$err"
   rc=$?
 
   if [[ $rc -eq 124 ]]; then

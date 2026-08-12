@@ -1,0 +1,19 @@
+-- haxe-parity Task 3, review fix (Critical 2): the reverse direction
+-- of the Text/Int representation mismatch -- an `Int` subject against
+-- a `Text` case label doesn't crash the VM (EQ just compares two
+-- int64s), but it is equally wrong: the case value's own register
+-- never holds the subject's representation, so the comparison is
+-- silently always-false, and the case can never fire. `n` is
+-- confidently `Int` (a declared parameter), so this is a real,
+-- statically-provable mismatch, not a guess.
+fn describe(n: Int) -> Text {
+  let v = switch n {
+    case "one": "matched";
+    default: "other";
+  };
+  return v;
+}
+
+fn main() -> Int {
+  return 0;
+}

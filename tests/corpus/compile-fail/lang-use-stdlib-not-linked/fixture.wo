@@ -1,0 +1,12 @@
+-- haxe-parity Task 1 (modules): `fs` is a reserved stdlib namespace —
+-- `use fs` resolves and `fs.stat(...)` typechecks as UNKNOWN-BUT-
+-- RESERVED (no E207/E225/arity error; the six namespaces' members
+-- arrive in plan 9). A call through it that survives all the way to
+-- emission is WO-E406, not silently accepted and not a generic
+-- WO-E403 "cannot resolve the receiver" -- there is nothing wrong with
+-- the reference, only nothing to lower it to yet.
+use fs
+
+fn main() {
+  print_int(fs.stat("x"))
+}

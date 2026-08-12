@@ -1,0 +1,9 @@
+-- `it.price` is the one real bug: Item (a.wo) has no `price` field,
+-- only `n`. Before the hotfix, this body-level WO-E202 check re-ran
+-- once per OTHER discovered file too (a.wo's own pass here), so a
+-- 2-file program reported it twice -- once correctly at b.wo, once
+-- phantom-stamped with a.wo's path at the same (nonexistent) line/col.
+fn main() {
+  let it = Item{n:1}
+  print_int(it.price)
+}

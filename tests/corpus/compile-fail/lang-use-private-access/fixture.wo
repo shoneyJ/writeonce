@@ -1,0 +1,8 @@
+-- haxe-parity Task 1 (modules): `secret.hidden()` names a real fn in a
+-- real, `use`d module — but `hidden` is not `pub` (see secret/secret.wo),
+-- so this is WO-E217, not a lookup failure.
+use secret
+
+fn main() {
+  print_int(secret.hidden())
+}

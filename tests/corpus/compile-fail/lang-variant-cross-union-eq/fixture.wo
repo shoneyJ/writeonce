@@ -1,0 +1,12 @@
+-- haxe-parity Task 4, fix round 1 (review Major): two bare unions share
+-- the ordinal-tag representation, so `X == P` across DIFFERENT unions
+-- was silently true (both ordinal 0). WO-E201 — values of different
+-- unions never compare equal.
+type A = X | Yv
+
+type B = P | Qv
+
+fn main() -> Int {
+  if X == P { print("cross-eq") }
+  return 0
+}

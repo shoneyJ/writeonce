@@ -1,0 +1,19 @@
+-- haxe-parity Task 4: typedef records are STRUCTURAL aliases -- two
+-- typedefs with the same shape (same fields, same order, same types)
+-- are the same type. `A` and `B` below share one compiler-generated
+-- class-table entry (pinned by a runner.ml direct assertion over the
+-- disassembly; this fixture pins the observable half: a value built as
+-- `A` flows through a parameter declared `B` and back out unchanged).
+typedef A = { n: Int, tag: Text }
+typedef B = { n: Int, tag: Text }
+
+fn show(r: B) -> Int {
+  print(r.tag)
+  return r.n
+}
+
+fn main() -> Int {
+  let a = A { n: 42, tag: "answer" }
+  print_int(show(a))
+  return 0
+}

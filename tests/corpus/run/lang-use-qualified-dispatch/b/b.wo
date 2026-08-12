@@ -1,0 +1,3 @@
+pub fn thing() -> Text {
+  return "from b"
+}

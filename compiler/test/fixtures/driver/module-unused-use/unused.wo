@@ -1,0 +1,9 @@
+-- haxe-parity Task 1 (modules): `use fs` is declared but this file
+-- never calls anything through the `fs` alias -- WO-W202. A warning,
+-- not an error: the bare `woc <path>` exit-code contract (0 clean, 1
+-- diagnostics-*with-an-error*-reported) means this still exits 0.
+use fs
+
+fn main() {
+  print("hello")
+}

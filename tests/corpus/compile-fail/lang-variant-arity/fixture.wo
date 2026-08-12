@@ -1,0 +1,10 @@
+-- haxe-parity Task 4: constructing a payload variant with the wrong
+-- number of payload arguments is WO-E203 (bad arity -- reserved since
+-- plan 2 Task 6, this is its first real emission site). `Failed`
+-- declares exactly one payload field.
+type Status = Pending | Failed(reason: Text)
+
+fn main() -> Int {
+  let st = Failed("a", "b")
+  return 0
+}

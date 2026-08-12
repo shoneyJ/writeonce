@@ -1,0 +1,11 @@
+-- haxe-parity Task 1 (modules): `a` and `b` both export a `pub fn
+-- thing`. Resolution goes file -> own module -> used modules -> stdlib
+-- (this file's own module has no `thing` at all), and at the "used
+-- modules" tier both `a` and `b` match — collisions diagnose rather
+-- than shadow silently (WO-E218), never a first-used-wins pick.
+use a
+use b
+
+fn main() {
+  print_int(thing())
+}

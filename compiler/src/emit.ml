@@ -137,6 +137,16 @@ let unguardable_code = Diag.emitter_prefix ^ "04"
    (nothing declared, nothing to contradict `Int`). *)
 let entry_return_code = Diag.emitter_prefix ^ "05"
 
+(* WO-E406 (haxe-parity Task 1, modules) — a call through a reserved
+   stdlib alias (`use fs`/`proc`/`net`/`time`/`json`/`env`) survived
+   typechecking (types.ml accepts it as UNKNOWN-BUT-RESERVED: no
+   E207/E225/arity check, since the six namespaces' members arrive in
+   plan 9) and reached emission. There is nothing to lower it to yet —
+   no signature, no builtin id — so this is the one place that still
+   says so, and only if such a call actually survives this far; `use fs`
+   declared and never called never reaches this code at all. *)
+let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
+
 (* ============================================================
    Format constants (mirror of runtime/src/wob.h — never diverge)
    ============================================================ *)
@@ -195,6 +205,19 @@ let b_map_new = 9
 let b_map_set = 10
 let b_map_get = 11
 let b_map_has = 12
+(* haxe-parity Task 2: the one fenced VM addition this task takes —
+   string interpolation's Int-to-Text conversion (`"${count} lines"`).
+   runtime/src/wob.h WO_B_INT_TO_TEXT = 13. *)
+let b_int_to_text = 13
+
+(* haxe-parity Task 4: the one fenced VM addition of the enum-payload
+   work — reads a variant object's tag (the object header's own
+   class_id; docs/plan/oop-vm/00-wob-format.md "enum payload variants")
+   so a switch over a payload union can compare tags without a per-arm
+   allocation. runtime/src/wob.h WO_B_VARIANT_TAG = 14. Compiler-
+   internal: never a source-callable name (not in is_builtin_name /
+   types.ml's builtin_signatures — 08-builtin-surface.md is unchanged). *)
+let b_variant_tag = 14
 
 let ins_abc op a b c = op lor (a lsl 8) lor (b lsl 16) lor (c lsl 24)
 let ins_abx op a bx = op lor (a lsl 8) lor (bx lsl 16)
@@ -321,6 +344,38 @@ type pctx = {
      lookup, never in the emitted table *)
   p_method_id : int SM.t;
   p_methods : methrec array;
+  (* haxe-parity Task 1 (modules): file -> that file's own `use` edges.
+     Front-door module visibility is already fully decided by
+     types.ml's check_modules before the emitter ever runs — this
+     exists only for the two things emission itself still needs to
+     know: (1) a stdlib-reserved alias reaching a real call site here
+     is WO-E406 (nothing to lower it to, see that code's doc comment),
+     and (2) which alias names a project module at all (as opposed to a
+     receiver expression), so a qualified call can be resolved against
+     that module's own symbols below rather than p_syms' flat merge. *)
+  p_uses : (string, Types.use_edge list) Hashtbl.t;
+  (* haxe-parity Task 1 (modules), CRITICAL 1 review fix: p_syms.free_fns
+     is one flat table, first-wins merged across the *whole* discovered
+     tree regardless of module (main.ml's merge_symbols, unchanged by
+     this task) — exactly right for `main`/every other pre-Task-1
+     lookup, and exactly wrong the instant two different modules declare
+     a same-named `pub fn` and a qualified call means to pick between
+     them: the flat merge already silently dropped one, so looking a
+     qualified call's callee up there can return the *wrong module's*
+     body no matter how carefully the call site names its alias. A
+     qualified call therefore resolves through *this* table instead —
+     module id -> that module's own, unmerged-with-anyone-else `symbols`
+     (built by Types.module_symbols, the same per-module grouping
+     types.ml's own resolver uses) — never through p_syms for that one
+     purpose. `p_module_of` (file -> module id) is what turns a bare
+     call's *own* file into the same key, so an own-module bare call to
+     a name that happens to collide with some other module's same-named
+     `pub fn` resolves correctly too (see free_fn_key's doc comment). *)
+  p_module_syms : (string, Types.symbols) Hashtbl.t;
+  p_module_of : string -> string;
+  (* every free-fn name declared by more than one distinct module — see
+     free_fn_key's doc comment. *)
+  p_colliding : (string, unit) Hashtbl.t;
   (* constant pool, deduplicated *)
   p_kints : (int, int) Hashtbl.t;
   p_ktexts : (string, int) Hashtbl.t;
@@ -351,6 +406,22 @@ let const_text (p : pctx) (s : string) : int =
 (* ============================================================
    Per-method lowering state
    ============================================================ *)
+
+(* haxe-parity Task 2: one enclosing loop's own backpatch lists.
+   `break`/`continue` inside the loop's body emit a blind `JMP 0` at
+   their own site (their own drops already ran, from Owner's
+   v_break/v_continue tables) and record that instruction's pc here;
+   the loop that pushed this frame patches every recorded pc once it
+   knows the real target — `lf_breaks` always to "right after the whole
+   loop" (same target `JZ`'s own exit uses), `lf_continues` to wherever
+   *that* loop shape re-enters its own condition check (`while`: the
+   top; `for`: right before the increment; `do...while`: right before
+   the condition). *)
+type loop_frame = {
+  lf_node : int;
+  mutable lf_breaks : int list;
+  mutable lf_continues : int list;
+}
 
 type fstate = {
   f_file : string;
@@ -395,6 +466,13 @@ type fstate = {
      when the last instruction is not a terminator. *)
   mutable f_maxjmp : int;
   mutable f_over : bool; (* WO-E401 already reported for this method *)
+  (* haxe-parity Task 2: innermost-first stack of enclosing loop
+     backpatch frames — see loop_frame's own doc comment. Empty outside
+     any loop, which is exactly how emit_break/emit_continue detect a
+     `break`/`continue` with no legal target (WO-E403, "cannot lower" —
+     the same convention as every other construct nothing upstream
+     tracks loop nesting to reject earlier). *)
+  mutable f_loops : loop_frame list;
 }
 
 (* ---- per-unit views of the four owner tables ---- *)
@@ -404,6 +482,12 @@ type views = {
   v_scope : (int * string, Owner.drop_item list) Hashtbl.t;
   v_join : (int * string, Owner.drop_item list) Hashtbl.t;
   v_return : (int, Owner.drop_item list) Hashtbl.t;
+  (* haxe-parity Task 2: DBreak/DContinue's own views, by the
+     break/continue statement's own node id — mirrors v_return exactly,
+     just bounded to the enclosing loop instead of the whole function
+     (owner.ml's live_holders_upto). *)
+  v_break : (int, Owner.drop_item list) Hashtbl.t;
+  v_continue : (int, Owner.drop_item list) Hashtbl.t;
   v_overwrite : (int, unit) Hashtbl.t;
   v_mask : (int, Owner.drop_item list) Hashtbl.t;
   (* holder decl nodes: every declaring node the DROPS table ever names.
@@ -426,7 +510,8 @@ type views = {
 let build_views (t : Owner.tables) : views =
   let v =
     { v_move = Hashtbl.create 16; v_scope = Hashtbl.create 16; v_join = Hashtbl.create 16;
-      v_return = Hashtbl.create 16; v_overwrite = Hashtbl.create 16; v_mask = Hashtbl.create 16;
+      v_return = Hashtbl.create 16; v_break = Hashtbl.create 16; v_continue = Hashtbl.create 16;
+      v_overwrite = Hashtbl.create 16; v_mask = Hashtbl.create 16;
       v_holder = Hashtbl.create 16; v_rc = Hashtbl.create 16; v_res = Hashtbl.create 16;
       v_res_used = Hashtbl.create 16 }
   in
@@ -443,6 +528,8 @@ let build_views (t : Owner.tables) : views =
       | Owner.DScope label -> Hashtbl.replace v.v_scope (d.Owner.dr_node, label) items
       | Owner.DBranchJoin label -> Hashtbl.replace v.v_join (d.Owner.dr_node, label) items
       | Owner.DReturn -> Hashtbl.replace v.v_return d.Owner.dr_node items
+      | Owner.DBreak -> Hashtbl.replace v.v_break d.Owner.dr_node items
+      | Owner.DContinue -> Hashtbl.replace v.v_continue d.Owner.dr_node items
       | Owner.DOverwrite -> Hashtbl.replace v.v_overwrite d.Owner.dr_node ()
       | Owner.DLiveMask -> Hashtbl.replace v.v_mask d.Owner.dr_node items)
     t.Owner.drops;
@@ -634,6 +721,62 @@ let field_of (p : pctx) (cid : int) (fname : string) : (int * Ast.field_ty) opti
 let free_fn (p : pctx) (n : string) : Types.free_fn_info option =
   Types.StringMap.find_opt n p.p_syms.Types.free_fns
 
+(* haxe-parity Task 1 (modules): is `alias` one of file `f_file`'s own
+   `use` edges? Returns the edge so the caller can tell stdlib apart
+   from a project module (Types.use_edge.ue_is_stdlib). *)
+let use_edge_for (p : pctx) ~(file : string) (alias : string) : Types.use_edge option =
+  match Hashtbl.find_opt p.p_uses file with
+  | None -> None
+  | Some edges -> List.find_opt (fun (u : Types.use_edge) -> u.Types.ue_alias = alias) edges
+
+(* haxe-parity Task 1 (modules), CRITICAL 1 review fix: computed once per
+   `emit` call (below) and threaded through pctx (p_colliding) rather
+   than kept as an `emit`-local, since free_fn_key (right below) is
+   needed by emit_call, part of the emit_expr/emit_call mutually
+   recursive group defined further down this file — a plain local to
+   `emit` (itself defined at the bottom of the file) would not be in
+   scope there. A name collides when more than one *distinct* module
+   declares a free fn with that exact name; only possible now that
+   modules exist at all (pre-Task-1, every discovered file was one flat
+   namespace, so this table is always empty for any program that
+   predates `use`). *)
+let compute_colliding_fn_names ~(module_of : string -> string) (units : input list) :
+    (string, unit) Hashtbl.t =
+  let fn_modules : (string, (string, unit) Hashtbl.t) Hashtbl.t = Hashtbl.create 32 in
+  List.iter
+    (fun u ->
+      List.iter
+        (function
+          | Ast.Fn (m : Ast.method_decl) ->
+            let mid = module_of u.file in
+            let mods =
+              match Hashtbl.find_opt fn_modules m.name with
+              | Some t -> t
+              | None ->
+                let t = Hashtbl.create 2 in
+                Hashtbl.replace fn_modules m.name t;
+                t
+            in
+            Hashtbl.replace mods mid ()
+          | Ast.Class _ | Ast.Interface _ | Ast.Use _ | Ast.Const _ | Ast.Union _ -> ())
+        u.prog.decls)
+    units;
+  let colliding : (string, unit) Hashtbl.t = Hashtbl.create 8 in
+  Hashtbl.iter (fun name mods -> if Hashtbl.length mods >= 2 then Hashtbl.replace colliding name ()) fn_modules;
+  colliding
+
+(* A free fn's method-table key: its plain name, unless that name
+   collides across modules, in which case it's `"<module>#<name>"` — the
+   same composite-key idea class methods already use (`"Class.method"`).
+   Every free-fn method-table key, on both the build side (emit's own
+   pass 2, before `p : pctx` even exists yet — hence taking the raw
+   `colliding` table rather than `p`) and the lookup side (emit_call, via
+   `p.p_colliding`) goes through this now, so a non-colliding name
+   (everything before this task, and the overwhelming majority after it)
+   is completely unaffected — same plain key as always. *)
+let free_fn_key (colliding : (string, unit) Hashtbl.t) (mid : string) (name : string) : string =
+  if Hashtbl.mem colliding name then mid ^ "#" ^ name else name
+
 let class_method (p : pctx) (cname : string) (m : string) : Types.method_info option =
   match Types.StringMap.find_opt cname p.p_syms.Types.classes with
   | None -> None
@@ -661,6 +804,7 @@ let iface_method (p : pctx) (iname : string) (m : string) : (int * Types.method_
 
 let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty option =
   match name with
+  | "int_to_text" -> Some (Scalar "Text")
   | "now" -> Some (Scalar "Timestamp")
   | "print" | "print_int" | "push" | "set" -> Some (Scalar "Int")
   | "words" | "count" -> Some (Scalar "Int")
@@ -675,14 +819,53 @@ let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty opt
 let is_builtin_name (n : string) =
   List.mem n
     [ "now"; "print"; "print_int"; "words"; "multi_new"; "push"; "get"; "count"; "latest";
-      "map_new"; "set"; "has" ]
+      "map_new"; "set"; "has"; "int_to_text" ]
+
+(* ---- unions and variants (haxe-parity Task 4) ------------------------
+
+   All read straight off p_syms (types.ml's own tables) — the emitter
+   derives nothing types.ml already knows. A payload union's variants
+   each have a compiler-generated class-table entry keyed
+   "<Union>.<Variant>" in p_class_id (built in emit's pass 1, below;
+   idents can never contain a dot, so the composite key cannot collide
+   with a source-declared class — the same mangling convention
+   "Class.method" already uses in the method table). An all-bare union
+   has no entries at all: its variants ARE their ordinals. *)
+let find_union (p : pctx) (n : string) : Types.union_info option =
+  Types.StringMap.find_opt n p.p_syms.Types.unions
+
+let find_variant (p : pctx) (n : string) : (Types.union_info * Types.variant_info) option =
+  Types.find_variant p.p_syms n
+
+let variant_class_key (u : Types.union_info) (vi : Types.variant_info) : string =
+  u.Types.u_name ^ "." ^ vi.Types.vi_name
+
+(* the runtime tag a case pattern / bare reference compares or loads:
+   the class-table id for a payload union's variant (the object header's
+   class_id — the format doc's variant convention), the ordinal for an
+   all-bare union's. *)
+let variant_tag_value (p : pctx) (u : Types.union_info) (vi : Types.variant_info) : int =
+  if u.Types.u_has_payload then
+    match SM.find_opt (variant_class_key u vi) p.p_class_id with
+    | Some cid -> cid
+    | None -> 0 (* unreachable: pass 1 registers every payload-union variant *)
+  else vi.Types.vi_tag
 
 let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
-  | Ident n -> ( match List.assoc_opt n f.f_env with Some (_, t) -> Some t | None -> None)
+  | Ident n -> (
+    match List.assoc_opt n f.f_env with
+    | Some (_, t) -> Some t
+    | None -> (
+      (* haxe-parity Task 4: a bare variant reference types as its
+         union; locals/params always won above, so a shadowing binding
+         is never mistaken for a variant. *)
+      match find_variant p n with
+      | Some (u, _) -> Some (Scalar u.Types.u_name)
+      | None -> None))
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
@@ -700,12 +883,29 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | Call (callee, args) -> (
     match callee.kind with
     | Ident n -> (
-      match free_fn p n with
+      (* haxe-parity Task 1 (modules), CRITICAL 1 review fix: own module
+         first — see emit_call's identical fix for why p_syms' flat merge
+         is the wrong table once two modules can share a free-fn name. *)
+      let own_mid = p.p_module_of f.f_file in
+      let own_fi =
+        match Hashtbl.find_opt p.p_module_syms own_mid with
+        | Some msyms -> Types.StringMap.find_opt n msyms.Types.free_fns
+        | None -> None
+      in
+      match own_fi with
       | Some fi -> fi.Types.ret
-      | None ->
-        if is_builtin_name n then
-          builtin_ret n (match args with a :: _ -> ty_of_expr p f a | [] -> None)
-        else None)
+      | None -> (
+        match free_fn p n with
+        | Some fi -> fi.Types.ret
+        | None -> (
+          (* haxe-parity Task 4: variant construction — the call's value
+             is the union's own type (a fresh variant object). *)
+          match find_variant p n with
+          | Some (u, _) -> Some (Scalar u.Types.u_name)
+          | None ->
+            if is_builtin_name n then
+              builtin_ret n (match args with a :: _ -> ty_of_expr p f a | [] -> None)
+            else None)))
     | Field (base, mname) -> (
       match ty_of_expr p f base with
       | Some bt -> (
@@ -715,16 +915,96 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
           | Some mi -> mi.Types.ret
           | None -> ( match iface_method p cn mname with Some (_, sg) -> sg.Types.ret | None -> None))
         | _ -> None)
-      | None -> None)
+      | None -> (
+        (* base didn't resolve as a value at all (no local/param/self
+           named that) — a qualified free-fn call through a `use` alias
+           (haxe-parity Task 1) has exactly this shape; a genuine
+           receiver is always caught by the `Some bt` arm above, so
+           locals/params still shadow a same-named alias here too. *)
+        match base.kind with
+        | Ident alias -> (
+          match use_edge_for p ~file:f.f_file alias with
+          | Some u when u.Types.ue_is_stdlib -> None (* nothing to infer a return type from yet *)
+          | Some u -> (
+            let target_mid = Types.path_str u.Types.ue_segments in
+            match Hashtbl.find_opt p.p_module_syms target_mid with
+            | Some msyms -> (
+              match Types.StringMap.find_opt mname msyms.Types.free_fns with
+              | Some fi -> fi.Types.ret
+              | None -> None)
+            | None -> None)
+          | None -> None)
+        | _ -> None))
     | _ -> None)
   | Unary (Neg, o) -> ty_of_expr p f o
   | Binary (op, l, _) -> (
     match op with
     | Concat -> Some (Scalar "Text")
-    | Eq | Ne | Lt | Le | Gt | Ge -> Some (Scalar "Bool")
+    | Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Some (Scalar "Bool")
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
+  | Interp _ -> Some (Scalar "Text")
   | DbStub _ -> None
+  | Switch (subject, arms) -> (
+    (* haxe-parity Task 3: mirrors types.ml's own `typecheck_switch` —
+       the first arm's type wins (types.ml already proved every other
+       arm agrees, or reported WO-E201 if not) — but derived through
+       this file's own, narrower `ty_of_expr` rather than duplicating
+       that pass. Needed for real, not a "not chased" placeholder like
+       `Index`/`Binary` above: this is what tells `Let`'s own emission
+       (below) whether a `let v = switch ... { case ...: "text"; ... }`
+       with no `: Type` annotation holds `Text` or `Int` — get it
+       wrong and a later `${v}` interpolation calls `int_to_text` on a
+       Text register, or an `==` picks EQ over EQS.
+
+       Task 4 fix round 1 (review Critical 1b): an arm yielding its own
+       payload BINDING (`case Boxed(b): b;`) types as the binding's
+       declared field type — the binding is not in f_env at derivation
+       time (it exists only while the arm's own body is emitted), so
+       the plain recursive call returned None and the Int fallback
+       broke legal code downstream (`field access on Int`). Mirrors
+       owner.ml's binding_ty_of_arm. *)
+    match arms with
+    | [] -> None
+    | first :: _ -> (
+      match List.rev first.body with
+      | { s_kind = ExprStmt ve; _ } :: _ -> (
+        match ve.kind with
+        | Ident n -> (
+          match emit_binding_ty_of_arm p f subject first n with
+          | Some fty -> Some fty
+          | None -> ty_of_expr p f ve)
+        | _ -> ty_of_expr p f ve)
+      | _ -> None))
+
+(* The declared type of payload binding [n], when [arm]'s pattern binds
+   it off [subject]'s union — None whenever this is not that shape.
+   Mirrors owner.ml's binding_ty_of_arm (same convention as every other
+   mirrored deriver pair between these two files). *)
+and emit_binding_ty_of_arm (p : pctx) (f : fstate) (subject : Ast.expr) (arm : Ast.switch_arm)
+    (n : string) : Ast.field_ty option =
+  match ty_of_expr p f subject with
+  | Some (Scalar sn) -> (
+    match find_union p sn with
+    | Some u when u.Types.u_has_payload -> (
+      match arm.values with
+      | [ { kind = Call ({ kind = Ident vname; _ }, bargs); _ } ] -> (
+        match
+          List.find_opt (fun (vi : Types.variant_info) -> vi.Types.vi_name = vname)
+            u.Types.u_variants
+        with
+        | Some vi when List.length bargs = List.length vi.Types.vi_fields ->
+          let rec zip (args : Ast.expr list) fields =
+            match (args, fields) with
+            | { kind = Ident bn; _ } :: _, (_, fty) :: _ when bn = n -> Some fty
+            | _ :: ta, _ :: tf -> zip ta tf
+            | _ -> None
+          in
+          zip bargs vi.Types.vi_fields
+        | _ -> None)
+      | _ -> None)
+    | _ -> None)
+  | _ -> None
 
 let is_text (p : pctx) (f : fstate) (e : Ast.expr) : bool =
   match ty_of_expr p f e with Some t -> ( match unwrap t with Scalar "Text" -> true | _ -> false) | None -> false
@@ -930,10 +1210,24 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | Ident n -> (
     match lookup_local f n with
     | Some (r, _) -> if r <> dst then put f (ins_abc op_move dst r 0)
-    | None ->
-      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
-        ~message:(Printf.sprintf "`%s` is not a local, parameter, or `self` — nothing to load" n);
-      put f (ins_abx op_loadk dst (const_int p 0)))
+    | None -> (
+      (* haxe-parity Task 4: a bare variant reference. All-bare union:
+         the value IS the ordinal tag — one LOADK, no heap. Payload
+         union: every value of the union is a variant object, so even a
+         bare variant allocates its (zero-field) class — NEW is all it
+         takes, the header's class_id is the tag. *)
+      match find_variant p n with
+      | Some (u, vi) ->
+        if u.Types.u_has_payload then
+          put f (ins_abx op_new dst (check_bx p f e.pos "class" (variant_tag_value p u vi)))
+        else
+          put f
+            (ins_abx op_loadk dst
+               (check_bx p f e.pos "constant" (const_int p vi.Types.vi_tag)))
+      | None ->
+        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+          ~message:(Printf.sprintf "`%s` is not a local, parameter, or `self` — nothing to load" n);
+        put f (ins_abx op_loadk dst (const_int p 0))))
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
@@ -983,10 +1277,35 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     put f (ins_abc op_neg dst b 0)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
+  | Interp inner -> (
+    (* haxe-parity Task 2: the type-directed half of the interpolation
+       desugar (parser.ml's own doc comment on Ast.Interp) — a Text
+       interpolant passes through untouched; an Int one is wrapped in
+       the `int_to_text` builtin; anything else has no lowering (the
+       brief's own scope: "desugar Int-typed expressions", not every
+       scalar). *)
+    match ty_of_expr p f inner with
+    | Some t -> (
+      match unwrap t with
+      | Scalar "Text" -> emit_expr p f v ~dst inner
+      | Scalar "Int" -> emit_builtin p f v ~dst e "int_to_text" [ inner ]
+      | other ->
+        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+          ~message:
+            (Printf.sprintf
+               "cannot interpolate a value of type `%s` in \"${...}\" — only Text and Int are \
+                supported"
+               (Dump.field_ty_str other));
+        put f (ins_abx op_loadk dst (const_int p 0)))
+    | None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:"cannot resolve the interpolated expression's type";
+      put f (ins_abx op_loadk dst (const_int p 0)))
   | Call (callee, args) -> emit_call p f v ~dst ?expected e callee args
   | DbStub _ ->
     sync_mask p f v e.id;
-    put f (ins_abc op_db_stub 0 0 0));
+    put f (ins_abc op_db_stub 0 0 0)
+  | Switch (subject, arms) -> emit_switch p f v e ~dst subject arms);
   Hashtbl.replace f.f_node e.id dst;
   (* An escaping @gc value takes its increment right where the value
      lands. owner.ml's gc_escape anchors that acquire on the *place
@@ -1066,6 +1385,32 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     let z = alloc_temp p f pos in
     put f (ins_abx op_loadk z (check_bx p f pos "constant" (const_int p 0)));
     put f (ins_abc op_eq dst t z)
+  | And ->
+    (* haxe-parity Task 2: short-circuit -- `l`'s own value (0 or 1)
+       lands directly in `dst`; if it is already false, `r` is never
+       evaluated at all (the fixture's own proof: a right operand that
+       would trap, e.g. division by zero, must not run) and `dst` keeps
+       `l`'s value. Otherwise `r`'s value overwrites `dst`, becoming the
+       result. Compare-and-jump on the existing JZ opcode, no new one. *)
+    emit_expr p f v ~dst l;
+    f.f_cur_line <- pos.line;
+    let jz = here f in
+    put f (ins_asbx op_jz dst 0);
+    emit_expr p f v ~dst r;
+    patch_jump p f ~file:f.f_file ~pos jz (here f)
+  | Or ->
+    (* same shape, the other way: `l` true short-circuits (skip `r`,
+       keep `l`'s true value); `l` false falls through to `r`. JZ plus
+       one JMP (to skip `r` on the true path), still no new opcode. *)
+    emit_expr p f v ~dst l;
+    f.f_cur_line <- pos.line;
+    let jz = here f in
+    put f (ins_asbx op_jz dst 0);
+    let jmp = here f in
+    put f (ins_asbx op_jmp 0 0);
+    patch_jump p f ~file:f.f_file ~pos jz (here f);
+    emit_expr p f v ~dst r;
+    patch_jump p f ~file:f.f_file ~pos jmp (here f)
   | Mod ->
     (* no MOD opcode either: truncating `a % b` is `a - (a / b) * b`,
        exact for the VM's truncating DIV (which traps on 0 and on
@@ -1077,6 +1422,323 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     put f (ins_abc op_mul q q b);
     put f (ins_abc op_sub dst a q)
 
+(* haxe-parity Task 3: compare-and-jump chain on the existing EQ/EQS/
+   JZ/JMP opcodes — no new opcode, per the brief. The subject is
+   evaluated exactly once, into `subj_reg`, and every arm's comparisons
+   read it; `dst` is where an arm's value lands (mirrors `Binary`'s
+   own And/Or short-circuit above: the caller's own `dst` is written
+   directly, no intermediate temp to move out of).
+
+   One case's `values` (the sample's own `case "@daily", "@midnight":`
+   comma form) chains: value 1's failure falls through to check value
+   2; any success jumps straight to the arm body, skipping the rest of
+   that arm's own checks; the LAST value's failure falls through to the
+   NEXT ARM's own first check (backpatched once that arm starts emitting,
+   `pending_fail`). `default` has no checks at all — it always matches
+   whatever reaches it — which is also why the missing-default case
+   (already a WO-E208 *error*, so this image is never written — see
+   main.ml's own has_error gate) still lowers without crashing: the
+   last real arm's `pending_fail` simply has nowhere to go but the
+   switch's own exit, same as `end_jumps` below.
+
+   Each arm is its own drop scope: this inlines emit_block's own
+   save/restore-and-drop shape (`f_nlocals`/`f_env`/`f_declared`,
+   `emit_scope_drops`, the @gc release group) rather than calling
+   emit_block outright, because emit_block emits every statement
+   *generically* — including the last one, which for a value-yielding
+   arm must land in the caller's `dst`, not a throwaway temp the way
+   emit_block's own ExprStmt handling (emit_tail) would. An arm whose
+   body doesn't end in `ExprStmt` (every arm in the sample's own
+   statement-position switches, which end in `return`) writes nothing
+   into `dst` — correct either way: statement position discards it
+   regardless, and expression position already has types.ml's own
+   WO-E201 for an arm that fails to yield a value (see typecheck_switch's
+   own doc comment — this file does not re-check that).
+
+   `f.f_div` (this path has returned) mirrors emit_if's own THEN/ELSE
+   bookkeeping, generalized to N arms: an arm that diverged emits no
+   trailing jump to the switch's exit and contributes nothing to the
+   owned/@gc mask merge below (mask_meet, folded pairwise across every
+   *non*-diverging arm — the N-way generalization of emit_if's own
+   2-way `mask_meet f then_owned then_gc` call, same helper, unchanged).
+   `emit_join_drops` (JOIN-DROP: a value this arm kept but some *other*
+   arm moved) is owner.ml's own table entry, keyed exactly the way
+   emit_if's THEN/ELSE already are — `(e.id, "ARM<i>")` here vs.
+   `(s.s_id, "THEN"/"ELSE")` there — so this is a lookup, not new
+   logic. *)
+(* `~want_value` (Task 4 fix round 1, Critical 1): true everywhere the
+   switch's value is consumed (a `let`'s value, a `return`, nested in an
+   expression — every emit_expr path), false only for the discarded
+   statement position (emit_stmt's own ExprStmt special case, mirroring
+   types.ml's want_value:false). It gates exactly one thing: the
+   payload MOVE-OUT below — an arm yielding its own binding nulls the
+   subject's field only when someone actually takes ownership of the
+   value; a discarded yield must leave the shell intact or the payload
+   would leak with nobody left to drop it. *)
+and emit_switch ?(want_value = true) (p : pctx) (f : fstate) (v : views) (e : Ast.expr)
+    ~(dst : int) (subject : Ast.expr) (arms : Ast.switch_arm list) : unit =
+  let subj_is_text = is_text p f subject in
+  f.f_cur_line <- subject.pos.line;
+  let subj_reg = emit_operand p f v subject in
+  (* `dst` is not always already-reserved the way an ordinary expr's
+     `dst` is: in statement position (`switch {...}` alone, discarded),
+     `emit_tail`'s own "allocate then immediately un-reserve" convention
+     hands this a `dst` that is the *next free* temp/local slot — bug
+     found by this task's own ASan fixture, not a theoretical worry: an
+     arm's own `let` (`alloc_local`'s register is `f_nlocals`, entirely
+     independent of `f_temp`) legitimately picked that same slot, and
+     the arm's own trailing value-write into `dst` then silently
+     clobbered the live local sitting there before its DROP ran — a
+     real, ASan-confirmed leak (RED), not a hypothetical. Reserving
+     `dst` here, for the whole switch, fixes it at the source rather
+     than special-casing the discard path: every `alloc_local`/
+     `alloc_temp` inside any arm is now guaranteed a register above
+     `dst`. A `let`-value switch's `dst` is already `< f_nlocals`
+     (`alloc_local` ran before this function was ever called), so this
+     is a no-op there — restoring `saved_nlocals` afterward gives back
+     exactly nothing it did not itself reserve. *)
+  let saved_nlocals = f.f_nlocals in
+  if f.f_nlocals <= dst then f.f_nlocals <- dst + 1;
+  if f.f_temp <= dst then f.f_temp <- dst + 1;
+  bump f dst;
+  (* haxe-parity Task 4: a union-typed subject compares variant TAGS.
+     All-bare union: the subject register already holds the ordinal —
+     compare it directly, exactly the scalar chain below. Payload union:
+     read the tag (the object header's class_id) once, via the
+     variant_tag builtin, and compare that; the subject register itself
+     stays live into the arm BODIES (payload bindings GETF from it), so
+     both it and the tag temp are reserved past every arm-local for the
+     switch's own duration — the same saved_nlocals guard `dst` already
+     rides, restored in one place below. *)
+  let subj_union =
+    match ty_of_expr p f subject with
+    | Some (Scalar n) -> find_union p n
+    | _ -> None
+  in
+  (* through `?T` too (fix round 1) — for PATTERN RECOGNITION only. A
+     `?Union` subject with variant cases is already a hard WO-E201
+     upstream (types.ml), so no image carrying this lowering is ever
+     written; recognizing the patterns anyway (tag constants instead of
+     expression evaluation, bindings bound) keeps the emitter from
+     cascading misleading "`m` is not a local" errors on top of the real
+     diagnostic. Tag reads (variant_tag) and the payload move-out keep
+     gating on the EXACT `subj_union` above — never nullable-unwrapped. *)
+  let subj_union_deep =
+    match subj_union with
+    | Some _ as u -> u
+    | None -> (
+      match ty_of_expr p f subject with
+      | Some t -> ( match unwrap t with Scalar n -> find_union p n | _ -> None)
+      | None -> None)
+  in
+  let cmp_reg =
+    match subj_union with
+    | Some u when u.Types.u_has_payload ->
+      if f.f_nlocals <= subj_reg then f.f_nlocals <- subj_reg + 1;
+      if f.f_temp <= subj_reg then f.f_temp <- subj_reg + 1;
+      let t = alloc_temp p f subject.pos in
+      f.f_cur_line <- subject.pos.line;
+      put f (ins_abc op_builtin t subj_reg b_variant_tag);
+      if f.f_nlocals <= t then f.f_nlocals <- t + 1;
+      t
+    | _ -> subj_reg
+  in
+  (* the tag constant a case pattern compares against, or None for the
+     plain-value path (non-union subjects; also a malformed pattern over
+     a union — already diagnosed upstream, WO-E201/E203, so no image is
+     ever written — which falls back to the value path rather than
+     crashing the serializer). *)
+  let union_case_tag (value_e : Ast.expr) : int option =
+    match subj_union_deep with
+    | None -> None
+    | Some u -> (
+      let vname =
+        match value_e.Ast.kind with
+        | Ast.Ident n -> Some n
+        | Ast.Call ({ Ast.kind = Ast.Ident n; _ }, _) -> Some n
+        | _ -> None
+      in
+      match vname with
+      | None -> None
+      | Some n -> (
+        match
+          List.find_opt (fun (vi : Types.variant_info) -> vi.Types.vi_name = n) u.Types.u_variants
+        with
+        | Some vi -> Some (variant_tag_value p u vi)
+        | None -> None))
+  in
+  let switch_temp_base = f.f_temp in
+  let entry_owned = f.f_owned and entry_gc = f.f_gc in
+  let div0 = f.f_div in
+  let pending_fail = ref [] in
+  let end_jumps = ref [] in
+  let arm_results = ref [] in
+  (* review fix, Critical 1: `default` has no comparison of its own —
+     it matches unconditionally — so lowering the arms in raw *source*
+     order made any `case` arm written after a `default` permanently
+     unreachable dead code (reviewer-reproduced: `default` first,
+     `case 2` after it, `classify(2)` returned the `default` value).
+     `Ast.switch_lowering_order` moves `default` to the end before the
+     chain is built; owner.ml's `analyze_switch` walks the identical
+     order so the "ARM<i>" labels the two files hand each other over
+     the drop-scope/JOIN-DROP tables never drift apart. *)
+  List.iteri
+    (fun i (arm : Ast.switch_arm) ->
+      let label = Printf.sprintf "ARM%d" i in
+      List.iter
+        (fun pc -> patch_jump p f ~file:f.f_file ~pos:arm.Ast.arm_pos pc (here f))
+        !pending_fail;
+      pending_fail := [];
+      f.f_owned <- entry_owned;
+      f.f_gc <- entry_gc;
+      f.f_div <- div0;
+      f.f_temp <- switch_temp_base;
+      (if not arm.Ast.is_default then begin
+         let n = List.length arm.Ast.values in
+         let to_body = ref [] in
+         List.iteri
+           (fun j (value_e : Ast.expr) ->
+             f.f_cur_line <- value_e.Ast.pos.line;
+             let b =
+               match union_case_tag value_e with
+               | Some tagv ->
+                 (* a variant pattern never evaluates as an expression —
+                    its tag constant is loaded directly (a payload
+                    pattern lowered through emit_operand would NEW a
+                    fresh object and compare pointers: always false) *)
+                 let tb = alloc_temp p f value_e.Ast.pos in
+                 put f
+                   (ins_abx op_loadk tb
+                      (check_bx p f value_e.Ast.pos "constant" (const_int p tagv)));
+                 tb
+               | None -> emit_operand p f v value_e
+             in
+             let t = alloc_temp p f value_e.Ast.pos in
+             put f (ins_abc (if subj_is_text then op_eqs else op_eq) t cmp_reg b);
+             let jz = here f in
+             put f (ins_asbx op_jz t 0);
+             if j < n - 1 then begin
+               let jmp = here f in
+               put f (ins_asbx op_jmp 0 0);
+               patch_jump p f ~file:f.f_file ~pos:value_e.Ast.pos jz (here f);
+               to_body := jmp :: !to_body
+             end
+             else pending_fail := jz :: !pending_fail)
+           arm.Ast.values;
+         let body_start = here f in
+         List.iter
+           (fun pc -> patch_jump p f ~file:f.f_file ~pos:arm.Ast.arm_pos pc body_start)
+           !to_body
+       end);
+      let saved_locals = f.f_nlocals in
+      let saved_env = f.f_env in
+      let saved_decls = f.f_declared in
+      (* haxe-parity Task 4: payload bindings — GETF the variant object's
+         fields into fresh arm-locals before the body runs. Plain
+         registers holding borrows of the subject's own fields: never in
+         a drop set (owner.ml declares them l_holds = false), undone by
+         the same env/locals restore every arm already gets. *)
+      let arm_binds = ref [] in
+      (match subj_union_deep with
+      | Some u when u.Types.u_has_payload -> (
+        match arm.Ast.values with
+        | [ { Ast.kind = Ast.Call ({ Ast.kind = Ast.Ident vname; _ }, bargs); _ } ] -> (
+          match
+            List.find_opt
+              (fun (vi : Types.variant_info) -> vi.Types.vi_name = vname)
+              u.Types.u_variants
+          with
+          | Some vi when List.length bargs = List.length vi.Types.vi_fields ->
+            List.iteri
+              (fun idx (barg : Ast.expr) ->
+                match barg.Ast.kind with
+                | Ast.Ident bn ->
+                  let _, fty = List.nth vi.Types.vi_fields idx in
+                  let r = alloc_local p f barg.Ast.pos in
+                  f.f_cur_line <- barg.Ast.pos.line;
+                  put f (ins_abc op_getf r subj_reg (check_field_idx p f barg.Ast.pos idx));
+                  f.f_env <- (bn, (r, fty)) :: f.f_env;
+                  arm_binds := (bn, r, idx, fty) :: !arm_binds
+                | _ -> ())
+              bargs
+          | _ -> ())
+        | _ -> ())
+      | _ -> ());
+      (match List.rev arm.Ast.body with
+      | [] -> ()
+      | last :: rev_init ->
+        List.iter (emit_stmt p f v) (List.rev rev_init);
+        (match last.Ast.s_kind with
+        | Ast.ExprStmt ve ->
+          stmt_reset f;
+          f.f_cur_line <- last.Ast.s_pos.line;
+          emit_expr p f v ~dst ve;
+          (* Task 4 fix round 1 (Critical 1a/1c): the arm yields its own
+             payload binding — a MOVE OUT of the variant object. The
+             payload pointer just landed in `dst` (its new owner's
+             register); null the shell's field so the shell's ordinary
+             recursive drop plan — which already skips zero slots
+             (runtime/src/gc.c wo_drop_kind) — frees the shell only,
+             never the escaped payload. Without this, the subject's
+             scope-end drop and the new owner's drop both freed the
+             payload: a real reviewer-reproduced double free. Gated on
+             `want_value` (a discarded yield must leave the shell whole)
+             and on the name still resolving to the BINDING's own
+             register (an arm-local `let` shadowing the binding is an
+             ordinary yield, not an escape).
+
+             Fix round 2: pointer-kind payload fields ONLY. Escaping a
+             SCALAR field (Int/Bool/Timestamp/Id/ref, a bare-union tag)
+             is a COPY — there is no ownership to move, nothing the
+             shell's drop plan would double-free, and the SETF-0 was
+             indistinguishable from a legitimate 0: the reviewer's m3d
+             probe re-switched the same subject and read 0 where 5
+             lived. Kind 0 is WO_K_SCALAR (runtime/src/wob.h). *)
+          (if want_value then
+             match ve.Ast.kind with
+             | Ast.Ident n -> (
+               match List.find_opt (fun (bn, _, _, _) -> bn = n) !arm_binds with
+               | Some (_, breg, fidx, bfty)
+                 when (match lookup_local f n with Some (r, _) -> r = breg | None -> false)
+                      && field_kind p bfty <> 0 ->
+                 let save = f.f_temp in
+                 let z = alloc_temp p f ve.Ast.pos in
+                 put f (ins_abx op_loadk z (check_bx p f ve.Ast.pos "constant" (const_int p 0)));
+                 put f (ins_abc op_setf subj_reg (check_field_idx p f ve.Ast.pos fidx) z);
+                 f.f_temp <- save
+               | _ -> ())
+             | _ -> ());
+          (match Hashtbl.find_opt v.v_move ve.id with
+          | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
+          | None -> ())
+        | _ -> emit_stmt p f v last));
+      emit_scope_drops p f v ~node:e.id ~label;
+      emit_rc p f v ~node:e.id ~acquire:false ~groups:(declared_since f saved_decls) ();
+      f.f_nlocals <- saved_locals;
+      f.f_env <- saved_env;
+      f.f_declared <- saved_decls;
+      f.f_temp <- saved_locals;
+      emit_join_drops p f v ~node:e.id ~label;
+      (if not f.f_div then begin
+         f.f_cur_line <- arm.Ast.arm_pos.line;
+         let pc = here f in
+         put f (ins_asbx op_jmp 0 0);
+         end_jumps := pc :: !end_jumps
+       end);
+      arm_results := (f.f_owned, f.f_gc, f.f_div) :: !arm_results)
+    (Ast.switch_lowering_order arms);
+  let exit_pc = here f in
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:e.pos pc exit_pc) !pending_fail;
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:e.pos pc exit_pc) !end_jumps;
+  f.f_nlocals <- saved_nlocals;
+  match List.filter (fun (_, _, d) -> not d) (List.rev !arm_results) with
+  | [] -> f.f_div <- true
+  | (o0, g0, _) :: rest ->
+    f.f_owned <- o0;
+    f.f_gc <- g0;
+    List.iter (fun (o, g, _) -> mask_meet f o g) rest;
+    f.f_div <- div0
+
 and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (cn : string)
     (fields : (string * Ast.expr) list) : unit =
   match class_of_name p cn with
@@ -1086,6 +1748,15 @@ and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (c
     put f (ins_abx op_loadk dst (const_int p 0))
   | Some cid ->
     put f (ins_abx op_new dst (check_bx p f e.pos "class" cid));
+    (* dst holds the live object pointer every SETF below reads -- but
+       in tail position (`return Box{...}`, emit_tail's allocate-then-
+       un-reserve convention) dst sits AT f_temp, so the field-value
+       temp would be dst itself and the value-write would clobber the
+       pointer before SETF reads it (NEW r0; LOADK r0; SETF r0,f0,r0 --
+       an int64 stored through as a heap pointer). Reserve dst past the
+       field loop; same guard emit_switch uses for its placeholder dst. *)
+    let outer = f.f_temp in
+    if f.f_temp <= dst then f.f_temp <- dst + 1;
     List.iter
       (fun ((fname : string), (fe : Ast.expr)) ->
         match field_of p cid fname with
@@ -1104,7 +1775,109 @@ and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (c
           f.f_cur_line <- fe.pos.line;
           put f (ins_abc op_setf dst (check_field_idx p f e.pos idx) t);
           f.f_temp <- save)
-      fields
+      fields;
+    (* haxe-parity Task 4: fields the literal omitted. A declared
+       default is emitted and stored (this is what makes `TailState {}`
+       construct — the sample's own defaults-fill-in pattern); a
+       `?`-typed field with no default stays the zero word NEW left
+       (nil-by-shape). Appended AFTER the provided-field loop, never
+       interleaved, so a literal that provides every field emits
+       byte-identical code to before this task. A field that is neither
+       provided, defaulted, nor nullable was already WO-E206 upstream —
+       no image is written, so no arm is needed here. *)
+    (match Types.StringMap.find_opt cn p.p_syms.Types.classes with
+    | None -> ()
+    | Some (ci : Types.class_info) ->
+      let provided = List.map fst fields in
+      List.iter
+        (fun (fname, _, fdefault, _) ->
+          match fdefault with
+          | Some d when not (List.mem fname provided) -> (
+            match field_of p cid fname with
+            | None -> ()
+            | Some (idx, fty) ->
+              let save = f.f_temp in
+              let t = alloc_temp p f e.pos in
+              emit_default_value p f ~dst:t ~fty ~pos:e.pos d;
+              f.f_cur_line <- e.pos.line;
+              put f (ins_abc op_setf dst (check_field_idx p f e.pos idx) t);
+              f.f_temp <- save)
+          | _ -> ())
+        ci.Types.fields);
+    f.f_temp <- outer
+
+(* The default expressions the emitter can lower (haxe-parity Task 4):
+   the literal shapes the sample's own typedefs use — Int (optionally
+   negated), Text, Bool, `now()` (parse_default_expr's own recognized
+   case), and `[]` (an empty container, kinds from the field's declared
+   type — the same container_imm rule multi_new/map_new already
+   follow). A default is an opaque token span by design (ast.ml), so
+   anything richer is WO-E403 — a diagnostic, never invented bytecode. *)
+and emit_default_value (p : pctx) (f : fstate) ~(dst : int) ~(fty : Ast.field_ty)
+    ~(pos : Ast.pos) (d : Ast.default_expr) : unit =
+  let bad () =
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos
+      ~message:
+        "cannot lower this field default — only Int/Text/Bool literals, `now()`, and `[]` are \
+         supported";
+    put f (ins_abx op_loadk dst (const_int p 0))
+  in
+  match d with
+  | Ast.DefaultNow -> put f (ins_abc op_builtin dst dst b_now)
+  | Ast.DefaultOpaque toks -> (
+    match List.map (fun (t : Token.t) -> t.Token.kind) toks with
+    | [ Token.Int n ] -> put f (ins_abx op_loadk dst (check_bx p f pos "constant" (const_int p n)))
+    | [ Token.Dash; Token.Int n ] ->
+      put f (ins_abx op_loadk dst (check_bx p f pos "constant" (const_int p (-n))))
+    | [ Token.Str s ] -> put f (ins_abx op_loadk dst (check_bx p f pos "constant" (const_text p s)))
+    | [ Token.KwTrue ] -> put f (ins_abx op_loadk dst (const_int p 1))
+    | [ Token.KwFalse ] -> put f (ins_abx op_loadk dst (const_int p 0))
+    | [ Token.LBracket; Token.RBracket ] -> (
+      match container_imm p (Some fty) (match unwrap fty with Map _ -> true | _ -> false) with
+      | Some imm ->
+        put f
+          (ins_abc op_builtin dst imm
+             (match unwrap fty with Map _ -> b_map_new | _ -> b_multi_new))
+      | None -> bad ())
+    | _ -> bad ())
+
+(* haxe-parity Task 4: variant construction (`Failed("boom")`). NEW of
+   the variant's own class (its id IS the tag — the header carries it,
+   nothing else to set), then positional SETFs, exactly a constructor
+   literal with positional instead of named fields. Same dst-reservation
+   guard as emit_ctor (tail position hands this a dst at f_temp).
+   Arity was already WO-E203 upstream (types.ml); this keeps the
+   emitter's own belt-and-braces WO-E403 like every call path does. *)
+and emit_variant_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
+    (u : Types.union_info) (vi : Types.variant_info) (args : Ast.expr list) : unit =
+  if
+    not
+      (check_arity p f e
+         ~what:(Printf.sprintf "variant `%s` of `%s`" vi.Types.vi_name u.Types.u_name)
+         ~want:(List.length vi.Types.vi_fields) ~got:(List.length args))
+  then put f (ins_abx op_loadk dst (const_int p 0))
+  else if not u.Types.u_has_payload then
+    (* a bare-union variant "called" with its zero arguments is the same
+       value as the bare reference: the ordinal tag *)
+    put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p vi.Types.vi_tag)))
+  else begin
+    put f (ins_abx op_new dst (check_bx p f e.pos "class" (variant_tag_value p u vi)));
+    let outer = f.f_temp in
+    if f.f_temp <= dst then f.f_temp <- dst + 1;
+    List.iteri
+      (fun idx (ae : Ast.expr) ->
+        match List.nth_opt vi.Types.vi_fields idx with
+        | None -> ()
+        | Some (_, fty) ->
+          let save = f.f_temp in
+          let t = alloc_temp p f ae.pos in
+          emit_expr p f v ~dst:t ~expected:fty ae;
+          f.f_cur_line <- ae.pos.line;
+          put f (ins_abc op_setf dst (check_field_idx p f e.pos idx) t);
+          f.f_temp <- save)
+      args;
+    f.f_temp <- outer
+  end
 
 (* ---- calls ---------------------------------------------------------
 
@@ -1121,15 +1894,42 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
   ignore expected;
   match callee.kind with
   | Ident name -> (
-    match free_fn p name with
-    | Some fi -> emit_direct p f v ~dst e ~key:name ~recv:None ~params:fi.Types.params args
-    | None ->
-      if is_builtin_name name then emit_builtin p f v ~dst ?expected e name args
-      else begin
-        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
-          ~message:(Printf.sprintf "call to `%s`, which is not a declared fn or a builtin" name);
-        put f (ins_abx op_loadk dst (const_int p 0))
-      end)
+    (* haxe-parity Task 1 (modules), CRITICAL 1 review fix: this file's
+       own module's own free_fns first — never p_syms' flat merge — so
+       an own-module bare call to a name that happens to collide with
+       some other module's same-named `pub fn` still resolves to *this*
+       module's declaration, not whichever one the flat merge kept.
+       Falls back to p_syms only when the own module doesn't declare it
+       at all (a bare call resolving through a single `use`d module, or
+       a builtin) — every pre-existing, non-colliding case behaves
+       exactly as before: a name with only one declaration anywhere is
+       never mangled either way, so free_fn_key returns it unchanged. *)
+    let own_mid = p.p_module_of f.f_file in
+    let own_fi =
+      match Hashtbl.find_opt p.p_module_syms own_mid with
+      | Some msyms -> Types.StringMap.find_opt name msyms.Types.free_fns
+      | None -> None
+    in
+    match own_fi with
+    | Some fi ->
+      emit_direct p f v ~dst e ~key:(free_fn_key p.p_colliding own_mid name) ~recv:None
+        ~params:fi.Types.params args
+    | None -> (
+      match free_fn p name with
+      | Some fi -> emit_direct p f v ~dst e ~key:name ~recv:None ~params:fi.Types.params args
+      | None -> (
+        (* haxe-parity Task 4: variant construction by name. A declared
+           free fn of the same name already won above (the same
+           shadowing rule builtins follow). *)
+        match find_variant p name with
+        | Some (u, vi) -> emit_variant_ctor p f v ~dst e u vi args
+        | None ->
+          if is_builtin_name name then emit_builtin p f v ~dst ?expected e name args
+          else begin
+            err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+              ~message:(Printf.sprintf "call to `%s`, which is not a declared fn or a builtin" name);
+            put f (ins_abx op_loadk dst (const_int p 0))
+          end)))
   | Field (base, mname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
@@ -1150,10 +1950,67 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
         err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
           ~message:(Printf.sprintf "method `%s` called on a value that is not a class instance" mname);
         put f (ins_abx op_loadk dst (const_int p 0)))
-    | None ->
-      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
-        ~message:(Printf.sprintf "cannot resolve the receiver's type for the call to `%s`" mname);
-      put f (ins_abx op_loadk dst (const_int p 0)))
+    | None -> (
+      (* haxe-parity Task 1 (modules): before falling to the generic
+         "cannot resolve the receiver" error, check whether `base` is
+         actually a `use` alias for this file rather than an
+         unresolvable receiver expression — a genuine local/param/self
+         receiver is always caught by the `Some bt` arm above (ty_of_expr
+         resolves it), so this is reached only when `base` names nothing
+         ty_of_expr knows, which is exactly the shape a bare module alias
+         has. types.ml's check_modules already proved the reference
+         legitimate (own module unconditionally, a used module only its
+         `pub` names) before the compile got this far — that front-door
+         check decided whether this call was even allowed, not anything
+         here. Two shapes reach emission:
+         - a stdlib-reserved alias (`fs`/`proc`/...): nothing to lower to
+           yet (member signatures arrive in plan 9) — WO-E406, the one
+           place this milestone still says so, and only because this
+           call actually survived to emission (an unused `use fs` never
+           reaches this code at all).
+         - a project-module alias: resolves through *that module's own*
+           symbols (p_module_syms), never p_syms' flat merge (CRITICAL 1
+           review fix) — p_syms may have silently dropped this exact
+           module's declaration in favor of some other module's
+           same-named `pub fn` (main.ml's merge_symbols is first-wins
+           across the whole discovered tree, oblivious to modules). This
+           is what makes `a.thing()` and `b.thing()` genuinely distinct
+           once qualification disambiguates them, not two spellings of
+           whichever one the flat merge happened to keep. *)
+      match base.kind with
+      | Ident alias -> (
+        match use_edge_for p ~file:f.f_file alias with
+        | Some u when u.Types.ue_is_stdlib ->
+          err p ~code:stdlib_not_linked_code ~file:f.f_file ~pos:e.pos
+            ~message:
+              (Printf.sprintf "stdlib module `%s` is not linked in this milestone (called as `%s.%s`)"
+                 alias alias mname);
+          put f (ins_abx op_loadk dst (const_int p 0))
+        | Some u -> (
+          let target_mid = Types.path_str u.Types.ue_segments in
+          let target_fi =
+            match Hashtbl.find_opt p.p_module_syms target_mid with
+            | Some msyms -> Types.StringMap.find_opt mname msyms.Types.free_fns
+            | None -> None
+          in
+          match target_fi with
+          | Some fi ->
+            emit_direct p f v ~dst e ~key:(free_fn_key p.p_colliding target_mid mname) ~recv:None
+              ~params:fi.Types.params args
+          | None ->
+            err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+              ~message:
+                (Printf.sprintf "call to `%s.%s`, which is not a declared fn in module `%s`" alias mname
+                   alias);
+            put f (ins_abx op_loadk dst (const_int p 0)))
+        | None ->
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:(Printf.sprintf "cannot resolve the receiver's type for the call to `%s`" mname);
+          put f (ins_abx op_loadk dst (const_int p 0)))
+      | _ ->
+        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+          ~message:(Printf.sprintf "cannot resolve the receiver's type for the call to `%s`" mname);
+        put f (ins_abx op_loadk dst (const_int p 0))))
   | _ ->
     err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
       ~message:"only a name or a `receiver.method` form can be called";
@@ -1176,10 +2033,73 @@ and check_arity (p : pctx) (f : fstate) (e : Ast.expr) ~(what : string) ~(want :
     false
   end
 
+(* The third return component (Task 4 fix rounds 1-2): stable registers
+   holding OWNED HEAP temporaries passed by borrow — a construction or
+   an owned-returning call as an argument (`get(Boxed(Pay{}))`,
+   `peek(Pay{})` — the reviewer's h5/m5c per-iteration leaks) is a
+   fresh owned value NOBODY owned before this fix: it is not a place,
+   so owner.ml never tracks it, and no scope ever dropped it. The
+   borrow convention means the callee never takes it either (a callee
+   that stores or returns the borrow is already WO-E304), so the CALLER
+   reaps it: each qualifying argument's pointer is copied to a slot
+   below the window (the callee's frame overlaps the window and may
+   overwrite the arg slot itself — same reasoning as the residual-guard
+   gbase) and DROPped by emit_direct/emit_iface once the call returns.
+   Recursive drop is correct both ways: a payload the callee moved out
+   (the switch escape above) left the field nulled, which the drop plan
+   skips; an untouched temp frees payload and shell together.
+   Emitter-only, no owner table: the temp never exists in owner.ml's
+   world, so there is no entry to conflict with; the one imprecision is
+   a trap DURING the call (the frame's drop mask cannot name a
+   register owner.ml never saw — the temp leaks on that path, the same
+   pre-existing behavior every expression temporary has). *)
 and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.expr option)
-    ~(params : (string * Ast.field_ty * Ast.param_conv) list) (args : Ast.expr list) : int * int =
+    ~(params : (string * Ast.field_ty * Ast.param_conv) list) (args : Ast.expr list) :
+    int * int * int list =
   let nrecv = match recv with Some _ -> 1 | None -> 0 in
   let argc = nrecv + List.length args in
+  (* Fix round 2 widened this from payload-union temps to ANY owned heap
+     temporary: the sibling leak (`peek(Pay{})`, a plain record ctor in
+     a loop — reviewer's m5c, 10,780 KB vs a 1,532 KB control) was the
+     same fresh-value-nobody-owns shape with a class instead of a
+     union. Qualifies: a Ctor literal, a variant construction, or a
+     call whose result is a payload union or a declared NON-@gc class
+     (records included — same table). Excluded, each for its own
+     reason: `take` params (a real transfer — the callee owns it,
+     m6a/m6c prove that path flat); places (their scope drops them);
+     @gc classes (their creating reference is the rc system's, and DROP
+     is the wrong op for a counted handle); Text (owner.ml classes it
+     Copy, so a callee may legitimately STORE a Text argument — classes
+     and unions can't, WO-E304 polices those borrows); interface-typed
+     call results (ty_of_expr names the interface, not the concrete
+     class — still leak, disclosed). *)
+  let owned_heap_temp (a : Ast.expr) : bool =
+    (match a.kind with
+    | Ident n -> lookup_local f n = None (* a local is a place, never a temp *)
+    | Call _ | Ctor _ -> true
+    | _ -> false)
+    && (match ty_of_expr p f a with
+       | Some t -> (
+         match unwrap t with
+         | Scalar n -> (
+           match find_union p n with
+           | Some u -> u.Types.u_has_payload
+           | None -> (
+             match Types.StringMap.find_opt n p.p_syms.Types.classes with
+             | Some (ci : Types.class_info) -> not ci.Types.is_gc
+             | None -> false))
+         | _ -> false)
+       | None -> false)
+  in
+  let temp_idx =
+    List.mapi
+      (fun i a ->
+        let conv = match List.nth_opt params i with Some (_, _, c) -> c | None -> Ast.Borrow in
+        if conv = Ast.Borrow && owned_heap_temp a then Some i else None)
+      args
+    |> List.filter_map Fun.id
+  in
+  let tbase = alloc_temps p f e.pos (List.length temp_idx) in
   let base = alloc_temps p f e.pos (max argc 1) in
   (match recv with None -> () | Some r -> emit_expr p f v ~dst:base r);
   List.iteri
@@ -1192,7 +2112,15 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
       | None -> emit_expr p f v ~dst:slot a);
       f.f_temp <- save)
     args;
-  (base, argc)
+  let temp_drops =
+    List.mapi
+      (fun j i ->
+        let g = tbase + j in
+        put f (ins_abc op_move g (base + nrecv + i) 0);
+        g)
+      temp_idx
+  in
+  (base, argc, temp_drops)
 
 and emit_direct (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) ~(key : string)
     ~(recv : Ast.expr option) ~(params : (string * Ast.field_ty * Ast.param_conv) list)
@@ -1205,7 +2133,7 @@ and emit_direct (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) 
   | Some midx when check_arity p f e ~what:(Printf.sprintf "`%s`" key)
                      ~want:(List.length params) ~got:(List.length args) ->
     let gbase = alloc_temps p f e.pos (residual_count v e.id) in
-    let base, _ = call_window p f v e ~recv ~params args in
+    let base, _, temp_drops = call_window p f v e ~recv ~params args in
     let guards = residual_guards p f v e.id (Some gbase) in
     acquire_guards f guards;
     (* the frame's drop map, from the owner table, effective at the CALL *)
@@ -1213,6 +2141,9 @@ and emit_direct (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) 
     f.f_cur_line <- e.pos.line;
     put f (ins_abx op_call base (check_bx p f e.pos "method" midx));
     release_guards f guards;
+    (* owned variant temporaries this call borrowed — reaped here, see
+       call_window's own doc comment *)
+    List.iter (fun g -> put f (ins_abc op_drop g 0 0)) temp_drops;
     if dst <> base then put f (ins_abc op_move dst base 0)
   | Some _ -> put f (ins_abx op_loadk dst (const_int p 0))
 
@@ -1224,13 +2155,15 @@ and emit_iface (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) ~
     put f (ins_abx op_loadk dst (const_int p 0))
   else begin
   let gbase = alloc_temps p f e.pos (residual_count v e.id) in
-  let w, _ = call_window p f v e ~recv:(Some base) ~params args in
+  let w, _, temp_drops = call_window p f v e ~recv:(Some base) ~params args in
   let guards = residual_guards p f v e.id (Some gbase) in
   acquire_guards f guards;
   sync_mask p f v e.id;
   f.f_cur_line <- e.pos.line;
   put f (ins_abx op_icall w (check_bx p f e.pos "interface slot" slot));
   release_guards f guards;
+  (* owned variant temporaries this call borrowed — see call_window *)
+  List.iter (fun g -> put f (ins_abc op_drop g 0 0)) temp_drops;
   if dst <> w then put f (ins_abc op_move dst w 0)
   end
 
@@ -1250,7 +2183,10 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   in
   let arity_of id =
     if id = b_now || id = b_multi_new || id = b_map_new then 0
-    else if id = b_print || id = b_print_int || id = b_words || id = b_count || id = b_latest then 1
+    else if
+      id = b_print || id = b_print_int || id = b_words || id = b_count || id = b_latest
+      || id = b_int_to_text
+    then 1
     else if id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has then 2
     else 3
   in
@@ -1283,6 +2219,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   | "words" -> fixed b_words
   | "count" -> fixed b_count
   | "latest" -> fixed b_latest
+  | "int_to_text" -> fixed b_int_to_text
   | "multi_new" | "map_new" ->
     let is_map = name = "map_new" in
     if args <> [] then bad (Printf.sprintf "builtin `%s` takes no arguments" name)
@@ -1359,6 +2296,24 @@ and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
     | None -> ());
     emit_rc p f v ~node:s.s_id ~acquire:true ()
   | Assign { target; value } -> emit_assign p f v s target value
+  | ExprStmt ({ kind = Ast.Switch (subj, arms); _ } as e) ->
+    (* Task 4 fix round 1: the one place a switch's value is DISCARDED —
+       mirrors types.ml's own want_value:false special case. The flag
+       gates the payload move-out (see emit_switch's doc comment): a
+       discarded binding yield must leave the shell intact. The dst
+       convention and the emit_expr epilogue (node register, escape
+       increments) are replicated from emit_tail's non-place path so
+       this stays byte-identical to the generic path for everything but
+       the flag. *)
+    let t = alloc_temp p f e.pos in
+    f.f_temp <- t;
+    f.f_cur_line <- e.pos.line;
+    emit_switch ~want_value:false p f v e ~dst:t subj arms;
+    Hashtbl.replace f.f_node e.id t;
+    emit_rc p f v ~node:e.id ~acquire:true ();
+    (match Hashtbl.find_opt v.v_move e.id with
+    | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
+    | None -> ())
   | ExprStmt e ->
     (* a discarded value lands in the next free temporary *without*
        reserving it: a call then places its own window at that same slot
@@ -1372,6 +2327,9 @@ and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   | If { cond; then_body; else_body } -> emit_if p f v s cond then_body else_body
   | While { cond; body } -> emit_while p f v s cond body
   | For { var; iter; body } -> emit_for p f v s var iter body
+  | Break -> emit_break p f v s
+  | Continue -> emit_continue p f v s
+  | DoWhile { body; cond } -> emit_do_while p f v s body cond
 
 and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast.expr)
     (value : Ast.expr) : unit =
@@ -1536,6 +2494,47 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
     put f (ins_abc op_ret t 0 0);
     f.f_div <- true
 
+(* haxe-parity Task 2: `break`/`continue` mirror emit_return's own shape
+   exactly (drops from the owner table at this node, then jump) — the
+   only difference is *where* the jump lands, which this frame does not
+   know yet (the enclosing loop patches it once it does — loop_frame's
+   own doc comment). `f.f_div <- true` afterward is the same call
+   emit_return makes for the same reason: the rest of this block is
+   unreachable, and emit_if's own THEN/ELSE merge already knows how to
+   fold that into a branch join (unchanged by this task — a `break`
+   inside an `if` inside a loop takes the exact path a `return` there
+   already does). Empty `f_loops` (no enclosing loop) is WO-E403: there
+   is no legal jump target to lower onto, the same "cannot lower"
+   convention every other construct with nothing to lower to uses. *)
+and emit_break (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
+  match f.f_loops with
+  | [] ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:s.s_pos ~message:"`break` outside of a loop"
+  | lf :: _ ->
+    emit_rc p f v ~node:s.s_id ~acquire:true ();
+    (match Hashtbl.find_opt v.v_break s.s_id with Some items -> emit_drops p f items | None -> ());
+    emit_rc p f v ~node:s.s_id ~acquire:false ();
+    f.f_cur_line <- s.s_pos.line;
+    let pc = here f in
+    put f (ins_asbx op_jmp 0 0);
+    lf.lf_breaks <- pc :: lf.lf_breaks;
+    f.f_div <- true
+
+and emit_continue (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
+  match f.f_loops with
+  | [] ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:s.s_pos
+      ~message:"`continue` outside of a loop"
+  | lf :: _ ->
+    emit_rc p f v ~node:s.s_id ~acquire:true ();
+    (match Hashtbl.find_opt v.v_continue s.s_id with Some items -> emit_drops p f items | None -> ());
+    emit_rc p f v ~node:s.s_id ~acquire:false ();
+    f.f_cur_line <- s.s_pos.line;
+    let pc = here f in
+    put f (ins_asbx op_jmp 0 0);
+    lf.lf_continues <- pc :: lf.lf_continues;
+    f.f_div <- true
+
 and emit_block (p : pctx) (f : fstate) (v : views) ~(node : int) ~(label : string)
     (body : Ast.stmt list) : unit =
   let saved_locals = f.f_nlocals in
@@ -1609,14 +2608,34 @@ and emit_while (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (cond : Ast.ex
   f.f_cur_line <- s.s_pos.line;
   let jz = here f in
   put f (ins_asbx op_jz t 0);
+  let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
+  f.f_loops <- lf :: f.f_loops;
   emit_block p f v ~node:s.s_id ~label:"WHILE" body;
+  f.f_loops <- List.tl f.f_loops;
   f.f_cur_line <- s.s_pos.line;
   let back = here f in
   put f (ins_asbx op_jmp 0 0);
   patch_jump p f ~file:f.f_file ~pos:s.s_pos back top;
-  patch_jump p f ~file:f.f_file ~pos:s.s_pos jz (here f);
+  (* haxe-parity Task 2: `continue` re-enters at the condition check —
+     `top`, the exact pc the back-edge above already jumps to; never a
+     second copy of the condition. *)
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc top) lf.lf_continues;
+  let exit_pc = here f in
+  patch_jump p f ~file:f.f_file ~pos:s.s_pos jz exit_pc;
+  (* `break` exits to the exact same place the condition's own JZ does. *)
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc exit_pc) lf.lf_breaks;
   (* a loop may run zero times, so the exit state always includes the
-     entry state; a body that returned contributes nothing *)
+     entry state; a body that returned/broke/continued contributes
+     nothing. Disclosed, secondary-mechanism approximation (haxe-parity
+     Task 2): a `break`'s own mask at the moment it jumped is not
+     separately folded into this meet — f_owned/f_gc feed only the
+     per-pc trap-unwind table (this file's own `put`, above), never an
+     emission decision (every DROP/RC instruction break/continue itself
+     needs is already emitted at emit_break/emit_continue's own site,
+     from the owner table, unconditionally) — so the only thing this
+     could under/over-track is which registers a *trap during the
+     narrow window right after this loop* would additionally destroy,
+     not whether break/continue's own owned value is dropped at all. *)
   if f.f_div then begin
     f.f_owned <- entry_owned;
     f.f_gc <- entry_gc
@@ -1659,9 +2678,22 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string) (
     let jz = here f in
     put f (ins_asbx op_jz tc 0);
     put f (ins_abc op_builtin rv rc b_multi_get);
+    let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
+    f.f_loops <- lf :: f.f_loops;
     List.iter (emit_stmt p f v) body;
+    f.f_loops <- List.tl f.f_loops;
     emit_scope_drops p f v ~node:s.s_id ~label:"FOR";
     emit_rc p f v ~node:s.s_id ~acquire:false ~groups:(declared_since f saved_decls) ();
+    (* haxe-parity Task 2: `continue` re-enters right here — after this
+       iteration's own scope-end cleanup (a `continue` already ran the
+       equivalent of it at its own site, from v_continue — see
+       emit_continue — so landing after the *normal* cleanup above
+       never double-drops), and before the increment, so the next
+       iteration still advances. *)
+    let continue_target = here f in
+    List.iter
+      (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc continue_target)
+      lf.lf_continues;
     f.f_temp <- f.f_nlocals;
     f.f_cur_line <- s.s_pos.line;
     let one = alloc_temp p f s.s_pos in
@@ -1670,7 +2702,9 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string) (
     let back = here f in
     put f (ins_asbx op_jmp 0 0);
     patch_jump p f ~file:f.f_file ~pos:s.s_pos back top;
-    patch_jump p f ~file:f.f_file ~pos:s.s_pos jz (here f);
+    let exit_pc = here f in
+    patch_jump p f ~file:f.f_file ~pos:s.s_pos jz exit_pc;
+    List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc exit_pc) lf.lf_breaks;
     if f.f_div then begin
       f.f_owned <- entry_owned;
       f.f_gc <- entry_gc
@@ -1686,6 +2720,51 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string) (
       ~message:
         "`for` can only iterate a `multi` — the v1 builtins expose no key enumeration for a `map`"
 
+(* haxe-parity Task 2: `do { body } while cond` — body first, condition
+   after, otherwise the exact same JZ/JMP shape `while` uses (no new
+   opcode). `continue` re-enters at the condition check (the one point
+   every iteration passes through, whichever way it got there); `break`
+   exits to the same place the condition's own JZ does. Unlike
+   while/for, the body always runs at least once — there is no
+   zero-iteration path to merge the exit mask with, so (unlike
+   emit_while/emit_for) the non-diverged case simply keeps whatever
+   mask the condition check left, no `mask_meet` needed. The
+   `f.f_div`/entry-restore branch below is kept anyway, for consistency
+   with owner.ml's `fixpoint` (shared, unmodified, across all three loop
+   shapes, and always resets `diverged` to its pre-loop value) — a
+   disclosed, documented approximation for the one shape neither pass
+   chases precisely: a body that unconditionally returns/breaks on
+   every path, making the condition dead code. No fixture in this task
+   has that shape. *)
+and emit_do_while (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (body : Ast.stmt list)
+    (cond : Ast.expr) : unit =
+  let top = here f in
+  let entry_owned = f.f_owned and entry_gc = f.f_gc in
+  let div0 = f.f_div in
+  let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
+  f.f_loops <- lf :: f.f_loops;
+  emit_block p f v ~node:s.s_id ~label:"DO" body;
+  f.f_loops <- List.tl f.f_loops;
+  let cond_pc = here f in
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc cond_pc) lf.lf_continues;
+  let t = alloc_temp p f s.s_pos in
+  emit_expr p f v ~dst:t cond;
+  f.f_cur_line <- s.s_pos.line;
+  let jz = here f in
+  put f (ins_asbx op_jz t 0);
+  let back = here f in
+  put f (ins_asbx op_jmp 0 0);
+  patch_jump p f ~file:f.f_file ~pos:s.s_pos back top;
+  let exit_pc = here f in
+  patch_jump p f ~file:f.f_file ~pos:s.s_pos jz exit_pc;
+  List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc exit_pc) lf.lf_breaks;
+  if f.f_div then begin
+    f.f_owned <- entry_owned;
+    f.f_gc <- entry_gc
+  end
+  else mask_meet f entry_owned entry_gc;
+  f.f_div <- div0
+
 (* ============================================================
    One method
    ============================================================ *)
@@ -1697,7 +2776,7 @@ let emit_method (p : pctx) (v : views) ~(file : string) ~(self_class : (int * st
       f_line = -1; f_lines = []; f_owned = 0L; f_gc = 0L; f_last_owned = 0L; f_last_gc = 0L;
       f_drops = []; f_nlocals = 0; f_temp = 0; f_max = 0; f_env = []; f_decl = Hashtbl.create 16;
       f_node = Hashtbl.create 64; f_kind = Hashtbl.create 16; f_declared = []; f_div = false; f_maxjmp = 0;
-      f_over = false }
+      f_over = false; f_loops = [] }
   in
   (match self_class with
   | None -> ()
@@ -1784,7 +2863,10 @@ let satisfies (p : pctx) (cid : int) (ir : ifacerec) : int list option =
   in
   go [] ir.ir_methods
 
-let emit ~(syms : Types.symbols) (coll : Diag.Collector.t) (units : input list) : string =
+let emit ~(syms : Types.symbols) ~(module_of : string -> string)
+    ~(module_syms : (string, Types.symbols) Hashtbl.t) (coll : Diag.Collector.t) (units : input list) :
+    string =
+  let colliding = compute_colliding_fn_names ~module_of units in
   (* ---- pass 1: declarations, in discovery then declaration order ---- *)
   let classes = ref [] and class_id = ref SM.empty and nclasses = ref 0 in
   let ifaces = ref [] and iface_id = ref SM.empty and nifaces = ref 0 and nslots = ref 0 in
@@ -1792,22 +2874,83 @@ let emit ~(syms : Types.symbols) (coll : Diag.Collector.t) (units : input list) 
   let entry = ref wob_none in
   (* (file, self class option, method_decl, unit) in method-table order *)
   let bodies = ref [] in
+  (* haxe-parity Task 4: typedef records are STRUCTURAL — two records
+     with the same shape share ONE class-table entry, keyed by this
+     rendering of the ordered field list. Defaults are part of the key
+     deliberately: aliases whose defaults differ get their own entries
+     (identical layout either way, so interchangeability is unaffected —
+     class ids only decide layout and drop plan), because sharing one
+     entry would make emit_ctor's default-filling read whichever alias
+     registered first. types.ml's typ_equal compares fields only —
+     strictly wider than this key, and safe for exactly that layout
+     reason. *)
+  let record_shape : (string, int) Hashtbl.t = Hashtbl.create 8 in
+  let record_shape_key (c : Ast.class_decl) : string =
+    String.concat ";"
+      (List.map
+         (fun (fl : Ast.field) ->
+           let dflt =
+             match fl.default with
+             | None -> ""
+             | Some Ast.DefaultNow -> "=now()"
+             | Some (Ast.DefaultOpaque toks) ->
+               "=" ^ String.concat " " (List.map (fun (t : Token.t) -> Dump.kind_label t.Token.kind) toks)
+           in
+           fl.name ^ ":" ^ Dump.field_ty_str fl.ty ^ dflt)
+         c.fields)
+  in
   List.iter
     (fun u ->
       List.iter
         (function
           | Ast.Class (c : Ast.class_decl) ->
             if not (SM.mem c.name !class_id) then begin
-              let cid = !nclasses in
-              class_id := SM.add c.name cid !class_id;
-              incr nclasses;
-              classes :=
-                { cr_name = c.name; cr_gc = c.is_gc;
-                  cr_fields =
-                    Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
-                  cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods }
-                :: !classes
+              let shape = if c.is_record then Some (record_shape_key c) else None in
+              let alias_of =
+                match shape with Some key -> Hashtbl.find_opt record_shape key | None -> None
+              in
+              match alias_of with
+              | Some cid ->
+                (* structural alias: this name maps onto the shape's
+                   existing entry; no new clsrec *)
+                class_id := SM.add c.name cid !class_id
+              | None ->
+                let cid = !nclasses in
+                class_id := SM.add c.name cid !class_id;
+                incr nclasses;
+                (match shape with
+                | Some key -> Hashtbl.replace record_shape key cid
+                | None -> ());
+                classes :=
+                  { cr_name = c.name; cr_gc = c.is_gc;
+                    cr_fields =
+                      Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
+                    cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods }
+                  :: !classes
             end
+          | Ast.Union (ud : Ast.union_decl) ->
+            (* haxe-parity Task 4: a payload union gets one compiler-
+               generated class entry PER VARIANT (bare variants of the
+               same union included — a uniform heap representation is
+               what lets one register hold "any variant of this union");
+               the entry's id is the variant's runtime tag, carried by
+               the object header's own class_id. An all-bare union gets
+               nothing here at all: its values are plain ordinals. *)
+            if List.exists (fun (vd : Ast.variant_decl) -> vd.Ast.v_fields <> []) ud.variants then
+              List.iter
+                (fun (vd : Ast.variant_decl) ->
+                  let key = ud.name ^ "." ^ vd.Ast.v_name in
+                  if not (SM.mem key !class_id) then begin
+                    let cid = !nclasses in
+                    class_id := SM.add key cid !class_id;
+                    incr nclasses;
+                    classes :=
+                      { cr_name = key; cr_gc = false;
+                        cr_fields = Array.of_list vd.Ast.v_fields;
+                        cr_methods = [] }
+                      :: !classes
+                  end)
+                ud.variants
           | Ast.Interface (i : Ast.interface_decl) ->
             (* an interface with no methods gets no slots and no rows: the
                loader rejects a zero-method interface entry, and no ICALL
@@ -1823,7 +2966,9 @@ let emit ~(syms : Types.symbols) (coll : Diag.Collector.t) (units : input list) 
                 :: !ifaces;
               nslots := !nslots + List.length i.methods
             end
-          | Ast.Fn _ -> ())
+          | Ast.Fn _ -> ()
+          | Ast.Use _ -> ()
+          | Ast.Const _ -> ())
         u.prog.decls)
     units;
   let class_id = !class_id in
@@ -1850,8 +2995,9 @@ let emit ~(syms : Types.symbols) (coll : Diag.Collector.t) (units : input list) 
               c.methods
           | Ast.Interface _ -> ()
           | Ast.Fn (m : Ast.method_decl) ->
-            if not (SM.mem m.name !method_id) then begin
-              method_id := SM.add m.name !nmethods !method_id;
+            let key = free_fn_key colliding (module_of u.file) m.name in
+            if not (SM.mem key !method_id) then begin
+              method_id := SM.add key !nmethods !method_id;
               methods :=
                 { mr_name = m.name; mr_class = None; mr_argc = List.length m.params; mr_regc = 1;
                   mr_code = [||]; mr_lines = []; mr_drops = [] }
@@ -1876,13 +3022,20 @@ let emit ~(syms : Types.symbols) (coll : Diag.Collector.t) (units : input list) 
                  | Some _ | None -> ())
               end;
               incr nmethods
-            end)
+            end
+          | Ast.Use _ -> ()
+          | Ast.Const _ -> ()
+          | Ast.Union _ -> () (* haxe-parity Task 4: no methods to emit *))
         u.prog.decls)
     units;
   let p_methods = Array.of_list (List.rev !methods) in
+  let p_uses : (string, Types.use_edge list) Hashtbl.t = Hashtbl.create 8 in
+  List.iter (fun u -> Hashtbl.replace p_uses u.file (Types.uses_of_program u.prog)) units;
   let p =
     { p_syms = syms; p_coll = coll; p_classes; p_class_id = class_id; p_ifaces;
-      p_iface_id = !iface_id; p_method_id = !method_id; p_methods; p_kints = Hashtbl.create 32;
+      p_iface_id = !iface_id; p_method_id = !method_id; p_methods; p_uses;
+      p_module_syms = module_syms; p_module_of = module_of; p_colliding = colliding;
+      p_kints = Hashtbl.create 32;
       p_ktexts = Hashtbl.create 32; p_consts = []; p_nconsts = 0 }
   in
   (* names are constants; interning them first keeps the pool's low

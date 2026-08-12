@@ -1,0 +1,9 @@
+-- haxe-parity Task 2: `break` outside any loop has no legal jump
+-- target -- emit.ml's own "cannot lower" gate (WO-E403), the same
+-- convention every other construct with nothing to lower to uses.
+-- Nothing upstream (parser/types/owner) tracks loop nesting to reject
+-- this earlier.
+fn main() -> Int {
+  break
+  return 0
+}

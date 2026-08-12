@@ -1,0 +1,11 @@
+-- haxe-parity Task 1 (modules): a cross-module call through `use`.
+-- `greet` (this fixture's own `greet/` subdirectory) is a project-
+-- relative module, resolved by directory — not one of the six reserved
+-- stdlib namespaces. `greet.hello()` lowers exactly like a bare free-fn
+-- call (emit.ml): the `use` alias's only job was proving, at typecheck
+-- time, that the reference was legitimately in scope.
+use greet
+
+fn main() {
+  print(greet.hello())
+}

@@ -1,0 +1,26 @@
+-- haxe-parity Task 2: `and`/`or` -- real keywords, own precedence level
+-- (looser than comparison, so `a == 1 and b == 2` needs no parens),
+-- short-circuit lowering to compare-and-jump (JZ + JMP, no new opcode).
+-- The short-circuit proof is real, not asserted: `1 / zero` traps
+-- (division by zero) if it is ever actually evaluated, so a broken
+-- (always-evaluate-both-sides) lowering would crash this fixture
+-- outright instead of merely printing a wrong answer.
+fn main() -> Int {
+  let a = 1
+  let b = 2
+  if a == 1 and b == 2 {
+    print("and-precedence-ok")
+  }
+  let zero = 0
+  if false and (1 / zero == 0) {
+    print("SHOULD-NOT-PRINT-and")
+  } else {
+    print("and-short-circuit-ok")
+  }
+  if true or (1 / zero == 0) {
+    print("or-short-circuit-ok")
+  } else {
+    print("SHOULD-NOT-PRINT-or")
+  }
+  return 0
+}

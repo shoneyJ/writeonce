@@ -1,0 +1,21 @@
+-- haxe-parity Task 4, fix round 1 (review Critical 2): a variant-named
+-- case over a `?Union` subject can NEVER match (the subject is not
+-- narrowed by `switch` — `?T` forced handling is Task 6's), so it
+-- compiled clean and always took `default`. WO-E201, pointing at the
+-- nil case first.
+type St = Pending | Failed(m: Text)
+
+typedef R = { ?st: St }
+
+fn f(r: R) -> Text {
+  return switch r.st {
+    case Pending: "p";
+    default: "nil";
+  }
+}
+
+fn main() -> Int {
+  let a = R { st: Pending }
+  print(f(a))
+  return 0
+}

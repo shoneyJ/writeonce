@@ -1,0 +1,24 @@
+-- haxe-parity Task 2: `continue` in a `for` loop -- re-enters right
+-- before the increment step (not `while`'s condition-check target),
+-- so the loop still advances past the skipped element instead of
+-- looping forever on it.
+class Nums {
+  items: multi Int
+}
+
+fn main() -> Int {
+  let box = Nums { items: multi_new() }
+  push(box.items, 1)
+  push(box.items, 2)
+  push(box.items, 3)
+  push(box.items, 4)
+  push(box.items, 5)
+  for n in box.items {
+    if n == 3 {
+      continue
+    }
+    print_int(n)
+  }
+  print("done")
+  return 0
+}

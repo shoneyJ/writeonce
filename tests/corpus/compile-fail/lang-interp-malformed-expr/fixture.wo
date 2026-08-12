@@ -1,0 +1,11 @@
+-- haxe-parity Task 2 review fix (Important): a genuine sub-parse
+-- failure inside "${...}" (`1 +`, not just trailing garbage) must
+-- report at this string literal's own position with the malformed-
+-- interpolation message -- not at the sub-lexer's own uncorrected
+-- line/col (which used to land on some unrelated line of this real
+-- file). See compiler/test/runner.ml's direct assertion for the exact
+-- position/message pin; this fixture only pins the outcome (WO-E101).
+fn main() -> Int {
+  print("prefix ${1 +} suffix")
+  return 0
+}

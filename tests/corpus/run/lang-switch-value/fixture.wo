@@ -1,0 +1,38 @@
+-- haxe-parity Task 3: `switch` as an expression -- value-yielding over
+-- both subjects this task covers (Int, Text), proving arm selection
+-- (each case fires only for its own value, multi-value `case a, b:`
+-- fires for either) and the required `default` fires for anything
+-- else. `status_of`/`greet` mirror the sample's own shape
+-- (docs/examples/log-watcher/mcp.wo's `status_text`/`dispatch`) closely
+-- enough to be a real proof, not a toy: a `let`-bound switch result,
+-- multiple values per case, `default` last.
+fn status_of(code: Int) -> Text {
+  let text = switch code {
+    case 200: "OK";
+    case 404, 410: "Gone";
+    case 500: "Server Error";
+    default: "Unknown";
+  };
+  return text;
+}
+
+fn greet(name: Text) -> Text {
+  return switch name {
+    case "alice": "hi alice";
+    case "bob", "bobby": "hi bob";
+    default: "hi stranger";
+  };
+}
+
+fn main() -> Int {
+  print(status_of(200));
+  print(status_of(404));
+  print(status_of(410));
+  print(status_of(500));
+  print(status_of(1));
+  print(greet("alice"));
+  print(greet("bob"));
+  print(greet("bobby"));
+  print(greet("carol"));
+  return 0;
+}

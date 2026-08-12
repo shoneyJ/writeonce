@@ -1,0 +1,9 @@
+-- Hotfix (WO-E209): `now` takes zero arguments
+-- (docs/plan/oop-vm/08-builtin-surface.md's `now()` row) -- this
+-- exercises the wrong-arity half of the same diagnostic, caught at
+-- typecheck time. Arity mismatches were already caught later, at
+-- emission (`WO-E403`, `emit.ml`) -- that check stays as-is; this is an
+-- earlier, additional gate over the same contract, not a replacement.
+fn main() {
+  now(1)
+}

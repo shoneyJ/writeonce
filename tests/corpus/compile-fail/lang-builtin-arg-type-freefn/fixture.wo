@@ -1,0 +1,20 @@
+-- Hotfix round 2 (WO-E209): `takesSecret` is declared `-> Int`, so its
+-- call result is exactly as confidently `Int` as a bare literal would
+-- be -- passing it to `print` (wants `Text`) is the same class of bug
+-- `print(7)` is, just one call deeper. Controller-verified real repro:
+-- this compiled clean and segfaulted `wovm` before `confident_typ`
+-- chased a free fn's own declared return type (round 1 only chased
+-- literals/fields/params, missing this shape entirely).
+class Box {
+  fn hidden() -> Int {
+    return 7
+  }
+}
+
+fn takesSecret(box: Box) -> Int {
+  return box.hidden()
+}
+
+fn main() {
+  print(takesSecret(Box{}))
+}

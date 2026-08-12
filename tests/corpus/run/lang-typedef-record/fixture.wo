@@ -1,0 +1,23 @@
+-- haxe-parity Task 4: `typedef` record round-trip. Field defaults fill
+-- the fields a brace literal omits (`Rec {}` is the sample's own
+-- `TailState {}` pattern), and a `?field` is nullable-by-shape: omitted
+-- means nil (the zero word NEW already leaves there), supplied means the
+-- value sticks. `note` is only ever read from the literal that supplied
+-- it -- reading an omitted `?field` is Task 6's forced-handling story,
+-- not this fixture's.
+typedef Rec = {
+  n:     Int  = 7
+  name:  Text = "seven"
+  ?note: Text
+}
+
+fn main() -> Int {
+  let r = Rec {}
+  print_int(r.n)
+  print(r.name)
+  let s = Rec { n: 1, name: "one", note: "noted" }
+  print_int(s.n)
+  print(s.name)
+  print(s.note)
+  return 0
+}

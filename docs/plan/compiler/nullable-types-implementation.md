@@ -47,13 +47,64 @@ claiming ownership of that work.
 
 ## Dead-code register
 
-Ten `WO-E2xx` codes are declared as named constants in `types.ml` with no
-call site anywhere in the front end — `grep '~code:'` finds exactly five
+**Update (haxe-parity Task 1, modules):** `WO-E210` below has since been
+wired — the module concept it was blocked on now exists
+(`compiler/src/types.ml`'s `check_modules`) — so it is no longer one of the
+ten; it has moved up into `docs/plan/oop-vm/01-error-catalog.md`'s main
+table. The table below is left as this doc's own historical record of the
+state Task 6b found, not edited to match current reality (same convention
+this doc already uses elsewhere for its "historical record" blocks).
+
+**Update (hotfix, 2026-08-11):** `WO-E209` below has also since been
+wired — a real bug forced it: `print(7)` compiled clean and segfaulted
+`wovm` (`print` wants a `Text`, a heap-string pointer; a bare `Int` is a
+plain int64 register, which the VM's `str_check` dereferenced as a wild
+pointer with no runtime tag to catch it first). It too is no longer one
+of the ten; it has moved up into `docs/plan/oop-vm/01-error-catalog.md`'s
+main table. The check (`compiler/src/types.ml`'s `check_builtin_call` and
+`confident_typ`) covers exactly the arity-and-signature gap the row below
+describes, but conservatively: an argument is only checked against a
+builtin's expected type when it is *confidently* known — a literal,
+`self`, a parameter's or class field's declared type, or a `let` whose
+value traces back to one of those — never a guess, so an unresolved name
+or an UNKNOWN-BUT-RESERVED stdlib call result stays unchecked rather than
+risk a false positive. Same convention as the `WO-E210` note above: the
+table below is left unedited.
+
+**Update (haxe-parity Task 2, 2026-08-11):** `WO-E201` below has also
+since been wired — the row's own gap ("`Binary`/`Unary` in `types.ml`
+don't check operand types at all") is exactly what stayed true for
+every operator *except* the two Task 2 added: `and`/`or` are `Bool`-only
+by the language's own design (no truthiness), and their operands *are*
+now checked, via the same "confident-type, stay silent when underivable"
+contract `WO-E209` uses. Every other `Binary`/`Unary` operator (the
+arithmetic ladder, comparisons' own operand types) remains exactly as
+unchecked as this row describes — this is a new, narrow call site, not
+a general fix of the row's own gap. It too has moved up into
+`docs/plan/oop-vm/01-error-catalog.md`'s main table. Same convention as
+the notes above: the table below is left unedited.
+
+**Update (haxe-parity Task 3, 2026-08-12):** `WO-E208` below has also
+since been wired — the row's own blocker ("no `switch` keyword exists
+in `token.ml`/`lexer.ml`/`parser.ml` yet") is exactly what haxe-parity
+Task 3 closed. The check (`compiler/src/types.ml`'s `typecheck_switch`)
+is unconditional today, for every subject: no union type exists in
+`typ` yet, so "exhaustiveness over a union, missing `default` only
+when a variant is uncovered" — the row's own description — is not yet
+a distinct code path, just the same E208 Task 4 will branch ahead of
+(a `TUnion` arm, not a second check) once tagged unions land. `WO-E201`
+picked up a second, unrelated call site in the same task: a `switch`
+expression's arms disagree on their yielded type. Both have moved up
+into `docs/plan/oop-vm/01-error-catalog.md`'s main table. Same
+convention as the notes above: the table below is left unedited.
+
+Ten `WO-E2xx` codes were declared as named constants in `types.ml` with no
+call site anywhere in the front end — `grep '~code:'` found exactly five
 sites (`WO-W201`, `WO-E202`, `WO-E206`, `WO-E207`, `WO-E225`); the other ten
-declared constants are never referenced by a `Diag.error`/`Diag.warning`
+declared constants were never referenced by a `Diag.error`/`Diag.warning`
 call. `docs/plan/oop-vm/01-error-catalog.md`'s "Reserved, not yet emitted"
-section already lists all ten; this table adds *why* each is dead and who,
-if anyone, is expected to wire it:
+section listed all ten at the time; this table adds *why* each was dead and
+who, if anyone, was expected to wire it:
 
 | Code | Meaning | Why it's dead |
 |------|---------|----------------|

@@ -1,0 +1,3 @@
+pub fn thing() -> Int {
+  return 1
+}

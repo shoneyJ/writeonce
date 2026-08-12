@@ -243,6 +243,13 @@ type drop_item = {
    DReturn — every live owned local in *all* enclosing scopes at an
               early (or final) return, after the returned value's own
               move: the DROPs that must run before the frame leaves.
+   DBreak/DContinue (haxe-parity Task 2) — every live owned local in
+              every scope from here up to *and including* the nearest
+              enclosing loop's own body scope (WHILE/FOR/DO — never
+              beyond it, since a break/continue only exits the loop, not
+              the function). Same "reuse DReturn's own machinery" shape,
+              bounded to the loop instead of the whole function — see
+              live_holders_upto.
    DOverwrite — the value an assignment overwrites (see the module doc).
    DBranchJoin — join normalization: the locals the *other* branch of an if
               moved and this one did not, dropped at this branch's end so
@@ -260,6 +267,8 @@ type drop_kind =
   | DOverwrite
   | DBranchJoin of string
   | DLiveMask
+  | DBreak
+  | DContinue
 
 type drop_site = {
   dr_node : int;
@@ -370,6 +379,15 @@ type ctx = {
   sink : sink;
   fn_name : string;
   mutable scopes : scope list; (* innermost first *)
+  (* haxe-parity Task 2: the enclosing While/For/DoWhile statement ids,
+     innermost first — the nearest enclosing loop's own `s.s_id`, which
+     is also its own scope's `sc_node` (analyze_block ~node:s.s_id).
+     Empty outside any loop; a break/continue found there records no
+     drop site at all (nothing to bound the drop to) and leaves the
+     actual rejection to emit.ml, which has no jump target to lower it
+     onto — the same WO-E403 "no legal target" convention as every
+     other construct with nothing to lower to. *)
+  mutable loop_stack : int list;
   (* false during a loop's probe pass: no diagnostics, no table entries *)
   mutable recording : bool;
   (* set when the current path has returned; a diverged path contributes
@@ -399,7 +417,15 @@ let oclass_of (ctx : ctx) (ft : Ast.field_ty) : oclass =
     if Types.is_builtin_scalar n then Copy
     else if Types.is_gc_class ctx.syms n then Gc
     else if Types.StringMap.mem n ctx.syms.Types.classes then Owned
-    else Copy (* unknown type: WO-E225 already reported by types.ml *)
+    else (
+      (* haxe-parity Task 4: an all-bare union value is a plain integer
+         tag — Copy, exactly like a builtin scalar (moving/aliasing it
+         is copying an int). A payload union value is a heap variant
+         object — Owned, one owner, dropped at scope end like any other
+         non-@gc instance. *)
+      match Types.StringMap.find_opt n ctx.syms.Types.unions with
+      | Some u -> if u.Types.u_has_payload then Owned else Copy
+      | None -> Copy (* unknown type: WO-E225 already reported by types.ml *))
   | Ref _ -> Copy
   | Multi _ | Map _ -> Owned
   | Nullable _ -> Copy (* unreachable: unwrapped above *)
@@ -447,8 +473,8 @@ and stmt_writes_self (s : Ast.stmt) : bool =
   | If { then_body; else_body; _ } ->
     body_writes_self then_body
     || (match else_body with Some (_, b) -> body_writes_self b | None -> false)
-  | While { body; _ } | For { body; _ } -> body_writes_self body
-  | Let _ | Return _ | ExprStmt _ -> false
+  | While { body; _ } | For { body; _ } | DoWhile { body; _ } -> body_writes_self body
+  | Let _ | Return _ | ExprStmt _ | Break | Continue -> false
 
 (* A resolved callee: its parameter conventions (positional), its return
    type, and — for a method call — whether the receiver is borrowed
@@ -463,22 +489,108 @@ type callee = {
   ce_recv_excl : bool;
 }
 
+(* haxe-parity Task 4: a bare variant reference (`Pending`) or a variant
+   construction (`Failed("x")`) types as its union — locals always win
+   first (find_local / resolve_callee run before this), so a shadowing
+   binding is never mistaken for a variant. *)
+let variant_union_ty (ctx : ctx) (n : string) : Ast.field_ty option =
+  match Types.find_variant ctx.syms n with
+  | Some (u, _) -> Some (Ast.Scalar u.Types.u_name)
+  | None -> None
+
 let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
-  | Ident n -> ( match find_local ctx n with Some l -> Some l.l_ty | None -> None)
+  | Ident n -> (
+    match find_local ctx n with
+    | Some l -> Some l.l_ty
+    | None -> variant_union_ty ctx n)
   | Field (base, f) -> (
     match expr_ty ctx base with
     | Some bt -> ( match unwrap_nullable bt with Scalar cn -> field_ty_of ctx cn f | _ -> None)
     | None -> None)
   | Index (base, _) -> ( match expr_ty ctx base with Some bt -> elem_ty bt | None -> None)
-  | Call (callee, _) -> ( match resolve_callee ctx callee with Some c -> c.ce_ret | None -> None)
+  | Call (callee, _) -> (
+    match resolve_callee ctx callee with
+    | Some c -> c.ce_ret
+    | None -> (
+      (* an unresolved Ident callee may be a variant construction — its
+         value is a fresh Owned variant object of the union's type, and
+         missing this here is a real leak (analyze_let's None-fallback
+         classifies as Copy, so the object would never be dropped). *)
+      match callee.kind with
+      | Ident n -> variant_union_ty ctx n
+      | _ -> None))
   | Unary (_, o) -> expr_ty ctx o
   | Binary _ -> None (* arithmetic/comparison: Copy either way *)
   | Ctor (cn, _) -> Some (Scalar cn)
+  | Interp _ -> Some (Scalar "Text") (* an interpolation always produces Text *)
   | DbStub _ -> None
+  | Switch (subject, arms) ->
+    (* review fix, Critical 3: this was `None` ("not chased", the same
+       call as `Binary`/`DbStub` above) — a real, reviewer-reproduced
+       leak, not a theoretical gap: `analyze_let`'s own fallback for
+       `expr_ty = None` is `Scalar "Int"` (Copy), so an *unannotated*
+       `let v = switch ... { case ...: SomeClass{...}; ... }` was
+       classified Copy and never dropped, even for a plain class with
+       no union involved. Mirrors emit.ml's own `ty_of_expr` Switch
+       case exactly (same shape, this file's own `Ast.field_ty`/`ctx`
+       types instead of `Types.typ`/`pctx`) rather than duplicating
+       types.ml's `typecheck_switch` unification: the first arm's
+       trailing `ExprStmt`'s own type wins — types.ml already proved
+       every other arm agrees, or reported WO-E201 if not, so trusting
+       the first arm here is not a second, weaker check, just this
+       file's own narrower deriver reading the same fact.
+
+       Task 4 fix round 1 (review Critical 1b): an arm may yield its own
+       payload BINDING (`case Boxed(b): b;` — the escape shape the
+       log-watcher's own return pattern uses). The binding is not a
+       local at derivation time (it exists only during the arm's own
+       walk), so the plain recursive call typed the whole switch `None`
+       -> the `Scalar "Int"` fallback -> Copy — a leak (unannotated
+       `let`) or a bogus downstream error. `binding_ty_of_arm` reads the
+       binding's type straight off the subject's variant declaration. *)
+    (match arms with
+     | [] -> None
+     | first :: _ -> (
+       match List.rev first.Ast.body with
+       | { Ast.s_kind = ExprStmt ve; _ } :: _ -> (
+         match ve.Ast.kind with
+         | Ident n -> (
+           match binding_ty_of_arm ctx subject first n with
+           | Some fty -> Some fty
+           | None -> expr_ty ctx ve)
+         | _ -> expr_ty ctx ve)
+       | _ -> None))
+
+(* The declared type of payload binding [n], when [arm]'s pattern binds
+   it off [subject]'s union — None whenever this is not that shape. *)
+and binding_ty_of_arm (ctx : ctx) (subject : Ast.expr) (arm : Ast.switch_arm) (n : string) :
+    Ast.field_ty option =
+  match expr_ty ctx subject with
+  | Some (Scalar sn) -> (
+    match Types.StringMap.find_opt sn ctx.syms.Types.unions with
+    | Some u when u.Types.u_has_payload -> (
+      match arm.Ast.values with
+      | [ { Ast.kind = Ast.Call ({ Ast.kind = Ast.Ident vname; _ }, bargs); _ } ] -> (
+        match
+          List.find_opt (fun (vi : Types.variant_info) -> vi.Types.vi_name = vname)
+            u.Types.u_variants
+        with
+        | Some vi when List.length bargs = List.length vi.Types.vi_fields ->
+          let rec zip (args : Ast.expr list) fields =
+            match (args, fields) with
+            | { Ast.kind = Ast.Ident bn; _ } :: _, (_, fty) :: _ when bn = n -> Some fty
+            | _ :: ta, _ :: tf -> zip ta tf
+            | _ -> None
+          in
+          zip bargs vi.Types.vi_fields
+        | _ -> None)
+      | _ -> None)
+    | _ -> None)
+  | _ -> None
 
 and resolve_callee (ctx : ctx) (callee : Ast.expr) : callee option =
   let params_of ps = List.map (fun (n, _, conv) -> (n, conv)) ps in
@@ -682,6 +794,23 @@ let is_live_holder (l : local) : bool =
    each scope. *)
 let live_holders (ctx : ctx) : local list =
   List.concat_map (fun sc -> List.filter is_live_holder sc.sc_locals) ctx.scopes
+
+(* haxe-parity Task 2: every live holder from the innermost scope up to
+   and including the scope whose sc_node is [loop_node] (the nearest
+   enclosing loop's own body scope) — DBreak/DContinue's own bound
+   version of live_holders, which goes all the way to the function's
+   own outermost scope (return's job: leave the whole frame). A
+   break/continue only leaves the loop, so scopes *outside* it are
+   untouched — their own DScope drop still runs later, at the loop's
+   normal exit. *)
+let live_holders_upto (ctx : ctx) (loop_node : int) : local list =
+  let rec go = function
+    | [] -> []
+    | (sc : scope) :: rest ->
+      let here = List.filter is_live_holder sc.sc_locals in
+      if sc.sc_node = loop_node then here else here @ go rest
+  in
+  go ctx.scopes
 
 let owned_items (ls : local list) : drop_item list =
   ls
@@ -913,9 +1042,11 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
   | Binary (_, a, b) ->
     read_expr ctx a;
     read_expr ctx b
+  | Interp inner -> read_expr ctx inner
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)
     record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
+  | Switch (subject, arms) -> analyze_switch ctx e.id subject arms
 
 (* The root of a place expression is already accounted for by use_place;
    what still needs walking are index subexpressions and a non-place base
@@ -947,6 +1078,43 @@ and analyze_ctor (ctx : ctx) (cn : string) (fields : (string * Ast.expr) list) :
    transfers — that ordering is what makes `f(x, take x)` a
    move-while-borrowed rather than a use-after-move. *)
 and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast.expr list) : unit =
+  (* haxe-parity Task 4: a variant construction is not a call — it
+     lowers to NEW + SETF, no CALL instruction — so every place-shaped
+     payload argument is a ctor-field ESCAPE (analyze_ctor's own rule:
+     the value is stored into the fresh object, which owns it from
+     here), never a borrow-for-the-duration-of-the-call. Getting this
+     wrong is a double free, not an imprecision: a local moved into the
+     payload would otherwise stay Live and be dropped at scope end on
+     top of the variant object's own recursive drop. No LIVE-MASK is
+     recorded either — there is no trap-capable call site to sync a
+     drop map at. A declared free fn of the same name shadows the
+     variant (the same flat-table resolution resolve_callee itself
+     uses). *)
+  let variant_ctor =
+    match callee.kind with
+    | Ident n when not (Types.StringMap.mem n ctx.syms.Types.free_fns) ->
+      Types.find_variant ctx.syms n
+    | _ -> None
+  in
+  match variant_ctor with
+  | Some (_, vi) ->
+    List.iteri
+      (fun i (fe : Ast.expr) ->
+        read_expr ctx fe;
+        match place_of fe with
+        | None -> ()
+        | Some p ->
+          let fname =
+            match List.nth_opt vi.Types.vi_fields i with
+            | Some (n, _) -> n
+            | None -> Printf.sprintf "arg%d" (i + 1)
+          in
+          if
+            transfer ctx p
+              ~what:(Printf.sprintf "cannot be stored in `%s.%s`" vi.Types.vi_name fname)
+          then record_move ctx p (MvCtorField fname))
+      args
+  | None ->
   let resolved = resolve_callee ctx callee in
   (* receiver *)
   let recv =
@@ -1130,6 +1298,128 @@ and branch_join_drops (ctx : ctx) ~(node : int) ~(label : string) ~(pos : Ast.po
   in
   record_drop ctx ~node ~pos ~kind:(DBranchJoin label) ~items
 
+(* haxe-parity Task 3: `switch`'s own arms are alternate flows joining
+   back together after the switch — exactly what `if`/`else` already
+   is, generalized from two branches to N (one per arm). Reused, not
+   reinvented, per the brief's own instruction: each arm is its own
+   `analyze_block` (so an arm-local owned value that is never moved
+   still gets its ordinary DScope drop at that arm's own end — nothing
+   special to write for that half); a diverging arm (every path inside
+   it returned) drops out of the join exactly like a diverging `if`
+   branch does; and a value moved in *some* arms but not others gets
+   `branch_join_drops`'s own JOIN-DROP treatment, called once per kept
+   arm against the join of every *other* (non-diverging) arm's ending
+   state — the N-way shape of the same "the branch that kept it drops
+   it at its own end" rule the module doc above states for two.
+
+   The subject is read (`read_expr`, never `transfer`) exactly once,
+   before any arm runs: it is compared against, never consumed — "the
+   SUBJECT's ownership — borrowed for the comparison, not consumed" per
+   this task's own brief. Case values are read the same way; for this
+   task's scalar/Text subjects they are always literals, so this is a
+   no-op today and only matters once a union variant tag becomes a real
+   bound reference (Task 4). *)
+and analyze_switch (ctx : ctx) (node : int) (subject : Ast.expr) (arms : Ast.switch_arm list) :
+    unit =
+  read_expr ctx subject;
+  (* haxe-parity Task 4: over a union-typed subject the case "values"
+     are variant PATTERNS (`case Ok:`, `case Failed(reason):`), not
+     expressions — never read as such (a pattern's binding names are
+     unbound on purpose; reading them would be noise at best). The
+     subject's own union-ness comes from this pass's own expr_ty,
+     deliberately NOT unwrapped through `?T` (types.ml's subj_union
+     makes the same call — a `?Union` subject stays on the plain-value
+     path until Task 6). *)
+  let subj_union =
+    match expr_ty ctx subject with
+    | Some (Scalar n) -> Types.StringMap.find_opt n ctx.syms.Types.unions
+    | _ -> None
+  in
+  (match subj_union with
+   | Some _ -> ()
+   | None ->
+     List.iter (fun (a : Ast.switch_arm) -> List.iter (read_expr ctx) a.Ast.values) arms);
+  (* A payload pattern's bindings are BORROWS of the subject's own
+     fields (`case Failed(reason):` reads `reason` straight out of the
+     variant object via GETF — the subject keeps owning the payload, so
+     the binding must never be dropped by the arm or the subject's own
+     drop double-frees). Declared into the arm's own scope, exactly like
+     a `for` cursor is into its loop's (same Borrowed state, same
+     l_holds = false); when the subject is a place, the binding's source
+     place is that place plus the field projection, so moving the
+     subject out from under a live binding is the ordinary WO-E302. *)
+  let arm_bindings (a : Ast.switch_arm) : local list =
+    match subj_union with
+    | None -> []
+    | Some u -> (
+      match a.Ast.values with
+      | [ { Ast.kind = Ast.Call ({ Ast.kind = Ast.Ident vname; _ }, args); _ } ] -> (
+        match
+          List.find_opt (fun (v : Types.variant_info) -> v.Types.vi_name = vname)
+            u.Types.u_variants
+        with
+        | Some vi when List.length args = List.length vi.Types.vi_fields ->
+          let subj_place = place_of subject in
+          List.concat
+            (List.map2
+               (fun (arg : Ast.expr) (fname, fty) ->
+                 match arg.Ast.kind with
+                 | Ast.Ident bn ->
+                   let src =
+                     match subj_place with
+                     | Some p ->
+                       Some { p with projs = p.projs @ [ PField fname ]; pnode = arg.Ast.id }
+                     | None -> None
+                   in
+                   [ { l_name = bn; l_ty = fty; l_class = oclass_of ctx fty;
+                       l_node = arg.Ast.id; l_pos = arg.Ast.pos; l_holds = false; l_src = src;
+                       l_bkind = AShared; l_state = Borrowed arg.Ast.pos } ]
+                 | _ -> [])
+               args vi.Types.vi_fields)
+        | _ -> [])
+      | _ -> [])
+  in
+  let entry = snapshot ctx in
+  let div0 = ctx.diverged in
+  (* review fix, Critical 1: walk the *lowering* order (default last),
+     not raw source order — see Ast.switch_lowering_order's own doc
+     comment. "ARM<i>" must be the same index emit.ml's own
+     emit_switch hands the owner tables, or every DScope/JOIN-DROP
+     lookup below silently misses. *)
+  let results =
+    List.mapi
+      (fun i (a : Ast.switch_arm) ->
+        restore entry;
+        ctx.diverged <- div0;
+        let label = Printf.sprintf "ARM%d" i in
+        analyze_block ctx ~pre:(arm_bindings a) ~node ~pos:a.Ast.arm_pos ~label a.Ast.body;
+        (label, a.Ast.arm_pos, snapshot ctx, ctx.diverged))
+      (Ast.switch_lowering_order arms)
+  in
+  let non_diverged = List.filter (fun (_, _, _, d) -> not d) results in
+  match non_diverged with
+  | [] ->
+    (* every arm diverged (or there were no arms at all — a malformed
+       switch types.ml already reports on): nothing reachable follows,
+       so — mirroring analyze_stmt's own `If` case, which restores
+       *some* snapshot purely for hygiene even though it is provably
+       unobservable — restore the last arm's ending state, if any. *)
+    (match List.rev results with (_, _, sn, _) :: _ -> restore sn | [] -> ());
+    ctx.diverged <- true
+  | (_, _, first_sn, _) :: rest ->
+    List.iter
+      (fun (label, pos, sn, _) ->
+        match List.filter (fun (l, _, _, _) -> l <> label) non_diverged with
+        | [] -> () (* the only non-diverging arm: nothing else could have moved anything *)
+        | (_, _, first_other, _) :: rest_other ->
+          let moved_elsewhere =
+            List.fold_left (fun acc (_, _, s, _) -> join acc s) first_other rest_other
+          in
+          branch_join_drops ctx ~node ~label ~pos ~moving:moved_elsewhere ~other:sn)
+      non_diverged;
+    restore (List.fold_left (fun acc (_, _, s, _) -> join acc s) first_sn rest);
+    ctx.diverged <- div0
+
 and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
   match s.s_kind with
   | Let { name; ty; value } -> analyze_let ctx s name ty value
@@ -1182,16 +1472,19 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
       ctx.diverged <- div0
     end
   | While { cond; body } ->
+    ctx.loop_stack <- s.s_id :: ctx.loop_stack;
     fixpoint ctx
       (fun () ->
         read_expr ctx cond;
-        analyze_block ctx ~node:s.s_id ~pos:s.s_pos ~label:"WHILE" body)
+        analyze_block ctx ~node:s.s_id ~pos:s.s_pos ~label:"WHILE" body);
+    ctx.loop_stack <- List.tl ctx.loop_stack
   | For { var; iter; body } ->
     read_expr ctx iter;
     let src = place_of iter in
     let item_ty =
       match expr_ty ctx iter with Some t -> ( match elem_ty t with Some e -> e | None -> t) | None -> Scalar "Int"
     in
+    ctx.loop_stack <- s.s_id :: ctx.loop_stack;
     fixpoint ctx
       (fun () ->
         push_scope ctx ~node:s.s_id ~pos:s.s_pos ~label:"FOR";
@@ -1202,7 +1495,22 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
             l_pos = s.s_pos; l_holds = false; l_src = src; l_bkind = AShared;
             l_state = Borrowed s.s_pos };
         List.iter (analyze_stmt ctx) body;
-        pop_scope ctx)
+        pop_scope ctx);
+    ctx.loop_stack <- List.tl ctx.loop_stack
+  | DoWhile { body; cond } ->
+    (* `do { body } while cond` — body always runs before the condition
+       is ever consulted, so it is analyzed first; still wrapped in
+       `fixpoint` for the same reason `while`/`for` are (a *second*
+       iteration's move state must be joined against the first's, the
+       brief's own loop rule — see fixpoint's doc comment). *)
+    ctx.loop_stack <- s.s_id :: ctx.loop_stack;
+    fixpoint ctx
+      (fun () ->
+        analyze_block ctx ~node:s.s_id ~pos:s.s_pos ~label:"DO" body;
+        read_expr ctx cond);
+    ctx.loop_stack <- List.tl ctx.loop_stack
+  | Break -> analyze_break ctx s
+  | Continue -> analyze_continue ctx s
 
 (* The brief's loop rule: probe the body once with recording off, join
    that with the entry state, then analyze for real against the joined
@@ -1223,8 +1531,14 @@ and fixpoint (ctx : ctx) (run : unit -> unit) : unit =
   restore (join entry after);
   ctx.diverged <- div0
 
-and analyze_block (ctx : ctx) ~node ~pos ~label (body : Ast.stmt list) : unit =
+(* `~pre` (haxe-parity Task 4): locals to declare into the fresh scope
+   before its statements run — a payload pattern's bindings, and nothing
+   else today. Borrows only (l_holds = false), so pop_scope's drop
+   recording never sees them; every pre-existing call site passes
+   nothing and is byte-identical. *)
+and analyze_block (ctx : ctx) ?(pre = []) ~node ~pos ~label (body : Ast.stmt list) : unit =
   push_scope ctx ~node ~pos ~label;
+  List.iter (declare ctx) pre;
   List.iter (analyze_stmt ctx) body;
   pop_scope ctx
 
@@ -1360,6 +1674,38 @@ and analyze_return (ctx : ctx) (s : Ast.stmt) (opt : Ast.expr option) : unit =
   release_gc ctx ~node:s.s_id ~pos:s.s_pos live;
   ctx.diverged <- true
 
+(* haxe-parity Task 2: `break`/`continue` reuse analyze_return's own
+   drop machinery verbatim, bounded to the nearest enclosing loop
+   instead of the whole function (live_holders_upto vs. live_holders —
+   see that function's doc comment) — this is "the one non-trivial bit"
+   the brief calls out: an owned value still alive in the loop body at
+   a `break`/`continue` gets its DROP recorded right here, at the jump,
+   not left to leak. `ctx.diverged <- true` afterward mirrors
+   analyze_return's own reasoning exactly: the rest of *this* block is
+   unreachable, and the surrounding if/fixpoint machinery already knows
+   how to fold that into a branch join or a loop's own entry/exit meet
+   (the same normalization a `return` inside a loop or an `if` already
+   gets, unchanged by this task). Outside any loop, `loop_stack` is
+   empty and nothing is recorded — see that field's own doc comment for
+   why emit.ml, not this pass, is the actual gate for that case. *)
+and analyze_break (ctx : ctx) (s : Ast.stmt) : unit =
+  (match ctx.loop_stack with
+  | [] -> ()
+  | loop_node :: _ ->
+    let live = live_holders_upto ctx loop_node in
+    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DBreak ~items:(owned_items live);
+    release_gc ctx ~node:s.s_id ~pos:s.s_pos live);
+  ctx.diverged <- true
+
+and analyze_continue (ctx : ctx) (s : Ast.stmt) : unit =
+  (match ctx.loop_stack with
+  | [] -> ()
+  | loop_node :: _ ->
+    let live = live_holders_upto ctx loop_node in
+    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DContinue ~items:(owned_items live);
+    release_gc ctx ~node:s.s_id ~pos:s.s_pos live);
+  ctx.diverged <- true
+
 (* ============================================================
    Per-function driver
    ============================================================ *)
@@ -1396,8 +1742,8 @@ let resolve_rc (ctx : ctx) : unit =
 let analyze_fn ~(file : string) (syms : Types.symbols) (coll : Diag.Collector.t) (sink : sink)
     ~(self_class : string option) (m : Ast.method_decl) : unit =
   let ctx =
-    { file; syms; coll; sink; fn_name = m.name; scopes = []; recording = true; diverged = false;
-      fn_rcs = []; rc_groups = Hashtbl.create 8; rc_escaped = Hashtbl.create 8;
+    { file; syms; coll; sink; fn_name = m.name; scopes = []; loop_stack = []; recording = true;
+      diverged = false; fn_rcs = []; rc_groups = Hashtbl.create 8; rc_escaped = Hashtbl.create 8;
       clobbered = Hashtbl.create 8 }
   in
   push_scope ctx ~node:m.id ~pos:m.pos ~label:"BODY";
@@ -1430,7 +1776,10 @@ let analyze ~(file : string) (prog : Ast.program) (syms : Types.symbols)
       | Ast.Class c ->
         List.iter (fun m -> analyze_fn ~file syms coll sink ~self_class:(Some c.name) m) c.methods
       | Ast.Interface _ -> ()
-      | Ast.Fn f -> analyze_fn ~file syms coll sink ~self_class:None f)
+      | Ast.Fn f -> analyze_fn ~file syms coll sink ~self_class:None f
+      | Ast.Use _ -> ()
+      | Ast.Const _ -> ()
+      | Ast.Union _ -> () (* haxe-parity Task 4: no bodies to analyze *))
     prog.decls;
   (* Source order: sort by position, stably, so entries sharing a
      position keep the order the walk produced. Node ids can *not* be

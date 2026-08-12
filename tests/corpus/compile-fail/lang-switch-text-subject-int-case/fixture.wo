@@ -1,0 +1,19 @@
+-- haxe-parity Task 3, review fix (Critical 2): a `Text` subject
+-- compared against an `Int` case label is not merely a type error --
+-- unchecked, it is a real VM segfault: emit.ml's EQ-vs-EQS choice
+-- reads only the SUBJECT's type, so `s: Text` picks EQS, and EQS's
+-- own `str_check` dereferences whatever sits in the case value's
+-- register as a `wo_str*` -- a raw int64 (`1`) read as a heap address.
+-- `s` is confidently `Text` (a declared parameter), so this is a
+-- real, statically-provable mismatch, not a guess.
+fn describe(s: Text) -> Text {
+  let v = switch s {
+    case 1: "one";
+    default: "other";
+  };
+  return v;
+}
+
+fn main() -> Int {
+  return 0;
+}

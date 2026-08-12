@@ -1,0 +1,13 @@
+-- haxe-parity Task 2: string interpolation. Text interpolants pass
+-- through untouched; an Int interpolant (`count`) desugars through the
+-- new `int_to_text` builtin. `\$` produces a literal `$` (so a whole
+-- `${...}` sequence stays literal text when the `$` was escaped); a
+-- lone `$` not followed by `{` also stays literal, unconditionally.
+fn main() -> Int {
+  let count = 3
+  let name = "log-watcher"
+  print("${name}: ${count} lines")
+  print("price is \${100} exactly")
+  print("a lone $ stays literal")
+  return 0
+}

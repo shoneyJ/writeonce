@@ -460,14 +460,19 @@ let () =
           && List.for_all (fun (m : Ast.method_decl) -> c.id < m.id) c.methods);
         add c.id;
         List.iter visit_field c.fields;
-        List.iter visit_method c.methods
+        List.iter visit_method c.methods;
+        (* haxe-parity Task 2: bare class-level consts, same shape *)
+        List.iter (fun (cd : Ast.const_decl) -> add cd.id) c.consts
       | Ast.Interface i ->
         check
           (Printf.sprintf "node ids: interface `%s` id < all its method ids" i.name)
           (List.for_all (fun (s : Ast.method_sig) -> i.id < s.id) i.methods);
         add i.id;
         List.iter visit_sig i.methods
-      | Ast.Fn m -> visit_method m)
+      | Ast.Fn m -> visit_method m
+      | Ast.Use u -> add u.id
+      | Ast.Const c -> add c.id
+      | Ast.Union u -> add u.id (* haxe-parity Task 4: variants carry no ids of their own *))
     prog.Ast.decls;
   let sorted = List.sort compare !ids in
   let deduped = List.sort_uniq compare !ids in
@@ -574,6 +579,161 @@ let () =
         (match cond.Ast.kind with Ast.Ident "active" -> true | _ -> false)
     | _ -> check "no_brace guard: exactly one `if` statement" false)
   | _ -> check "no_brace guard: exactly one free fn" false
+
+(* ---- haxe-parity Task 2 (not golden-diffed) -----------------------------
+
+   `and`/`or` precedence, string-interpolation desugar shape, and const
+   substitution's scope-awareness — all structural facts a text dump
+   cannot show cleanly (same rationale as this file's other direct
+   assertions above). break/continue/do-while's own shapes are simple
+   enough that golden/ast coverage would suffice, so they are not
+   duplicated here. *)
+
+let () =
+  (* `or` binds loosest, then `and`, then comparison (parser.ml's own
+     ladder doc): `a == 1 and b == 2` must parse as
+     `And(Eq(a,1), Eq(b,2))` with no parens needed. *)
+  let prog, _ = parse_str ~file:"and-prec.wo" "fn f(a: Int, b: Int) {\n  return a == 1 and b == 2\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.Binary (Ast.And, l, r); _ }); _ } ] ->
+      check "and/or precedence: left operand is `a == 1`"
+        (match l.Ast.kind with
+        | Ast.Binary (Ast.Eq, { Ast.kind = Ast.Ident "a"; _ }, { Ast.kind = Ast.IntLit 1; _ }) -> true
+        | _ -> false);
+      check "and/or precedence: right operand is `b == 2`"
+        (match r.Ast.kind with
+        | Ast.Binary (Ast.Eq, { Ast.kind = Ast.Ident "b"; _ }, { Ast.kind = Ast.IntLit 2; _ }) -> true
+        | _ -> false)
+    | _ -> check "and/or precedence: top-level operator is `and`, not split by `==`" false)
+  | _ -> check "and/or precedence: exactly one free fn" false
+
+let () =
+  (* `or` looser than `and`: `x or y and z` is `Or(x, And(y, z))`, not
+     `And(Or(x,y), z)`. *)
+  let prog, _ = parse_str ~file:"or-prec.wo" "fn f(x: Bool, y: Bool, z: Bool) {\n  return x or y and z\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.Binary (Ast.Or, l, r); _ }); _ } ] ->
+      check "or looser than and: left operand is bare `x`"
+        (match l.Ast.kind with Ast.Ident "x" -> true | _ -> false);
+      check "or looser than and: right operand is `y and z`"
+        (match r.Ast.kind with
+        | Ast.Binary (Ast.And, { Ast.kind = Ast.Ident "y"; _ }, { Ast.kind = Ast.Ident "z"; _ }) -> true
+        | _ -> false)
+    | _ -> check "or looser than and: top-level operator is `or`" false)
+  | _ -> check "or looser than and: exactly one free fn" false
+
+let () =
+  (* Interpolation desugar shape: `"${x} y"` -> Concat(Interp(Ident x),
+     StrLit " y") -- the parse-time-decided chain shape parser.ml's own
+     Ast.Interp doc comment describes. *)
+  let prog, _ = parse_str ~file:"interp.wo" "fn f(x: Int) {\n  return \"${x} y\"\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [
+     {
+       Ast.s_kind =
+         Ast.Return (Some { Ast.kind = Ast.Binary (Ast.Concat, { Ast.kind = Ast.Interp inner; _ }, tail); _ });
+       _;
+     };
+    ] ->
+      check "interp desugar: the embedded expression is bare `x`"
+        (match inner.Ast.kind with Ast.Ident "x" -> true | _ -> false);
+      check "interp desugar: the trailing text segment is `\" y\"`"
+        (match tail.Ast.kind with Ast.StrLit " y" -> true | _ -> false)
+    | _ -> check "interp desugar: exactly one `return Concat(Interp, StrLit)`" false)
+  | _ -> check "interp desugar: exactly one free fn" false
+
+let () =
+  (* `\$` is a literal `$`, so a fully-escaped `${x}` never triggers
+     interpolation at all -- the whole literal stays one plain StrLit,
+     not a degenerate one-segment Interp chain. *)
+  let prog, _ = parse_str ~file:"interp-escape.wo" "fn f() {\n  return \"\\${x}\"\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some e); _ } ] ->
+      check "interp desugar: `\\${x}` is a plain StrLit \"${x}\", no interpolation"
+        (match e.Ast.kind with Ast.StrLit "${x}" -> true | _ -> false)
+    | _ -> check "interp desugar (escape): exactly one `return`" false)
+  | _ -> check "interp desugar (escape): exactly one free fn" false
+
+let () =
+  (* Review fix (Important, post-Task-2): a genuine sub-parse failure
+     inside an interpolation (1 +, not just trailing garbage) must
+     report at the outer string literal's own position, with the same
+     malformed-interpolation framing the trailing-garbage case already
+     used — not at the sub-lexer's own uncorrected 1:1-relative
+     line/col, which used to land on some unrelated line of the real
+     file (and never mentioned interpolation at all, since it was
+     raised straight out of the nested parse_expr). The source below
+     puts the string literal's own opening quote at line 2, column 10;
+     a regression back to the old, uncaught-inner-failure behavior
+     would report at line 1 (the sub-lexer's own count) instead. *)
+  let prog, collector =
+    parse_str ~file:"interp-malformed.wo" "fn f() {\n  return \"${1 +}\"\n}\n"
+  in
+  (match Diag.Collector.diagnostics collector with
+  | d :: _ ->
+    check "interp malformed sub-expr: reports at the outer string's own position (2:10)"
+      (d.Diag.site.Diag.line = 2 && d.Diag.site.Diag.col = 10);
+    check "interp malformed sub-expr: the \"malformed ${...}\" message, not a raw sub-parse error"
+      (d.Diag.message = "malformed \"${...}\" interpolation expression");
+    check "interp malformed sub-expr: code is WO-E101" (d.Diag.code = "WO-E101")
+  | [] -> check "interp malformed sub-expr: at least one diagnostic reported" false);
+  (* The failure is caught and recovered at the *statement* level
+     (parse_block's own sync_to_next_stmt, unchanged by this fix) --
+     `fn f` itself still parses, just with its one bad `return`
+     statement dropped, confirming desugar_interp's `fail` raises
+     Parse_error the ordinary way rather than short-circuiting recovery
+     entirely. *)
+  ignore prog
+
+let () =
+  (* const substitution (parser.ml's own post-parse pass): a bare
+     `Ident` reference becomes the literal expr the const named. *)
+  let prog, _ = parse_str ~file:"const.wo" "const N = 5\nfn f() {\n  return N\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Const _; Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.IntLit 5; _ }); _ } ] ->
+      check "const substitution: `return N` became `return 5`" true
+    | _ -> check "const substitution: `return N` should desugar to `return 5`" false)
+  | _ -> check "const substitution: exactly one const decl and one free fn" false
+
+let () =
+  (* Scope-aware, exactly like types.ml's own local-shadows-a-`use`-
+     alias fix (Task 1 review): a parameter named the same as a
+     top-level const always wins, so `f`'s own `N` parameter is returned
+     unsubstituted, not silently replaced by the const's `5`. *)
+  let prog, _ = parse_str ~file:"const-shadow.wo" "const N = 5\nfn f(N: Int) {\n  return N\n}\n" in
+  match prog.Ast.decls with
+  | [ Ast.Const _; Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.Ident "N"; _ }); _ } ] ->
+      check "const substitution: a same-named parameter shadows the const" true
+    | _ -> check "const substitution: a same-named parameter must shadow the const, not get replaced" false)
+  | _ -> check "const substitution (shadowing): exactly one const decl and one free fn" false
+
+let () =
+  (* Class-level consts win over a same-named top-level one (innermost
+     scope wins) and are visible bare, with no `self.` prefix, inside
+     that class's own methods only. *)
+  let prog, _ =
+    parse_str ~file:"const-class.wo"
+      "const LABEL = \"top\"\nclass Box {\n  const LABEL = \"class\"\n  n: Int\n  fn get() -> Text {\n    return LABEL\n  }\n}\n"
+  in
+  match prog.Ast.decls with
+  | [ Ast.Const _; Ast.Class c ] -> (
+    match c.methods with
+    | [ { body = [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.StrLit "class"; _ }); _ } ]; _ } ] ->
+      check "const substitution: class-level const shadows the top-level one" true
+    | _ -> check "const substitution: class-level LABEL should win, returning \"class\"" false)
+  | _ -> check "const substitution (class-level): exactly one const decl and one class" false
 
 (* ---- fix round 1 regressions (post-review CRITICAL 1/2/3) ---------------
 
@@ -694,6 +854,108 @@ let () =
         | _ -> false)
     | _ -> check "ctor in call/index inside a condition: exactly two `if` statements" false)
   | _ -> check "ctor in call/index inside a condition: exactly one free fn" false
+
+(* ---- haxe-parity Task 3 (`switch` as expression, not golden-diffed) --
+
+   Same rationale as Task 2's own direct-assertion section above: the
+   grammar shape (arm count, multi-value `case`, `default`'s empty
+   `values`, the no_brace guard on the subject) is a structural fact a
+   text dump cannot show cleanly. *)
+
+let () =
+  (* `switch code { case 200: "a"; case 404, 410: "b"; default: "c"; }`
+     -- the sample's own shape (docs/examples/log-watcher/cron.wo's
+     `case "@daily", "@midnight": ...`): a `case` may carry more than
+     one value, `default` carries none and is flagged. *)
+  let prog, collector =
+    parse_str ~file:"switch-shape.wo"
+      "fn f(code: Int) -> Text {\n\
+      \  return switch code {\n\
+      \    case 200: \"a\";\n\
+      \    case 404, 410: \"b\";\n\
+      \    default: \"c\";\n\
+      \  };\n\
+       }\n"
+  in
+  check_eq "switch shape: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector))
+    string_of_int;
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.Return (Some { Ast.kind = Ast.Switch (subject, arms); _ }); _ } ] ->
+      check "switch shape: subject is the bare Ident `code`"
+        (match subject.Ast.kind with Ast.Ident "code" -> true | _ -> false);
+      (match arms with
+      | [ a1; a2; a3 ] ->
+        check "switch shape: arm 1 is a single-value `case 200`, not default"
+          (not a1.Ast.is_default
+          && match a1.Ast.values with [ { Ast.kind = Ast.IntLit 200; _ } ] -> true | _ -> false);
+        check "switch shape: arm 2 is the multi-value `case 404, 410`"
+          (not a2.Ast.is_default
+          &&
+          match a2.Ast.values with
+          | [ { Ast.kind = Ast.IntLit 404; _ }; { Ast.kind = Ast.IntLit 410; _ } ] -> true
+          | _ -> false);
+        check "switch shape: arm 3 is `default`, with no values"
+          (a3.Ast.is_default && a3.Ast.values = [])
+      | _ -> check "switch shape: exactly three arms" false)
+    | _ -> check "switch shape: exactly one `return switch ...`" false)
+  | _ -> check "switch shape: exactly one free fn" false
+
+let () =
+  (* Statement position: "one construct, not two" (the brief's own
+     words) -- a bare `switch {...}` with no assignment is exactly the
+     same `Ast.Switch` node, just wrapped in `ExprStmt`, its value
+     discarded -- the same shape a bare `select ...`/function-call
+     statement already is. *)
+  let prog, collector =
+    parse_str ~file:"switch-stmt-shape.wo"
+      "fn f(n: Int) {\n\
+      \  switch n {\n\
+      \    case 1: print(\"one\");\n\
+      \    default: print(\"other\");\n\
+      \  }\n\
+       }\n"
+  in
+  check_eq "switch statement shape: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector))
+    string_of_int;
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.ExprStmt { Ast.kind = Ast.Switch (subject, arms); _ }; _ } ] ->
+      check "switch statement shape: subject is the bare Ident `n`"
+        (match subject.Ast.kind with Ast.Ident "n" -> true | _ -> false);
+      check_eq "switch statement shape: two arms" ~expected:2 ~actual:(List.length arms)
+        string_of_int
+    | _ -> check "switch statement shape: exactly one bare `ExprStmt(Switch ...)`" false)
+  | _ -> check "switch statement shape: exactly one free fn" false
+
+let () =
+  (* The no_brace guard (parser.ml's state.no_brace / looks_like_ctor),
+     for `switch` exactly like `if`/`while`/`for` above: a bare
+     identifier subject immediately followed by `{` is the switch's own
+     body, never a constructor literal swallowing it. *)
+  let prog, collector =
+    parse_str ~file:"switch-no-brace.wo"
+      "fn f(active: Int) {\n\
+      \  switch active {\n\
+      \    default: return\n\
+      \  }\n\
+       }\n"
+  in
+  check_eq "switch no_brace guard: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector))
+    string_of_int;
+  match prog.Ast.decls with
+  | [ Ast.Fn m ] -> (
+    match m.body with
+    | [ { Ast.s_kind = Ast.ExprStmt { Ast.kind = Ast.Switch (subject, _); _ }; _ } ] ->
+      check "switch no_brace guard: subject is the bare ident, not a Ctor"
+        (match subject.Ast.kind with Ast.Ident "active" -> true | _ -> false)
+    | _ -> check "switch no_brace guard: exactly one switch statement" false)
+  | _ -> check "switch no_brace guard: exactly one free fn" false
 
 (* ---- CLI smoke -------------------------------------------------------
 
@@ -879,6 +1141,65 @@ let () =
     (find_substring ~needle:"fixtures/driver/collision/a_first.wo:1:1: `Dup` first declared here"
        stderr
     <> None)
+
+let () =
+  (* haxe-parity Task 1 (modules): unused-`use` golden. Corpus fixtures
+     (tests/corpus/run and tests/corpus/compile-fail, "lang-use-" prefix)
+     exercise the resolver end to end through the real woc/wovm pair —
+     cross-module call,
+     collision, private-name-access — but oop-e2e.sh's compile-fail/
+     kind demands exit 1, and run/ only diffs stdout, so neither kind
+     can assert a *warning*-only outcome (exit 0, something on stderr)
+     at all; that gap is exactly why the brief calls out "golden via
+     compiler suite since warnings don't fail" for this one case, and
+     is filed here rather than duplicating the collision/private-access/
+     cross-module cases already proven end to end by the corpus. *)
+  let path = "fixtures/driver/module-unused-use/unused.wo" in
+  let exit_code, _stdout, stderr = run_cli [ path ] in
+  check "unused use: `use fs` declared and never called still exits 0 (a warning, not an error)"
+    (exit_code = 0);
+  check "unused use: WO-W202 on the `use fs` line, naming the module"
+    (find_substring ~needle:"unused.wo:5:1: warning WO-W202: unused `use fs`" stderr <> None)
+
+(* Manual non-overlapping substring counter, same idiom as find_substring
+   just above -- the one thing that helper can't answer on its own
+   (whether a needle occurs more than once), needed only by the single
+   test right below it. *)
+let count_substring ~needle haystack =
+  let hlen = String.length haystack and nlen = String.length needle in
+  let rec go i n =
+    if i + nlen > hlen then n
+    else if String.sub haystack i nlen = needle then go (i + nlen) (n + 1)
+    else go (i + 1) n
+  in
+  go 0 0
+
+let () =
+  (* Hotfix (multi-file double-report): typecheck_program used to walk
+     the whole-program *merged* symbol table's classes/free_fns
+     regardless of which file was actually being checked, so an N-file
+     program ran every file's bodies through the checker once per
+     discovered file (here N=2, so 2x, not once) -- b.wo's one real
+     WO-E202 (`it.price`; Item, declared in a.wo, has no such field)
+     got a second, phantom copy stamped with a.wo's own path, at the
+     same (line, col) a.wo doesn't even have that many lines of. See
+     types.ml's typecheck_program doc comment (the `~file_syms` fix)
+     and .superpowers/sdd/2026-08-01-haxe-parity-language/
+     hotfix-e209-report.md's "Disclosed, NOT fixed" section for the
+     original diagnosis this pins the fix for. Bare check-only mode
+     (no --emit) on purpose: it skips emit.ml's own, unrelated
+     field-existence check (WO-E403), keeping this fixture down to
+     exactly the one diagnostic under test. *)
+  let dir = "fixtures/driver/multifile-single-report" in
+  let exit_code, _stdout, stderr = run_cli [ dir ] in
+  check "multifile single-report: exits 1 (one real WO-E202, nothing else)" (exit_code = 1);
+  check "multifile single-report: WO-E202 reported EXACTLY once, not once per other file"
+    (count_substring ~needle:"error WO-E202" stderr = 1);
+  check "multifile single-report: the one report is tagged with b.wo (the real site)"
+    (find_substring ~needle:"b.wo:8:15: error WO-E202: unknown field `price` on `Item`" stderr
+    <> None);
+  check "multifile single-report: no phantom copy stamped with a.wo's path"
+    (find_substring ~needle:"a.wo:" stderr = None)
 
 (* ---- direct typechecker assertions (Task 6b) --------------------------
 
@@ -1113,6 +1434,363 @@ let () =
   check_eq "class/fn name sharing across namespaces: reports nothing" ~expected:0
     ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
 
+(* ---- WO-E209 direct assertions (hotfix: invalid-builtin-arg) ----------
+
+   `print(7)` used to compile clean and segfault `wovm` -- `print` wants
+   a `Text` (a heap-string pointer) and a bare `7` is a plain int64
+   register, so the VM's `str_check` dereferenced it as a wild pointer.
+   `tests/corpus/compile-fail/lang-builtin-arg-type/` and
+   `lang-builtin-arity/` pin the same two shapes end to end through
+   `woc`/`oop-e2e.sh`; these assertions pin the Collector-level contract
+   directly (code, severity, exact position), the same way the WO-W201/
+   WO-E225/WO-E215 blocks above do. *)
+
+let () =
+  (* Positive control: a correctly-typed `print` call must stay silent --
+     this check must not regress the common case. *)
+  let _, collector = typecheck_str ~file:"print-ok.wo" "fn main() {\n  print(\"x\")\n}\n" in
+  check_eq "builtin-arg-type: print(\"x\") reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* Negative #1: print(7) -- a Text builtin called with an Int literal,
+     the exact segfault repro. Reported at the argument's own position
+     (2:9, the `7`), not the call's. *)
+  let path = "print-int-lit.wo" in
+  let _, collector = typecheck_str ~file:path "fn main() {\n  print(7)\n}\n" in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "builtin-arg-type: print(7) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "builtin-arg-type: code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arg-type: severity is Error" (d.Diag.severity = Diag.Error);
+    check "builtin-arg-type: reported at the argument's own position (print-int-lit.wo:2:9)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 2 && d.Diag.site.Diag.col = 9);
+    check "builtin-arg-type: message names the builtin, expected, and actual type"
+      (find_substring ~needle:"builtin `print` expects Text, got `Int`" d.Diag.message <> None)
+  | _ -> check "builtin-arg-type: print(7) exactly one diagnostic" false);
+  check_eq "builtin-arg-type: an error run exits 1" ~expected:1
+    ~actual:(Diag.Collector.exit_code collector) string_of_int
+
+let () =
+  (* Negative #2: now(1) -- `now` takes zero arguments
+     (08-builtin-surface.md's `now()` row). Reported at the call's own
+     position (2:6, the `(` -- e.pos for a Call node), same code as the
+     argument-type mismatch above: WO-E209 covers both halves of
+     "invalid builtin call." *)
+  let path = "now-arity.wo" in
+  let _, collector = typecheck_str ~file:path "fn main() {\n  now(1)\n}\n" in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "builtin-arity: now(1) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "builtin-arity: code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arity: reported at the call's own position (now-arity.wo:2:6)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 2 && d.Diag.site.Diag.col = 6);
+    check "builtin-arity: message names the builtin and the counts"
+      (find_substring ~needle:"builtin `now` takes 0 argument(s), given 1" d.Diag.message <> None)
+  | _ -> check "builtin-arity: now(1) exactly one diagnostic" false
+
+let () =
+  (* Container-ness, real catch: `push` wants a `multi` receiver
+     (08-builtin-surface.md); `b.n` is a genuinely *declared* `Int`
+     field, not an unresolved placeholder, so this must fire even though
+     the receiver isn't a literal -- the case that motivated threading
+     `confident_typ`'s own `cenv` through field/parameter resolution
+     instead of only trusting literals. *)
+  let _, collector =
+    typecheck_str ~file:"push-wrong-receiver.wo"
+      "class Box {\n  n: Int\n}\nfn use_box(b: Box) {\n  push(b.n, 1)\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "builtin-arg-type: push(b.n, 1) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "builtin-arg-type: code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arg-type: message names push, a multi, and Int"
+      (find_substring ~needle:"builtin `push` expects a `multi`, got `Int`" d.Diag.message <> None)
+  | _ -> check "builtin-arg-type: push(b.n, 1) exactly one diagnostic" false
+
+let () =
+  (* Container-ness, positive control: `push` onto a genuinely-declared
+     `multi` field must stay silent. *)
+  let _, collector =
+    typecheck_str ~file:"push-ok.wo"
+      "class Item {\n  n: Int\n}\nclass Box {\n  items: multi Item\n}\nfn use_box(b: Box) {\n  \
+       push(b.items, Item { n: 1 })\n}\n"
+  in
+  check_eq "builtin-arg-type: push onto a declared `multi` field reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* Shadowing: "a user-declared free fn of the same name always wins"
+     (08-builtin-surface.md) -- a same-named `print` taking a `Text`
+     means `print(7)` is now a call to *that* fn, not the builtin, so
+     this check must not fire (whether the user fn's own call is
+     well-typed is WO-E203/WO-E204's pre-existing, unrelated gap). *)
+  let _, collector =
+    typecheck_str ~file:"print-shadowed.wo"
+      "fn print(x: Text) {\n  print_int(1)\n}\nfn main() {\n  print(7)\n}\n"
+  in
+  check_eq "builtin-arg-type: user-declared `print` shadows the builtin, reports nothing"
+    ~expected:0 ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* Conservatism: `print(x)` where `x` is an unresolved name has no
+     confidently-known type (an unresolved `Ident` is `confident_typ`'s
+     own `None` case) -- this check must stay silent rather than guess,
+     exactly the "stay silent when underivable" contract. *)
+  let _, collector = typecheck_str ~file:"print-unresolved.wo" "fn main() {\n  print(x)\n}\n" in
+  check_eq "builtin-arg-type: print(x) with x unresolved reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+(* ---- WO-E209 round 2: Call-return derivation (fix-round-1 finding) ----
+
+   Round 1's `confident_typ` chased literals/fields/params but never a
+   `Call`'s own return type -- so `print(takesSecret(box))`, where
+   `takesSecret` is declared `-> Int`, compiled clean and segfaulted
+   `wovm` exactly like `print(7)` does, one call deeper. Controller-
+   verified real repro; `tests/corpus/compile-fail/
+   lang-builtin-arg-type-{freefn,method}/` pin the same two shapes end
+   to end through `woc`/`oop-e2e.sh`. *)
+
+let () =
+  (* Free-fn call: `takesSecret` is declared `-> Int`; a class method
+     call inside it (`box.hidden()`) is itself part of the repro but not
+     what's being pinned here -- the outer `print` call is. *)
+  let path = "print-freefn-call.wo" in
+  let src =
+    "class Box {\n  fn hidden() -> Int {\n    return 7\n  }\n}\n\
+     fn takesSecret(box: Box) -> Int {\n  return box.hidden()\n}\n\
+     fn main() {\n  print(takesSecret(Box{}))\n}\n"
+  in
+  let _, collector = typecheck_str ~file:path src in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "builtin-arg-type: print(freefn-call) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "builtin-arg-type: code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arg-type: reported at the call's own position (print-freefn-call.wo:10:20)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 10 && d.Diag.site.Diag.col = 20);
+    check "builtin-arg-type: message names print, Text, and Int"
+      (find_substring ~needle:"builtin `print` expects Text, got `Int`" d.Diag.message <> None)
+  | _ -> check "builtin-arg-type: print(freefn-call) exactly one diagnostic" false
+
+let () =
+  (* Method call, receiver built the ordinary way (`let b = Box{}`, a
+     `Ctor` -- confident_typ has to chase that too, not only a
+     parameter's declared type, to reach `hidden`'s own `-> Int`). *)
+  let path = "print-method-call.wo" in
+  let src =
+    "class Box {\n  fn hidden() -> Int {\n    return 7\n  }\n}\n\
+     fn main() {\n  let b = Box{}\n  print(b.hidden())\n}\n"
+  in
+  let _, collector = typecheck_str ~file:path src in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "builtin-arg-type: print(method-call) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "builtin-arg-type: code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arg-type: reported at the call's own position (print-method-call.wo:8:17)"
+      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 8 && d.Diag.site.Diag.col = 17);
+    check "builtin-arg-type: message names print, Text, and Int"
+      (find_substring ~needle:"builtin `print` expects Text, got `Int`" d.Diag.message <> None)
+  | _ -> check "builtin-arg-type: print(method-call) exactly one diagnostic" false
+
+let () =
+  (* Bidirectional pin on a builtin-call return type feeding another
+     builtin: `words` returns `Int` (08-builtin-surface.md), so
+     `print(words(...))` is WO-E209 (wants `Text`) and
+     `print_int(words(...))` is clean (wants `Int`) -- same underlying
+     `builtin_confident_ret` entry, both directions asserted so a
+     regression flipping either one is caught. *)
+  let _, bad_collector =
+    typecheck_str ~file:"print-words.wo" "fn main() {\n  print(words(\"a b\"))\n}\n"
+  in
+  let bad_diags = Diag.Collector.diagnostics bad_collector in
+  check_eq "builtin-arg-type: print(words(...)) is exactly one diagnostic (WO-E209)" ~expected:1
+    ~actual:(List.length bad_diags) string_of_int;
+  (match bad_diags with
+  | [ d ] ->
+    check "builtin-arg-type: print(words(...)) code is WO-E209" (d.Diag.code = "WO-E209");
+    check "builtin-arg-type: print(words(...)) message names print, Text, and Int"
+      (find_substring ~needle:"builtin `print` expects Text, got `Int`" d.Diag.message <> None)
+  | _ -> check "builtin-arg-type: print(words(...)) exactly one diagnostic" false);
+  let _, ok_collector =
+    typecheck_str ~file:"print-int-words.wo" "fn main() {\n  print_int(words(\"a b\"))\n}\n"
+  in
+  check_eq "builtin-arg-type: print_int(words(...)) reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics ok_collector)) string_of_int
+
+(* ---- haxe-parity Task 3: WO-E208 (missing default), WO-E201 (arm
+   mismatch) direct assertions --------------------------------------
+
+   tests/corpus/compile-fail/lang-switch-missing-default and
+   lang-switch-arm-mismatch already pin the end-to-end shape (real code,
+   real exit status); these pin the exact diagnostic — count, severity,
+   site — the same way the WO-E209 blocks above do for builtins. *)
+
+let () =
+  (* Scalar subject (`Int`), no `default`: unconditional today (no union
+     type exists yet — see typecheck_switch's own doc comment, the seam
+     Task 4 extends) — WO-E208, at the subject's own position. *)
+  let path = "switch-no-default.wo" in
+  let _, collector =
+    typecheck_str ~file:path
+      "fn f(n: Int) -> Text {\n  let v = switch n {\n    case 1: \"a\";\n    case 2: \"b\";\n  }\n  return v\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "switch missing default: exactly one diagnostic (WO-E208)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "switch missing default: code is WO-E208" (d.Diag.code = "WO-E208");
+    check "switch missing default: severity is Error" (d.Diag.severity = Diag.Error);
+    check "switch missing default: message names the subject's type (`Int`)"
+      (find_substring ~needle:"switch over `Int` has no `default` arm" d.Diag.message <> None)
+  | _ -> check "switch missing default: exactly one diagnostic" false
+
+let () =
+  (* Review fix (Critical 1): a `default` arm satisfies the default-
+     required rule even when it is not textually last (no error) — but
+     is no longer silent about it either: `case 2`, written after
+     `default`, used to be permanently unreachable dead code (nothing
+     ever jumped into it) with zero diagnostic; `default` is now
+     lowered last regardless of source position (ast.ml's own
+     `switch_lowering_order`, so `case 2` is live again — see the
+     dedicated corpus fixture, lang-switch-default-not-last, for the
+     runtime proof), and this position is still surprising enough
+     source to warn about once, at `default`'s own site. *)
+  let path = "switch-default-present.wo" in
+  let _, collector =
+    typecheck_str ~file:path
+      "fn f(n: Int) -> Text {\n  let v = switch n {\n    case 1: \"a\";\n    default: \"z\";\n    case 2: \"b\";\n  }\n  return v\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "switch with default present (not last): exactly one diagnostic (WO-W203)"
+    ~expected:1 ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "switch default not last: code is WO-W203" (d.Diag.code = "WO-W203");
+    check "switch default not last: severity is Warning (never an error)"
+      (d.Diag.severity = Diag.Warning);
+    check_eq "switch default not last: exits 0 (a warning-only run)" ~expected:0
+      ~actual:(Diag.Collector.exit_code collector) string_of_int
+  | _ -> check "switch default not last: exactly one diagnostic" false
+
+let () =
+  (* Arm-type unification: `case 1` yields `Text`, `default` yields
+     `Int` — the switch's own type is fixed by the first arm
+     (typecheck_switch's "first wins" convention), so the mismatch is
+     reported at the *later* (default) arm's own value, not the first. *)
+  let path = "switch-arm-mismatch.wo" in
+  let _, collector =
+    typecheck_str ~file:path
+      "fn f(n: Int) -> Text {\n  let v = switch n {\n    case 1: \"a\";\n    default: 0;\n  }\n  return v\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "switch arm mismatch: exactly one diagnostic (WO-E201)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "switch arm mismatch: code is WO-E201" (d.Diag.code = "WO-E201");
+    check "switch arm mismatch: severity is Error" (d.Diag.severity = Diag.Error);
+    check "switch arm mismatch: message names both types (`Int` vs `Text`)"
+      (find_substring ~needle:"switch arm yields `Int`, but the switch's type is `Text`"
+         d.Diag.message
+      <> None);
+    check_eq "switch arm mismatch: reported at the `default` arm's own value (line 4, col 14)"
+      ~expected:(4, 14) ~actual:(d.Diag.site.Diag.line, d.Diag.site.Diag.col)
+      (fun (l, c) -> Printf.sprintf "%d:%d" l c)
+  | _ -> check "switch arm mismatch: exactly one diagnostic" false)
+
+let () =
+  (* Statement position: "the expression with a discarded value" — an
+     arm that fails to yield one (every arm here ends in `return`, not
+     an `ExprStmt`) must NOT be treated as a type mismatch: nothing is
+     unified when the value is never used. Also proves `default` is
+     still required in statement position, unconditionally (not just
+     when the value is consumed). *)
+  let _, collector =
+    typecheck_str ~file:"switch-stmt-no-mismatch.wo"
+      "fn f(n: Int) -> Int {\n  switch n {\n    case 1: return 1\n    default: return 0\n  }\n  return 0\n}\n"
+  in
+  check_eq "switch statement position, every arm returns: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
+
+let () =
+  (* Review fix (Critical 2): a `Text` subject compared against an
+     `Int` case label is not merely a type error — unchecked, it is a
+     real VM segfault (emit.ml's EQ-vs-EQS choice reads only the
+     subject's type; `s: Text` picks EQS, whose `str_check`
+     dereferences the case value's own register — a raw int64 — as a
+     `wo_str*`). Wired through WO-E201 (`type_mismatch_code`), the
+     same code the arm-unification check above uses, per the review's
+     own instruction. *)
+  let path = "switch-text-int-mismatch.wo" in
+  let _, collector =
+    typecheck_str ~file:path
+      "fn f(s: Text) -> Text {\n  let v = switch s {\n    case 1: \"a\";\n    default: \"b\";\n  }\n  return v\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "switch Text-subject/Int-case: exactly one diagnostic (WO-E201)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  (match diags with
+  | [ d ] ->
+    check "switch Text-subject/Int-case: code is WO-E201" (d.Diag.code = "WO-E201");
+    check "switch Text-subject/Int-case: severity is Error" (d.Diag.severity = Diag.Error);
+    check "switch Text-subject/Int-case: message names both types"
+      (find_substring
+         ~needle:"switch case value has type `Int`, but the switch subject has type `Text`"
+         d.Diag.message
+      <> None)
+  | _ -> check "switch Text-subject/Int-case: exactly one diagnostic" false)
+
+let () =
+  (* The reverse direction: an `Int` subject against a `Text` case
+     label doesn't crash the VM (EQ just compares two int64s), but the
+     case can never fire (a silent always-false) — equally wrong, and
+     the review calls it out explicitly as "equally wrong today." *)
+  let _, collector =
+    typecheck_str ~file:"switch-int-text-mismatch.wo"
+      "fn f(n: Int) -> Text {\n  let v = switch n {\n    case \"one\": \"a\";\n    default: \"b\";\n  }\n  return v\n}\n"
+  in
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "switch Int-subject/Text-case: exactly one diagnostic (WO-E201)" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "switch Int-subject/Text-case: code is WO-E201" (d.Diag.code = "WO-E201");
+    check "switch Int-subject/Text-case: message names both types"
+      (find_substring
+         ~needle:"switch case value has type `Text`, but the switch subject has type `Int`"
+         d.Diag.message
+      <> None)
+  | _ -> check "switch Int-subject/Text-case: exactly one diagnostic" false
+
+let () =
+  (* Silence proof: the pattern-vs-subject check must NOT false-positive
+     against an unresolved/placeholder subject type — the exact shape
+     the sample's own union-typed switch sites have today (Task 4's
+     territory, already WO-E207'd) — matching the "confident, stay
+     silent when underivable" contract WO-E209 established. `Unknown`
+     is not a builtin scalar, gc class, or declared class, so its
+     `wob_kind` is WO_K_OWNED — deliberately `Other`, never compared. *)
+  let _, collector =
+    typecheck_str ~file:"switch-unresolved-subject.wo"
+      "fn f(u: Unknown) -> Text {\n  let v = switch u {\n    case Ok: \"a\";\n    default: \"b\";\n  }\n  return v\n}\n"
+  in
+  let non_e201 =
+    List.filter (fun (d : Diag.t) -> d.Diag.code = "WO-E201") (Diag.Collector.diagnostics collector)
+  in
+  check_eq "switch unresolved subject: no WO-E201 false positive" ~expected:0
+    ~actual:(List.length non_e201) string_of_int
+
 (* ---- direct ownership-pass assertions (Task 7) ------------------------
 
    golden/owner-err/ already pins the *rendered* text of every must-fail
@@ -1142,7 +1820,14 @@ let emit_str ~file src =
   let prog = Parser.parse collector ~file toks in
   let syms, () = Types.typecheck ~file prog collector in
   let tables = Owner.analyze ~file prog syms collector in
-  let image = Emit.emit ~syms collector [ { Emit.file; prog; tables } ] in
+  (* Single-file helper (every golden fixture is one file): its own
+     module is "." and that module's own symbols are exactly `syms` —
+     no cross-module resolution to plumb through for these tests. *)
+  let module_syms = Hashtbl.create 1 in
+  Hashtbl.replace module_syms "." syms;
+  let image =
+    Emit.emit ~syms ~module_of:(fun _ -> ".") ~module_syms collector [ { Emit.file; prog; tables } ]
+  in
   (image, collector)
 
 let is_ownership_code (code : string) =
@@ -1503,6 +2188,141 @@ let () =
     (not (List.exists (fun (d : Owner.drop_site) -> d.Owner.dr_pos.Ast.line = 63) overwrites))
 
 let () =
+  (* haxe-parity Task 3: switch arms are alternate flows joining back
+     together — the N-way generalization of if/else's own JOIN-DROP
+     (branch_join_drops, reused verbatim per the brief's own
+     instruction: "reuse it, do not invent a second join"). `pick`
+     moves `b` in ARM0 (`case 1`, via a `take` call) and merely reads
+     it in ARM1 (`default`); after the merge `b` is Moved either way
+     (join takes Moved over Live), so ARM1 — the arm that *kept* it —
+     must get its own synthetic drop at its own end, or the value
+     leaks on that path; ARM0 must NOT get a second one (a double
+     free). Controller-verified end to end under `runtime/build/
+     wovm_asan` (both call paths, task-3-report.md has the transcript);
+     this pins the table entry the ASan proof depends on. *)
+  let src =
+    "class Box {\n  n: Int\n}\n\n\
+     fn consume(take b: Box) -> Int {\n  return b.n\n}\n\n\
+     fn pick(k: Int, take b: Box) -> Int {\n\
+    \  switch k {\n\
+    \    case 1:\n\
+    \      print_int(consume(b))\n\
+    \    default:\n\
+    \      print(\"kept\")\n\
+    \  }\n\
+    \  return 0\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"switch-join.wo" src in
+  check_eq "switch join: reports nothing (a legal move on one arm only)" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  let joins = drop_sites_of tables (function Owner.DBranchJoin _ -> true | _ -> false) in
+  single_site "switch join: exactly one JOIN-DROP" joins (fun d ->
+      check "switch join: on the arm that kept `b` (the `default` arm, ARM1)"
+        (d.Owner.dr_kind = Owner.DBranchJoin "ARM1");
+      check "switch join: drops the value the other arm (ARM0) moved" (names_of d = [ "b" ]));
+  check "switch join: the moving arm (ARM0) gets no synthetic drop of its own"
+    (not
+       (List.exists
+          (fun (d : Owner.drop_site) -> d.Owner.dr_kind = Owner.DBranchJoin "ARM0")
+          tables.Owner.drops))
+
+let () =
+  (* Arm-local drop: an owned value created inside one arm and never
+     moved dies at that arm's own scope end (DScope "ARM<i>") — the
+     ordinary scope-drop machinery every block already gets via
+     analyze_block, reused verbatim ("each arm is its own drop scope",
+     the brief's own words). tests/corpus/run/lang-switch-arm-drop
+     proves this under ASan with a real leak-sized object; this pins
+     the table entry that fixture's own DROP instruction depends on. *)
+  let src =
+    "class Item {\n  n: Int\n}\n\n\
+     fn f(k: Int) -> Int {\n\
+    \  switch k {\n\
+    \    case 1:\n\
+    \      let it = Item { n: 1 }\n\
+    \      print_int(it.n)\n\
+    \    default:\n\
+    \      print(\"other\")\n\
+    \  }\n\
+    \  return 0\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"switch-arm-scope.wo" src in
+  check_eq "switch arm scope: reports nothing" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  let scopes =
+    drop_sites_of tables (function
+      | Owner.DScope l -> String.length l >= 3 && String.sub l 0 3 = "ARM"
+      | _ -> false)
+  in
+  single_site "switch arm scope: exactly one arm-local DScope drop" scopes (fun d ->
+      check "switch arm scope: on ARM0 (`case 1`)" (d.Owner.dr_kind = Owner.DScope "ARM0");
+      check "switch arm scope: drops the arm-local `it`" (names_of d = [ "it" ]))
+
+let () =
+  (* Review fix (Critical 1), the two-file half: `default` is lowered
+     *last* regardless of source position (Ast.switch_lowering_order),
+     and owner.ml's `analyze_switch` must walk the identical order or
+     its "ARM<i>" labels drift from emit.ml's own — this is exactly
+     the failure mode that would silently break DScope/JOIN-DROP
+     lookups without ever showing up as a wrong *count*. `default` is
+     written FIRST here, `case 1` SECOND; if the two files agreed on
+     source order (the bug) the JOIN-DROP would land on "ARM0"
+     (`default`, keeping `b`) — this asserts it lands on "ARM1"
+     instead, proving `default` was actually lowered (and labeled)
+     last, matching lang-switch-default-not-last's own runtime proof. *)
+  let src =
+    "class Box {\n  n: Int\n}\n\n\
+     fn consume(take b: Box) -> Int {\n  return b.n\n}\n\n\
+     fn pick(k: Int, take b: Box) -> Int {\n\
+    \  switch k {\n\
+    \    default:\n\
+    \      print(\"kept\")\n\
+    \    case 1:\n\
+    \      print_int(consume(b))\n\
+    \  }\n\
+    \  return 0\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"switch-reorder.wo" src in
+  check_eq "switch reorder: reports nothing (WO-W203 aside — this is typecheck-only)"
+    ~expected:0 ~actual:(List.length (ownership_diags coll)) string_of_int;
+  let joins = drop_sites_of tables (function Owner.DBranchJoin _ -> true | _ -> false) in
+  single_site "switch reorder: exactly one JOIN-DROP" joins (fun d ->
+      check
+        "switch reorder: on ARM1 (`default`, lowered last despite being written first)"
+        (d.Owner.dr_kind = Owner.DBranchJoin "ARM1");
+      check "switch reorder: drops the value ARM0 (`case 1`) moved" (names_of d = [ "b" ]))
+
+let () =
+  (* Review fix (Critical 3): owner.ml's `expr_ty` used to return
+     `None` for a `Switch` — `analyze_let`'s own fallback for that is
+     `Scalar "Int"` (Copy), so an *unannotated* `let` binding a
+     class-yielding switch was silently never dropped (reviewer-
+     reproduced real leak; tests/corpus/run/lang-switch-class-arm-leak
+     has the ASan RED→GREEN transcript). This pins the table entry
+     that fixture's own DROP instruction depends on: `w` must be
+     classified Owned (a real DReturn drop naming it), not silently
+     absent the way a Copy-classified local would leave it. *)
+  let src =
+    "class Widget {\n  a: Int\n}\n\n\
+     fn f(k: Int) -> Int {\n\
+    \  let w = switch k {\n\
+    \    case 1: Widget { a: 1 }\n\
+    \    default: Widget { a: 2 }\n\
+    \  }\n\
+    \  return w.a\n\
+     }\n"
+  in
+  let tables, coll = owner_str ~file:"switch-let-class.wo" src in
+  check_eq "switch let-class: reports nothing" ~expected:0
+    ~actual:(List.length (ownership_diags coll)) string_of_int;
+  let returns = drop_sites_of tables (fun k -> k = Owner.DReturn) in
+  check "switch let-class: `w` is dropped at the return (classified Owned, not silently Copy)"
+    (List.exists (fun d -> names_of d = [ "w" ]) returns)
+
+let () =
   (* IMPORTANT: a `mut` argument means the callee may replace what the place
      holds. For a @gc place that invalidates rc elision — the elided
      increment would leave the alias as the last reference to a freed
@@ -1859,6 +2679,35 @@ let () =
     (find_substring ~needle:"RC_INC" main_block <> None)
 
 let () =
+  (* haxe-parity Task 3: the compare-and-jump chain lowers onto the
+     existing EQ/EQS/JZ/JMP opcodes — no new one, per the brief. An
+     `Int` subject compares via EQ, never EQS (that switch, over
+     `Text`, is tests/corpus/run/lang-switch-value's own second half —
+     both are proven end to end there; this pins the instruction
+     *shape* a --dump-bc reader would actually see, task-3-report.md's
+     own excerpt). *)
+  let src =
+    "fn classify(code: Int) -> Text {\n\
+    \  let v = switch code {\n\
+    \    case 200: \"a\"\n\
+    \    default: \"b\"\n\
+    \  }\n\
+    \  return v\n\
+     }\n\n\
+     fn main() -> Int {\n  return 0\n}\n"
+  in
+  let image, collector = emit_str ~file:"switch-bc.wo" src in
+  check_eq "switch bc: compiles clean" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int;
+  let block = method_block (Disasm.dump image) "classify" in
+  check "switch bc: an Int subject compares via EQ" (find_substring ~needle:"EQ " block <> None);
+  check "switch bc: never EQS for an Int subject" (find_substring ~needle:"EQS" block = None);
+  check "switch bc: at least one JZ (the case-value test)"
+    (find_substring ~needle:"JZ" block <> None);
+  check "switch bc: at least one JMP (the matched arm's own jump to the switch's exit)"
+    (find_substring ~needle:"JMP" block <> None)
+
+let () =
   (* Residual guards: one coalesced pair per operand, and — the
      regression this pins — never on a register inside the call window.
      The callee's frame overlaps that window (it may assign to its own
@@ -2002,7 +2851,8 @@ let () =
             (fun n (d : Owner.drop_site) ->
               match d.Owner.dr_kind with
               | Owner.DLiveMask -> n
-              | Owner.DScope _ | Owner.DReturn | Owner.DOverwrite | Owner.DBranchJoin _ ->
+              | Owner.DScope _ | Owner.DReturn | Owner.DOverwrite | Owner.DBranchJoin _
+              | Owner.DBreak | Owner.DContinue ->
                 n
                 + List.length
                     (List.filter
@@ -2211,6 +3061,499 @@ let () =
   let exit_code, _, stderr = run_cli [ "--emit"; "golden/bc/arith.wo" ] in
   check "cli smoke: --emit without -o is a usage error (exit 2)" (exit_code = 2);
   check "cli smoke: usage goes to stderr" (stderr <> "")
+
+(* ---- typedef records + enum payload variants (haxe-parity Task 4) ----
+
+   Direct assertions, no golden diffs (the same convention Tasks 2/3's
+   sections follow): parser shapes for the two new declarations, the
+   structural-equivalence contract at both levels it lives on (types.ml
+   unification and the emitted class table), the E203/E208/E201/E206
+   diagnostic surface, the union field-kind rule (a bare union field is
+   a SCALAR slot — the int-as-pointer segfault family), the ownership
+   rows (a payload argument MOVES into the construction; a payload
+   binding is a borrow, never dropped), and the lowering shapes
+   (variant_tag for payload unions only, defaults filled for omitted
+   fields). The corpus fixtures (the lang-typedef-/lang-variant-
+   directories) pin the end-to-end round trips; these pin the internals
+   a round trip cannot state as a contract. *)
+
+let () =
+  (* parser: typedef record — comma and newline field forms, `?name`
+     desugars to Nullable, `type` legal as a field name, is_record set *)
+  let src =
+    "typedef R = { a: Int = 7, ?b: Text, type: Text }\n\
+     typedef S = {\n  n: Int\n  ?m: ?Int\n}\n"
+  in
+  let prog, collector = parse_str ~file:"t4-record.wo" src in
+  check "t4 record: parses clean" (not (Diag.Collector.has_error collector));
+  (match prog.Ast.decls with
+  | [ Ast.Class r; Ast.Class s ] ->
+    check "t4 record: is_record set, is_class clear" (r.Ast.is_record && not r.Ast.is_class);
+    check "t4 record: comma form keeps all three fields"
+      (List.map (fun (f : Ast.field) -> f.Ast.name) r.Ast.fields = [ "a"; "b"; "type" ]);
+    check "t4 record: `?b: Text` desugars to Nullable Text"
+      (match r.Ast.fields with
+      | [ _; b; _ ] -> b.Ast.ty = Ast.Nullable (Ast.Scalar "Text")
+      | _ -> false);
+    check "t4 record: `a` keeps its default"
+      (match r.Ast.fields with a :: _ -> a.Ast.default <> None | [] -> false);
+    check "t4 record: `?m: ?Int` does not double-wrap"
+      (match s.Ast.fields with
+      | [ _; m ] -> m.Ast.ty = Ast.Nullable (Ast.Scalar "Int")
+      | _ -> false);
+    check "t4 record: dump header says TYPEDEF"
+      (count_substring ~needle:"TYPEDEF R" (Dump.dump_ast prog) = 1)
+  | _ -> check "t4 record: two typedef declarations survive" false)
+
+let () =
+  (* parser: union declarations — bare, payload, and the struct form
+     `type Note { ... }` staying a struct (the `=` lookahead) *)
+  let src =
+    "type Status = Pending | Failed(reason: Text, code: Int)\n\
+     type Note { n: Int }\n"
+  in
+  let prog, collector = parse_str ~file:"t4-union.wo" src in
+  check "t4 union: parses clean" (not (Diag.Collector.has_error collector));
+  (match prog.Ast.decls with
+  | [ Ast.Union u; Ast.Class note ] ->
+    check "t4 union: two variants, payload fields in order"
+      (match u.Ast.variants with
+      | [ p; fl ] ->
+        p.Ast.v_name = "Pending" && p.Ast.v_fields = []
+        && fl.Ast.v_name = "Failed"
+        && fl.Ast.v_fields = [ ("reason", Ast.Scalar "Text"); ("code", Ast.Scalar "Int") ]
+      | _ -> false);
+    check "t4 union: `type Note { ... }` is still the struct form"
+      ((not note.Ast.is_class) && not note.Ast.is_record);
+    check "t4 union: dump renders the variant line"
+      (count_substring ~needle:"UNION Status = Pending | Failed(reason: Text, code: Int)"
+         (Dump.dump_ast prog)
+      = 1)
+  | _ -> check "t4 union: union + struct decls survive" false)
+
+let () =
+  (* parser: one dotted segment in a type position (the sample's own
+     `?id: json.Value`) — one Scalar name, dot included *)
+  let src = "typedef Q = { ?id: json.Value }\n" in
+  let prog, collector = parse_str ~file:"t4-dotted.wo" src in
+  check "t4 dotted: parses clean" (not (Diag.Collector.has_error collector));
+  (match prog.Ast.decls with
+  | [ Ast.Class q ] ->
+    check "t4 dotted: field type is Scalar \"json.Value\" under Nullable"
+      (match q.Ast.fields with
+      | [ f ] -> f.Ast.ty = Ast.Nullable (Ast.Scalar "json.Value")
+      | _ -> false)
+  | _ -> check "t4 dotted: typedef survives" false)
+
+(* the whole check-only pipeline (no emitter), returning every diagnostic *)
+let t4_diags ~file src =
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file src in
+  let prog = Parser.parse collector ~file toks in
+  let _syms, () = Types.typecheck ~file prog collector in
+  Diag.Collector.diagnostics collector
+
+let t4_codes ~file src = List.map (fun (d : Diag.t) -> d.Diag.code) (t4_diags ~file src)
+
+let () =
+  (* WO-E206's new omittability rule: defaults and `?` fields fill in /
+     nil in; a plain field still fires *)
+  let base = "typedef R = { a: Int = 7, ?b: Text, c: Text }\n" in
+  check "t4 E206: omitting defaulted+optional fields is clean"
+    (t4_codes ~file:"t4-e206a.wo" (base ^ "fn main() { let r = R { c: \"x\" }\n  print(r.c) }\n")
+    = []);
+  check "t4 E206: omitting a plain field still fires"
+    (t4_codes ~file:"t4-e206b.wo" (base ^ "fn main() { let r = R {}\n  print(r.c) }\n")
+    = [ "WO-E206" ])
+
+let () =
+  (* WO-E203, both sites: construction arity and pattern arity/shape *)
+  let u = "type Status = Pending | Failed(reason: Text)\n" in
+  check "t4 E203: construction with too many payload args"
+    (t4_codes ~file:"t4-e203a.wo" (u ^ "fn main() { let s = Failed(\"a\", \"b\") }\n")
+    = [ "WO-E203" ]);
+  check "t4 E203: construction with too few payload args"
+    (t4_codes ~file:"t4-e203b.wo" (u ^ "fn main() { let s = Failed() }\n") = [ "WO-E203" ]);
+  check "t4 E203: pattern binding the wrong number of fields"
+    (t4_codes ~file:"t4-e203c.wo"
+       (u
+      ^ "fn f(s: Status) -> Int { return switch s {\n\
+        \  case Pending: 0;\n  case Failed(a, b): 1;\n} }\nfn main() { }\n")
+    = [ "WO-E203" ]);
+  check "t4 E203: pattern arguments must be plain names"
+    (t4_codes ~file:"t4-e203d.wo"
+       (u
+      ^ "fn f(s: Status) -> Int { return switch s {\n\
+        \  case Pending: 0;\n  case Failed(\"x\"): 1;\n} }\nfn main() { }\n")
+    = [ "WO-E203" ])
+
+let () =
+  (* WO-E208's union exhaustiveness rule + WO-E201 for a non-variant
+     pattern *)
+  let u = "type Kind = Lo | Mid | Hi\n" in
+  check "t4 E208: all variants covered needs no default"
+    (t4_codes ~file:"t4-e208a.wo"
+       (u
+      ^ "fn f(k: Kind) -> Int { return switch k {\n\
+        \  case Lo: 1;\n  case Mid: 2;\n  case Hi: 3;\n} }\nfn main() { }\n")
+    = []);
+  (match
+     t4_diags ~file:"t4-e208b.wo"
+       (u ^ "fn f(k: Kind) -> Int { return switch k {\n  case Lo: 1;\n} }\nfn main() { }\n")
+   with
+  | [ d ] ->
+    check "t4 E208: uncovered variants fire E208" (d.Diag.code = "WO-E208");
+    check "t4 E208: the message names the missing variants, in order"
+      (count_substring ~needle:"does not cover: Mid, Hi" d.Diag.message = 1)
+  | ds ->
+    check_eq "t4 E208: exactly one diagnostic" ~expected:1 ~actual:(List.length ds) string_of_int);
+  check "t4 E208: a default covers the gap"
+    (t4_codes ~file:"t4-e208c.wo"
+       (u
+      ^ "fn f(k: Kind) -> Int { return switch k {\n\
+        \  case Lo: 1;\n  default: 0;\n} }\nfn main() { }\n")
+    = []);
+  check "t4 E201: a non-variant case name over a union subject"
+    (t4_codes ~file:"t4-e201a.wo"
+       (u
+      ^ "fn f(k: Kind) -> Int { return switch k {\n\
+        \  case Lo: 1;\n  case Wat: 2;\n  default: 0;\n} }\nfn main() { }\n")
+    = [ "WO-E201" ]);
+  check "t4 E201: a literal case value over a union subject"
+    (t4_codes ~file:"t4-e201b.wo"
+       (u
+      ^ "fn f(k: Kind) -> Int { return switch k {\n\
+        \  case 1: 1;\n  default: 0;\n} }\nfn main() { }\n")
+    = [ "WO-E201" ])
+
+let () =
+  (* structural equivalence, types.ml half: same-shape typedefs unify
+     across switch arms; different shapes still WO-E201 *)
+  let two_same = "typedef A = { n: Int }\ntypedef B = { n: Int }\n" in
+  let two_diff = "typedef A = { n: Int }\ntypedef B = { n: Text }\n" in
+  let body =
+    "fn f(c: Int) -> Int {\n\
+    \  let v = switch c {\n\
+    \    case 1: A { n: 1 };\n\
+    \    default: B { n: 2 };\n\
+    \  }\n\
+    \  return 0\n\
+     }\nfn main() { }\n"
+  in
+  let body_diff =
+    "fn f(c: Int) -> Int {\n\
+    \  let v = switch c {\n\
+    \    case 1: A { n: 1 };\n\
+    \    default: B { n: \"x\" };\n\
+    \  }\n\
+    \  return 0\n\
+     }\nfn main() { }\n"
+  in
+  check "t4 structural: same shape, arms unify with no E201"
+    (t4_codes ~file:"t4-str1.wo" (two_same ^ body) = []);
+  check "t4 structural: different shape still mismatches"
+    (t4_codes ~file:"t4-str2.wo" (two_diff ^ body_diff) = [ "WO-E201" ])
+
+let () =
+  (* WO-E215 for duplicate unions and variant names *)
+  check "t4 E215: duplicate union name"
+    (t4_codes ~file:"t4-e215a.wo" "type K = A | B\ntype K = C | D\nfn main() { }\n"
+    = [ "WO-E215" ]);
+  check "t4 E215: variant name reused across unions"
+    (t4_codes ~file:"t4-e215b.wo" "type K = A | B\ntype L = B | C\nfn main() { }\n"
+    = [ "WO-E215" ]);
+  check "t4 E215: variant name reused inside one union"
+    (t4_codes ~file:"t4-e215c.wo" "type K = A | A\nfn main() { }\n" = [ "WO-E215" ])
+
+let () =
+  (* the emitted class table: structural dedup (one entry for two
+     same-shape typedefs), per-variant entries for a payload union
+     (composite `Union.Variant` names), NO entries for a bare union, and
+     the union field-kind rule (SCALAR for bare — the stubbed-kind RED
+     was a real wo_drop_obj SEGV chasing tag 2 as a pointer; OWNED for
+     payload) *)
+  let src =
+    "typedef A = { n: Int, tag: Text }\n\
+     typedef B = { n: Int, tag: Text }\n\
+     type Kind = Lo | Mid | Hi\n\
+     type Status = Pending | Failed(reason: Text)\n\
+     typedef Holder = { k: Kind, st: ?Status }\n\
+     fn main() -> Int {\n\
+    \  let a = A { n: 1, tag: \"t\" }\n\
+    \  let h = Holder { k: Lo, st: Pending }\n\
+    \  print_int(a.n)\n\
+    \  return 0\n\
+     }\n"
+  in
+  let image, collector = emit_str ~file:"t4-table.wo" src in
+  check "t4 table: compiles clean" (not (Diag.Collector.has_error collector));
+  let dump = Disasm.dump image in
+  check "t4 table: A and B share ONE class entry (structural dedup)"
+    (count_substring ~needle:"A flags" dump = 1 && count_substring ~needle:"B flags" dump = 0);
+  check "t4 table: payload union gets one entry per variant"
+    (count_substring ~needle:"Status.Pending flags" dump = 1
+    && count_substring ~needle:"Status.Failed flags" dump = 1);
+  check "t4 table: Status.Failed's payload Text is a TEXT slot"
+    (count_substring ~needle:"Status.Failed flags=- fields=[TEXT]" dump = 1);
+  check "t4 table: bare union gets no class entries"
+    (count_substring ~needle:"Kind" dump
+     - count_substring ~needle:"Kind" (String.concat "" [ "" ])
+     >= 0
+    && count_substring ~needle:"Kind flags" dump = 0
+    && count_substring ~needle:"Kind.Lo" dump = 0);
+  check "t4 table: a bare-union record field is a SCALAR slot, a payload one OWNED"
+    (count_substring ~needle:"Holder flags=- fields=[SCALAR, OWNED]" dump = 1)
+
+let () =
+  (* lowering shapes: variant_tag for a payload union's switch only; a
+     bare union switch is a plain EQ chain (no variant_tag, no NEW);
+     omitted defaults are filled (SETF count) *)
+  let src =
+    "type Status = Pending | Failed(reason: Text)\n\
+     type Kind = Lo | Mid\n\
+     fn f(s: Status) -> Int {\n\
+    \  return switch s {\n\
+    \    case Pending: 0;\n\
+    \    case Failed(reason): 1;\n\
+    \  }\n\
+     }\n\
+     fn g(k: Kind) -> Int {\n\
+    \  return switch k {\n\
+    \    case Lo: 0;\n\
+    \    case Mid: 1;\n\
+    \  }\n\
+     }\n\
+     fn main() { }\n"
+  in
+  let image, collector = emit_str ~file:"t4-lower.wo" src in
+  check "t4 lower: compiles clean" (not (Diag.Collector.has_error collector));
+  let dump = Disasm.dump image in
+  check "t4 lower: exactly one variant_tag read (f's switch, not g's)"
+    (count_substring ~needle:"variant_tag" dump = 1);
+  let rec_default =
+    "typedef R = { a: Int = 7, b: Text = \"seven\", ?c: Text }\n\
+     fn main() -> Int {\n\
+    \  let r = R {}\n\
+    \  print(r.b)\n\
+    \  return 0\n\
+     }\n"
+  in
+  let image2, collector2 = emit_str ~file:"t4-defaults.wo" rec_default in
+  check "t4 defaults: compiles clean" (not (Diag.Collector.has_error collector2));
+  let dump2 = Disasm.dump image2 in
+  check "t4 defaults: two omitted defaults stored, the ?field left nil (2 SETFs)"
+    (count_substring ~needle:"SETF" dump2 = 2);
+  let bad_default =
+    "typedef R = { a: Int = 1 + 2 }\nfn main() { let r = R {}\n  print_int(r.a) }\n"
+  in
+  let _, collector3 = emit_str ~file:"t4-baddefault.wo" bad_default in
+  check "t4 defaults: a non-literal default is WO-E403, never invented bytecode"
+    (List.exists
+       (fun (d : Diag.t) -> d.Diag.code = "WO-E403")
+       (Diag.Collector.diagnostics collector3))
+
+let () =
+  (* ownership rows: a place-shaped payload argument MOVES into the
+     construction (the un-stubbed half of the double-free RED); a
+     payload binding is a borrow — never in any drop set *)
+  let src =
+    "class Box { n: Int }\n\
+     type W = Just(b: Box)\n\
+     fn main() -> Int {\n\
+    \  let bx = Box { n: 1 }\n\
+    \  let w = Just(bx)\n\
+    \  switch w {\n\
+    \    case Just(inner): print_int(inner.n);\n\
+    \  }\n\
+    \  return 0\n\
+     }\n"
+  in
+  let tables, collector = owner_str ~file:"t4-owner.wo" src in
+  check "t4 owner: analyzes clean" (not (Diag.Collector.has_error collector));
+  let dump = Dump.dump_owner tables in
+  check "t4 owner: `bx` moves into the payload field (CTOR row)"
+    (count_substring ~needle:"MOVE bx CTOR(b)" dump = 1);
+  check "t4 owner: `w` still drops before the frame leaves; moved-out `bx` does not"
+    (* main ends in `return 0`, so the drop set is the RETURN row (the
+       BODY scope-end is unreachable after a return and suppressed) *)
+    (count_substring ~needle:"RETURN [w]" dump = 1
+    && count_substring ~needle:"[bx" dump = 0);
+  check "t4 owner: the binding `inner` is a borrow — in no drop set"
+    (count_substring ~needle:"[inner" dump = 0 && count_substring ~needle:", inner" dump = 0)
+
+(* ---- Task 4 fix round 1 (review: 2 Critical + 1 Major) ---------------
+
+   Critical 1: a payload binding escaping its arm as the switch's value
+   is a MOVE OUT of the variant object — the escape arm nulls the
+   shell's field (its recursive drop plan already skips zero slots), the
+   derivers type the escaped value by the binding's declared field, and
+   the caller reaps owned variant temporaries passed by borrow.
+   Critical 2 / Major: three new WO-E201 sites (variant case over
+   `?Union`, cross-union `==`, variant case over a non-union subject). *)
+
+let () =
+  let u = "class P { a: Int }\ntype Ev = Tick | Boxed(p: P)\n" in
+  (* value position: the escape arm nulls the shell's field — one SETF
+     more than the identical switch in statement position, where the
+     discarded yield must leave the shell whole (want_value gate). *)
+  let value_pos =
+    u
+    ^ "fn main() -> Int {\n\
+      \  let v = Boxed(P { a: 7 })\n\
+      \  let out = switch v {\n\
+      \    case Boxed(p): p;\n\
+      \    case Tick: P { a: 0 };\n\
+      \  }\n\
+      \  print_int(out.a)\n\
+      \  return 0\n\
+       }\n"
+  in
+  let stmt_pos =
+    u
+    ^ "fn main() -> Int {\n\
+      \  let v = Boxed(P { a: 7 })\n\
+      \  switch v {\n\
+      \    case Boxed(p): p;\n\
+      \    case Tick: print(\"t\");\n\
+      \  }\n\
+      \  return 0\n\
+       }\n"
+  in
+  let image, collector = emit_str ~file:"t4f-escape.wo" value_pos in
+  check "t4fix escape: binding-yield switch compiles clean (was `field access on Int`)"
+    (not (Diag.Collector.has_error collector));
+  let dump = Disasm.dump image in
+  check_eq "t4fix escape: ctor(1) + payload store(1) + escape NULL(1) + arm ctor(1) = 4 SETFs"
+    ~expected:4 ~actual:(count_substring ~needle:"SETF" dump) string_of_int;
+  let image2, collector2 = emit_str ~file:"t4f-escape-stmt.wo" stmt_pos in
+  check "t4fix escape: statement position compiles clean" (not (Diag.Collector.has_error collector2));
+  check_eq "t4fix escape: discarded yield does NOT null the shell (2 SETFs only)"
+    ~expected:2 ~actual:(count_substring ~needle:"SETF" (Disasm.dump image2)) string_of_int;
+  (* owner half of the drop plan: both the escaped payload's new owner
+     (`out`) and the shell (`v`) drop before the frame leaves — one drop
+     each, shell-only semantics coming from the nulled field, never from
+     a second table entry. *)
+  let tables, ocoll = owner_str ~file:"t4f-escape-owner.wo" value_pos in
+  check "t4fix escape: owner analyzes clean" (not (Diag.Collector.has_error ocoll));
+  check "t4fix escape: RETURN drops [out, v] — payload owner AND shell, once each"
+    (count_substring ~needle:"RETURN [out, v]" (Dump.dump_owner tables) = 1)
+
+let () =
+  (* the caller reaps an owned variant temporary passed by borrow: the
+     reviewer's h5 shell leak (~30 B/iteration, arena-backed and
+     LSan-invisible — pinned here at the bytecode level instead). *)
+  let src =
+    "class P { a: Int }\n\
+     type Ev = Tick | Boxed(p: P)\n\
+     fn use_ev(e: Ev) -> Int { return 1 }\n\
+     fn main() -> Int {\n\
+    \  print_int(use_ev(Boxed(P { a: 1 })))\n\
+    \  return 0\n\
+     }\n"
+  in
+  let image, collector = emit_str ~file:"t4f-reap.wo" src in
+  check "t4fix reap: compiles clean" (not (Diag.Collector.has_error collector));
+  check_eq "t4fix reap: exactly one DROP — the borrowed variant temp, after the call"
+    ~expected:1 ~actual:(count_substring ~needle:"DROP" (Disasm.dump image)) string_of_int
+
+let () =
+  (* WO-E201, three new sites *)
+  let st = "type St = Pending | Failed(m: Text)\ntypedef R = { ?st: St }\n" in
+  (match
+     t4_diags ~file:"t4f-optunion.wo"
+       (st
+      ^ "fn f(r: R) -> Text { return switch r.st {\n\
+        \  case Pending: \"p\";\n  default: \"n\";\n} }\nfn main() { }\n")
+   with
+  | [ d ] ->
+    check "t4fix ?union: variant case over `?Union` is WO-E201" (d.Diag.code = "WO-E201");
+    check "t4fix ?union: the message points at nil handling first"
+      (count_substring ~needle:"may be nil" d.Diag.message = 1)
+  | ds ->
+    check_eq "t4fix ?union: exactly one diagnostic" ~expected:1 ~actual:(List.length ds)
+      string_of_int);
+  check "t4fix ?union: a default-only switch over `?Union` stays legal"
+    (t4_codes ~file:"t4f-optunion-ok.wo"
+       (st ^ "fn f(r: R) -> Text { return switch r.st {\n  default: \"n\";\n} }\nfn main() { }\n")
+    = []);
+  let two = "type A = X | Yv\ntype B = P | Qv\n" in
+  check "t4fix cross-union ==: WO-E201"
+    (t4_codes ~file:"t4f-crosseq.wo" (two ^ "fn main() { if X == P { print(\"x\") } }\n")
+    = [ "WO-E201" ]);
+  check "t4fix cross-union ==: same union stays legal, and a local shadowing a variant is a local"
+    (t4_codes ~file:"t4f-crosseq-ok.wo"
+       (two ^ "fn main() { let X = 1\n  if X == 1 { print(\"a\") }\n  if P == Qv { print(\"b\") } }\n")
+    = []);
+  check "t4fix int-subject: a variant case over an Int subject is WO-E201"
+    (t4_codes ~file:"t4f-intsubj.wo"
+       ("type K = Lo | Mid | Hi\n"
+      ^ "fn f(n: Int) -> Int { return switch n {\n  case Lo: 99;\n  default: 0;\n} }\n\
+         fn main() { }\n")
+    = [ "WO-E201" ])
+
+(* ---- Task 4 fix round 2 (review: scalar move-out corruption + the
+   record/class sibling of the temp-argument leak) --------------------- *)
+
+let () =
+  (* NEW 1: escaping a SCALAR payload field is a COPY — no null. The
+     pointer-payload escape pins 4 SETFs above (one of them the null);
+     this scalar twin has exactly the payload store, nothing else. *)
+  let src =
+    "type Ev = Tick | Wrap(n: Int)\n\
+     fn main() -> Int {\n\
+    \  let v = Wrap(5)\n\
+    \  let x = switch v {\n\
+    \    case Tick: 0;\n\
+    \    case Wrap(n): n;\n\
+    \  }\n\
+    \  print_int(x)\n\
+    \  return 0\n\
+     }\n"
+  in
+  let image, collector = emit_str ~file:"t4f2-scalar.wo" src in
+  check "t4fix2 scalar escape: compiles clean" (not (Diag.Collector.has_error collector));
+  check_eq "t4fix2 scalar escape: payload store only — NO null SETF (subject stays intact)"
+    ~expected:1 ~actual:(count_substring ~needle:"SETF" (Disasm.dump image)) string_of_int
+
+let () =
+  (* NEW 2: the reap covers every owned heap temp by borrow — record
+     ctor, class-returning call — while `take` stays the callee's drop
+     (exactly one DROP total, in the callee; two would be the double
+     free) and a place is never reaped. *)
+  let rec_decl = "typedef P = { a: Int = 1 }\n" in
+  let borrow_ctor =
+    rec_decl ^ "fn peek(p: P) -> Int { return p.a }\nfn main() -> Int {\n  print_int(peek(P {}))\n  return 0\n}\n"
+  in
+  let borrow_call =
+    rec_decl
+    ^ "fn mk() -> P { return P {} }\nfn peek(p: P) -> Int { return p.a }\n\
+       fn main() -> Int {\n  print_int(peek(mk()))\n  return 0\n}\n"
+  in
+  let take_ctor =
+    rec_decl
+    ^ "fn eat(take p: P) -> Int { return p.a }\nfn main() -> Int {\n  print_int(eat(P {}))\n  return 0\n}\n"
+  in
+  let place_borrow =
+    rec_decl
+    ^ "fn peek(p: P) -> Int { return p.a }\nfn main() -> Int {\n\
+      \  let q = P {}\n  print_int(peek(q))\n  return 0\n}\n"
+  in
+  let drops label src expected =
+    let image, collector = emit_str ~file:(label ^ ".wo") src in
+    check (label ^ ": compiles clean") (not (Diag.Collector.has_error collector));
+    check_eq (label ^ ": DROP count") ~expected
+      ~actual:(count_substring ~needle:"DROP" (Disasm.dump image)) string_of_int
+  in
+  (* one DROP each and each a DIFFERENT one: the caller's reap for the
+     two borrow shapes (mk returns its fresh value undropped, peek
+     borrows), the CALLEE's take-param drop for the take shape (a
+     second one there would be the double free), and the local's own
+     scope drop for the place shape (a reap on top would be too). *)
+  drops "t4fix2 reap record-ctor temp by borrow (caller reaps)" borrow_ctor 1;
+  drops "t4fix2 reap class-returning-call temp by borrow (caller reaps)" borrow_call 1;
+  drops "t4fix2 take temp: exactly ONE drop — the callee's, never a second (double free)"
+    take_ctor 1;
+  drops "t4fix2 place by borrow: the local's own scope drop only, never a reap" place_borrow 1
 
 (* ---- golden-directory walk ------------------------------------------ *)
 

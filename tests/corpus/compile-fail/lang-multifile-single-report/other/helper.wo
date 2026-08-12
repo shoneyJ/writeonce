@@ -1,0 +1,8 @@
+-- Unrelated file, deliberately trivial and error-free -- its only job
+-- is being a second discovered file in this program (see fixture.wo's
+-- own comment for why). No Ctor/Call site here means no module `use`
+-- gating gets exercised either -- this fixture is purely about the
+-- double-report bug, not the module system.
+fn helper() -> Int {
+  return 1
+}

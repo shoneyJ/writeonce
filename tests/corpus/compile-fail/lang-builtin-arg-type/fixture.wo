@@ -1,0 +1,11 @@
+-- Hotfix (WO-E209): `print` wants a `Text` -- a heap-string pointer,
+-- .wob kind WO_K_TEXT -- and a bare Int literal is a WO_K_SCALAR
+-- register holding a raw int64 (docs/plan/oop-vm/08-builtin-surface.md's
+-- `print(t)` row). Before this check existed, this compiled clean and
+-- segfaulted `wovm`: the VM's `str_check` (runtime/src/vm.c) dereferences
+-- whatever register it's handed as a `wo_str*` with no runtime tag to
+-- check first, so the literal `7` was a wild pointer read. The exact
+-- repro that motivated wiring this diagnostic up.
+fn main() {
+  print(7)
+}

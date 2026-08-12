@@ -29,6 +29,7 @@ maps to one `BUILTIN` id of the format doc.
 | `get(c, k)` | `multi_get` / `map_get` | 2 | element by index, or value by key (a missing key traps `KEY`) |
 | `set(m, k, v)` | `map_set` | 3 | insert or replace in a `map` |
 | `has(m, k)` | `map_has` | 2 | `1`/`0` |
+| `int_to_text(n)` | `int_to_text` | 1 | decimal rendering of an `Int`, as a fresh owned `Text` — haxe-parity Task 2's one fenced VM addition, the type-directed half of string interpolation (below); also directly callable |
 
 `get`, `set`, `push`, `count` and `has` resolve on the container they are
 given, so one source name covers the `multi` and `map` ids the runtime
@@ -96,6 +97,43 @@ type, which is also a typed destination.
 - `self` occupies the callee's `r0`, so a method's argument count is
   `1 + parameters`.
 
+## Modules (haxe-parity Task 1)
+
+A `.wo` file's **module is its directory** — no manifest, no declared
+module name. Every file sharing a directory sees every other same-
+directory file's declarations unconditionally (Task 8's existing
+multi-file discovery, unchanged); a name declared in a *different*
+directory needs `use` to become visible at all, and even then only if
+it is marked `pub`.
+
+- **`pub`** on a top-level `class`/`type`/`interface`/`fn` exports it
+  outside its own module. Default is private-to-module — visible to
+  every file in the same directory, invisible to every other module
+  regardless of `use` (`WO-E217` if referenced anyway). `pub` on a
+  class/interface method, or the `pub(read)` field-accessor marker
+  (Haxe's `(default, null)`), is a different, later feature — not this
+  one.
+- **`use fs`** (a bare, single-segment name) is a **reserved stdlib
+  namespace**: exactly `fs`, `proc`, `net`, `time`, `json`, `env`, no
+  others, and always stdlib even if a same-named project directory
+  exists. A call through one (`fs.stat(...)`) typechecks as
+  UNKNOWN-BUT-RESERVED — no E207/E225/arity check, since the six
+  namespaces' members arrive in plan 9 — and is `WO-E406` only if such
+  a call survives all the way to emission; an unused `use fs` compiles
+  clean (modulo `WO-W202`, below).
+- **`use shared/util`** (slash-separated segments) is **project-
+  relative**: it must name a directory this program's own discovery
+  actually finds, or `WO-E216`. The alias a call site uses is always
+  the path's *last* segment (`util.fn(...)`, not `shared.fn(...)`).
+- **Resolution order** for a bare (unqualified) name: this file's own
+  module, unconditionally; then every `use`d module's `pub` surface. If
+  more than one used module exports the same `pub` name, that is
+  `WO-E218` — collisions diagnose rather than silently pick a winner.
+  A qualified reference (`alias.name(...)`) skips straight to its
+  named module; `WO-E217` if `name` exists there but isn't `pub`.
+- A `use` clause never referenced (bare or qualified) anywhere in its
+  own file is `WO-W202` — a warning, so it does not fail the build.
+
 ## Program entry
 
 The entry point is the **zero-argument free `fn main`**. A `main` that
@@ -113,6 +151,8 @@ Lowered by the emitter, not added to the format:
 | `a > b`, `a >= b` | `LT` / `LE` with the operands swapped |
 | `a == b` on `Text` | `EQS` (content equality); `EQ` otherwise |
 | `a .. b` | `CONCAT` — `+` is arithmetic only, never string addition |
+| `a and b` | evaluate `a`; `JZ` past evaluating `b` (result stays `a`'s value); else evaluate `b` into the same register (haxe-parity Task 2) |
+| `a or b` | evaluate `a`; `JZ` + `JMP` past evaluating `b` when `a` is already true; else evaluate `b` (haxe-parity Task 2) |
 
 ## Not lowerable in milestone 1
 
@@ -125,6 +165,50 @@ Each is `WO-E403` at the offending site, never invented bytecode:
 - a field or method on a type that is not a declared class — including a
   class named only inside `multi T` / `ref T`, which `types.ml`'s
   unknown-type check (`WO-E225`) does not look inside.
+- `break`/`continue` outside any loop (haxe-parity Task 2) — nothing
+  upstream tracks loop nesting to reject it earlier, so the emitter's
+  own "no legal jump target" gate is the only one.
+- interpolating (`"${expr}"`) a value that is neither `Text` nor `Int`
+  (haxe-parity Task 2) — the brief's own scope; a class, `multi`, `map`,
+  or other scalar has no defined textification here.
+
+## Small control surface (haxe-parity Task 2)
+
+`break`/`continue`/`do...while`, `const`, `and`/`or`, and string
+interpolation — the haxe keyword verdict table's low-risk batch, added
+2026-08-11.
+
+- **`break`/`continue`** reuse the owner pass's own `return`-drop
+  machinery, bounded to the nearest enclosing loop instead of the whole
+  function: an owned value still alive in the loop body is dropped at
+  the `break`/`continue` site itself, not left to leak (proven under
+  ASan, `tests/corpus/run/lang-break-owned-drop/`). `continue`'s actual
+  jump target depends on loop shape — `while`'s own condition check,
+  `for`'s increment step, or `do...while`'s condition check — but the
+  drop-set computation is identical either way.
+- **`do { body } while cond`** — the body always runs at least once;
+  lowered onto the same `JZ`/`JMP` pair `while`/`for` already use, just
+  reordered.
+- **`const NAME = <literal>`** (top-level, or bare — no `static` —
+  class-level) is resolved entirely by `parser.ml`, before typecheck
+  ever runs: every unshadowed reference is replaced by the literal it
+  names, so nothing downstream (types/owner/emit) has any const-specific
+  code at all. A local/parameter/`self` of the same name always shadows
+  it. `static const` is Task 7's own syntax (`static`), not recognized
+  here.
+- **`and`/`or`** are real keywords (never `&&`/`||`), one precedence
+  level below comparison (`or` loosest, then `and`, then comparison —
+  so `a == 1 and b == 2` needs no parens). `Bool`-typed operands only,
+  no truthiness: a confidently-non-`Bool` operand is `WO-E201`. Short-
+  circuit, lowered to compare-and-jump above — no new opcode.
+- **String interpolation** (`"${expr}"`) desugars at parse time to a
+  `..` (`Concat`) chain of text segments and embedded expressions; each
+  embedded expression's *textification* is decided at emit time, once
+  its type is known: `Text` passes through untouched, `Int` is wrapped
+  in `int_to_text` (above), anything else is `WO-E403` (see "Not
+  lowerable in milestone 1"). `\$` is a literal `$` (so `\${x}` stays
+  literal, never interpolates); a lone `$` not followed by `{` is also
+  literal, unconditionally.
 
 ## `?T`
 

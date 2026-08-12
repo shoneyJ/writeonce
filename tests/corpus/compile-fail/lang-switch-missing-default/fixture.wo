@@ -1,0 +1,15 @@
+-- haxe-parity Task 3: scalars/Text require `default` -- no union type
+-- exists yet (Task 4), so this is unconditional for every subject this
+-- task supports; `n` is confidently `Int` (a declared parameter), so
+-- this is a real, statically-provable gap, not a guess.
+fn classify(n: Int) -> Text {
+  let label = switch n {
+    case 1: "one";
+    case 2: "two";
+  };
+  return label;
+}
+
+fn main() -> Int {
+  return 0;
+}

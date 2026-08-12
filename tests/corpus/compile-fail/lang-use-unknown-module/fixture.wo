@@ -1,0 +1,8 @@
+-- haxe-parity Task 1 (modules): `nosuchmodule` is neither one of the
+-- six reserved stdlib namespaces (fs, proc, net, time, json, env) nor a
+-- directory this program actually discovers -- WO-E216.
+use nosuchmodule
+
+fn main() {
+  print("x")
+}

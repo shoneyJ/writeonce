@@ -1,0 +1,22 @@
+-- haxe-parity Task 1 (modules), review fix IMPORTANT 2: `secret` is
+-- both a real `use` alias (secret/secret.wo) AND, inside `main`, a local
+-- variable of type `Box`. `secret.hidden()` must be Box's own method
+-- call on the local — lexical scope wins over a module alias, exactly
+-- like everywhere else in every language with both. A regression that
+-- let the module alias win instead would either misresolve this call
+-- entirely or bogusly demand `secret.hidden` (secret/secret.wo's free
+-- fn) be `pub` — see compile-fail/lang-use-private-access for the
+-- companion case where no local intervenes and E217 still fires.
+use secret
+
+class Box {
+  n: Int
+  fn hidden() -> Int {
+    return self.n
+  }
+}
+
+fn main() {
+  let secret = Box { n: 42 }
+  print_int(secret.hidden())
+}

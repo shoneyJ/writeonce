@@ -136,6 +136,13 @@ type field = {
    `+`/`-`, tighter than comparison — this ladder's ordering). *)
 type unop = Neg
 
+(* `And`/`Or` (haxe-parity Task 2): real keywords, spelled as words, not
+   `&&`/`||` — the spec amendment's own wording. `Bool`-typed operands
+   only (types.ml wires this through, no truthiness); short-circuit,
+   lowered to compare-and-jump on the existing JZ/JMP opcodes (emit.ml),
+   no new opcode. Own precedence level, looser than every comparison —
+   see parser.ml's ladder doc for the exact ordering (`or` loosest, then
+   `and`, then comparison). *)
 type binop =
   | Add
   | Sub
@@ -149,6 +156,8 @@ type binop =
   | Le
   | Gt
   | Ge
+  | And
+  | Or
 
 type expr = {
   id : int;
@@ -190,6 +199,35 @@ and expr_kind =
   | Binary of binop * expr * expr
   | Ctor of string * (string * expr) list
   | DbStub of Token.t list
+  (* haxe-parity Task 2: one `${expr}` interpolation site, produced only
+     by the string-interpolation desugar (parser.ml) — never written
+     directly by a parse rule the way every other expr_kind is. Its
+     *textification* (pass through if already Text, `int_to_text` if
+     Int, a diagnostic for anything else) is a type-directed decision
+     deferred to emit.ml, since the parser has no type information yet;
+     "desugars at parse time to concatenation" covers the chain SHAPE
+     (a `Binary(Concat, ...)` of StrLit/Interp segments), not this one
+     leaf's textification. *)
+  | Interp of expr
+  (* haxe-parity Task 3: `switch subject { case v1, v2: <stmts> ...
+     default: <stmts> }`. One construct for both positions (the brief's
+     own words: "statement position is the expression with a discarded
+     value") — `stmt` has no separate switch node; a bare `switch {...}`
+     statement is simply this same node wrapped in `ExprStmt`, exactly
+     like a bare `select ...` call already is. Arms carry a `stmt list`
+     body (not a single `expr`) because the sample's own sites do —
+     `case "tail_log": if args == nil { return err(...); } ... return
+     self.tools.tail_log(...);` is not reducible to one expression — so
+     `expr`/`stmt` must be mutually recursive from here down (this is
+     the one place `expr_kind` reaches into `stmt`; every other node
+     above predates this task and never needed to). `values = []` means
+     `default` (`is_default = true`); a `case` always has at least one
+     value, and — the sample's own `alias_of`/cron.wo shape,
+     `case "@daily", "@midnight": ...` — may have more than one,
+     matching on any of them. No guards, no ranges: the sample never
+     uses either, so neither is grammar here (YAGNI, recorded in the
+     task report). *)
+  | Switch of expr * switch_arm list
 
 (* ---- statements (Task 5) ---------------------------------------------
 
@@ -210,7 +248,7 @@ and expr_kind =
    else-block whose sole statement is itself an `If` — rather than a
    third `else_body` shape, so dump.ml's block-rendering code (already
    written once, for `then_body`) renders the chain for free. *)
-type stmt = {
+and stmt = {
   s_id : int;
   s_pos : pos;
   s_kind : stmt_kind;
@@ -242,6 +280,76 @@ and stmt_kind =
     }
   | Return of expr option
   | ExprStmt of expr
+  (* haxe-parity Task 2: loop control. Both reuse owner.ml's scope-end
+     drop machinery (see Owner.DBreak/DContinue) so an owned value still
+     alive in the loop body is dropped at the jump, not left to leak;
+     emit.ml refuses to lower either one outside a loop (WO-E403 —
+     "cannot lower", the same convention as every other construct with
+     no legal target, since nothing upstream tracks loop nesting as a
+     parse- or type-error). *)
+  | Break
+  | Continue
+  (* `do { body } while cond` — body runs at least once, then the
+     condition gates repeating it. Lowered onto the same JZ/JMP pair
+     `while`/`for` already use, just reordered (parser.ml/emit.ml). *)
+  | DoWhile of {
+      body : stmt list;
+      cond : expr;
+    }
+
+(* haxe-parity Task 3: one arm of a `switch`. `values = []` iff
+   `is_default`; a `case` arm's `values` is never empty (parser
+   contract, mirrored — not re-checked — by every later stage). No
+   per-arm `id`: nothing downstream keys a side table on "this specific
+   arm" independent of the `Switch` expr that owns it (the shared
+   `Switch.id` is the drop-scope/branch-join node for every arm, one
+   per-arm string label telling them apart — exactly how `If`'s THEN/
+   ELSE already share `s_id` and differ only by label). *)
+and switch_arm = {
+  arm_pos : pos;
+  values : expr list;
+  is_default : bool;
+  body : stmt list;
+}
+
+(* haxe-parity Task 3 (review fix, Critical 1): the arm order a
+   switch's own lowering actually walks — `default` moved to the end,
+   regardless of where it sits in the source. `default` has no
+   comparison of its own (it matches unconditionally); lowering the
+   arms in raw *source* order therefore made any `case` arm written
+   after a `default` permanently unreachable dead code (nothing ever
+   jumps into it, and `default`'s own body jumps straight to the
+   switch's exit, never falling through) — a real, reviewer-reproduced
+   bug, not a theoretical one. Both `owner.ml` (`analyze_switch`,
+   whose drop-scope/JOIN-DROP tables are keyed "ARM<i>" by this order)
+   and `emit.ml` (`emit_switch`, the compare-and-jump chain itself)
+   call this SAME function rather than each re-deriving the reorder
+   independently — the two-file fix the review flagged, done once so
+   the "ARM<i>" indices the two files hand each other can never drift
+   apart. `List.partition` is stable (documented in the stdlib): every
+   `case` arm keeps its own relative order, and — malformed, not
+   otherwise rejected — more than one `default` would too, all pushed
+   after every `case`. *)
+let switch_lowering_order (arms : switch_arm list) : switch_arm list =
+  let cases, defaults = List.partition (fun (a : switch_arm) -> not a.is_default) arms in
+  cases @ defaults
+
+(* haxe-parity Task 2: `const NAME = <literal>` — a compile-time value,
+   substituted for every unshadowed `Ident NAME` reference by a
+   dedicated post-parse pass (parser.ml's own const-substitution step,
+   run at the end of `parse`) rather than threaded through
+   typecheck/owner/emit as a new resolvable name: after substitution a
+   const reference simply *is* the literal expr it names, so every later
+   stage needs zero const-specific code. `value` is restricted by the
+   parser to a literal (`IntLit`/`StrLit`/`BoolLit`, optionally
+   `Unary(Neg, IntLit)`) — never a general expression, matching the
+   brief's own "= literal", not "= expr". *)
+type const_decl = {
+  id : int;
+  pos : pos;
+  name : string;
+  value : expr;
+}
 
 (* A signature shared shape (name/params/ret) appears twice: as an
    interface method (no body) and as a class/type/free-fn method (body
@@ -266,6 +374,15 @@ type method_decl = {
   (* Task 4 captured this as a verbatim token span (brace-depth counter
      only); Task 5 parses it for real. *)
   body : stmt list;
+  (* haxe-parity Task 1 (modules): true only for a top-level free `fn`
+     parsed with a leading `pub` marker. method_decl is shared with
+     class methods (Task 4's own design — see this file's module doc),
+     but `pub` is a Task-1-scoped, top-level-declaration-only marker
+     (classes, interfaces, free fns); method-level visibility is a
+     different, not-yet-designed question, so parse_method always
+     passes `pub = false` for a class body's own methods — this field
+     is meaningful only when the surrounding decl is `Fn`. *)
+  pub : bool;
 }
 
 (* `@table(name: "...", index: [a, b], index: [c])` — optional storage
@@ -287,10 +404,31 @@ type class_decl = {
      deliberate divergence from rt's plan-13 asymmetry, where a plain
      `type`'s `fn` was skip-discarded — see parser.ml's module doc). *)
   is_class : bool;
+  (* haxe-parity Task 4: true for `typedef Name = { ... }` — a
+     STRUCTURAL record alias, reusing this same node (same field
+     grammar, same downstream ctor/field machinery) rather than a
+     parallel decl kind. What the flag changes downstream: two records
+     with the same shape are the SAME type (emit.ml dedups them onto one
+     class-table entry; types.ml's arm unification compares shapes, not
+     names). A record body is fields only — the parser never puts a
+     method or const inside one, so `methods`/`consts` are always []
+     here. `is_class` is false whenever this is true. *)
+  is_record : bool;
   is_gc : bool; (* @gc — reference semantics, spec section 3/4 *)
   table : table_cfg option; (* @table(...) — absent unless annotated *)
   fields : field list;
   methods : method_decl list;
+  (* haxe-parity Task 2: class-level `const NAME = literal` (bare, no
+     `static` — `static const` is Task 7's syntax, deliberately not
+     handled here so it falls through to a clean parse error, counted
+     against the gap until Task 7 lands). Scoped to this class's own
+     methods only by the same post-parse substitution pass that handles
+     top-level consts — see const_decl's own doc comment. *)
+  consts : const_decl list;
+  (* haxe-parity Task 1 (modules): `pub` marker — false (private to the
+     declaring module) unless the declaration was written `pub class`/
+     `pub type`. *)
+  pub : bool;
 }
 
 type interface_decl = {
@@ -298,11 +436,51 @@ type interface_decl = {
   pos : pos;
   name : string;
   methods : method_sig list; (* signatures only — no fields, no bodies *)
+  pub : bool; (* haxe-parity Task 1 — see class_decl.pub *)
+}
+
+(* haxe-parity Task 1 (modules): `use fs` (a reserved stdlib namespace)
+   or `use shared/util` (project-relative, slash-separated path
+   segments naming another discovered module's directory). `segments`
+   is never empty — the parser requires at least one identifier. *)
+type use_decl = {
+  id : int;
+  pos : pos;
+  segments : string list;
+}
+
+(* haxe-parity Task 4: one variant of a union declaration
+   (`type Name = A | B | C(field: Type, ...)`). `v_fields` is the
+   payload, in declaration order — [] for a bare variant. No per-variant
+   `id`: like switch_arm, nothing downstream keys a side table on "this
+   specific variant" independent of the union that owns it (a variant's
+   identity downstream is (union, ordinal) — its tag). *)
+type variant_decl = {
+  v_pos : pos;
+  v_name : string;
+  v_fields : (string * field_ty) list;
+}
+
+(* haxe-parity Task 4: `type Name = V1 | V2 | ...` — a tagged union.
+   All-bare unions (every `v_fields` empty) lower to plain integer tags
+   (the variant's ordinal), no heap object and no class-table entry;
+   a union with at least one payload variant lowers every variant to a
+   small heap object whose class-table entry the compiler generates
+   (docs/plan/oop-vm/00-wob-format.md, "enum payload variants"). *)
+type union_decl = {
+  id : int;
+  pos : pos;
+  name : string;
+  variants : variant_decl list;
+  pub : bool;
 }
 
 type decl =
   | Class of class_decl
   | Interface of interface_decl
   | Fn of method_decl (* free (non-method) top-level function *)
+  | Use of use_decl
+  | Const of const_decl (* haxe-parity Task 2: top-level `const NAME = literal` *)
+  | Union of union_decl (* haxe-parity Task 4: `type Name = A | B | ...` *)
 
 type program = { decls : decl list }

@@ -1,0 +1,27 @@
+-- haxe-parity Task 4: an all-bare union (the sample's own CronResult/
+-- NameKind shape) is pure scalar tags -- no heap object, no class-table
+-- entry, `==` and `switch` lower to plain EQ. The union value also sits
+-- in a typedef record field, which must emit as a SCALAR slot (kind 0):
+-- a drop plan treating the tag integer as a pointer would be a hard
+-- ASan/segfault failure, which is exactly what this fixture guards.
+-- The switch has no `default`: all three variants are covered, so
+-- WO-E208's union exhaustiveness rule must stay silent.
+type Kind = Lo | Mid | Hi
+
+typedef Item = { kind: Kind, label: Text }
+
+fn name_of(k: Kind) -> Text {
+  return switch k {
+    case Lo:  "lo";
+    case Mid: "mid";
+    case Hi:  "hi";
+  }
+}
+
+fn main() -> Int {
+  let it = Item { kind: Hi, label: "x" }
+  print(name_of(it.kind))
+  if it.kind == Hi { print("hi-eq") }
+  print(name_of(Mid))
+  return 0
+}

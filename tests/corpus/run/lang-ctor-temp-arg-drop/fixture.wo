@@ -1,0 +1,159 @@
+-- haxe-parity Task 4, fix round 2 (review NEW 2): an OWNED heap
+-- temporary passed as a borrow argument — a record/class constructor
+-- literal or an owned-returning call, not just a variant construction
+-- (fix round 1's scope) — is reaped by the caller after the call.
+-- Before: `peek(Pay{})` in a loop leaked one object per iteration
+-- (reviewer's m5c probe: maxrss 10,780 KB vs a 1,532 KB control over
+-- 300k iterations; arena-backed and LSan-invisible, so this fixture
+-- uses `Big` — 130 Int fields, past the arena's 1024-byte ceiling —
+-- to make any miss a hard ASan failure). `take` arguments stay the
+-- callee's to drop (the m6a/m6c-proven path) and places stay their
+-- scope's; both are pinned by runner.ml assertions.
+typedef Big = {
+  f0: Int = 1
+  f1: Int = 1
+  f2: Int = 1
+  f3: Int = 1
+  f4: Int = 1
+  f5: Int = 1
+  f6: Int = 1
+  f7: Int = 1
+  f8: Int = 1
+  f9: Int = 1
+  f10: Int = 1
+  f11: Int = 1
+  f12: Int = 1
+  f13: Int = 1
+  f14: Int = 1
+  f15: Int = 1
+  f16: Int = 1
+  f17: Int = 1
+  f18: Int = 1
+  f19: Int = 1
+  f20: Int = 1
+  f21: Int = 1
+  f22: Int = 1
+  f23: Int = 1
+  f24: Int = 1
+  f25: Int = 1
+  f26: Int = 1
+  f27: Int = 1
+  f28: Int = 1
+  f29: Int = 1
+  f30: Int = 1
+  f31: Int = 1
+  f32: Int = 1
+  f33: Int = 1
+  f34: Int = 1
+  f35: Int = 1
+  f36: Int = 1
+  f37: Int = 1
+  f38: Int = 1
+  f39: Int = 1
+  f40: Int = 1
+  f41: Int = 1
+  f42: Int = 1
+  f43: Int = 1
+  f44: Int = 1
+  f45: Int = 1
+  f46: Int = 1
+  f47: Int = 1
+  f48: Int = 1
+  f49: Int = 1
+  f50: Int = 1
+  f51: Int = 1
+  f52: Int = 1
+  f53: Int = 1
+  f54: Int = 1
+  f55: Int = 1
+  f56: Int = 1
+  f57: Int = 1
+  f58: Int = 1
+  f59: Int = 1
+  f60: Int = 1
+  f61: Int = 1
+  f62: Int = 1
+  f63: Int = 1
+  f64: Int = 1
+  f65: Int = 1
+  f66: Int = 1
+  f67: Int = 1
+  f68: Int = 1
+  f69: Int = 1
+  f70: Int = 1
+  f71: Int = 1
+  f72: Int = 1
+  f73: Int = 1
+  f74: Int = 1
+  f75: Int = 1
+  f76: Int = 1
+  f77: Int = 1
+  f78: Int = 1
+  f79: Int = 1
+  f80: Int = 1
+  f81: Int = 1
+  f82: Int = 1
+  f83: Int = 1
+  f84: Int = 1
+  f85: Int = 1
+  f86: Int = 1
+  f87: Int = 1
+  f88: Int = 1
+  f89: Int = 1
+  f90: Int = 1
+  f91: Int = 1
+  f92: Int = 1
+  f93: Int = 1
+  f94: Int = 1
+  f95: Int = 1
+  f96: Int = 1
+  f97: Int = 1
+  f98: Int = 1
+  f99: Int = 1
+  f100: Int = 1
+  f101: Int = 1
+  f102: Int = 1
+  f103: Int = 1
+  f104: Int = 1
+  f105: Int = 1
+  f106: Int = 1
+  f107: Int = 1
+  f108: Int = 1
+  f109: Int = 1
+  f110: Int = 1
+  f111: Int = 1
+  f112: Int = 1
+  f113: Int = 1
+  f114: Int = 1
+  f115: Int = 1
+  f116: Int = 1
+  f117: Int = 1
+  f118: Int = 1
+  f119: Int = 1
+  f120: Int = 1
+  f121: Int = 1
+  f122: Int = 1
+  f123: Int = 1
+  f124: Int = 1
+  f125: Int = 1
+  f126: Int = 1
+  f127: Int = 1
+  f128: Int = 1
+  f129: Int = 1
+}
+
+fn mk() -> Big { return Big {} }
+
+fn peek(b: Big) -> Int { return b.f0 }
+
+fn main() -> Int {
+  let i = 0
+  let acc = 0
+  while i < 50 {
+    acc = acc + peek(Big {})
+    acc = acc + peek(mk())
+    i = i + 1
+  }
+  print_int(acc)
+  return 0
+}

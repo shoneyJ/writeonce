@@ -44,9 +44,73 @@ All integers little-endian; offsets are absolute file offsets.
 | 30 | DB_STUB | trap T_DB "engine not linked" (spec: SQL-layer statements in milestone 1) |
 | 31 | TRAP Bx | explicit trap with code Bx |
 
-**Builtins:** now (ms), print (text), print_int, words (whitespace token count), multi_new/multi_push/multi_get/count/latest, map_new/map_set/map_get/map_has.
+**Builtins:** now (ms), print (text), print_int, words (whitespace token count), multi_new/multi_push/multi_get/count/latest, map_new/map_set/map_get/map_has, int_to_text (haxe-parity Task 2), variant_tag (haxe-parity Task 4 — see "Enum payload variants" below).
 
 **Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT.
+
+## Enum payload variants (haxe-parity compiler Task 4)
+
+`.wob` v1 is unchanged — no new section, no new header field, no version
+bump. A union with at least one payload variant (`type Status = Pending |
+Failed(reason: Text)`) compiles to **one ordinary class-table entry per
+variant**, named `"<Union>.<Variant>"` in the constant pool (source
+identifiers can never contain a dot, so the composite name cannot collide
+with a declared class — the same convention the method table already uses
+for `"Class.method"`). A variant's payload fields are the entry's fields,
+declaration order, ordinary kind bytes — so a variant object is dropped,
+masked, and cycle-scanned exactly like any other instance, including
+recursive payload frees, with zero collector changes.
+
+**The variant tag IS the class-table index**, carried by the object
+header's existing `class_id` field — nothing new is stored and `NEW`
+needs no change. The one VM addition is builtin **14 `variant_tag`**:
+register A = the header `class_id` of the object in register B, so a
+`switch` over a payload union reads the tag once and compares it against
+`LOADK`-ed class-id constants — no per-arm allocation. It traps
+`T_BOUNDS` on a null receiver or a native (`WO_CLS_*`) class id, the same
+defense `ICALL` keeps; a non-pointer register stays the compiler's to
+prevent (untyped registers, the residual-check doctrine). `variant_tag`
+is compiler-internal: it is not a source-callable name and does not
+appear in [`08-builtin-surface.md`](08-builtin-surface.md).
+
+An **all-bare union** (`type CronResult = Ok | ErrorFinal | Miss`) never
+reaches this file's format at all: its values are plain integer ordinals
+(0, 1, 2 … in declaration order) in `WO_K_SCALAR` positions, compared
+with `EQ` — no class entries, no heap objects, no `variant_tag`.
+
+**Payload move-out** (Task 4 fix rounds 1–2): a `switch` arm that yields
+its own payload binding as the switch's value (`case Boxed(b): b;`) MOVES
+the payload out of the variant object — **pointer-kind fields only**
+(OWNED/GCREF/TEXT/MULTI/MAP). The convention needs no format or collector
+change: the compiler emits a `SETF` writing zero into the moved field
+right after the value lands in its new owner's register, and the shell's
+ordinary recursive drop plan — which already skips zero slots for every
+kind (`runtime/src/gc.c wo_drop_kind`) — thereby frees the shell only.
+Escaping a **SCALAR** field (Int/Bool/Timestamp/Id/`ref`, a bare-union
+tag) is a plain COPY: no ownership moves and the field is left intact —
+nulling it would corrupt the subject with a value indistinguishable from
+a legitimate 0. A DISCARDED yield (statement-position switch) does not
+null either: the shell keeps the payload and frees it as usual.
+**Re-reading a moved-out payload is nil**: the field holds the zero word,
+so a later `switch` over the same subject GETFs 0 into the binding and
+any use of it traps `T_BOUNDS` ("null receiver") — memory-safe and
+defined, the residual-check doctrine's direction; a later task may
+promote this to a compile-time partial-move diagnostic (WO-E301 family).
+One companion rule on the caller side: an **owned heap temporary** passed
+as a borrow argument — a record/class constructor literal, a variant
+construction, or an owned-returning call (`peek(Pay{})`,
+`get(Boxed(Pay{}))`) — is copied to a stable register below the call
+window and `DROP`ped by the caller once the call returns (`take`
+arguments are the callee's to drop; places are their scope's; `@gc` and
+`Text` temporaries are excluded — the rc system's and the Copy-aliasing
+story's, respectively). Recursive drop is correct both ways, because a
+payload the callee moved out left the field nulled.
+
+**Typedef records** (`typedef Name = { ... }`) are ordinary class-table
+entries too, with one compiler-side convention the loader never sees: two
+records with the same shape (same ordered fields, same types, same
+defaults) share a single entry — structural aliasing decided entirely at
+emit time.
 
 ## Single-binary trailer (`woc build`, plan 3 Task 6)
 

@@ -1,0 +1,26 @@
+-- haxe-parity Task 2: `const NAME = literal` -- top-level and
+-- (bare, non-static) class-level, both usable in expressions. Resolved
+-- by parser.ml's own post-parse substitution: by the time typecheck/
+-- owner/emit see this file, GREETING_COUNT and LABEL are already the
+-- literals they name.
+const GREETING_COUNT = 2
+
+class Box {
+  const LABEL = "box"
+  n: Int
+
+  fn describe() -> Text {
+    return LABEL
+  }
+}
+
+fn main() -> Int {
+  let i = 0
+  while i < GREETING_COUNT {
+    print("hi")
+    i = i + 1
+  }
+  let b = Box { n: 1 }
+  print(b.describe())
+  return 0
+}

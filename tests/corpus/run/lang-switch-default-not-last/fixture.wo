@@ -1,0 +1,27 @@
+-- haxe-parity Task 3, review fix (Critical 1): `default` textually
+-- BEFORE some `case` arms used to silently kill every arm after it --
+-- `default` has no comparison of its own, so lowering the arms in raw
+-- source order meant nothing ever jumped into a `case` written after
+-- it, and `default`'s own body jumped straight past it to the
+-- switch's exit. Reviewer-reproduced repro shape, verbatim: with the
+-- bug, `classify(2)` returned "many" (default's own value) instead of
+-- "two". Fixed by lowering `default` last regardless of source
+-- position (ast.ml's `switch_lowering_order`); this fixture pins the
+-- corrected *runtime* behavior (a `--dump-owner`/typecheck assertion
+-- can't see this — only actually running the compare-and-jump chain
+-- proves the arm was reachable again).
+fn classify(n: Int) -> Text {
+  let v = switch n {
+    default: "many";
+    case 1: "one";
+    case 2: "two";
+  };
+  return v;
+}
+
+fn main() -> Int {
+  print(classify(1));
+  print(classify(2));
+  print(classify(3));
+  return 0;
+}

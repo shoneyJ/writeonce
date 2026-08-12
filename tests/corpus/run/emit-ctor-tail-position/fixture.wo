@@ -1,0 +1,35 @@
+-- pre-existing emit_ctor register collision, found during haxe-parity
+-- Task 3's re-review (out-of-scope encounter, fixed as its own hotfix):
+-- a constructor in TAIL position (`return Box{...}`) gets its dst from
+-- emit_tail's allocate-then-un-reserve convention, so dst sits AT
+-- f_temp -- and emit_ctor's per-field value temp then lands in dst
+-- itself, clobbering the just-NEW'd object pointer before SETF reads
+-- it (NEW r0; LOADK r0,k; SETF r0,f0,r0 -- an int64 stored through as
+-- a heap pointer, VM segfault with zero diagnostics). A `let`-bound
+-- ctor never collides (its dst is a local, below f_temp), which is why
+-- the whole milestone-1 corpus missed it. Same defect family as the
+-- Task 3 emit_switch placeholder-dst collision, different call site.
+class Box {
+  n: Int
+}
+
+class Pair {
+  a: Int
+  b: Int
+}
+
+fn make() -> Box {
+  return Box{n: 3};
+}
+
+fn make_pair() -> Pair {
+  return Pair{a: 1, b: 2};
+}
+
+fn main() -> Int {
+  print_int(make().n);
+  let p = make_pair();
+  print_int(p.a);
+  print_int(p.b);
+  return 0;
+}

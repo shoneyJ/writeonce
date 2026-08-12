@@ -105,7 +105,8 @@ let read_ident_chars lx =
    plus uppercase-only INSERT/SELECT. Deliberately absent: self, me,
    subscribe, receive, and lowercase insert/select — those fall
    through to the `_ -> None` case below and lex as plain Ident,
-   matching rt and the CLAUDE.md gotcha this task exists to preserve. *)
+   matching rt and the CLAUDE.md gotcha this task exists to preserve.
+   `use`/`pub` (haxe-parity Task 1, modules) added on top of that set. *)
 let keyword_kind = function
   | "type" -> Some Token.KwType
   | "class" -> Some Token.KwClass
@@ -122,9 +123,81 @@ let keyword_kind = function
   | "in" -> Some Token.KwIn
   | "true" -> Some Token.KwTrue
   | "false" -> Some Token.KwFalse
+  | "use" -> Some Token.KwUse
+  | "pub" -> Some Token.KwPub
+  | "break" -> Some Token.KwBreak
+  | "continue" -> Some Token.KwContinue
+  | "do" -> Some Token.KwDo
+  | "const" -> Some Token.KwConst
+  | "and" -> Some Token.KwAnd
+  | "or" -> Some Token.KwOr
+  | "inline" -> Some Token.KwInline
+  | "switch" -> Some Token.KwSwitch
+  | "case" -> Some Token.KwCase
+  | "default" -> Some Token.KwDefault
+  | "typedef" -> Some Token.KwTypedef
   | "INSERT" -> Some Token.KwInsert
   | "SELECT" -> Some Token.KwSelect
   | _ -> None
+
+(* haxe-parity Task 2: scans the raw source of one `${...}` interpolation
+   body, starting right after the `{` (caller already consumed `$` and
+   `{`). Returns that raw, unlexed text -- the parser re-tokenizes it as a
+   full expression (parser.ml's own desugar-to-Concat step; this is a
+   mechanical extraction only, no semantics). Tracks brace depth so a
+   nested `{}` (a constructor literal inside an interpolation,
+   `${Point{x:1}.x}`) doesn't end the scan early, and skips a nested
+   string literal verbatim (honoring its own backslash escapes) so a
+   quote or brace *inside* that nested string can't confuse either
+   count. Runs off the end of the file the same silent way an
+   unterminated outer string does -- the caller's own EOF handling picks
+   up right after. *)
+let read_interp_expr lx =
+  let buf = Buffer.create 16 in
+  let depth = ref 0 in
+  let continue_ = ref true in
+  while !continue_ do
+    match peek lx with
+    | None -> continue_ := false
+    | Some '}' when !depth = 0 ->
+      ignore (advance lx);
+      continue_ := false
+    | Some ('{' as c) ->
+      incr depth;
+      Buffer.add_char buf c;
+      ignore (advance lx)
+    | Some ('}' as c) ->
+      decr depth;
+      Buffer.add_char buf c;
+      ignore (advance lx)
+    | Some (('"' | '\'') as q) ->
+      Buffer.add_char buf q;
+      ignore (advance lx);
+      let scanning = ref true in
+      while !scanning do
+        match peek lx with
+        | None -> scanning := false
+        | Some c when c = q ->
+          Buffer.add_char buf c;
+          ignore (advance lx);
+          scanning := false
+        | Some '\\' -> (
+          Buffer.add_char buf '\\';
+          ignore (advance lx);
+          match peek lx with
+          | Some c ->
+            Buffer.add_char buf c;
+            ignore (advance lx)
+          | None -> scanning := false)
+        | Some c ->
+          Buffer.add_char buf c;
+          ignore (advance lx)
+      done
+    | Some c ->
+      Buffer.add_char buf c;
+      ignore (advance lx)
+  done;
+  Buffer.contents buf
 
 let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
     Token.t list =
@@ -171,6 +244,16 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
         let quote = c in
         ignore (advance lx);
         let buf = Buffer.create 16 in
+        (* haxe-parity Task 2: segments accumulate here only when at
+           least one `${...}` is actually found (flush_text below); a
+           plain string never touches `parts` at all, so it emits the
+           exact same `Token.Str` it always did -- see the `match !parts`
+           dispatch after the loop. *)
+        let parts = ref [] in
+        let flush_text () =
+          parts := Token.SText (Buffer.contents buf) :: !parts;
+          Buffer.clear buf
+        in
         let scanning = ref true in
         while !scanning do
           match peek lx with
@@ -184,6 +267,17 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
           | Some c when c = quote ->
             ignore (advance lx);
             scanning := false
+          | Some '$' when peek_at lx 1 = Some '{' ->
+            (* Unescaped `${` -- `\$` never reaches here, it is fully
+               consumed by the backslash branch below, one dispatch
+               earlier, so this is always a genuine interpolation start,
+               never an escaped `$` that happens to be followed by `{`. *)
+            flush_text ();
+            ignore (advance lx);
+            (* '$' *)
+            ignore (advance lx);
+            (* '{' *)
+            parts := Token.SExpr (read_interp_expr lx) :: !parts
           | Some '\\' -> (
             (* Captured before advancing: this is the backslash's own
                position, so a dangling-escape diagnostic points at the
@@ -196,6 +290,10 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
             | Some '\\' -> Buffer.add_char buf '\\'
             | Some '"' -> Buffer.add_char buf '"'
             | Some '\'' -> Buffer.add_char buf '\''
+            (* `\$` -- not one of the escapes above, so it falls into
+               this catch-all exactly like any other unrecognized
+               backslash sequence, producing a literal `$` that the `$`
+               dispatch above never sees (it already advanced past it). *)
             | Some other -> Buffer.add_char buf other
             | None ->
               report_unterminated_escape esc_line esc_col;
@@ -204,7 +302,11 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
             ignore (advance lx);
             Buffer.add_char buf other
         done;
-        emit (Token.Str (Buffer.contents buf)) line col
+        flush_text ();
+        (match List.rev !parts with
+        | [] -> emit (Token.Str "") line col
+        | [ Token.SText s ] -> emit (Token.Str s) line col
+        | segs -> emit (Token.InterpStr segs) line col)
       end
       else if is_digit c then begin
         let n = ref 0 in

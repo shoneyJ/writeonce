@@ -1,0 +1,17 @@
+-- Hotfix round 2 (WO-E209): a direct method call, not a free fn wrapping
+-- one -- `Box.hidden` is declared `-> Int`, and the receiver `b` is
+-- confidently `Box` because it was built the ordinary way (`let b =
+-- Box{}`, a `Ctor`, which `confident_typ` also had to start chasing to
+-- reach method calls off a receiver built this way rather than only a
+-- parameter). `print(b.hidden())` is the same class of bug as
+-- `print(7)`, dispatched through a method instead of a free fn.
+class Box {
+  fn hidden() -> Int {
+    return 7
+  }
+}
+
+fn main() {
+  let b = Box{}
+  print(b.hidden())
+}

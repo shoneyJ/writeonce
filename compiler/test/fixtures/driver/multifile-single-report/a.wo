@@ -1,0 +1,3 @@
+-- Hotfix (multi-file double-report): see b.wo and runner.ml's own
+-- "multifile single-report" test block for what this pins.
+class Item { n: Int }

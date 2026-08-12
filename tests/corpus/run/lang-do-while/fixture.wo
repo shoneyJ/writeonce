@@ -1,0 +1,14 @@
+-- haxe-parity Task 2: `do { body } while cond` -- body runs at least
+-- once. `n` starts already past the condition (5, not < 3) so the
+-- printed "0" below only happens because the body ran unconditionally
+-- before the condition was ever checked; a `while`-shaped (check-first)
+-- lowering would print nothing at all.
+fn main() -> Int {
+  let n = 5
+  do {
+    print_int(n)
+    n = n + 1
+  } while n < 3
+  print("done")
+  return 0
+}

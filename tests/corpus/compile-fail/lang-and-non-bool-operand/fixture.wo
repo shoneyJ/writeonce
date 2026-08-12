@@ -1,0 +1,10 @@
+-- haxe-parity Task 2: `and`/`or` are Bool-only, no truthiness --
+-- `count` is confidently Int (a literal-valued local), so this is a
+-- real, statically-provable type error, not a guess.
+fn main() -> Int {
+  let count = 1
+  if count and true {
+    print("unreachable")
+  }
+  return 0
+}

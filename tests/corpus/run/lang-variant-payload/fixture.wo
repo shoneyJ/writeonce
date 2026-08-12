@@ -1,0 +1,35 @@
+-- haxe-parity Task 4: enum payload variants. `Status` mixes a bare
+-- variant and a payload variant, so every `Status` value is a variant
+-- object (a compiler-generated class entry per variant; the tag is the
+-- object header's own class id -- docs/plan/oop-vm/00-wob-format.md's
+-- variant convention). Construction is by variant name (`Pending`,
+-- `Failed("boom")`); the switch is exhaustive (both variants covered,
+-- no `default` needed -- WO-E208's union rule) and `case
+-- Failed(reason):` binds the payload field in its arm.
+type Status = Pending | Failed(reason: Text)
+
+fn mk(n: Int) -> Status {
+  if n == 1 { return Failed("boom") }
+  return Pending
+}
+
+fn classify(st: Status) -> Text {
+  return switch st {
+    case Pending: "pending";
+    case Failed(reason): reason;
+  }
+}
+
+fn main() -> Int {
+  let a = mk(0)
+  let b = mk(1)
+  print(classify(a))
+  print(classify(b))
+  -- direct construction (not through a declared-return fn): the owner
+  -- pass must classify `d` Owned through the variant construction
+  -- itself, or this CONCAT-built payload leaks (ASan-proven RED when
+  -- that classification is stubbed out -- task report).
+  let d = Failed("direct " .. int_to_text(9))
+  print(classify(d))
+  return 0
+}

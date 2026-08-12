@@ -27,6 +27,12 @@ let kind_label (k : Token.kind) : string =
   | Token.Ident s -> Printf.sprintf "IDENT(%s)" s
   | Token.Int n -> Printf.sprintf "INT(%d)" n
   | Token.Str s -> Printf.sprintf "STR(%s)" s
+  | Token.InterpStr segs ->
+    let part_str = function
+      | Token.SText s -> Printf.sprintf "TEXT(%s)" s
+      | Token.SExpr s -> Printf.sprintf "EXPR(%s)" s
+    in
+    Printf.sprintf "INTERP_STR(%s)" (String.concat "," (List.map part_str segs))
   | Token.KwType -> "KW_TYPE"
   | Token.KwClass -> "KW_CLASS"
   | Token.KwInterface -> "KW_INTERFACE"
@@ -44,6 +50,19 @@ let kind_label (k : Token.kind) : string =
   | Token.KwFalse -> "KW_FALSE"
   | Token.KwInsert -> "KW_INSERT"
   | Token.KwSelect -> "KW_SELECT"
+  | Token.KwUse -> "KW_USE"
+  | Token.KwPub -> "KW_PUB"
+  | Token.KwBreak -> "KW_BREAK"
+  | Token.KwContinue -> "KW_CONTINUE"
+  | Token.KwDo -> "KW_DO"
+  | Token.KwConst -> "KW_CONST"
+  | Token.KwAnd -> "KW_AND"
+  | Token.KwOr -> "KW_OR"
+  | Token.KwInline -> "KW_INLINE"
+  | Token.KwSwitch -> "KW_SWITCH"
+  | Token.KwCase -> "KW_CASE"
+  | Token.KwDefault -> "KW_DEFAULT"
+  | Token.KwTypedef -> "KW_TYPEDEF"
   | Token.LBrace -> "LBRACE"
   | Token.RBrace -> "RBRACE"
   | Token.LParen -> "LPAREN"
@@ -168,6 +187,8 @@ let binop_str : Ast.binop -> string = function
   | Ast.Le -> "<="
   | Ast.Gt -> ">"
   | Ast.Ge -> ">="
+  | Ast.And -> "and"
+  | Ast.Or -> "or"
 
 (* Raw token span shared by both DbStub renderings below: a statement-
    position DbStub (dump_stmt) and an expression-position one nested
@@ -198,6 +219,20 @@ let rec expr_str (e : Ast.expr) : string =
       (String.concat ", "
          (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
+  | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
+  (* haxe-parity Task 3: arm bodies are `stmt list`, not one `expr` — no
+     golden AST/bc fixture pins a switch (direct assertions instead, see
+     runner.ml, same convention haxe-parity Task 2 used), so this is a
+     one-line-per-arm-header summary ("readable enough to eyeball", this
+     file's own module-doc contract), not a full unparse of every arm's
+     statements. *)
+  | Ast.Switch (subject, arms) ->
+    let arm_str (a : Ast.switch_arm) =
+      if a.Ast.is_default then "default: ..."
+      else Printf.sprintf "case %s: ..." (String.concat ", " (List.map expr_str a.Ast.values))
+    in
+    Printf.sprintf "SWITCH %s { %s }" (expr_str subject)
+      (String.concat " " (List.map arm_str arms))
 
 (* dump_stmt — one line per statement (LINE:COL KIND detail), matching
    dump_field/dump_method_sig's "one descriptive line" convention;
@@ -235,12 +270,25 @@ let rec dump_stmt (s : Ast.stmt) : string list =
   | Ast.ExprStmt { Ast.kind = Ast.DbStub toks; _ } ->
     [ Printf.sprintf "%s DB_STUB %s" (pos_str s.Ast.s_pos) (dbstub_tokens_str toks) ]
   | Ast.ExprStmt e -> [ Printf.sprintf "%s EXPR %s" (pos_str s.Ast.s_pos) (expr_str e) ]
+  | Ast.Break -> [ Printf.sprintf "%s BREAK" (pos_str s.Ast.s_pos) ]
+  | Ast.Continue -> [ Printf.sprintf "%s CONTINUE" (pos_str s.Ast.s_pos) ]
+  | Ast.DoWhile { body; cond } ->
+    Printf.sprintf "%s DO" (pos_str s.Ast.s_pos) :: indent_block body
+    @ [ Printf.sprintf "%s WHILE %s" (pos_str s.Ast.s_pos) (expr_str cond) ]
 
 (* [header; body statements...] — body lines are already indented two
    spaces; callers nesting this under a class add one more level of
    indent uniformly, same as before Task 5. *)
+(* `pub` (haxe-parity Task 1, modules) prefixes the header when set; a
+   plain (non-pub) declaration renders byte-identical to every
+   pre-Task-1 golden fixture — this is additive, never a reformat of
+   the unmarked case. *)
+let pub_prefix (pub : bool) : string = if pub then "PUB " else ""
+
 let dump_method (m : Ast.method_decl) : string list =
-  let header = Printf.sprintf "%s METHOD %s" (pos_str m.pos) (sig_str m.name m.params m.ret) in
+  let header =
+    Printf.sprintf "%s %sMETHOD %s" (pos_str m.pos) (pub_prefix m.pub) (sig_str m.name m.params m.ret)
+  in
   let body_lines = List.concat_map (fun s -> List.map (fun l -> "  " ^ l) (dump_stmt s)) m.body in
   header :: body_lines
 
@@ -261,24 +309,56 @@ let annotations_header (is_gc : bool) (table : Ast.table_cfg option) : string =
   in
   gc_part ^ table_part
 
+(* haxe-parity Task 2: `CONST NAME = <literal>` — top-level or (bare)
+   class-level. *)
+let dump_const (c : Ast.const_decl) : string =
+  Printf.sprintf "%s CONST %s = %s" (pos_str c.pos) c.name (expr_str c.value)
+
 let dump_class (c : Ast.class_decl) : string list =
-  let kw = if c.is_class then "CLASS" else "TYPE" in
+  let kw = if c.is_record then "TYPEDEF" else if c.is_class then "CLASS" else "TYPE" in
   let header =
-    Printf.sprintf "%s %s %s%s" (pos_str c.pos) kw c.name (annotations_header c.is_gc c.table)
+    Printf.sprintf "%s %s%s %s%s" (pos_str c.pos) (pub_prefix c.pub) kw c.name
+      (annotations_header c.is_gc c.table)
   in
   let field_lines = List.map (fun f -> "  " ^ dump_field f) c.fields in
+  let const_lines = List.map (fun cd -> "  " ^ dump_const cd) c.consts in
   let method_lines = List.concat_map (fun m -> List.map (fun l -> "  " ^ l) (dump_method m)) c.methods in
-  (header :: field_lines) @ method_lines
+  (header :: field_lines) @ const_lines @ method_lines
 
 let dump_interface (i : Ast.interface_decl) : string list =
-  let header = Printf.sprintf "%s INTERFACE %s" (pos_str i.pos) i.name in
+  let header = Printf.sprintf "%s %sINTERFACE %s" (pos_str i.pos) (pub_prefix i.pub) i.name in
   let method_lines = List.map (fun m -> "  " ^ dump_method_sig m) i.methods in
   header :: method_lines
+
+(* USE <path>, segments joined by '/' exactly as written in source
+   (`use shared/util` -> "shared/util") — no resolution performed here,
+   this is a syntax-level dump like every other dump_* function. *)
+let dump_use (u : Ast.use_decl) : string list =
+  [ Printf.sprintf "%s USE %s" (pos_str u.pos) (String.concat "/" u.segments) ]
+
+(* UNION Name = A | B(f: T) — one line, variants rendered inline the
+   same "readable enough to eyeball" way expr_str renders expressions
+   (haxe-parity Task 4). *)
+let dump_union (u : Ast.union_decl) : string list =
+  let variant_str (v : Ast.variant_decl) =
+    match v.Ast.v_fields with
+    | [] -> v.Ast.v_name
+    | fs ->
+      Printf.sprintf "%s(%s)" v.Ast.v_name
+        (String.concat ", "
+           (List.map (fun (n, ty) -> Printf.sprintf "%s: %s" n (field_ty_str ty)) fs))
+  in
+  [ Printf.sprintf "%s %sUNION %s = %s" (pos_str u.Ast.pos) (pub_prefix u.Ast.pub) u.Ast.name
+      (String.concat " | " (List.map variant_str u.Ast.variants))
+  ]
 
 let dump_decl : Ast.decl -> string list = function
   | Ast.Class c -> dump_class c
   | Ast.Interface i -> dump_interface i
   | Ast.Fn f -> dump_method f
+  | Ast.Const c -> [ dump_const c ]
+  | Ast.Use u -> dump_use u
+  | Ast.Union u -> dump_union u
 
 let dump_ast (prog : Ast.program) : string =
   let lines = List.concat_map dump_decl prog.decls in
@@ -413,6 +493,8 @@ let dump_owner (t : Owner.tables) : string =
     | Owner.DBranchJoin label ->
       Printf.sprintf "%s JOIN-DROP %s %s" pos label (drop_items_str d.Owner.dr_items)
     | Owner.DLiveMask -> Printf.sprintf "%s LIVE-MASK %s" pos (drop_items_str d.Owner.dr_items)
+    | Owner.DBreak -> Printf.sprintf "%s BREAK %s" pos (drop_items_str d.Owner.dr_items)
+    | Owner.DContinue -> Printf.sprintf "%s CONTINUE %s" pos (drop_items_str d.Owner.dr_items)
   in
   let rc_line (r : Owner.rc_site) =
     Printf.sprintf "%s %s %s %s" (owner_pos_str r.Owner.rc_pos)

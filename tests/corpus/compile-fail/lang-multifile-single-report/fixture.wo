@@ -1,0 +1,15 @@
+-- Hotfix repro (multi-file double-report): a body-level check (here
+-- WO-E202, unknown field) must fire exactly once, tagged with THIS
+-- file -- not once per OTHER discovered file too. `it.price` is the
+-- one real bug (Item has no `price` field, only `n`). other/helper.wo
+-- exists purely to make this a two-file program: the bug needs N>1
+-- discovered files to reproduce at all (with one file, there is no
+-- "other file's pass" to re-report under). See
+-- .superpowers/sdd/2026-08-01-haxe-parity-language/hotfix-e209-report.md's
+-- "Disclosed, NOT fixed" section for the original diagnosis.
+class Item { n: Int }
+
+fn main() {
+  let it = Item{n:1}
+  print_int(it.price)
+}

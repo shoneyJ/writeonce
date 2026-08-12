@@ -1,0 +1,18 @@
+-- haxe-parity Task 4, fix round 1 (review Major): the inverse of the
+-- union-subject direction — a case naming a KNOWN variant over an `Int`
+-- subject silently ordinal-matched (`Lo` is tag 0, so `f(0)` took the
+-- `case Lo:` arm). WO-E201, the same family as the existing
+-- lang-switch-int-subject-text-case.
+type K = Lo | Mid | Hi
+
+fn f(n: Int) -> Int {
+  return switch n {
+    case Lo: 99;
+    default: 0;
+  }
+}
+
+fn main() -> Int {
+  print_int(f(0))
+  return 0
+}

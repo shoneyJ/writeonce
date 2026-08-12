@@ -1,0 +1,16 @@
+-- haxe-parity Task 1 (modules), review fix CRITICAL 1: `a` and `b` both
+-- declare `pub fn thing()`. Bare `thing()` would be WO-E218 (ambiguous —
+-- see compile-fail/lang-use-collision); qualifying disambiguates, and
+-- each qualified call MUST dispatch to its own module's own
+-- implementation, never silently share whichever one a name-only merge
+-- happened to keep. Pinned by two genuinely different strings, not just
+-- "it compiles" — a regression that made both calls execute the same
+-- body would still compile clean and only be caught by this exact
+-- byte-for-byte stdout check.
+use a
+use b
+
+fn main() {
+  print(a.thing())
+  print(b.thing())
+}

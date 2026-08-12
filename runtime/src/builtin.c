@@ -150,6 +150,34 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = wo_map_has(m, R[B + 1]) ? 1 : 0;
         return 0;
     }
+    case WO_B_INT_TO_TEXT: { /* haxe-parity compiler Task 2: string interpolation */
+        char buf[32];
+        int len = snprintf(buf, sizeof buf, "%lld", (long long)(int64_t)R[B]);
+        wo_str *s = wo_str_new(rt, buf, (uint32_t)len);
+        if (!s) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)s;
+        return 0;
+    }
+    case WO_B_VARIANT_TAG: { /* haxe-parity compiler Task 4: enum payload variants */
+        /* the tag IS the header's class_id (wob.h's convention). Null and
+         * native-class receivers trap BOUNDS — same defense ICALL keeps;
+         * a non-pointer register is the compiler's to prevent (untyped
+         * registers, the residual-check doctrine). */
+        if (!R[B]) {
+            *msg = "null receiver";
+            return WO_T_BOUNDS;
+        }
+        wo_hdr *o = (wo_hdr *)(uintptr_t)R[B];
+        if (o->class_id >= vm->mod->class_cnt) {
+            *msg = "variant tag of a native value";
+            return WO_T_BOUNDS;
+        }
+        R[A] = o->class_id;
+        return 0;
+    }
     default: /* unreachable: loader validated the id */
         *msg = "unknown builtin";
         return WO_T_EXPLICIT;

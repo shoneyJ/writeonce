@@ -20,11 +20,25 @@
    (CLAUDE.md gotcha — this is the whole reason Task 3 exists as a
    from-scratch lexer rather than a copy of rt's). *)
 
+type str_part =
+  | SText of string (* literal text, escapes already applied *)
+  | SExpr of string (* raw, unlexed source of one `${...}`'s body *)
+
 type kind =
   (* literals *)
   | Ident of string
   | Int of int
   | Str of string
+  (* haxe-parity Task 2: a string literal containing at least one
+     `${expr}` interpolation. Alternating text/expr segments, in source
+     order; SExpr carries the *raw, unlexed* source text between the
+     `${` and its matching `}` (nested braces/strings skipped verbatim
+     by the lexer's own scan) -- the parser re-tokenizes/re-parses it as
+     a real expression, which is where "desugars at parse time to
+     concatenation" actually happens (ast.ml/parser.ml). A plain string
+     with no `${` never produces this -- it still lexes as a bare Str,
+     byte-identical to every pre-existing fixture. *)
+  | InterpStr of str_part list
   (* milestone-1 keywords *)
   | KwType
   | KwClass
@@ -41,6 +55,41 @@ type kind =
   | KwIn
   | KwTrue
   | KwFalse
+  (* haxe-parity Task 1 (modules): `use <path>` top-level import and the
+     `pub` visibility marker on class/interface/fn declarations. Real
+     keywords, not positionally-recognized idents like insert/select or
+     ref/multi/map -- neither name is used as an identifier anywhere in
+     the existing corpus/fixtures, so there is no rt-parity or
+     field-name collision to dodge (see lexer.ml's module doc for why
+     those other names stayed idents). *)
+  | KwUse
+  | KwPub
+  (* haxe-parity Task 2 (small control surface): break/continue/do-while,
+     const values, and/or booleans, and inline-fn rejection (the haxe
+     verdict table's own row: "const compile-time values; inline
+     *functions* rejected"). All real keywords -- none collides with an
+     existing corpus identifier (grepped before adding, same discipline
+     Task 1 used for use/pub). *)
+  | KwBreak
+  | KwContinue
+  | KwDo
+  | KwConst
+  | KwAnd
+  | KwOr
+  | KwInline
+  (* haxe-parity Task 3: `switch`/`case`/`default` — real keywords (none
+     collides with an existing corpus/sample identifier, grepped first,
+     same discipline Tasks 1/2 used for use/pub/break/etc.). *)
+  | KwSwitch
+  | KwCase
+  | KwDefault
+  (* haxe-parity Task 4: `typedef Name = { ... }` structural records. A
+     real keyword (grepped the corpus/sample first, same discipline as
+     every keyword above — `typedef` appears only as this declaration's
+     own leading word, never as an identifier). Union declarations reuse
+     the existing KwType (`type Name = A | B` vs. the struct form
+     `type Name { ... }` — disambiguated by the token after the name). *)
+  | KwTypedef
   (* uppercase-only SQL-layer stubs (Task 5 parses these into a DbStub
      span); lowercase "insert"/"select" are plain Ident, never these. *)
   | KwInsert

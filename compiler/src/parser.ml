@@ -127,6 +127,15 @@ let fail (st : state) (site : Ast.pos) (code : string) (message : string) : 'a =
 let syntax_code = Diag.parsing_prefix ^ "01" (* WO-E101: generic syntax error *)
 let table_code = Diag.parsing_prefix ^ "02" (* WO-E102: invalid @table(...) configuration *)
 
+(* haxe-parity Task 2: the haxe keyword verdict table's `inline` row —
+   "adopt (values): const compile-time values; inline *functions*
+   rejected — optimization is the compiler's job". `const` (below) is
+   the adopted half; this is the reject half's own diagnostic, cited at
+   `inline`'s own position, one per bad declaration (parse_program's
+   existing try/with resyncs past the whole discarded `inline fn ...`
+   body, same as any other bad top-level declaration). *)
+let inline_fn_code = Diag.parsing_prefix ^ "03" (* WO-E103 *)
+
 let unexpected (st : state) (what : string) : 'a =
   let p = peek_pos st in
   fail st p syntax_code
@@ -148,6 +157,19 @@ let expect_ident (st : state) (what : string) : string =
     ignore (advance st);
     s
   | _ -> unexpected st what
+
+(* haxe-parity Task 4: `type` is a legal FIELD name (the sample's own
+   wire-format key — mcp.wo's `ToolText = { type: Text, ... }` carries
+   JSON's `type` verbatim), so the three field-NAME positions (a field
+   declaration, a constructor-literal key, a `.field` access) accept the
+   keyword and treat it as the plain name "type". Field positions only —
+   everywhere else `type` stays the declaration keyword it is. *)
+let expect_field_name (st : state) (what : string) : string =
+  match peek st with
+  | Token.KwType ->
+    ignore (advance st);
+    "type"
+  | _ -> expect_ident st what
 
 (* ---- field/service/policy/on disambiguation --------------------------
 
@@ -205,9 +227,23 @@ let sync_to_next_top_level (st : state) : unit =
       decr depth;
       ignore (advance st)
     | Token.KwType when !depth = 0 && st.pos > start -> continue_ := false
+    | Token.KwTypedef when !depth = 0 && st.pos > start -> continue_ := false
     | Token.KwClass when !depth = 0 && st.pos > start -> continue_ := false
     | Token.KwInterface when !depth = 0 && st.pos > start -> continue_ := false
     | Token.KwFn when !depth = 0 && st.pos > start -> continue_ := false
+    | Token.KwUse when !depth = 0 && st.pos > start -> continue_ := false
+    | Token.KwConst when !depth = 0 && st.pos > start -> continue_ := false
+    (* KwPub deliberately NOT a sync point (unlike every other top-level
+       starter above): `pub(read)` (Task 7's field-accessor marker, not
+       this task's — ast.ml's method_decl.pub doc comment) recurs
+       *inside* an already-broken class/type body one field at a time,
+       and making KwPub a stop point would turn one coarse "whole class
+       discarded" diagnostic into one diagnostic per `pub(read)` field
+       line. Leaving it out preserves the pre-existing coarse-recovery
+       behavior there — the brief's own "leave it unparsed" option for
+       `pub(` — while a genuinely top-level `pub` still needs no sync
+       help at all: it's handled inline by parse_program on the
+       error-free path, and recovery only ever runs after a failure. *)
     | Token.At when !depth = 0 && st.pos > start -> continue_ := false
     | Token.Ident s when !depth = 0 && st.pos > start && is_sync_ident s -> continue_ := false
     | _ -> ignore (advance st)
@@ -330,7 +366,17 @@ let parse_field_ty (st : state) : Ast.field_ty =
         Ast.Map (k, v)
     | Token.Ident name ->
         ignore (advance st);
-        Ast.Scalar name
+        (* haxe-parity Task 4: one qualified segment (`json.Value` — the
+           sample's own stdlib-reserved type in a record field). Kept as
+           one dotted Scalar name; whether it resolves is types.ml's
+           question (is_known_type_name treats a reserved-stdlib head as
+           UNKNOWN-BUT-RESERVED, same convention as `fs.stat(...)` calls). *)
+        if peek st = Token.Dot then begin
+          ignore (advance st);
+          let member = expect_ident st "qualified type name" in
+          Ast.Scalar (name ^ "." ^ member)
+        end
+        else Ast.Scalar name
     | _ -> unexpected st "a field type"
   in
   if !nullable then Ast.Nullable base_ty else base_ty
@@ -394,9 +440,17 @@ let parse_default_expr (st : state) : Ast.default_expr =
   end
   else Ast.DefaultOpaque (collect_default_tokens st)
 
-let parse_field (st : state) : Ast.field =
+(* `~comma_ends` (haxe-parity Task 4): a typedef record body may list
+   its fields on one line, comma-separated (`typedef HttpResp = {
+   status: Int, body: Text }` — the sample's own shape), so a depth-0
+   comma ends the field there exactly like a newline does in a
+   class/type body; the comma itself is left for the record loop to
+   consume. Every pre-existing call site passes nothing and keeps the
+   class-body behavior byte-identical (a comma there is still the same
+   "unexpected" error as before). *)
+let parse_field ?(comma_ends = false) (st : state) : Ast.field =
   let pos = peek_pos st in
-  let name = expect_ident st "field name" in
+  let name = expect_field_name st "field name" in
   expect st Token.Colon "':'";
   let ty = parse_field_ty st in
   let default = ref None in
@@ -412,6 +466,7 @@ let parse_field (st : state) : Ast.field =
     | Token.Eq ->
       ignore (advance st);
       default := Some (parse_default_expr st)
+    | Token.Comma when comma_ends -> continue_ := false
     | Token.Newline | Token.RBrace | Token.Eof -> continue_ := false
     | _ -> unexpected st "an annotation, '=', or end of field"
   done;
@@ -487,6 +542,8 @@ let parse_sig_head (st : state) : sig_head =
    Precedence ladder, loosest to tightest (parse_expr is the entry
    point; each level's loop is left-associative):
 
+     or           or                      (haxe-parity Task 2)
+     and          and                     (haxe-parity Task 2)
      comparison   ==  !=  <  <=  >  >=
      concat       ..
      additive     +  -
@@ -498,7 +555,11 @@ let parse_sig_head (st : state) : sig_head =
 
    This ordering matches Lua's (concat binds looser than +/-, tighter
    than comparison) — see ast.ml's module doc for why `..`/Concat is
-   this task's own addition, not a straight rt port.
+   this task's own addition, not a straight rt port. `and`/`or` sit
+   above comparison per the spec amendment's own words ("or binds
+   loosest, then and, then comparison") — real keywords (KwAnd/KwOr),
+   never `&&`/`||`, so `a == 1 and b == 2` parses with no parens: `and`
+   only ever sees fully-formed comparisons as its operands.
 
    End-of-statement convention mirrors parse_field's: a "simple"
    statement (let/assign/return/expr-statement/DbStub) must end at an
@@ -650,7 +711,37 @@ let with_no_brace (st : state) (value : bool) (f : unit -> 'a) : 'a =
 
 (* ---- expression parsing -------------------------------------------------- *)
 
-let rec parse_expr (st : state) : Ast.expr = parse_comparison st
+let rec parse_expr (st : state) : Ast.expr = parse_or st
+
+and parse_or (st : state) : Ast.expr =
+  let lhs = ref (parse_and st) in
+  let continue_ = ref true in
+  while !continue_ do
+    match peek st with
+    | Token.KwOr ->
+      let pos = peek_pos st in
+      let id = fresh_id st in
+      ignore (advance st);
+      let rhs = parse_and st in
+      lhs := { Ast.id; pos; kind = Ast.Binary (Ast.Or, !lhs, rhs) }
+    | _ -> continue_ := false
+  done;
+  !lhs
+
+and parse_and (st : state) : Ast.expr =
+  let lhs = ref (parse_comparison st) in
+  let continue_ = ref true in
+  while !continue_ do
+    match peek st with
+    | Token.KwAnd ->
+      let pos = peek_pos st in
+      let id = fresh_id st in
+      ignore (advance st);
+      let rhs = parse_comparison st in
+      lhs := { Ast.id; pos; kind = Ast.Binary (Ast.And, !lhs, rhs) }
+    | _ -> continue_ := false
+  done;
+  !lhs
 
 and parse_comparison (st : state) : Ast.expr =
   let lhs = ref (parse_concat st) in
@@ -741,7 +832,7 @@ and parse_postfix (st : state) : Ast.expr =
     | Token.Dot ->
       let pos = peek_pos st in
       ignore (advance st);
-      let name = expect_ident st "field or method name" in
+      let name = expect_field_name st "field or method name" in
       base := { Ast.id = fresh_id st; pos; kind = Ast.Field (!base, name) }
     | Token.LParen ->
       let pos = peek_pos st in
@@ -791,20 +882,90 @@ and parse_ctor_literal (st : state) : Ast.expr =
   let fields = ref [] in
   let continue_ = ref (peek st <> Token.RBrace) in
   while !continue_ do
-    let fname = expect_ident st "constructor field name" in
+    let fname = expect_field_name st "constructor field name" in
     expect st Token.Colon "':'";
     let fval = parse_expr st in
     fields := (fname, fval) :: !fields;
     skip_newlines st;
-    if accept st Token.Comma then skip_newlines st else continue_ := false
+    if accept st Token.Comma then begin
+      skip_newlines st;
+      (* trailing comma before the close (haxe-parity Task 4 — the
+         sample's own multi-line record literals end `..., }`) *)
+      if peek st = Token.RBrace then continue_ := false
+    end
+    else continue_ := false
   done;
   skip_newlines st;
   expect st Token.RBrace "'}'";
   { Ast.id; pos; kind = Ast.Ctor (name, List.rev !fields) }
 
+(* haxe-parity Task 3: `switch subject { case v1, v2: <stmts> ... default:
+   <stmts> }` — the sample's own shape (grepped every `switch` site in
+   docs/examples/log-watcher/*.wo first). The subject is parsed
+   `no_brace` for the exact reason if/while/for's own conditions are:
+   `switch res { ... }` must not read `res {` as a constructor literal
+   swallowing the switch's own body. Arms have no brace of their own
+   (the sample never wraps a case body in `{ }`) — [parse_switch_arm_body]
+   is [parse_block]'s loop with `case`/`default`/`}` as its stop set
+   instead of `}` alone, and no brace to expect/consume. `default` is
+   grammar-optional here; whether it's *required* depends on the
+   subject's type (scalar/Text: yes; a union: only if a variant is
+   missing — Task 4's territory), which is a typecheck-time question
+   (WO-E208), not a parse-time one. *)
+and parse_switch_arm_body (st : state) : Ast.stmt list =
+  let stmts = ref [] in
+  let continue_ = ref true in
+  while !continue_ do
+    skip_newlines st;
+    match peek st with
+    | Token.KwCase | Token.KwDefault | Token.RBrace -> continue_ := false
+    | Token.Eof -> fail st (peek_pos st) syntax_code "unexpected end of input inside switch arm"
+    | _ -> (
+      try stmts := parse_stmt st :: !stmts
+      with Parse_error -> sync_to_next_stmt st)
+  done;
+  List.rev !stmts
+
+and parse_switch_expr (st : state) : Ast.expr =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  (* 'switch' *)
+  let subject = parse_expr_no_brace st in
+  expect st Token.LBrace "'{' to open switch body";
+  let arms = ref [] in
+  let continue_ = ref true in
+  while !continue_ do
+    skip_newlines st;
+    match peek st with
+    | Token.RBrace ->
+      ignore (advance st);
+      continue_ := false
+    | Token.Eof -> fail st (peek_pos st) syntax_code "unexpected end of input inside switch body"
+    | Token.KwCase ->
+      let arm_pos = peek_pos st in
+      ignore (advance st);
+      let values = ref [ parse_expr st ] in
+      while accept st Token.Comma do
+        values := parse_expr st :: !values
+      done;
+      expect st Token.Colon "':' after switch case value(s)";
+      let body = parse_switch_arm_body st in
+      arms := { Ast.arm_pos; values = List.rev !values; is_default = false; body } :: !arms
+    | Token.KwDefault ->
+      let arm_pos = peek_pos st in
+      ignore (advance st);
+      expect st Token.Colon "':' after `default`";
+      let body = parse_switch_arm_body st in
+      arms := { Ast.arm_pos; values = []; is_default = true; body } :: !arms
+    | _ -> unexpected st "`case`, `default`, or '}' in switch body"
+  done;
+  { Ast.id; pos; kind = Ast.Switch (subject, List.rev !arms) }
+
 and parse_primary (st : state) : Ast.expr =
   match peek st with
   | k when is_select_trigger k -> parse_dbstub_expr st
+  | Token.KwSwitch -> parse_switch_expr st
   | Token.Int n ->
     let pos = peek_pos st in
     let id = fresh_id st in
@@ -815,6 +976,10 @@ and parse_primary (st : state) : Ast.expr =
     let id = fresh_id st in
     ignore (advance st);
     { Ast.id; pos; kind = Ast.StrLit s }
+  | Token.InterpStr segs ->
+    let pos = peek_pos st in
+    ignore (advance st);
+    desugar_interp st pos segs
   | Token.KwTrue ->
     let pos = peek_pos st in
     let id = fresh_id st in
@@ -840,6 +1005,67 @@ and parse_primary (st : state) : Ast.expr =
     ignore (advance st);
     { Ast.id; pos; kind = Ast.Ident s }
   | _ -> unexpected st "an expression"
+
+(* haxe-parity Task 2: desugars one interpolated string's segments into a
+   `..`/Concat chain of StrLit (text) and Interp (embedded expression)
+   nodes — the "desugars at parse time to concatenation" the brief
+   names. Each `Token.SExpr raw` segment is a full expression's *raw
+   source*, captured verbatim by the lexer (token.ml/lexer.ml's own doc
+   comments) — re-tokenized and re-parsed here via a fresh, nested
+   lexer/parser state over just that substring. Every generated node
+   (StrLit/Interp/the Concat spine) shares the outer string literal's
+   own single position: this AST has no source *ranges* (ast.ml's
+   module doc), and per-segment positions would need the lexer to track
+   an offset into the interpolation that nothing downstream needs today.
+   Known, disclosed imprecision: a malformed `${...}` expression's own
+   error therefore reports at the whole string's start, not the
+   sub-expression's real column — acceptable since the sub-parse still
+   raises a real, correctly-coded diagnostic, just at a coarser site.
+
+   Review fix (Important, post-Task-2): a genuine sub-parse failure
+   (`"${1 +}"`, not just trailing garbage — `"${1 2}"`) used to add its
+   OWN diagnostic straight to `st.collector` from inside `parse_expr
+   sub_st`, at `sub_st`'s own uncorrected line/col (that lexer counts
+   from 1:1 over the raw substring, so the reported position landed on
+   some unrelated line of the *real* file), and then let `Parse_error`
+   propagate straight past this function, skipping the "malformed
+   ${...}" framing entirely. The sub-lex/sub-parse now runs against a
+   private, throwaway collector — nothing it reports (a lex error, a
+   parse error, or reaching a non-`Eof` leftover) ever touches the real
+   collector — so every failure inside collapses to exactly the one
+   diagnostic below, at the outer string's own position. *)
+and desugar_interp (st : state) (pos : Ast.pos) (segs : Token.str_part list) : Ast.expr =
+  let mk_str s = { Ast.id = fresh_id st; pos; kind = Ast.StrLit s } in
+  let mk_interp inner = { Ast.id = fresh_id st; pos; kind = Ast.Interp inner } in
+  let parse_segment_expr (raw : string) : Ast.expr =
+    let sub_collector = Diag.Collector.create () in
+    let sub_toks = Lexer.tokenize sub_collector ~file:st.file raw in
+    let sub_st = make sub_collector ~file:st.file sub_toks in
+    let parsed =
+      try
+        let e = parse_expr sub_st in
+        if peek sub_st = Token.Eof && not (Diag.Collector.has_error sub_collector) then Some e
+        else None
+      with Parse_error -> None
+    in
+    match parsed with
+    | Some e -> e
+    | None -> fail st pos syntax_code "malformed \"${...}\" interpolation expression"
+  in
+  let parts =
+    List.filter_map
+      (function
+        | Token.SText "" -> None
+        | Token.SText s -> Some (mk_str s)
+        | Token.SExpr raw -> Some (mk_interp (parse_segment_expr raw)))
+      segs
+  in
+  match parts with
+  | [] -> mk_str ""
+  | first :: rest ->
+    List.fold_left
+      (fun acc e -> { Ast.id = fresh_id st; pos; kind = Ast.Binary (Ast.Concat, acc, e) })
+      first rest
 
 (* ---- statement parsing --------------------------------------------------- *)
 
@@ -925,6 +1151,42 @@ and parse_return_stmt (st : state) : Ast.stmt =
   end_of_stmt st;
   { Ast.s_id = id; s_pos = pos; s_kind = Ast.Return value }
 
+(* haxe-parity Task 2: `break`/`continue`. Whether either actually sits
+   inside a loop is not checked here (this parser has no loop-nesting
+   state, unlike `state.no_brace`) — emit.ml is the gate, exactly the
+   existing WO-E403 convention: a construct the emitter has no legal
+   jump target for is a diagnostic, not invented bytecode. *)
+and parse_break_stmt (st : state) : Ast.stmt =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  end_of_stmt st;
+  { Ast.s_id = id; s_pos = pos; s_kind = Ast.Break }
+
+and parse_continue_stmt (st : state) : Ast.stmt =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  end_of_stmt st;
+  { Ast.s_id = id; s_pos = pos; s_kind = Ast.Continue }
+
+(* `do { body } while cond` — no `parse_expr_no_brace` needed for `cond`:
+   unlike `if`/`while`, nothing braced follows it (the statement just
+   ends), so a constructor literal there is never ambiguous with a
+   trailing block, the same reasoning `parse_return_stmt`'s value
+   already relies on. *)
+and parse_do_while_stmt (st : state) : Ast.stmt =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  (* 'do' *)
+  let body = parse_block st in
+  skip_newlines st;
+  expect st Token.KwWhile "`while` after `do { ... }`";
+  let cond = parse_expr st in
+  end_of_stmt st;
+  { Ast.s_id = id; s_pos = pos; s_kind = Ast.DoWhile { body; cond } }
+
 and parse_stmt (st : state) : Ast.stmt =
   match peek st with
   | k when is_insert_trigger k ->
@@ -938,6 +1200,9 @@ and parse_stmt (st : state) : Ast.stmt =
   | Token.KwWhile -> parse_while_stmt st
   | Token.KwFor -> parse_for_stmt st
   | Token.KwReturn -> parse_return_stmt st
+  | Token.KwBreak -> parse_break_stmt st
+  | Token.KwContinue -> parse_continue_stmt st
+  | Token.KwDo -> parse_do_while_stmt st
   | _ ->
     let pos = peek_pos st in
     let id = fresh_id st in
@@ -957,15 +1222,20 @@ and parse_stmt (st : state) : Ast.stmt =
    and [looks_like_ctor]. *)
 and parse_expr_no_brace (st : state) : Ast.expr = with_no_brace st true (fun () -> parse_expr st)
 
-let parse_method (st : state) : Ast.method_decl =
+(* `pub` (haxe-parity Task 1, modules) defaults to false: a class body's
+   own methods always call this with no `~pub` argument (method-level
+   visibility is a different, not-yet-designed question — see
+   ast.ml's method_decl.pub doc comment), so this default is what keeps
+   every existing call site's behavior byte-identical. *)
+let parse_method ?(pub = false) (st : state) : Ast.method_decl =
   let h = parse_sig_head st in
   let body = parse_block st in
-  { Ast.id = h.s_id; pos = h.s_pos; name = h.s_name; params = h.s_params; ret = h.s_ret; body }
+  { Ast.id = h.s_id; pos = h.s_pos; name = h.s_name; params = h.s_params; ret = h.s_ret; body; pub }
 
 (* A free top-level function is grammatically identical to a class
    method (signature + brace-delimited body span) — Task 6's brief
    ("free-fn tables") is why this exists as real grammar. *)
-let parse_fn_decl (st : state) : Ast.method_decl = parse_method st
+let parse_fn_decl ~(pub : bool) (st : state) : Ast.method_decl = parse_method ~pub st
 
 (* Interface signatures have no body: the line ends at a Newline (which
    is consumed) or at the interface's own closing brace / EOF (left for
@@ -1040,6 +1310,51 @@ let skip_on_block (st : state) : unit =
     | _ -> ignore (advance st)
   done
 
+(* ---- const declaration (haxe-parity Task 2) -----------------------------
+
+   `const NAME = <literal>` — top-level or (bare, no `static`) class-level.
+   The brief's own wording is "= literal", not "= expr": restricted here
+   to Int (optionally `-`-prefixed, folded directly into the literal —
+   no `Unary` wrapper needed for a compile-time value), Text, or Bool.
+   Resolved by a dedicated post-parse substitution pass (see `parse`,
+   below) rather than threaded through typecheck/owner/emit as a new
+   kind of name. *)
+let parse_const_literal (st : state) : Ast.expr =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  match peek st with
+  | Token.Int n ->
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.IntLit n }
+  | Token.Dash -> (
+    ignore (advance st);
+    match peek st with
+    | Token.Int n ->
+      ignore (advance st);
+      { Ast.id; pos; kind = Ast.IntLit (-n) }
+    | _ -> unexpected st "an integer literal after '-'")
+  | Token.Str s ->
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.StrLit s }
+  | Token.KwTrue ->
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.BoolLit true }
+  | Token.KwFalse ->
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.BoolLit false }
+  | _ -> unexpected st "a literal (Int, Text, or Bool)"
+
+let parse_const_decl (st : state) : Ast.const_decl =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  (* 'const' *)
+  let name = expect_ident st "const name" in
+  expect st Token.Eq "'=' in const declaration";
+  let value = parse_const_literal st in
+  end_of_stmt st;
+  { Ast.id; pos; name; value }
+
 (* ---- class / type declaration -------------------------------------------
 
    Task 4 brief: "class Name { ... } and type Name { ... } — identical
@@ -1048,7 +1363,7 @@ let skip_on_block (st : state) : unit =
    skip-discarded) — so both keywords get the same body loop here,
    `is_class` recorded purely as data for later stages, never gating
    what's parsed. *)
-let parse_class_or_type (st : state) (ann : type_annotations) : Ast.class_decl =
+let parse_class_or_type ?(pub = false) (st : state) (ann : type_annotations) : Ast.class_decl =
   let pos = peek_pos st in
   let is_class = peek st = Token.KwClass in
   if is_class then ignore (advance st) else expect st Token.KwType "`type` or `class`";
@@ -1057,6 +1372,7 @@ let parse_class_or_type (st : state) (ann : type_annotations) : Ast.class_decl =
   let id = fresh_id st in
   let fields = ref [] in
   let methods = ref [] in
+  let consts = ref [] in
   let continue_ = ref true in
   while !continue_ do
     skip_newlines st;
@@ -1067,6 +1383,13 @@ let parse_class_or_type (st : state) (ann : type_annotations) : Ast.class_decl =
     | Token.Eof ->
       fail st (peek_pos st) syntax_code "unexpected end of input inside type/class body"
     | Token.KwFn -> methods := parse_method st :: !methods
+    (* bare `const` only — `static const` (Task 7's `static`) is not
+       recognized here at all: `static` lexes as a plain Ident, matches
+       none of this loop's arms (not looks_like_field: the next token is
+       `const`, not a Colon), and falls through to the same clean
+       "expected a field, method, or ..." error every other unrecognized
+       class-body construct gets — no half-swallow, per the brief. *)
+    | Token.KwConst -> consts := parse_const_decl st :: !consts
     (* looks_like_field MUST be checked before is_sync_ident: `on`/
        `service`/`policy` are plain Idents here (Task 3 deliberately kept
        them as usable identifiers, unlike rt where they're real keywords
@@ -1085,11 +1408,112 @@ let parse_class_or_type (st : state) (ann : type_annotations) : Ast.class_decl =
     pos;
     name;
     is_class;
+    is_record = false;
     is_gc = ann.is_gc;
     table = ann.table;
     fields = List.rev !fields;
     methods = List.rev !methods;
+    consts = List.rev !consts;
+    pub;
   }
+
+(* ---- typedef record declaration (haxe-parity Task 4) ---------------------
+
+   `typedef Name = { field: Type [= default] [, ...] ?opt: Type ... }` —
+   a structural record alias. Fields only (no methods, no consts, no
+   service/policy/on leniency — a record is pure data shape); separators
+   are newlines OR commas (the sample writes both: multi-line SupConfig,
+   single-line HttpResp). A `?` prefixing the field NAME (`?detections:
+   Text`, the Haxe `@:optional` spelling) desugars to the field typed
+   `?T` — "?fields land as nullable-by-shape" (the task brief's own
+   words): one representation, `Nullable`, whether the `?` was written
+   on the name or on the type, so Task 6's forced-handling work has a
+   single shape to tighten. *)
+let parse_record_decl ?(pub = false) (st : state) : Ast.class_decl =
+  let pos = peek_pos st in
+  ignore (advance st);
+  (* 'typedef' *)
+  let name = expect_ident st "typedef name" in
+  expect st Token.Eq "'=' in typedef declaration";
+  expect st Token.LBrace "'{' to open typedef record body";
+  let id = fresh_id st in
+  let fields = ref [] in
+  let continue_ = ref true in
+  while !continue_ do
+    skip_newlines st;
+    match peek st with
+    | Token.RBrace ->
+      ignore (advance st);
+      continue_ := false
+    | Token.Eof -> fail st (peek_pos st) syntax_code "unexpected end of input inside typedef body"
+    | _ ->
+      let optional = accept st Token.Question in
+      let f = parse_field ~comma_ends:true st in
+      let f =
+        if optional then
+          match f.Ast.ty with
+          | Ast.Nullable _ -> f (* `?opt: ?T` — already nullable, don't double-wrap *)
+          | ty -> { f with Ast.ty = Ast.Nullable ty }
+        else f
+      in
+      fields := f :: !fields;
+      ignore (accept st Token.Comma)
+  done;
+  {
+    Ast.id;
+    pos;
+    name;
+    is_class = false;
+    is_record = true;
+    is_gc = false;
+    table = None;
+    fields = List.rev !fields;
+    methods = [];
+    consts = [];
+    pub;
+  }
+
+(* ---- union declaration (haxe-parity Task 4) -------------------------------
+
+   `type Name = V1 | V2 | V3(field: Type, ...)` — a tagged union,
+   sharing the `type` keyword with the struct form (`type Name { ... }`)
+   and disambiguated by the token after the name (`=` vs `{`, decided by
+   parse_program's two-token lookahead before either parser runs). A
+   variant's payload reuses the field grammar's `name: Type` pairs,
+   comma-separated inside its parens; a newline is allowed after a `|`
+   (so a long union can wrap) but the declaration otherwise ends the way
+   a `use`/`let` line does (end_of_stmt). *)
+let parse_union_decl ?(pub = false) (st : state) : Ast.union_decl =
+  let pos = peek_pos st in
+  ignore (advance st);
+  (* 'type' *)
+  let name = expect_ident st "union name" in
+  let id = fresh_id st in
+  expect st Token.Eq "'=' in union declaration";
+  let parse_variant () : Ast.variant_decl =
+    let v_pos = peek_pos st in
+    let v_name = expect_ident st "variant name" in
+    let v_fields = ref [] in
+    if accept st Token.LParen then begin
+      let more = ref (peek st <> Token.RParen) in
+      while !more do
+        let fname = expect_ident st "payload field name" in
+        expect st Token.Colon "':'";
+        let fty = parse_field_ty st in
+        v_fields := (fname, fty) :: !v_fields;
+        if not (accept st Token.Comma) then more := false
+      done;
+      expect st Token.RParen "')'"
+    end;
+    { Ast.v_pos; v_name; v_fields = List.rev !v_fields }
+  in
+  let variants = ref [ parse_variant () ] in
+  while accept st Token.Pipe do
+    skip_newlines st;
+    variants := parse_variant () :: !variants
+  done;
+  end_of_stmt st;
+  { Ast.id; pos; name; variants = List.rev !variants; pub }
 
 (* ---- interface declaration ----------------------------------------------
 
@@ -1097,7 +1521,7 @@ let parse_class_or_type (st : state) (ann : type_annotations) : Ast.class_decl =
    { fn sig... } (signatures only)"). Anything other than `fn` inside an
    interface body is a parse error; interfaces don't get the
    service/policy/on leniency class/type bodies get. *)
-let parse_interface (st : state) : Ast.interface_decl =
+let parse_interface ?(pub = false) (st : state) : Ast.interface_decl =
   let pos = peek_pos st in
   expect st Token.KwInterface "`interface`";
   let name = expect_ident st "interface name" in
@@ -1115,7 +1539,31 @@ let parse_interface (st : state) : Ast.interface_decl =
     | Token.KwFn -> methods := parse_iface_sig st :: !methods
     | _ -> unexpected st "a method signature (`fn ...`)"
   done;
-  { Ast.id; pos; name; methods = List.rev !methods }
+  { Ast.id; pos; name; methods = List.rev !methods; pub }
+
+(* ---- use declaration (haxe-parity Task 1, modules) ----------------------
+
+   `use fs` (a reserved stdlib namespace) or `use shared/util` (a
+   project-relative path — slash-separated directory segments naming
+   another discovered module's directory). Which of those two a given
+   path actually is, and whether it resolves at all, is the resolver's
+   job (types.ml) — this only demands at least one identifier segment,
+   with `/`-separated continuations, ended the same way a `let`/return
+   statement is (`end_of_stmt`: optional `;`, then newline/EOF — there
+   is no enclosing block at top level, but end_of_stmt's RBrace arm is
+   harmless dead code here, never reached). *)
+let parse_use_decl (st : state) : Ast.use_decl =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  (* 'use' *)
+  let first = expect_ident st "module name" in
+  let segments = ref [ first ] in
+  while accept st Token.Slash do
+    segments := expect_ident st "module path segment" :: !segments
+  done;
+  end_of_stmt st;
+  { Ast.id; pos; segments = List.rev !segments }
 
 (* ---- top-level program ---------------------------------------------------
 
@@ -1124,6 +1572,15 @@ let parse_interface (st : state) : Ast.interface_decl =
    try/with: on Parse_error (already reported at its raise site, see
    [fail]), sync to the next top-level construct and keep going —
    exactly one diagnostic per broken declaration, never a cascade. *)
+(* `type Name = ...` is a union; `type Name { ... }` stays the struct
+   form — two-token lookahead past the name (haxe-parity Task 4),
+   mirroring looks_like_ctor's identifier-then-brace trick one token
+   further out. Anything else after the name falls to
+   parse_class_or_type's own "expected '{'" error, unchanged. *)
+let looks_like_union (st : state) : bool =
+  (match (tok_at st (st.pos + 1)).kind with Token.Ident _ -> true | _ -> false)
+  && (tok_at st (st.pos + 2)).kind = Token.Eq
+
 let parse_program (st : state) : Ast.program =
   let decls = ref [] in
   let continue_ = ref true in
@@ -1133,10 +1590,40 @@ let parse_program (st : state) : Ast.program =
     else begin
       (try
          match peek st with
+         | Token.KwType when looks_like_union st ->
+           decls := Ast.Union (parse_union_decl st) :: !decls
          | Token.KwType | Token.KwClass ->
            decls := Ast.Class (parse_class_or_type st no_annotations) :: !decls
+         | Token.KwTypedef -> decls := Ast.Class (parse_record_decl st) :: !decls
          | Token.KwInterface -> decls := Ast.Interface (parse_interface st) :: !decls
-         | Token.KwFn -> decls := Ast.Fn (parse_fn_decl st) :: !decls
+         | Token.KwFn -> decls := Ast.Fn (parse_fn_decl ~pub:false st) :: !decls
+         | Token.KwUse -> decls := Ast.Use (parse_use_decl st) :: !decls
+         | Token.KwConst -> decls := Ast.Const (parse_const_decl st) :: !decls
+         | Token.KwInline ->
+           let ipos = peek_pos st in
+           ignore (advance st);
+           (match peek st with
+            | Token.KwFn ->
+              fail st ipos inline_fn_code
+                "`inline fn` is rejected — optimization is the compiler's job (const values are \
+                 the adopted half of this row)"
+            | _ -> unexpected st "`fn` after `inline`")
+         | Token.KwPub -> (
+           ignore (advance st);
+           (* consume 'pub'; a stray '(' here (`pub(read)` at top level —
+              Task 7's field-accessor marker, not this task's) falls
+              through to the same clean "expected ... after `pub`" error
+              as any other unrecognized token, rather than being
+              half-parsed. *)
+           match peek st with
+           | Token.KwType when looks_like_union st ->
+             decls := Ast.Union (parse_union_decl ~pub:true st) :: !decls
+           | Token.KwType | Token.KwClass ->
+             decls := Ast.Class (parse_class_or_type ~pub:true st no_annotations) :: !decls
+           | Token.KwTypedef -> decls := Ast.Class (parse_record_decl ~pub:true st) :: !decls
+           | Token.KwInterface -> decls := Ast.Interface (parse_interface ~pub:true st) :: !decls
+           | Token.KwFn -> decls := Ast.Fn (parse_fn_decl ~pub:true st) :: !decls
+           | _ -> unexpected st "`type`, `class`, `interface`, or `fn` after `pub`")
          | Token.At ->
            let ann = parse_type_annotations st in
            skip_newlines st;
@@ -1150,6 +1637,134 @@ let parse_program (st : state) : Ast.program =
   done;
   { Ast.decls = List.rev !decls }
 
+(* ---- const substitution (haxe-parity Task 2) ----------------------------
+
+   Runs once, over the whole freshly-parsed program, right before `parse`
+   returns it. Replaces every unshadowed `Ident NAME` with the literal
+   expr NAME's `const` declared, so typecheck/owner/emit see a plain
+   literal and need zero const-specific code anywhere downstream — the
+   same "desugar early, touch nothing later" shape string interpolation
+   already uses in this file. Scope-aware exactly like types.ml's own
+   local-shadows-a-`use`-alias fix (Task 1 review): a local, parameter,
+   `for` variable, or `self` binding of the same name always wins over a
+   const of that name, so `fn f(CHUNK: Int) { return CHUNK }` next to a
+   top-level `const CHUNK = 65536` still returns the parameter, not
+   65536. A const's own value is grammar-restricted to a literal
+   (parse_const_literal) — never an `Ident` — so one const's value can
+   never need substitution itself; no ordering/cycle question arises. *)
+module StringMap = Map.Make (String)
+module StringSet = Set.Make (String)
+
+let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : Ast.expr) : Ast.expr =
+  match e.Ast.kind with
+  | Ast.IntLit _ | Ast.StrLit _ | Ast.BoolLit _ | Ast.DbStub _ -> e
+  | Ast.Ident name ->
+    if StringSet.mem name bound then e
+    else ( match StringMap.find_opt name consts with Some v -> { e with Ast.kind = v.Ast.kind } | None -> e)
+  | Ast.Field (base, fname) -> { e with Ast.kind = Ast.Field (subst_expr consts bound base, fname) }
+  | Ast.Index (base, idx) ->
+    { e with Ast.kind = Ast.Index (subst_expr consts bound base, subst_expr consts bound idx) }
+  | Ast.Call (callee, args) ->
+    { e with Ast.kind = Ast.Call (subst_expr consts bound callee, List.map (subst_expr consts bound) args) }
+  | Ast.Unary (op, operand) -> { e with Ast.kind = Ast.Unary (op, subst_expr consts bound operand) }
+  | Ast.Binary (op, l, r) ->
+    { e with Ast.kind = Ast.Binary (op, subst_expr consts bound l, subst_expr consts bound r) }
+  | Ast.Ctor (cn, fields) ->
+    { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
+  | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
+  | Ast.Switch (subject, arms) ->
+    { e with
+      Ast.kind =
+        Ast.Switch
+          ( subst_expr consts bound subject,
+            List.map
+              (fun (a : Ast.switch_arm) ->
+                { a with
+                  Ast.values = List.map (subst_expr consts bound) a.Ast.values;
+                  body = subst_block consts bound a.Ast.body;
+                })
+              arms )
+    }
+
+(* `let` extends the rest of *this* block only, exactly like types.ml's
+   walk_stmt/walk_block: a nested block's own `let`s never leak back out
+   to the caller's bound set.
+
+   `subst_expr` now reaches into `Switch`'s own `stmt list` arm bodies
+   (haxe-parity Task 3), so it and `subst_block`/`subst_stmt` are one
+   `and`-chain from here on, not two separate `let rec` groups — the
+   same merge ast.ml's own `expr`/`stmt` needed for the same reason. *)
+and subst_block (consts : Ast.expr StringMap.t) (bound : StringSet.t) (body : Ast.stmt list) :
+    Ast.stmt list =
+  let bound_ref = ref bound in
+  List.map
+    (fun (s : Ast.stmt) ->
+      let s' = subst_stmt consts !bound_ref s in
+      (match s.Ast.s_kind with
+      | Ast.Let { name; _ } -> bound_ref := StringSet.add name !bound_ref
+      | _ -> ());
+      s')
+    body
+
+and subst_stmt (consts : Ast.expr StringMap.t) (bound : StringSet.t) (s : Ast.stmt) : Ast.stmt =
+  let e = subst_expr consts bound in
+  match s.Ast.s_kind with
+  | Ast.Let { name; ty; value } -> { s with Ast.s_kind = Ast.Let { name; ty; value = e value } }
+  | Ast.Assign { target; value } -> { s with Ast.s_kind = Ast.Assign { target = e target; value = e value } }
+  | Ast.If { cond; then_body; else_body } ->
+    { s with
+      Ast.s_kind =
+        Ast.If
+          { cond = e cond;
+            then_body = subst_block consts bound then_body;
+            else_body = Option.map (fun (p, b) -> (p, subst_block consts bound b)) else_body
+          }
+    }
+  | Ast.While { cond; body } ->
+    { s with Ast.s_kind = Ast.While { cond = e cond; body = subst_block consts bound body } }
+  | Ast.For { var; iter; body } ->
+    let bound' = StringSet.add var bound in
+    { s with Ast.s_kind = Ast.For { var; iter = e iter; body = subst_block consts bound' body } }
+  | Ast.Return opt -> { s with Ast.s_kind = Ast.Return (Option.map e opt) }
+  | Ast.ExprStmt ex -> { s with Ast.s_kind = Ast.ExprStmt (e ex) }
+  | Ast.Break | Ast.Continue -> s
+  | Ast.DoWhile { body; cond } ->
+    { s with Ast.s_kind = Ast.DoWhile { body = subst_block consts bound body; cond = e cond } }
+
+let params_bound (base : StringSet.t) (params : Ast.param list) : StringSet.t =
+  List.fold_left (fun acc (p : Ast.param) -> StringSet.add p.Ast.name acc) base params
+
+let const_map (consts : Ast.const_decl list) : Ast.expr StringMap.t =
+  List.fold_left (fun acc (c : Ast.const_decl) -> StringMap.add c.Ast.name c.Ast.value acc) StringMap.empty consts
+
+let subst_consts (prog : Ast.program) : Ast.program =
+  let top_consts =
+    const_map (List.filter_map (function Ast.Const c -> Some c | _ -> None) prog.Ast.decls)
+  in
+  let decls' =
+    List.map
+      (function
+        | Ast.Class c ->
+          (* class consts win over top-level ones on a name collision --
+             innermost scope wins, matching how a param/local also
+             outranks either. *)
+          let merged = StringMap.fold StringMap.add (const_map c.Ast.consts) top_consts in
+          let methods' =
+            List.map
+              (fun (m : Ast.method_decl) ->
+                let bound = params_bound (StringSet.singleton "self") m.Ast.params in
+                { m with Ast.body = subst_block merged bound m.Ast.body })
+              c.Ast.methods
+          in
+          Ast.Class { c with Ast.methods = methods' }
+        | Ast.Fn fn ->
+          let bound = params_bound StringSet.empty fn.Ast.params in
+          Ast.Fn { fn with Ast.body = subst_block top_consts bound fn.Ast.body }
+        | (Ast.Interface _ | Ast.Use _ | Ast.Const _ | Ast.Union _) as d -> d)
+      prog.Ast.decls
+  in
+  { Ast.decls = decls' }
+
 let parse (collector : Diag.Collector.t) ~(file : string) (toks : Token.t list) : Ast.program =
   let st = make collector ~file toks in
-  parse_program st
+  subst_consts (parse_program st)

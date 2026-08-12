@@ -1,0 +1,8 @@
+-- haxe-parity Task 1 (modules): a project-relative module. Its
+-- directory (relative to the fixture root, `greet/`) IS its module
+-- identity — no manifest, no declared name. `pub` exports `hello` to
+-- callers that `use greet`; without `pub` this would be WO-E217
+-- (private-name-access) from fixture.wo.
+pub fn hello() -> Text {
+  return "hi from greet"
+}

@@ -166,13 +166,24 @@ let build_lookup (sources : (string * string) list) : Woc_lib.Diag.source_lookup
   List.iter (fun (f, src) -> Hashtbl.replace tbl f src) sources;
   fun f -> Hashtbl.find_opt tbl f
 
+(* Pre-existing defect, fixed here (haxe-parity Task 1, modules): this
+   used to gate printing on `has_error` alone, so a collector holding
+   *only* warnings (no error at all — e.g. WO-W201's gc-suggestion, or
+   this task's own WO-W202 unused-`use`) printed nothing and exited 0,
+   indistinguishable from a collector with zero diagnostics. A warning
+   nobody ever sees is a dead feature, not a working one — this task's
+   own unused-`use` warning needs to actually reach stderr to be worth
+   having, which is what surfaced this. Still exits 0 whenever nothing
+   is an error (unchanged contract); the only behavior change is that a
+   warning-only run now also prints, matching what "diagnostics, if
+   any, print to stderr" (this file's own usage_msg) already promised. *)
 let finish (collector : Woc_lib.Diag.Collector.t) (lookup : Woc_lib.Diag.source_lookup) : unit =
-  if Woc_lib.Diag.Collector.has_error collector then begin
-    prerr_string (Woc_lib.Diag.Collector.render_all collector lookup);
-    prerr_newline ();
-    exit 1
-  end
-  else exit 0
+  let text = Woc_lib.Diag.Collector.render_all collector lookup in
+  if text <> "" then begin
+    prerr_string text;
+    prerr_newline ()
+  end;
+  exit (Woc_lib.Diag.Collector.exit_code collector)
 
 (* ---- Cross-file symbol resolution (Task 8) ---------------------------
 
@@ -206,11 +217,12 @@ let merge_symbols (syms_list : Woc_lib.Types.symbols list) : Woc_lib.Types.symbo
         interfaces = SM.union keep_first acc.interfaces s.interfaces;
         free_fns = SM.union keep_first acc.free_fns s.free_fns;
         typedefs = SM.union keep_first acc.typedefs s.typedefs;
+        unions = SM.union keep_first acc.unions s.unions;
         modules = acc.modules @ s.modules;
       })
     Woc_lib.Types.{
       classes = SM.empty; interfaces = SM.empty; free_fns = SM.empty;
-      typedefs = SM.empty; modules = [];
+      typedefs = SM.empty; unions = SM.empty; modules = [];
     }
     syms_list
 
@@ -273,19 +285,64 @@ let check_symbol_collisions (collector : Woc_lib.Diag.Collector.t)
           syms.interfaces))
     per_file
 
-let typecheck_all (collector : Woc_lib.Diag.Collector.t)
-    (parsed : (string * Woc_lib.Ast.program) list) : Woc_lib.Types.symbols =
+(* ---- module identity (haxe-parity Task 1, modules) --------------------
+
+   A file's module is its directory, relative to the root `woc` was
+   pointed at — exactly the directory structure discover_dir above
+   already walks, just not thrown away this time. "." denotes the root
+   module itself (Filename.dirname's own convention for a name with no
+   directory part — reused rather than inventing a second sentinel). A
+   single-file invocation (root is not a directory — the bare-path
+   `woc <file.wo>` form) has exactly one file and therefore exactly one
+   module: "." unconditionally, since there is no sibling directory
+   structure to differ from. *)
+let module_of_file ~(root : string) (file : string) : string =
+  if not (Sys.is_directory root) then "."
+  else
+    let root_norm =
+      if String.length root > 0 && root.[String.length root - 1] = '/' then
+        String.sub root 0 (String.length root - 1)
+      else root
+    in
+    let prefix = root_norm ^ "/" in
+    let plen = String.length prefix in
+    let rel =
+      if String.length file >= plen && String.sub file 0 plen = prefix then
+        String.sub file plen (String.length file - plen)
+      else file (* defensive: discover_dir always builds full = Filename.concat root rel', so this never triggers *)
+    in
+    Filename.dirname rel
+
+(* Returns the existing global, flat-merged `syms` (owner.ml's and most of
+   emit.ml's own view — unchanged by this task) alongside the new
+   per-module tables (CRITICAL 1 review finding: the emitter needs these
+   too, for the one place a flat merge is the wrong answer — see
+   Types.module_symbols' own doc comment). *)
+let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
+    (parsed : (string * Woc_lib.Ast.program) list) :
+    Woc_lib.Types.symbols * (string, Woc_lib.Types.symbols) Hashtbl.t =
   let per_file_syms =
     List.map
       (fun (f, prog) -> (f, Woc_lib.Types.collect_declarations ~file:f prog collector))
       parsed
   in
   check_symbol_collisions collector per_file_syms;
+  let module_of = module_of_file ~root in
+  Woc_lib.Types.check_modules collector ~module_of per_file_syms parsed;
+  let module_syms = Woc_lib.Types.module_symbols ~module_of per_file_syms in
   let syms = merge_symbols (List.map snd per_file_syms) in
-  List.iter
-    (fun (f, prog) -> Woc_lib.Types.typecheck_program ~file:f prog syms collector)
-    parsed;
-  syms
+  (* `~file_syms` (hotfix, multi-file double-report): `per_file_syms` and
+     `parsed` are both `List.map`s over the same original file list, in
+     the same order, so pairing them positionally is exact -- each
+     file's own collect_declarations output goes with that same file's
+     own prog. `syms` (the merged table) is still passed through
+     separately for cross-file resolution; see typecheck_program's own
+     doc comment for what narrows and what doesn't. *)
+  List.iter2
+    (fun (f, prog) (_, file_syms) ->
+      Woc_lib.Types.typecheck_program ~file:f ~module_of ~module_syms ~file_syms prog syms collector)
+    parsed per_file_syms;
+  (syms, module_syms)
 
 let dump_tokens path =
   let sources = discover_and_read path in
@@ -316,7 +373,7 @@ let dump_owner path =
   let collector = Woc_lib.Diag.Collector.create () in
   let multi = List.length sources > 1 in
   let parsed = parse_all collector sources in
-  let syms = typecheck_all collector parsed in
+  let syms, _module_syms = typecheck_all collector ~root:path parsed in
   List.iter
     (fun (f, prog) ->
       let tables = Woc_lib.Owner.analyze ~file:f prog syms collector in
@@ -332,7 +389,7 @@ let check_only path =
   let sources = discover_and_read path in
   let collector = Woc_lib.Diag.Collector.create () in
   let parsed = parse_all collector sources in
-  let syms = typecheck_all collector parsed in
+  let syms, _module_syms = typecheck_all collector ~root:path parsed in
   List.iter (fun (f, prog) -> ignore (Woc_lib.Owner.analyze ~file:f prog syms collector)) parsed;
   finish collector (build_lookup sources)
 
@@ -348,14 +405,16 @@ let compile_image path =
   let sources = discover_and_read path in
   let collector = Woc_lib.Diag.Collector.create () in
   let parsed = parse_all collector sources in
-  let syms = typecheck_all collector parsed in
+  let syms, module_syms = typecheck_all collector ~root:path parsed in
   let units =
     List.map
       (fun (f, prog) ->
         { Woc_lib.Emit.file = f; prog; tables = Woc_lib.Owner.analyze ~file:f prog syms collector })
       parsed
   in
-  let image = Woc_lib.Emit.emit ~syms collector units in
+  let image =
+    Woc_lib.Emit.emit ~syms ~module_of:(module_of_file ~root:path) ~module_syms collector units
+  in
   (collector, build_lookup sources, image)
 
 let write_file path contents =

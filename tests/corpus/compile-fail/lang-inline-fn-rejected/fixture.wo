@@ -1,0 +1,11 @@
+-- haxe-parity Task 2: the keyword verdict table's `inline` row --
+-- `const` values are adopted (see run/lang-const-usage); inline
+-- *functions* are rejected outright, optimization being the
+-- compiler's job, not the source language's.
+inline fn double(n: Int) -> Int {
+  return n + n
+}
+
+fn main() -> Int {
+  return double(2)
+}

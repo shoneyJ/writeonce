@@ -67,6 +67,8 @@ let builtin_name = function
   | 10 -> "map_set"
   | 11 -> "map_get"
   | 12 -> "map_has"
+  | 13 -> "int_to_text"
+  | 14 -> "variant_tag"
   | n -> Printf.sprintf "builtin%d" n
 
 let kind_name = function
