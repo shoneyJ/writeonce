@@ -1,5 +1,7 @@
 # HTTP Service Layer Implementation Plan
 
+> **Status: ⬜ pending** (story iteration 10) — `service` blocks route to VM methods; REST parity with the shipped Rust Stage 2 runtime. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

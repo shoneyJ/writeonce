@@ -1,5 +1,7 @@
 # .wob Format + wovm VM Core Implementation Plan
 
+> **Status: ✅ done** (story iteration 2) — `.wob` v1 loader with full static validation, register interpreter (computed-goto + ISO-C fallback), arena with size-class free lists, borrow word, RC + budgeted Bacon–Rajan cycle collector, drop-map trap unwinding, containers, builtins, ICALL, CLI. 13 suites × 2 dispatch flavors + CLI smoke, ASan/UBSan clean. The format contract itself lives on in [`plan/oop-vm/00-wob-format.md`](../../plan/oop-vm/00-wob-format.md). Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** this plan states concept, reason, and required behavior in words. The executor writes the actual code at implementation time; nothing here is copy-paste source.

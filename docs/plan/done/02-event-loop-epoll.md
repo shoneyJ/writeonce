@@ -1,5 +1,7 @@
 # 02 — Event Loop on `epoll`
 
+> **Status: ✅ done** (Rust Stage 2 — shipped, maintained, not advancing) — `runtime/netpoll_epoll.rs`: the hand-rolled `epoll` loop that replaced the async runtime. Board: [00-status.md](../../00-status.md)
+
 **Context sources:** [`../01-problem.md`](../../01-problem.md), [`../02-recovery.md`](../../02-recovery.md), [`./linux/00-linux.md`](../exploration/linux/00-linux.md), [`./done/01-scafolding-crates.md`](01-scafolding-crates.md).
 
 ## Goal

@@ -1,5 +1,7 @@
 # 04 — Cutover: Remove tokio, axum, tower
 
+> **Status: ✅ done** (Rust Stage 2 — shipped, maintained, not advancing) — tokio, axum and tower cut over and removed; dependencies now anyhow, serde, serde_json, libc. Board: [00-status.md](../../00-status.md)
+
 **Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./03-hand-rolled-http.md`](./03-hand-rolled-http.md), [`../01-problem.md`](../../01-problem.md).
 
 ## Goal

@@ -1,5 +1,7 @@
 # log-watcher .wo Sample Implementation Plan
 
+> **Status: ⬜ pending** (story iteration 7 — the acceptance gate) — the eight-file `.wo` sample compiles clean and detects a silent death live. Blocked on iterations 5–6. The sample is already authored ([`docs/examples/log-watcher/`](../../examples/log-watcher/README.md)) and currently reports 93 diagnostics, down from 307. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

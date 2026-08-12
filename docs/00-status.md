@@ -2,8 +2,12 @@
 
 The single place to learn where this project stands. Organised in six buckets:
 **stories** (the narrative arc), **in progress**, **done**, **pending**,
-**discarded**, **learnings**. Every phase doc carries a matching status banner;
-this board is the index.
+**discarded**, **learnings**. The buckets are **sections of this board, not
+folders** — a doc stays where it was authored when its work lands; only its
+banner and this board change. Every plan and phase doc opens with a
+`> **Status:**` banner linking back here; normative contracts
+(`plan/oop-vm/`), exploration studies, reference docs and the
+discarded/learnings registers carry none by design.
 
 Update this board in the same change that finishes work — move the item to done
 with *what actually landed*, set the next in-progress item, and record any

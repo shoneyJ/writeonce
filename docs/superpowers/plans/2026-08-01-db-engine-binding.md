@@ -1,5 +1,7 @@
 # DB Engine Binding Implementation Plan
 
+> **Status: ⬜ pending** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

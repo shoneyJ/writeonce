@@ -1,5 +1,7 @@
 # Program Mode + Systems Stdlib Implementation Plan
 
+> **Status: ⬜ pending** (story iteration 6 — next after iteration 5) — `fn main`, exit codes, and the `fs`/`proc`/`net`/`time`/`json`/`env` builtin surface. Blocked on plan 8; the six stdlib namespaces already typecheck as UNKNOWN-BUT-RESERVED, so a qualified call compiles today and only fails at emission (`WO-E406`). Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

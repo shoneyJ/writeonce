@@ -1,5 +1,7 @@
 # Haxe-Parity Language Adoptions Implementation Plan
 
+> **Status: 🔄 in progress** (story iteration 5) — Tasks 1–4 ✅ shipped and review-verified: modules (`use`/`pub`), language surface (`and`/`or`, `${}` interpolation, `const`, break/continue, do-while), switch expressions, typedef records + enum payload variants. Task 5 (try/catch over the trap system) ⬜ started, not landed. Tasks 6 (`?T` forced handling), 7 (statics, `using`, `pub(read)`), 8 (`#if` + reject rows) ⬜. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

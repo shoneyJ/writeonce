@@ -1,5 +1,7 @@
 # Shard-Actor VM Runtime Implementation Plan
 
+> **Status: ⬜ pending** (story iteration 8) — thread-per-core shards, per-shard heaps, ownership-move messaging. Must follow story iteration 7b (inferred GC + incremental mark-sweep): the collector settles before shards multiply. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

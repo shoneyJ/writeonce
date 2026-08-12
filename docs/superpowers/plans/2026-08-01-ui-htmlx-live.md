@@ -1,5 +1,7 @@
 # UI — .htmlx SSR + LIVE Subscriptions Implementation Plan
 
+> **Status: ⏸ parked** — the UI track (`.htmlx` SSR + LIVE subscriptions) is off the critical path by the 2026-08-08 scope directive and is deliberately **not sequenced** on the board; the language track runs to the log-watcher proof first. Board: [00-status.md](../../00-status.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.

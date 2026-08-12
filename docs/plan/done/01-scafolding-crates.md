@@ -1,5 +1,7 @@
 # 01 — Scaffolding the Crate Tree
 
+> **Status: ✅ done** (Rust Stage 2 — shipped, maintained, not advancing) — 15 crates in the workspace tree. Board: [00-status.md](../../00-status.md)
+
 **Context sources:** [`../../CLAUDE.md`](../../../CLAUDE.md), [`../../README.md`](../../../README.md), [`../../crates/README.md`](../../../crates/README.md), [`../runtime/database.md`](../../runtime/database.md), [`../runtime/database/07-wo-seg-migration.md`](../../runtime/database/07-wo-seg-migration.md).
 
 ## Goal
