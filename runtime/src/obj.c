@@ -53,6 +53,13 @@ int wo_rt_init(wo_rt *rt, size_t heap_cap, const wo_classdesc *classes,
     rt->classes = classes;
     rt->class_cnt = class_cnt;
     rt->out = stdout;
+    /* Line-buffered, always: a long-running program (the driving workload's
+     * `watch`/`run`/`mcp` modes) writes progress with `print`, and stdio's
+     * default full buffering when stdout is a file or a pipe meant that output
+     * sat in a buffer until exit — so a redirected service looked silent, and
+     * a killed one lost its log entirely. Content is unchanged, so every
+     * byte-exact fixture still compares equal. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     return 0;
 }
 

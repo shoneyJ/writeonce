@@ -1361,6 +1361,18 @@ let container_imm (p : pctx) (expected : Ast.field_ty option) (map : bool) : int
     | _ -> None)
   | None -> None
 
+(* A value handed to a container builtin that COPIES it (push/set, and the
+   `m[k] = v` sugar) is dropped here when it was freshly built — a call
+   result, a concatenation, an interpolation — and left alone when it was read
+   out of a place, whose owner still holds it. Types the emitter cannot
+   resolve are left alone: a missed drop is a leak, a wrong drop is a crash. *)
+let drop_fresh_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
+  let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+  let is_text =
+    match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
+  in
+  if (not is_place) && is_text then put f (ins_abc op_drop reg 0 0)
+
 (* `nil` written literally on either side of a comparison — see emit_binary's
    Eq/Ne cases for why the distinction matters. *)
 let is_nil_lit (e : Ast.expr) : bool = match e.Ast.kind with Ast.NilLit -> true | _ -> false
@@ -2733,10 +2745,15 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     | Some t -> ( match unwrap t with Multi _ -> Some on_multi | Map _ -> Some on_map | _ -> None)
     | None -> None
   in
-  let fixed id =
+  (* Returns the argument window's base when it emitted one, so a caller that
+     has to clean up after the call (push/set — see below) can find its own
+     argument registers. *)
+  let fixed_at id =
     let n = arity_of id in
-    if List.length args <> n then
-      bad (Printf.sprintf "builtin `%s` takes %d argument(s), given %d" name n (List.length args))
+    if List.length args <> n then begin
+      bad (Printf.sprintf "builtin `%s` takes %d argument(s), given %d" name n (List.length args));
+      None
+    end
     else begin
       let base = alloc_temps p f e.pos (max n 1) in
       List.iteri
@@ -2747,8 +2764,24 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
         args;
       sync_mask p f v e.id;
       f.f_cur_line <- e.pos.line;
-      put f (ins_abc op_builtin dst base id)
+      put f (ins_abc op_builtin dst base id);
+      Some base
     end
+  in
+  let fixed id = ignore (fixed_at id) in
+  (* `push`/`set` COPY a TEXT element, key or value into the container
+     (runtime/src/builtin.c). So a freshly built Text handed to them — a call
+     result, a concatenation, an interpolation — is still the caller's, and
+     dies right here; a Text read out of a place (`e.log_path`, a local, a
+     loop cursor) is NOT dropped, because its own owner still holds it. That
+     asymmetry is the whole point: before the copy, the borrowed case double
+     freed and the fresh case leaked. Types the emitter cannot resolve are
+     left alone — a missed drop is a leak, a wrong drop is a crash. *)
+  let copied_container_call id =
+    match fixed_at id with
+    | None -> ()
+    | Some base ->
+      List.iteri (fun i (a : Ast.expr) -> if i > 0 then drop_fresh_text p f (base + i) a) args
   in
   match name with
   | "now" -> fixed b_now
@@ -2804,7 +2837,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     match args with
     | a :: _ -> (
       match container_id a b_multi_push b_multi_push with
-      | Some id -> fixed id
+      | Some id -> copied_container_call id
       | None -> bad "builtin `push` needs a `multi` as its first argument")
     | [] -> bad "builtin `push` takes 2 arguments, given 0")
   | "get" -> (
@@ -2818,7 +2851,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     match args with
     | a :: _ -> (
       match container_id a b_map_set b_map_set with
-      | Some id -> fixed id
+      | Some id -> copied_container_call id
       | None -> bad "builtin `set` needs a `map` as its first argument")
     | [] -> bad "builtin `set` takes 3 arguments, given 0")
   | "has" -> (
@@ -3019,7 +3052,11 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         let guards = residual_guards p f v s.s_id None in
         acquire_guards f guards;
         put f (ins_abc op_builtin sink w b_map_set);
-        release_guards f guards
+        release_guards f guards;
+        (* the map COPIES a TEXT key/value in, so a freshly built one is still
+           this frame's — see emit_builtin's copied_container_call *)
+        drop_fresh_text p f (w + 1) idx;
+        drop_fresh_text p f (w + 2) value
       | Multi _ ->
         (* `m[i] = x` is the multi_set builtin — container, index, value in
            three consecutive registers, exactly the map_set shape above.
@@ -3034,7 +3071,8 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         let guards = residual_guards p f v s.s_id None in
         acquire_guards f guards;
         put f (ins_abc op_builtin sink w b_multi_set);
-        release_guards f guards
+        release_guards f guards;
+        drop_fresh_text p f (w + 2) value
       | _ ->
         err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
           ~message:"element assignment into a value that is neither a `multi` nor a `map`")

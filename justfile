@@ -47,6 +47,14 @@ wovm-test:
     make -C runtime test-iso
     bash runtime/test/cli_smoke.sh
 
+# the language track's acceptance test: docs/examples/log-watcher must compile
+# with zero diagnostics AND run — watch alerts on an error line, run schedules
+# a cron.d entry, and the MCP server answers JSON-RPC (initialize, tools/list,
+# 401 without a token). This is the test the whole track exists to pass; the
+# corpus below gates the individual behaviors underneath it.
+log-watcher:
+    ./scripts/log-watcher-accept.sh
+
 # conformance harness (plan 3): walks tests/corpus/{run,compile-fail,trap},
 # exact outcome per fixture kind — see docs/plan/oop-vm/02-corpus.md.
 # Fails loudly (and names the recipe to run) if woc or wovm isn't built.

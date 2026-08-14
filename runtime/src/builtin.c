@@ -115,7 +115,32 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_MULTI_PUSH: {
         wo_multi *m = native_check(R[B], WO_CLS_MULTI, msg);
         if (!m) return WO_T_BOUNDS;
-        if (wo_multi_push(m, R[B + 1]) != 0) {
+        /* A TEXT element is COPIED in (2026-08-14). The container's declared
+         * element kind makes it the container's job to free every element, so
+         * storing a pointer the caller still owns gave one string two owners —
+         * `push(res, e.log_path)` in the driving workload freed a record's
+         * field out from under it. Copying is the only rule that is correct
+         * for both shapes: a borrowed place keeps its owner, and a freshly
+         * built Text stays the caller's to drop (the compiler emits that
+         * drop — emit.ml's push/set case). OWNED/GCREF elements still move:
+         * they are not copyable, and `push`'s @gc escape handles their
+         * counting. Same rule as `slice`, which has always copied. */
+        uint64_t v = R[B + 1];
+        if (m->elem_kind == WO_K_TEXT && v) {
+            const wo_str *src = (const wo_str *)(uintptr_t)v;
+            if (src->h.class_id != WO_CLS_STR) {
+                *msg = "not a text value";
+                return WO_T_BOUNDS;
+            }
+            wo_str *cp = wo_str_new(rt, src->data, src->len);
+            if (!cp) {
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            v = (uint64_t)(uintptr_t)cp;
+        }
+        if (wo_multi_push(m, v) != 0) {
+            if (v != R[B + 1]) wo_str_free(rt, (wo_str *)(uintptr_t)v);
             *msg = "out of memory";
             return WO_T_OOM;
         }
@@ -166,12 +191,49 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_MAP_SET: {
         wo_map *m = native_check(R[B], WO_CLS_MAP, msg);
         if (!m) return WO_T_BOUNDS;
+        /* TEXT keys and TEXT values are copied in, for the same reason
+         * multi_push copies its element: the map's declared kinds make it the
+         * owner of what it holds. */
+        uint64_t k = R[B + 1], v = R[B + 2];
+        if (m->key_kind == WO_K_TEXT && k) {
+            const wo_str *src = (const wo_str *)(uintptr_t)k;
+            if (src->h.class_id != WO_CLS_STR) {
+                *msg = "not a text value";
+                return WO_T_BOUNDS;
+            }
+            wo_str *cp = wo_str_new(rt, src->data, src->len);
+            if (!cp) {
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            k = (uint64_t)(uintptr_t)cp;
+        }
+        if (m->val_kind == WO_K_TEXT && v) {
+            const wo_str *src = (const wo_str *)(uintptr_t)v;
+            if (src->h.class_id != WO_CLS_STR) {
+                if (k != R[B + 1]) wo_str_free(rt, (wo_str *)(uintptr_t)k);
+                *msg = "not a text value";
+                return WO_T_BOUNDS;
+            }
+            wo_str *cp = wo_str_new(rt, src->data, src->len);
+            if (!cp) {
+                if (k != R[B + 1]) wo_str_free(rt, (wo_str *)(uintptr_t)k);
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            v = (uint64_t)(uintptr_t)cp;
+        }
         uint64_t old = 0;
-        int rc = wo_map_set(m, R[B + 1], R[B + 2], &old);
+        int rc = wo_map_set(m, k, v, &old);
         if (rc < 0) {
+            if (k != R[B + 1]) wo_str_free(rt, (wo_str *)(uintptr_t)k);
+            if (v != R[B + 2]) wo_str_free(rt, (wo_str *)(uintptr_t)v);
             *msg = "out of memory";
             return WO_T_OOM;
         }
+        /* a replaced entry keeps its original key: the copy just made is not
+         * the one the map holds, so it must not leak */
+        if (rc == 1 && k != R[B + 1]) wo_str_free(rt, (wo_str *)(uintptr_t)k);
         /* insert-or-replace hands the displaced value back: drop it here —
          * closing the loose end cont.c documents */
         if (rc == 1) wo_drop_kind(rt, m->val_kind, old);
@@ -602,8 +664,22 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "multi index out of range";
             return WO_T_BOUNDS;
         }
-        if (m->items[i] != R[B + 2]) wo_drop_kind(rt, m->elem_kind, m->items[i]);
-        m->items[i] = R[B + 2];
+        uint64_t nv = R[B + 2];
+        if (m->elem_kind == WO_K_TEXT && nv) {
+            const wo_str *src = (const wo_str *)(uintptr_t)nv;
+            if (src->h.class_id != WO_CLS_STR) {
+                *msg = "not a text value";
+                return WO_T_BOUNDS;
+            }
+            wo_str *cp = wo_str_new(rt, src->data, src->len);
+            if (!cp) {
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            nv = (uint64_t)(uintptr_t)cp;
+        }
+        if (m->items[i] != nv) wo_drop_kind(rt, m->elem_kind, m->items[i]);
+        m->items[i] = nv;
         R[A] = 0;
         return 0;
     }
