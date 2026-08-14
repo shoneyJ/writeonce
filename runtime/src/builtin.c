@@ -249,6 +249,22 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         return 0;
     }
+    case WO_B_TEXT_COPY: { /* nil copies to nil: a `?Text` crosses this boundary
+                            * exactly like a Text does */
+        if (!R[B]) {
+            R[A] = 0;
+            return 0;
+        }
+        const wo_str *src = native_check(R[B], WO_CLS_STR, msg);
+        if (!src) return WO_T_BOUNDS;
+        wo_str *cp = wo_str_new(rt, src->data, src->len);
+        if (!cp) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)cp;
+        return 0;
+    }
     case WO_B_MAP_GET_OPT: { /* `m[k]`: a missing key is nil, not a trap */
         wo_map *m = native_check(R[B], WO_CLS_MAP, msg);
         if (!m) return WO_T_BOUNDS;

@@ -344,6 +344,19 @@ let suggest_gc_annotation ~file (cls : class_info) (collector : Diag.Collector.t
    typecheck_program (where it was a local closure) so the .wob emitter
    can reach the same mapping instead of keeping a second copy of it;
    the check pass still calls it under its old local name. *)
+(* The reverse of typ_of_field_ty: this pass states the stdlib's return shapes
+   as `typ`, and both the ownership pass and the emitter reason in
+   `Ast.field_ty`. A container of containers cannot be spelled as a field_ty
+   (`Multi of string`), so it answers None — nothing in the stdlib returns one. *)
+let rec field_ty_of_typ (t : typ) : field_ty option =
+  match t with
+  | TScalar n -> Some (Scalar n)
+  | TRef n -> Some (Ref n)
+  | TMulti (TScalar n) -> Some (Multi n)
+  | TMap (TScalar k, TScalar v) -> Some (Map (k, v))
+  | TNullable inner -> ( match field_ty_of_typ inner with Some ft -> Some (Nullable ft) | None -> None)
+  | TMulti _ | TMap _ | TVoid -> None
+
 let rec typ_of_field_ty (ft : field_ty) : typ =
   match ft with
   | Scalar name -> TScalar name

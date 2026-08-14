@@ -372,11 +372,27 @@ dispatch:
 
     CASE(SETF) : {
         /* overwriting a non-scalar field does NOT auto-drop the old value:
-         * the compiler emits the drop (format doc) */
+         * the compiler emits the drop (format doc).
+         *
+         * A TEXT field is COPIED into (2026-08-14), the same rule push/set
+         * follow: the field's kind makes the object the owner of that string,
+         * so storing a pointer the caller still owns would give it two owners.
+         * It is also what lets `self.name = name` — a borrowed Text parameter
+         * stored in a field, the most ordinary line there is — stay legal
+         * without demanding `take`. A freshly built Text handed to a field is
+         * still the caller's, and the compiler drops it at the store site. */
         const char *why;
         wo_hdr *o = recv_check(vm, R[wo_ins_a(ins)], wo_ins_b(ins), &why);
         if (!o) TRAPF(WO_T_BOUNDS, "%s", why);
-        wo_fields(o)[wo_ins_b(ins)] = R[wo_ins_c(ins)];
+        uint64_t v = R[wo_ins_c(ins)];
+        if (v && vm->mod->classes[o->class_id].kinds[wo_ins_b(ins)] == WO_K_TEXT) {
+            const wo_str *src = (const wo_str *)(uintptr_t)v;
+            if (src->h.class_id != WO_CLS_STR) TRAPF(WO_T_BOUNDS, "not a text value");
+            wo_str *cp = wo_str_new(&vm->rt, src->data, src->len);
+            if (!cp) TRAPF(WO_T_OOM, "out of memory");
+            v = (uint64_t)(uintptr_t)cp;
+        }
+        wo_fields(o)[wo_ins_b(ins)] = v;
         NEXT();
     }
 

@@ -256,6 +256,7 @@ let b_map_key_at = 37
 let b_map_val_at = 38
 let b_multi_set = 39
 let b_map_get_opt = 59
+let b_text_copy = 60
 
 (* json (runtime/src/json.c): encode takes the value's static kind as its
    second argument, decode the class id to build as its second. *)
@@ -855,21 +856,6 @@ let iface_method (p : pctx) (iname : string) (m : string) : (int * Types.method_
         | None -> None
         | Some sg -> Some (slot, sg))))
 
-(* Types.typ -> this file's own Ast.field_ty view. Needed for the one table
-   that is stated in the typechecker's language and consumed here: the
-   systems stdlib's declared return shapes (Types.stdlib_members). Container
-   element types beyond one scalar level cannot be spelled as a field_ty
-   (`Multi of string`), so a nested container yields None — nothing in the
-   stdlib returns one. *)
-let rec field_ty_of_typ (t : Types.typ) : Ast.field_ty option =
-  match t with
-  | Types.TScalar n -> Some (Scalar n)
-  | Types.TRef n -> Some (Ref n)
-  | Types.TMulti (Types.TScalar n) -> Some (Multi n)
-  | Types.TMap (Types.TScalar k, Types.TScalar v) -> Some (Map (k, v))
-  | Types.TNullable inner -> ( match field_ty_of_typ inner with Some ft -> Some (Nullable ft) | None -> None)
-  | Types.TMulti _ | Types.TMap _ | Types.TVoid -> None
-
 let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty option =
   match name with
   | "int_to_text" -> Some (Scalar "Text")
@@ -1034,7 +1020,7 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
              stdlib_members) — the source of `st.size` resolving at all *)
           | Some u when u.Types.ue_is_stdlib -> (
             match Types.stdlib_member alias mname with
-            | Some sm -> ( match sm.Types.sm_ret with Some t -> field_ty_of_typ t | None -> None)
+            | Some sm -> ( match sm.Types.sm_ret with Some t -> Types.field_ty_of_typ t | None -> None)
             | None -> None)
           | Some u -> (
             let target_mid = Types.path_str u.Types.ue_segments in
@@ -1366,6 +1352,17 @@ let container_imm (p : pctx) (expected : Ast.field_ty option) (map : bool) : int
    result, a concatenation, an interpolation — and left alone when it was read
    out of a place, whose owner still holds it. Types the emitter cannot
    resolve are left alone: a missed drop is a leak, a wrong drop is a crash. *)
+(* The mirror of drop_fresh_text: a Text read out of a PLACE is copied when it
+   crosses an ownership boundary (a binding, a return), so the place keeps its
+   own value and the new owner gets its own. A freshly built Text is already
+   nobody else's and passes through untouched. *)
+let copy_place_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
+  let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+  let is_text =
+    match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
+  in
+  if is_place && is_text then put f (ins_abc op_builtin reg reg b_text_copy)
+
 let drop_fresh_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
   let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
   let is_text =
@@ -1548,7 +1545,11 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       let w = alloc_temps p f e.pos 2 in
       emit_expr p f v ~dst:w base;
       emit_expr p f v ~dst:(w + 1) idx;
-      put f (ins_abc op_builtin dst w bid))
+      put f (ins_abc op_builtin dst w bid);
+      (* a Text read out of a container is COPIED: the container keeps owning
+         its element, the reader owns the copy (see owner.ml's copies_out) *)
+      if (match ty_of_expr p f e with Some t -> field_kind p t = 3 | None -> false) then
+        put f (ins_abc op_builtin dst dst b_text_copy))
   | Unary (Neg, o) ->
     let b = emit_operand p f v o in
     put f (ins_abc op_neg dst b 0)
@@ -2178,6 +2179,9 @@ and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (c
           emit_expr p f v ~dst:t ~expected:fty fe;
           f.f_cur_line <- fe.pos.line;
           put f (ins_abc op_setf dst (check_field_idx p f e.pos idx) t);
+          (* SETF copies a TEXT field in, so a freshly built one is still this
+             frame's to drop — see drop_fresh_text *)
+          drop_fresh_text p f t fe;
           f.f_temp <- save)
       fields;
     (* haxe-parity Task 4: fields the literal omitted. A declared
@@ -2844,7 +2848,12 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     match args with
     | a :: _ -> (
       match container_id a b_multi_get b_map_get with
-      | Some id -> fixed id
+      | Some id ->
+        fixed id;
+        if (match builtin_ret name (match args with x :: _ -> ty_of_expr p f x | [] -> None) with
+            | Some t -> field_kind p t = 3
+            | None -> false)
+        then put f (ins_abc op_builtin dst dst b_text_copy)
       | None -> bad "builtin `get` needs a `multi` or a `map` as its first argument")
     | [] -> bad "builtin `get` takes 2 arguments, given 0")
   | "set" -> (
@@ -2880,6 +2889,8 @@ and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
     (match declared with
     | Some t -> emit_expr p f v ~dst:r ~expected:t value
     | None -> emit_expr p f v ~dst:r value);
+    (* a Text bound out of a place is this binding's own copy *)
+    copy_place_text p f r value;
     f.f_env <- (name, (r, vty)) :: f.f_env;
     Hashtbl.replace f.f_decl s.s_id r;
     f.f_declared <- s.s_id :: f.f_declared;
@@ -3026,6 +3037,9 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
             acquire_guards f guards;
             put f (ins_abc op_setf b idx t);
             release_guards f guards;
+            (* SETF copies a TEXT field in, so a freshly built one stays this
+               frame's to drop — see drop_fresh_text *)
+            drop_fresh_text p f t value;
             match Hashtbl.find_opt v.v_move value.id with
             | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
             | None -> ()))
@@ -3094,6 +3108,24 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
     f.f_div <- true
   | Some e ->
     let t = emit_tail p f v e in
+    (* Returning a Text crosses an ownership boundary, like storing one into a
+       field or a container: when the value is a PLACE (a local, a field, a
+       loop cursor, a container read) the callee only borrows it, so the caller
+       must not become a second owner — copy. A freshly built Text is already
+       owned by nobody else and passes straight through. Without this,
+       `return lv` inside `for lv in [...]` is WO-E304 and the workload's own
+       level classifier cannot be written at all. *)
+    let t =
+      let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+      let is_text = match ty_of_expr p f e with Some ty -> field_kind p ty = 3 | None -> false in
+      if is_place && is_text then begin
+        let w = alloc_temps p f e.pos 1 in
+        put f (ins_abc op_move w t 0);
+        put f (ins_abc op_builtin w w b_text_copy);
+        w
+      end
+      else t
+    in
     (match Hashtbl.find_opt v.v_move e.id with
     | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
     | None -> ());
@@ -3303,6 +3335,8 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     put f (ins_abc op_move (w + 1) ri 0);
     put f (ins_abc op_builtin rk w b_map_key_at);
     put f (ins_abc op_builtin rv w b_map_val_at);
+    if field_kind p kt = 3 then put f (ins_abc op_builtin rk rk b_text_copy);
+    if field_kind p vt = 3 then put f (ins_abc op_builtin rv rv b_text_copy);
     let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
     f.f_loops <- lf :: f.f_loops;
     List.iter (emit_stmt p f v) body;
@@ -3358,6 +3392,9 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     let jz = here f in
     put f (ins_asbx op_jz tc 0);
     put f (ins_abc op_builtin rv rc b_multi_get);
+    (* a Text cursor holds a copy — owner.ml declares it owned, and the
+       scope-end drop for the loop body releases it each iteration *)
+    if field_kind p elem = 3 then put f (ins_abc op_builtin rv rv b_text_copy);
     let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
     f.f_loops <- lf :: f.f_loops;
     List.iter (emit_stmt p f v) body;

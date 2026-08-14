@@ -85,7 +85,6 @@ Always inspect crashsites. Always measure. Never assume.
 - caveman
 - context-mode
 - web-search
-- superpowers
 
 ---
 

@@ -413,6 +413,18 @@ let rec unwrap_nullable (ft : Ast.field_ty) : Ast.field_ty =
 
 let oclass_of (ctx : ctx) (ft : Ast.field_ty) : oclass =
   match unwrap_nullable ft with
+  (* `Text` is a HEAP value (runtime/src/obj.h's wo_str), so a binding that
+     holds a fresh one owns it and must drop it at scope end. It was Copy
+     until 2026-08-14 — grouped with Int/Bool because types.ml calls it a
+     builtin scalar — and the consequence was that no Text local was ever
+     dropped: every concatenation, interpolation and stdlib read accumulated
+     in the arena for the life of the process. Invisible in the corpus (small
+     strings live in the arena, which is freed wholesale at exit) and fatal in
+     a daemon (the workload's supervisor leaked a 1 MiB `fs.read_all` result
+     per rescan, which is a plain malloc and so ASan-visible). A Text read out
+     of a PLACE is still a borrow — analyze_let's own place logic decides
+     that, exactly as it does for a record field. *)
+  | Scalar n when n = "Text" || n = Types.json_value_type -> Owned
   | Scalar n ->
     if Types.is_builtin_scalar n then Copy
     else if Types.is_gc_class ctx.syms n then Gc
@@ -541,6 +553,11 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
       | Ident n -> variant_union_ty ctx n
       | _ -> None))
   | Unary (_, o) -> expr_ty ctx o
+  (* `..` (CONCAT) always produces a FRESH Text, and interpolation desugars to
+     exactly such a chain — so this is what gives every interpolated or
+     concatenated binding an owner and a drop. Left as None before
+     2026-08-14, which made those bindings Copy and leaked every one. *)
+  | Binary (Concat, _, _) -> Some (Scalar "Text")
   | Binary _ -> None (* arithmetic/comparison: Copy either way *)
   | Ctor (cn, _) -> Some (Scalar cn)
   | Interp _ -> Some (Scalar "Text") (* an interpolation always produces Text *)
@@ -617,7 +634,21 @@ and resolve_callee (ctx : ctx) (callee : Ast.expr) : callee option =
     | Some (f : Types.free_fn_info) ->
       Some
         { ce_params = params_of f.Types.params; ce_ret = f.Types.ret; ce_recv_excl = false }
-    | None -> None)
+    (* A BUILTIN's return type, from the table types.ml and emit.ml already
+       read. `split`/`split_ws`/`slice` hand back a fresh `multi` and
+       `substr`/`trim`/`join`/… a fresh Text; without this they resolved to
+       nothing, the binding fell back to Copy, and every one of those
+       containers leaked (measured: the workload's supervisor mode). A
+       user-declared fn of the same name wins above, the shadowing rule the
+       builtin surface already states. *)
+    | None -> (
+      let arg0 = None in
+      match Types.builtin_confident_ret name arg0 with
+      | Some t -> (
+        match Types.field_ty_of_typ t with
+        | Some ft -> Some { ce_params = []; ce_ret = Some ft; ce_recv_excl = false }
+        | None -> None)
+      | None -> None))
   | Field (base, mname) -> (
     match expr_ty ctx base with
     | Some bt -> (
@@ -633,7 +664,41 @@ and resolve_callee (ctx : ctx) (callee : Ast.expr) : callee option =
               { ce_params = params_of m.Types.params; ce_ret = m.Types.ret;
                 ce_recv_excl = body_writes_self m.Types.body }))
       | _ -> None)
-    | None -> None)
+    (* The base is not a value: it names a reserved stdlib module
+       (`fs.read_all(path, cap)`) or a class with a static member
+       (`Tools.needle(cmd)`). Both shapes were unresolved here until
+       2026-08-14, and an unresolved callee is not a missing *type* — it is a
+       missing LIFETIME: analyze_let's None-fallback classifies the binding
+       `Scalar "Int"`, oclass_of calls that Copy, and the fresh Text or
+       `multi` the call returned is never dropped. That was the measured
+       >1 MB leak in eight seconds of the workload's supervisor mode (one
+       `fs.read_all` result per cron file). The tables read here are the same
+       ones types.ml and emit.ml already read; a local of the same name
+       shadows the module, exactly as it does everywhere else. *)
+    | None -> (
+      match base.kind with
+      | Ident head when find_local ctx head = None -> (
+        match Types.stdlib_member head mname with
+        | Some sm ->
+          Some
+            { ce_params = [];
+              ce_ret = ( match sm.Types.sm_ret with Some t -> Types.field_ty_of_typ t | None -> None);
+              ce_recv_excl = false }
+        | None -> (
+          match Types.StringMap.find_opt head ctx.syms.Types.classes with
+          | None -> None
+          | Some (cls : Types.class_info) -> (
+            match
+              List.find_opt
+                (fun (m : Types.method_info) -> m.Types.name = mname && m.Types.is_static)
+                cls.Types.methods
+            with
+            | None -> None
+            | Some m ->
+              Some
+                { ce_params = params_of m.Types.params; ce_ret = m.Types.ret;
+                  ce_recv_excl = false })))
+      | _ -> None))
   | _ -> None
 
 (* ============================================================
@@ -655,9 +720,24 @@ let rec idx_text (e : Ast.expr) : string =
 let idx_proj (e : Ast.expr) : proj =
   match e.kind with IntLit n -> PConst n | _ -> PDyn (idx_text e)
 
+(* Builtins that hand back a POINTER INTO their container rather than a fresh
+   value: binding one binds a borrow of that container, not a second owner.
+   `pop`/`shift` are deliberately absent — they remove the element, so the
+   caller really does take ownership. Now that Text is Owned (oclass_of), this
+   distinction is what keeps `let v = get(m, k)` from dropping a string the
+   map still holds. *)
+let borrowing_builtin (name : string) : bool =
+  List.mem name [ "get"; "latest"; "key_at"; "val_at" ]
+
 let rec place_of (e : Ast.expr) : place option =
   match e.kind with
   | Ident n -> Some { root = n; projs = []; ppos = e.pos; pnode = e.id }
+  | Call ({ kind = Ident bname; _ }, (container :: rest)) when borrowing_builtin bname -> (
+    match place_of container with
+    | Some p ->
+      let proj = match rest with idx :: _ -> idx_proj idx | [] -> PDyn ("#" ^ string_of_int e.id) in
+      Some { p with projs = p.projs @ [ proj ]; pnode = e.id }
+    | None -> None)
   | Field (base, f) -> (
     match place_of base with
     | Some p -> Some { p with projs = p.projs @ [ PField f ]; pnode = e.id }
@@ -995,6 +1075,19 @@ let gc_escape (ctx : ctx) (p : place) : unit =
    an already-moved local) must be classified as a read, or the region's
    pairwise check reports a bogus move conflict on top of the escape error
    `transfer` is about to give. *)
+(* A `Text` stored into a field or a record is COPIED by the VM (SETF's own
+   rule, the same one push/set follow) — so it is neither a move out of the
+   source nor a borrow escaping its scope. Without this, `fn rename(name: Text)
+   { self.name = name }` — the most ordinary line in the workload — is
+   WO-E304, and the only way to write it would be `take name: Text`. Copying
+   is what keeps a field's owner the object itself. *)
+let stores_by_copy (ctx : ctx) (p : place) : bool =
+  match place_ty ctx p with
+  | Some t -> ( match unwrap_nullable t with
+                | Scalar n -> n = "Text" || n = Types.json_value_type
+                | _ -> false)
+  | None -> false
+
 let is_real_transfer (ctx : ctx) (p : place) : bool =
   p.projs = []
   && match root_local ctx p with Some l -> l.l_holds && l.l_state = Live | None -> false
@@ -1098,7 +1191,8 @@ and analyze_ctor (ctx : ctx) (cn : string) (fields : (string * Ast.expr) list) :
       match place_of fe with
       | None -> ()
       | Some p ->
-        if transfer ctx p ~what:(Printf.sprintf "cannot be stored in `%s.%s`" cn fname) then
+        if stores_by_copy ctx p then () (* the field gets its own copy *)
+        else if transfer ctx p ~what:(Printf.sprintf "cannot be stored in `%s.%s`" cn fname) then
           record_move ctx p (MvCtorField fname))
     fields
 
@@ -1230,8 +1324,16 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
      in. Narrow to `push`'s own value slot (index 1) and to Gc places only
      — an Owned element's move-on-push is a separate, pre-existing gap
      this task does not touch. *)
+  (* Keyed on "`push` is not a user-declared fn", NOT on "the callee did not
+     resolve": since 2026-08-14 resolve_callee answers for builtins too (their
+     return types are what give a `split`/`slice` binding its drop), and the
+     old `resolved = None` test silently stopped firing — the pushed @gc value
+     lost its RC_INC, the collector freed it while the container still held it,
+     and both `gc/` fixtures died with a use-after-free. *)
   let is_push_gc_value i =
-    resolved = None && i = 1 && match callee.kind with Ident "push" -> true | _ -> false
+    i = 1
+    && Types.StringMap.find_opt "push" ctx.syms.Types.free_fns = None
+    && match callee.kind with Ident "push" -> true | _ -> false
   in
   List.iteri
     (fun i a ->
@@ -1523,9 +1625,25 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
       | Some t, _ -> (None, ( match elem_ty t with Some e -> e | None -> t))
       | None, _ -> (None, Scalar "Int")
     in
+    (* A cursor over Text elements holds a COPY, not a borrow: the emitter
+       copies each element as it loads it (the same boundary rule containers,
+       fields and returns follow), so the body owns its cursor and drops it per
+       iteration. That is also what lets `for k, v in m { v.field = … }` work —
+       a borrowing key cursor made every mutation through the value cursor a
+       WO-E303 against the container's own borrow. Any other element type is
+       still a borrow: records are not copied. *)
     let cursor (n : string) (t : Ast.field_ty) : local =
-      { l_name = n; l_ty = t; l_class = oclass_of ctx t; l_node = s.s_id; l_pos = s.s_pos;
-        l_holds = false; l_src = src; l_bkind = AShared; l_state = Borrowed s.s_pos }
+      let copied =
+        match unwrap_nullable t with
+        | Scalar cn -> cn = "Text" || cn = Types.json_value_type
+        | _ -> false
+      in
+      if copied then
+        { l_name = n; l_ty = t; l_class = Owned; l_node = s.s_id; l_pos = s.s_pos; l_holds = true;
+          l_src = None; l_bkind = AShared; l_state = Live }
+      else
+        { l_name = n; l_ty = t; l_class = oclass_of ctx t; l_node = s.s_id; l_pos = s.s_pos;
+          l_holds = false; l_src = src; l_bkind = AShared; l_state = Borrowed s.s_pos }
     in
     ctx.loop_stack <- s.s_id :: ctx.loop_stack;
     fixpoint ctx
@@ -1641,9 +1759,37 @@ and analyze_let (ctx : ctx) (s : Ast.stmt) (name : string) (ty : Ast.field_ty op
     | None -> ( match expr_ty ctx value with Some t -> t | None -> Scalar "Int")
   in
   let cls = oclass_of ctx vty in
-  let vplace = place_of value in
+  (* A container read that yields a Text is COPIED by the emitter — the fourth
+     ownership boundary, and the one that keeps `let cl = headers["x"]` from
+     borrowing the map for the rest of the scope (which then forbade moving
+     that map into a record, WO-E302). For any other element type the read is
+     still a borrow of the container: records are not copied. *)
+  let reads_container =
+    match value.Ast.kind with
+    | Ast.Index _ -> true
+    | Ast.Call ({ Ast.kind = Ast.Ident bn; _ }, _) -> borrowing_builtin bn
+    | _ -> false
+  in
+  let copies_out = reads_container && (match unwrap_nullable vty with
+                                       | Scalar n -> n = "Text" || n = Types.json_value_type
+                                       | _ -> false) in
+  let vplace = if copies_out then None else place_of value in
+  (* A `@gc` value read out of a container is neither a copy nor a new
+     reference: the container holds the count, and the reader only looks. It
+     must NOT take the Gc-alias path below (which records an RC_INC/RC_DEC
+     pair) — doing so double-released the element and segfaulted both `gc/`
+     fixtures. Reading it as a plain borrow of the container is what the pass
+     did before container reads became places, now with the right type. *)
+  let gc_container_read = reads_container && cls = Gc in
   let holds, src, state =
     match (cls, vplace) with
+    | Gc, _ when gc_container_read -> (false, vplace, Borrowed s.s_pos)
+    (* Binding a Text from a PLACE copies it — the same boundary rule as a
+       field store, a container element, a loop cursor and a return. The
+       source stays live and keeps its own value; this binding owns the copy
+       and drops it at scope end. Without it `let range = part` MOVED `part`,
+       and the next line's `index_of(part, "/")` was a use-after-move. *)
+    | (Owned | Gc), Some p when stores_by_copy ctx p -> (true, None, Live)
     | Copy, _ -> (false, None, Live)
     | Owned, None -> (true, None, Live) (* fresh value: constructor or call result *)
     | Owned, Some p -> (
@@ -1740,7 +1886,8 @@ and analyze_assign (ctx : ctx) (s : Ast.stmt) (target : Ast.expr) (value : Ast.e
           (match tplace with Some tp -> place_text tp | None -> "a field")
       else "cannot be moved out"
     in
-    if transfer ctx vp ~what then record_move ctx vp MvAssign);
+    if into_field && stores_by_copy ctx vp then () (* the field gets its own copy *)
+    else if transfer ctx vp ~what then record_move ctx vp MvAssign);
   (* Whatever the value was — a fresh constructor, a call result, another
      local — assigning to a whole local re-initializes it: a local that had
      been moved out of is live again afterwards. *)
@@ -1757,7 +1904,13 @@ and analyze_return (ctx : ctx) (s : Ast.stmt) (opt : Ast.expr option) : unit =
     match place_of e with
     | None -> ()
     | Some p ->
-      if transfer ctx p ~what:(Printf.sprintf "escapes `%s`" ctx.fn_name) then
+      (* Returning a Text is the third ownership boundary that COPIES (the
+         other two are a container element and a field): the caller gets its
+         own string, the callee's borrow stays the borrow it was. emit.ml
+         emits that copy. Without this the workload's own level classifier —
+         `for lv in [...] { … return lv }` — cannot be written at all. *)
+      if stores_by_copy ctx p then ()
+      else if transfer ctx p ~what:(Printf.sprintf "escapes `%s`" ctx.fn_name) then
         record_move ctx p MvReturn));
   let live = live_holders ctx in
   record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DReturn ~items:(owned_items live);

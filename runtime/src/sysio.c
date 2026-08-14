@@ -117,8 +117,20 @@ static wo_str *read_range(wo_rt *rt, int fd, off_t off, size_t want, const char 
         if (n == 0) break; /* EOF */
         got += (size_t)n;
     }
-    s->len = (uint32_t)got; /* the allocation may be longer; length is truth */
-    return s;
+    if (got == want) return s;
+    /* A short read means the buffer is bigger than the value. It cannot just
+     * be relabelled: wo_str_free sizes a block by its `len` (obj.h — no size
+     * headers anywhere), so a 1 MiB buffer wearing a 30-byte length is freed
+     * into a 32-byte size class and never returned to the allocator. Copy out
+     * at the true size and release the buffer at the size it was taken. */
+    wo_str *exact = wo_str_new(rt, s->data, (uint32_t)got);
+    wo_str_free(rt, s); /* still labelled `want`: the size it was allocated at */
+    if (!exact) {
+        *msg = "out of memory";
+        *tcode = WO_T_OOM;
+        return NULL;
+    }
+    return exact;
 }
 
 int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
@@ -374,8 +386,19 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = strerror(errno);
             return WO_T_IO;
         }
-        s->len = (uint32_t)n;
-        R[A] = (uint64_t)(uintptr_t)s;
+        if ((size_t)n == (size_t)max) {
+            R[A] = (uint64_t)(uintptr_t)s;
+            return 0;
+        }
+        /* short read: copy out at the true size and free the buffer at the
+           size it was allocated (see read_range's own note) */
+        wo_str *exact = wo_str_new(rt, s->data, (uint32_t)n);
+        wo_str_free(rt, s);
+        if (!exact) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)exact;
         return 0;
     }
     case WO_B_NET_WRITE: {

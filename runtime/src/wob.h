@@ -280,8 +280,13 @@ enum {
      * `get(m, k)` (WO_B_MAP_GET) stays the asserting form. Indexing a `multi`
      * out of range still traps — a bad index is a fault, not an absence. */
     WO_B_MAP_GET_OPT = 59, /* (map, key) -> value or nil */
+    /* (text) -> a fresh copy. Every ownership boundary in this language
+     * copies a Text — into a container (push/set), into a field (SETF), and
+     * out of a function (`return` of a borrowed place, which is what this id
+     * exists for: the callee's borrow must not become the caller's owner). */
+    WO_B_TEXT_COPY = 60,
 };
-#define WO_B_MAX 59u
+#define WO_B_MAX 60u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

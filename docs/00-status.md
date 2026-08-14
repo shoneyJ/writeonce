@@ -29,10 +29,14 @@ gates it: 6 checks, 0 failures.
 What is left is the difference between "it runs" and "you can leave it
 running", and every item below came from a measurement on the sample itself:
 
-1. **The ownership pass does not know what the stdlib returns** — so a binding
-   holding a fresh `fs.read_all`/`fs.list`/`net.read`/`json.encode` result is
-   classified Copy and never dropped. Measured: >1 MB leaked in eight seconds
-   of `run` mode, the largest single allocation being one `fs.read_all` result.
+1. ~~The ownership pass does not know what the stdlib returns~~ — **done
+   2026-08-14**. The root cause was deeper than the table: `Text` was
+   classified Copy, so no Text local was ever dropped. `Text` is now an owned
+   heap value that is **copied at every ownership boundary** (container, field,
+   return, binding, loop cursor), the ownership pass reads the stdlib, builtin
+   and static tables, and `fs.read_all`/`net.read` no longer mis-size a short
+   read's buffer. Measured: `run` **1 051 040 B → 2 112 B**, `watch`
+   **128 B → 64 B**; what remains is items 2 and 3 below, by stack.
 2. **A projected temporary is never dropped** — `for e in parse_dir(d).entries`
    keeps the elements (correct) and leaks the record shell, once per rescan.
 3. **The runtime leaks its own argv container** — 128 bytes in 2 allocations on

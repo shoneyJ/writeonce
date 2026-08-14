@@ -60,7 +60,7 @@ docs/examples/log-watcher/ mcp.wo: close what accept opened (Task 5)
 scripts/log-watcher-accept.sh  the soak check (Task 6)
 ```
 
-### Task 1: The owner pass must know what the stdlib returns
+### Task 1 ✅: The owner pass must know what a callee returns — and what a `Text` is
 
 **Concept & reason:** `owner.ml`'s `expr_ty`/`resolve_callee` have no stdlib
 table — `types.ml` and `emit.ml` each got one, the ownership pass did not. So a
@@ -72,13 +72,34 @@ fs.read_all(path, FILE_CAP) catch (e) nil` holds a fresh Text nobody frees.
 The fix is to read the same `Types.stdlib_members` table the other two passes
 read, including through a `try`'s arms, so the classification matches reality.
 
-- [ ] Failing measurement first: record the current ASan totals for `watch` and
-      `run` (eight seconds each, clean exit via SIGTERM) so the drop is proven,
-      not assumed.
-- [ ] Teach the ownership pass the stdlib return shapes; every stdlib member
-      that yields a fresh Text, `multi` or record is Owned at its binding.
-- [ ] Re-measure: the `fs.read_all` and `fs.list` allocations disappear from
-      both modes' reports; `just oop-e2e` and `just woc-test` stay green.
+- [x] Failing measurement first: `run` 1 051 040 B in 24 allocations, `watch`
+      128 B in 2, both over eight seconds with a clean SIGTERM exit.
+- [x] Teach the ownership pass what a callee returns — three tables it never
+      read: the stdlib members, the builtins, and a class's `static` members.
+- [x] **`Text` is an owned heap value, not a scalar.** `oclass_of` grouped it
+      with Int/Bool, so no Text local was ever dropped; that, not the stdlib
+      table alone, was the leak. Making it Owned forces the language to answer
+      what a Text does at an ownership boundary, and the answer is uniform: it
+      is **copied** — into a container (push/set/`m[i] = v`), into a field
+      (SETF), out of a function (`return`), into a binding (`let s = other`),
+      and into a loop cursor. The source keeps its own value; a freshly built
+      Text stays the caller's and is dropped at the site. `WO_B_TEXT_COPY` is
+      the one new builtin this needed.
+- [x] Runtime bug found by the same measurement: `fs.read_all`/`net.read`
+      allocate their cap and then relabel the buffer with the short length, but
+      `wo_str_free` sizes a block by its `len` (obj.h keeps no size headers) —
+      so a 1 MiB buffer wearing a 30-byte length went onto a 32-byte free list
+      and never came back. They now copy out at the true size and release the
+      buffer at the size it was taken.
+- [x] Two regressions caught by the corpus and fixed in the same pass: a `@gc`
+      value read out of a container is a plain borrow (not an rc-counted
+      alias), and `push`'s `@gc` escape is keyed on "`push` is not a
+      user-declared fn" rather than on "the callee did not resolve" — which
+      stopped being true the moment builtins resolved.
+- [x] Re-measured: **`run` 1 051 040 B → 2 112 B (24 → 19 allocations)**,
+      **`watch` 128 B → 64 B (2 → 1)**. Everything left is Task 2's projected
+      temporary and Task 3's argv container, by stack. `just oop-e2e` 71/0,
+      `just woc-test` 565/0, `wovm` unit gates green, `just log-watcher` 6/0.
 
 ### Task 2: A temporary whose field is projected must still be dropped
 

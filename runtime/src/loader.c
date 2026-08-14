@@ -62,6 +62,7 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     /* json (json.c): encode takes the value's static kind, decode the class
        id to build */
     [WO_B_JSON_ENCODE] = 2,  [WO_B_JSON_DECODE] = 2, [WO_B_MAP_GET_OPT] = 2,
+    [WO_B_TEXT_COPY] = 1,
 };
 
 static int vtab_cmp(const void *a, const void *b) {
