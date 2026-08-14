@@ -1377,6 +1377,21 @@ let rec is_borrowed_value (e : Ast.expr) : bool =
   | Ast.Interp inner -> is_borrowed_value inner
   | _ -> false
 
+(* The Interp arm above is only true for a TEXT-typed segment (the emitter
+   passes those through untouched). An Int-typed one lowers to int_to_text —
+   a fresh allocation wearing a place's clothes: `"HTTP/1.1 ${resp.status}"`
+   leaked one three-byte string per MCP response until this looked at the
+   type. Used wherever the caller has p/f to ask with. *)
+let rec is_borrowed_value_t (p : pctx) (f : fstate) (e : Ast.expr) : bool =
+  match e.Ast.kind with
+  | Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true
+  | Ast.Interp inner -> (
+    (match ty_of_expr p f inner with
+    | Some t -> ( match unwrap t with Scalar "Text" -> true | _ -> false)
+    | None -> false)
+    && is_borrowed_value_t p f inner)
+  | _ -> false
+
 (* A value the emitter materialised into a temporary and nobody took ownership
    of: a fresh container or record used as an expression rather than bound to a
    name — `for raw in split(content, "\n")`, `join(slice(tokens, 0, 5), " ")`,
@@ -1388,7 +1403,7 @@ let rec is_borrowed_value (e : Ast.expr) : bool =
    straight, which is why this is applied at the specific sites that borrow.
    Kinds 1/4/5 are OWNED/MULTI/MAP; Text has its own copy rule above. *)
 let is_fresh_owned_temp (p : pctx) (f : fstate) (e : Ast.expr) : bool =
-  (not (is_borrowed_value e))
+  (not (is_borrowed_value_t p f e))
   && (match ty_of_expr p f e with
      | Some t -> ( match field_kind p t with 1 | 4 | 5 -> true | _ -> false)
      | None -> false)
@@ -1431,7 +1446,7 @@ let copy_place_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
   if is_place && is_text then put f (ins_abc op_builtin reg reg b_text_copy)
 
 let drop_fresh_text ?keep (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
-  let is_place = is_borrowed_value e && not (is_container_read e) in
+  let is_place = is_borrowed_value_t p f e && not (is_container_read e) in
   let is_text =
     match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
   in
@@ -1800,10 +1815,17 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
        nil_compare_into p f v ~dst:t op_eq l r;
        f.f_temp <- save
      end
-     else
+     else begin
        let a = emit_operand p f v l in
        let b = emit_operand p f v r in
-       put f (ins_abc (if is_text p f l || is_text p f r then op_eqs else op_eq) t a b));
+       put f (ins_abc (if is_text p f l || is_text p f r then op_eqs else op_eq) t a b);
+       (* the same reap `simple` does — `headers["authorization"] !=
+          "Bearer ${key}"` abandoned both sides, once per MCP request *)
+       drop_fresh_owned ~keep:t p f a l;
+       drop_fresh_text ~keep:t p f a l;
+       drop_fresh_owned ~keep:t p f b r;
+       drop_fresh_text ~keep:t p f b r
+     end);
     let z = alloc_temp p f pos in
     put f (ins_abx op_loadk z (check_bx p f pos "constant" (const_int p 0)));
     put f (ins_abc op_eq dst t z)
@@ -2590,7 +2612,16 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
               put f (ins_abx op_loadk (base + 1) (check_bx p f e.pos "constant" (const_int p kind)));
               sync_mask p f v e.id;
               f.f_cur_line <- e.pos.line;
-              put f (ins_abc op_builtin dst base b_json_encode)
+              put f (ins_abc op_builtin dst base b_json_encode);
+              (* the value being encoded: a Ctor built in the argument slot
+                 (`json.encode(ToolText { ... })`) had no owner — one record
+                 and both its field copies leaked per MCP tool call. ~keep
+                 covers the tail position where dst IS base (the argument
+                 pointer is already overwritten there; a place argument is
+                 the only shape that reaches it, and places are not
+                 dropped). *)
+              drop_fresh_owned ~keep:dst p f base a;
+              drop_fresh_text ~keep:dst p f base a
             | _ ->
               err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
                 ~message:"`json.encode` takes exactly one argument";
@@ -2747,7 +2778,7 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
      it returns they hold the callee's leftovers, not the arguments. *)
   let fresh_borrowed_value (a : Ast.expr) : bool =
     is_fresh_owned_temp p f a
-    || ((not (is_borrowed_value a))
+    || ((not (is_borrowed_value_t p f a) || is_container_read a)
        && match ty_of_expr p f a with Some t -> field_kind p t = 3 | None -> false)
   in
   let owned_heap_temp (a : Ast.expr) : bool =
@@ -3094,7 +3125,22 @@ and emit_stmt_body (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
        reserving it: a call then places its own window at that same slot
        and needs no MOVE to hand the result back, and nothing later in
        this statement can want the register (the statement ends here) *)
-    ignore (emit_tail p f v e);
+    let t = emit_tail p f v e in
+    (* Discarded does not mean unowned: `pop(lines);` REMOVES the element and
+       hands it to the caller, and a discarded call result is the caller's
+       too — one empty Text per popped line leaked in the workload's tail
+       tool. The four reader builtins are excluded the same way fixed_at
+       excludes them: their result points INTO the container. *)
+    let reader_call =
+      match e.kind with
+      | Ast.Call ({ Ast.kind = Ast.Ident n; _ }, _) ->
+        List.mem n [ "get"; "latest"; "key_at"; "val_at" ]
+      | _ -> false
+    in
+    if not reader_call then begin
+      drop_fresh_owned p f t e;
+      drop_fresh_text p f t e
+    end;
     (match Hashtbl.find_opt v.v_move e.id with
     | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
     | None -> ())

@@ -21,7 +21,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WOC="$ROOT/compiler/_build/default/bin/woc"
-WOVM="$ROOT/runtime/wovm"
+# LW_ACCEPT_WOVM points the whole run at another build — the sanitized one is
+# the reason this exists (the soak below is worth a great deal more under ASan).
+WOVM="${LW_ACCEPT_WOVM:-$ROOT/runtime/wovm}"
 SAMPLE="$ROOT/docs/examples/log-watcher"
 # A per-run port by default: a fixed one collides with a server left behind by
 # an earlier run (or by hand), and then the checks below silently talk to THAT
@@ -224,6 +226,99 @@ else
   bad "mcp stop" "still running 4s after SIGTERM; needed kill -9"
 fi
 SRV_PID=""
+
+# ---- 8. soak (opt-in) --------------------------------------------------
+# Every check above is seconds long, which is exactly the window a leak hides
+# in. The claim this sample exists to support is "you can leave it running",
+# so: drive each mode under load for a fixed duration and compare resident
+# memory and descriptor count between a warmed-up baseline and the end.
+#
+#   LW_SOAK=1            run it, 20 seconds per mode
+#   LW_SOAK=<seconds>    run it, that long per mode
+#   LW_SOAK_RSS_KB=<n>   resident-growth tolerance, default 256 KiB
+#   LW_ACCEPT_WOVM=...   soak a different build (the ASan one is the point)
+#
+# The tolerance is not zero for RSS: the allocator may touch a new page at any
+# time and the kernel accounts lazily. It IS zero for descriptors — a handle
+# is either returned or leaked, there is no third case.
+if [[ -n "${LW_SOAK:-}" ]]; then
+  SOAK_SECS="${LW_SOAK}"
+  [[ "$SOAK_SECS" == 1 || ! "$SOAK_SECS" =~ ^[0-9]+$ ]] && SOAK_SECS=20
+  RSS_TOL="${LW_SOAK_RSS_KB:-256}"
+  echo
+  echo "soak: ${SOAK_SECS}s per mode, tolerance ${RSS_TOL} KiB resident / 0 descriptors"
+
+  rss_of() { awk '/^VmRSS:/ {print $2}' "/proc/$1/status" 2>/dev/null || echo 0; }
+  fds_of() { ls "/proc/$1/fd" 2>/dev/null | wc -l; }
+
+  # start, warm up, sample, drive load, sample again, stop. [load_fn] is
+  # called repeatedly for the whole duration; it is what makes the mode work.
+  soak_mode() {
+    local name="$1" load_fn="$2"
+    shift 2
+    "$WOVM" "$IMAGE" "$@" >"$WORK/soak-$name.out" 2>&1 &
+    local pid=$! rss0 fd0 rss1 fd1 drss dfd deadline i
+    sleep 3 # first-touch pages and the first work cycle
+    if ! kill -0 "$pid" 2>/dev/null; then
+      bad "soak $name" "died during warm-up: $(tr '\n' '|' <"$WORK/soak-$name.out" | cut -c1-160)"
+      return
+    fi
+    # warm-up must include LOAD: the baseline is the steady state, and a cold
+    # process reaching its working-set high-water is not growth — measuring
+    # from before the first request reported the allocator's warm-up as a leak
+    for i in 1 2 3 4 5 6 7 8; do "$load_fn"; done
+    rss0="$(rss_of "$pid")"
+    fd0="$(fds_of "$pid")"
+    deadline=$((SECONDS + SOAK_SECS))
+    while ((SECONDS < deadline)); do
+      "$load_fn"
+      kill -0 "$pid" 2>/dev/null || break
+    done
+    if ! kill -0 "$pid" 2>/dev/null; then
+      bad "soak $name" "died mid-soak: $(tr '\n' '|' <"$WORK/soak-$name.out" | cut -c1-160)"
+      return
+    fi
+    rss1="$(rss_of "$pid")"
+    fd1="$(fds_of "$pid")"
+    kill -TERM "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    drss=$((rss1 - rss0))
+    dfd=$((fd1 - fd0))
+    if ((drss <= RSS_TOL)) && ((dfd <= 0)); then
+      ok "soak $name (${SOAK_SECS}s: resident ${rss0}->${rss1} KiB, delta ${drss}; descriptors ${fd0}->${fd1}, delta ${dfd})"
+    else
+      bad "soak $name" "resident ${rss0}->${rss1} KiB (delta ${drss}, tolerance ${RSS_TOL}); descriptors ${fd0}->${fd1} (delta ${dfd}, tolerance 0)"
+    fi
+  }
+
+  SOAK_LOG="$WORK/soak.log"
+  : >"$SOAK_LOG"
+  soak_watch_load() {
+    printf 'error disk full\n' >>"$SOAK_LOG"
+    sleep 0.2
+  }
+  soak_mode watch soak_watch_load watch "$SOAK_LOG" 2 1
+
+  # the supervisor re-reads the cron directory every rescan: rewriting the
+  # file is what makes each rescan do the parsing work being measured
+  cat >"$WORK/soak-sup.json" <<EOF
+{ "pollInterval": 1, "quietPeriod": 2, "rescanInterval": 1, "detections": "$WORK/soak-detections.log" }
+EOF
+  soak_run_load() {
+    printf '* * * * * root /usr/bin/backup.sh > %s 2>&1\n' "$SOAK_LOG" >"$CRON/backup"
+    sleep 0.5
+  }
+  soak_mode run soak_run_load run "$CRON" "$WORK/soak-sup.json"
+
+  # the MCP server under real request load: every tool, back to back
+  soak_mcp_load() {
+    http_post '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' s3cret >/dev/null
+    http_post '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_running_crons","arguments":{}}}' s3cret >/dev/null
+    http_post '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_logs","arguments":{}}}' s3cret >/dev/null
+    http_post "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"tail_log\",\"arguments\":{\"path\":\"$SOAK_LOG\",\"lines\":5}}}" s3cret >/dev/null
+  }
+  soak_mode mcp soak_mcp_load mcp "$CRON" "$WORK/cfg.json"
+fi
 
 echo
 printf 'log-watcher-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"

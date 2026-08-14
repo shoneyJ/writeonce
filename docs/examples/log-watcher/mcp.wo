@@ -109,18 +109,21 @@ class Mcp {
   }
 
   -- Blocking accept loop: one HTTP request per connection, respond, close.
-  -- Localhost only. A bad request never kills the loop. Connections are
-  -- owned handles: the drop at each iteration's end IS the close — the
-  -- Haxe try/close/catch bookkeeping (Mcp.hx:101-105) has no equivalent
-  -- and needs none.
+  -- Localhost only. A bad request never kills the loop. A connection is a
+  -- DESCRIPTOR, not an owned heap value: `net.Conn` is a scalar to the
+  -- ownership pass (nothing to drop, and dropping an fd number would be
+  -- nonsense), so the close is the source's own job on every path out of an
+  -- iteration — the 400 included. Measured before this was here: exactly one
+  -- descriptor leaked per request, so the server died at the process limit.
   fn serve(port: Int) -> Int {
     let srv = net.listen("127.0.0.1", port);
     while true {
-      if env.stopping() { return 0; }
+      if env.stopping() { net.close(srv); return 0; }
       let c = net.accept(srv);
       let req = try self.read_request(c) catch (e) nil;
       if req == nil {
         try net.write(c, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") catch (e) {}
+        net.close(c);
         continue;
       }
       let resp = self.handle(req);
@@ -128,6 +131,7 @@ class Mcp {
       head = head .. "Content-Type: application/json\r\nConnection: close\r\n";
       head = head .. "Content-Length: ${len(resp.body)}\r\n\r\n";
       try net.write(c, head .. resp.body) catch (e) {}
+      net.close(c);
     }
   }
 

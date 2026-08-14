@@ -59,11 +59,22 @@ running", and every item below came from a measurement on the sample itself:
    double-free: an **assignment** of a Text place was a move, not a copy, so
    `api_key = j.mcp.apiKey` aliased the record — `let` copied, assignment now
    does too. `just log-watcher` is 7 checks; the seventh is the stop.
-5. **The MCP server never closes an accepted connection** — `net.close` exists
-   and is unused; every request costs a descriptor.
-6. **Nothing soaks** — every check is seconds long, which is exactly the window
-   where a leak hides. The acceptance script needs a soak mode measuring RSS
-   and descriptors across a real duration.
+5. ~~The MCP server never closes an accepted connection~~ — **done
+   2026-08-15**. `net.close` on every path out of a serve iteration (and the
+   listener on stop). Measured: 4 → 4 descriptors across 200 requests, was
+   one leaked per request.
+6. ~~Nothing soaks~~ — **done 2026-08-15**. `LW_SOAK=<seconds>` drives all
+   three modes under load and fails on resident growth past 256 KiB or any
+   descriptor growth. The soak immediately caught what every seconds-long
+   check missed: ~1.6 MiB/min of **in-arena** leaks the ASan report cannot
+   see (the arena is one allocation to LeakSanitizer). Five bugs fell out:
+   json decode's worst-case string sizing (free lists poisoned by relabeled
+   lengths), `!=` never dropping fresh operands, Int interpolation segments
+   mistaken for borrows, `json.encode(Ctor{...})`'s unowned argument, and
+   discarded statement results (`pop(lines);`). After: release soak 30 s per
+   mode — watch 0, run 0, mcp +20 KiB, descriptors flat; ASan build flat at
+   14 600 KiB across 601 686 requests in 90 s once past its ~1200-request
+   quarantine warm-up.
 
 Plan: [`plan/compiler/2026-08-14-logwatcher-executable.md`](plan/compiler/2026-08-14-logwatcher-executable.md) ·
 Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](stories/language-runtime-database/07-logwatcher-proof.md)

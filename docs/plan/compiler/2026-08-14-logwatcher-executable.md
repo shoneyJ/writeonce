@@ -1,8 +1,9 @@
 # log-watcher Executable Implementation Plan
 
-> **Status: 🔄 in progress** (story iteration 7) — the sample compiles and its
-> three modes run; this plan is everything still between "it runs" and "you can
-> leave it running". Board: [00-status.md](../../00-status.md)
+> **Status: ✅ done 2026-08-15** (story iteration 7) — all six tasks landed:
+> the sample compiles, runs, stops on SIGTERM, holds RSS and descriptors flat
+> under sustained load in all three modes, and the soak that proves it is in
+> the acceptance script. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -209,7 +210,7 @@ with an event loop anyway.
       SIGTERM. Gates: `just oop-accept` ALL CRITERIA MET, `oop-e2e` 71/0,
       `woc-test` 565/0, `wovm-test` green, `just log-watcher` 7/0.
 
-### Task 5: The MCP server must close what it accepts
+### Task 5 ✅: The MCP server must close what it accepts
 
 **Concept & reason:** `Mcp.serve` accepts a connection per request and never
 calls `net.close` — the builtin exists, the sample does not use it. Every
@@ -219,12 +220,17 @@ is the acceptance workload. The connection is a value the loop owns for one
 iteration; it must be closed on every exit path from that iteration, including
 the malformed-request path that answers 400.
 
-- [ ] Failing measurement: descriptor count for the server process across a few
-      hundred requests.
-- [ ] Close the connection on every path out of the serve loop's body.
-- [ ] Re-measure: the descriptor count is flat.
+- [x] Failing measurement: exactly one descriptor per request — 4 → 54 fds
+      across 50 requests, read from `/proc/<pid>/fd`.
+- [x] `net.close(c)` on both paths out of an iteration (the 400 included) and
+      `net.close(srv)` on the stop path; the serve loop's comment claimed "the
+      drop at each iteration's end IS the close", which was wrong twice —
+      `net.Conn` is a scalar to the ownership pass, so nothing was dropped,
+      and a drop would not close an fd anyway. The comment now says what is
+      true.
+- [x] Re-measured: 4 → 4 fds across 200 requests.
 
-### Task 6: Soak — the acceptance a daemon actually has to pass
+### Task 6 ✅: Soak — the acceptance a daemon actually has to pass
 
 **Concept & reason:** every check today is a few seconds long, which is exactly
 the window in which a leak is invisible. The claim this plan exists to support
@@ -234,11 +240,38 @@ sample RSS and descriptor count at the start and the end, and fail when either
 grows beyond a stated tolerance. Keep it opt-in (an environment variable or a
 flag) so the default `just log-watcher` stays fast for the ordinary loop.
 
-- [ ] Soak the three modes with a stated duration, load pattern and tolerance;
-      report the measured deltas whether it passes or fails.
-- [ ] Run the soak against an ASan build once and record the result in the
-      status board's known-gaps section.
-- [ ] `just log-watcher` (fast path) stays green and stays under a minute.
+- [x] `LW_SOAK=<seconds>` in the acceptance script: each mode runs under load
+      (watch: an error line every 200 ms; run: the cron file rewritten every
+      500 ms so every rescan reparses; mcp: all four tools back to back), with
+      resident memory and descriptor count compared between a **warmed**
+      baseline and the end. Warm-up includes load — measuring from before the
+      first request reported the allocator reaching its working-set high-water
+      as a leak. Tolerance: 256 KiB resident (the kernel accounts lazily),
+      **zero** descriptors (a handle has no third state). `LW_ACCEPT_WOVM`
+      points the whole script at another build.
+- [x] **The soak caught what every seconds-long check missed.** The mcp mode
+      grew ~1.6 MiB/minute with ASan reporting zero leaks — in-arena leaks are
+      invisible to LeakSanitizer (the arena is one allocation), which is why
+      the soak measures RSS and not leak reports. Five compiler/runtime bugs
+      fell out, each found by an arena size-class census and a pointer trace:
+      `jparse_string` sized every decoded string at "rest of the input" and
+      shrank `len` after (the fs.read_all mis-size again — blocks filed on
+      free lists their next allocation never reads); `!=` never dropped its
+      fresh operands (`headers["authorization"] != "Bearer ${key}"`, twice
+      per request); an Int-typed interpolation segment (`"${resp.status}"`)
+      wore a place's clothes but is a fresh int_to_text allocation; a Ctor
+      handed to `json.encode` had no owner (one record + both field copies
+      per tool call); and a discarded expression statement (`pop(lines);`)
+      owns what the callee handed back. After: every handler flat per
+      request (arena live bytes constant from 4 to 24 requests).
+- [x] Release-build soak, 30 s per mode under load: watch delta 0 KiB, run
+      delta 0 KiB, mcp delta 20 KiB, descriptors 0/0/0. ASan-build soak
+      recorded: RSS plateaus at ~1200 requests (quarantine + redzone
+      high-water), then **flat at 14 600 KiB across 601 686 requests in
+      90 s** — the authoritative ASan number, since bash's ~30 req/s client
+      cannot warm that high-water inside the script's warm-up.
+- [x] `just log-watcher` (fast path) stays 7 checks, green, under a minute;
+      the soak is opt-in and off by default.
 
 ## Out of scope — deferred by name
 

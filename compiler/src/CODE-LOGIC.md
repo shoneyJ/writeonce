@@ -119,6 +119,16 @@ register holds a **copy**, so it needs no second copy at a boundary and does
 need a drop), a loop's iterable, the record a projection reads a field of, and
 any of those escaped by a `return` from inside the statement that built them.
 
+The soak (Task 6) widened the list with four more, all the same sentence:
+a `!=`'s operands (its lowering is separate from `==`'s and missed the reap);
+an Int-typed interpolation segment (`"${resp.status}"` LOOKS like a place
+wrapped in Interp, but lowers to a fresh int_to_text — is_borrowed_value_t
+asks the type); the argument of `json.encode` (its bespoke lowering bypassed
+the stdlib-member drop); and a discarded expression statement (`pop(lines);`
+REMOVES the element — the caller owns what it then ignores). The finding tool
+was an arena size-class census plus a pointer trace, not ASan: an in-arena
+leak is invisible to LeakSanitizer, because the arena is one allocation.
+
 Two rules the measurements imposed, both easy to get backwards:
 
 - **Never drop an argument register after a `CALL`.** The callee's frame

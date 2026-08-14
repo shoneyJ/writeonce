@@ -298,8 +298,18 @@ static wo_str *jparse_string(jp *j) {
         return NULL;
     }
     j->p++; /* closing quote */
-    s->len = n;
-    return s;
+    /* [s] was sized at the worst case (everything to the end of the input) and
+     * escapes only ever SHRINK the decoded form. wo_str_free sizes a block by
+     * its len (obj.h keeps no size headers), so relabeling this buffer with
+     * the decoded length would file it on the wrong free list forever after —
+     * the same mis-size fs.read_all had, and measured the same way: the MCP
+     * soak grew ~1.6 MiB a minute with zero malloc-level leaks, because every
+     * decoded string parked its worst-case block on a list its next
+     * allocation never reads. Copy out exact, release the buffer at the size
+     * it was taken. */
+    wo_str *exact = wo_str_new(j->rt, s->data, n);
+    wo_str_free(j->rt, s); /* len is still [worst]: the right class */
+    return exact;
 }
 
 /* An object into a fresh instance of [class_id]: keys matched against the
