@@ -83,6 +83,12 @@ type kind =
   | KwSwitch
   | KwCase
   | KwDefault
+  (* haxe-parity Task 5: `try expr catch (e) arm` — real keywords, and
+     neither appears as an identifier anywhere in the corpus or the
+     driving workload (grepped, the same discipline every keyword above
+     followed). *)
+  | KwTry
+  | KwCatch
   (* haxe-parity Task 4: `typedef Name = { ... }` structural records. A
      real keyword (grepped the corpus/sample first, same discipline as
      every keyword above — `typedef` appears only as this declaration's

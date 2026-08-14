@@ -41,7 +41,7 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_MULTI_GET] = 2, [WO_B_COUNT] = 1,     [WO_B_LATEST] = 1,
     [WO_B_MAP_NEW] = 0,   [WO_B_MAP_SET] = 3,   [WO_B_MAP_GET] = 2,
     [WO_B_MAP_HAS] = 2,   [WO_B_INT_TO_TEXT] = 1,
-    [WO_B_VARIANT_TAG] = 1,
+    [WO_B_VARIANT_TAG] = 1, [WO_B_ERR_FILL] = 1,
 };
 
 static int vtab_cmp(const void *a, const void *b) {
@@ -388,6 +388,20 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             }
             case WOP_DB_STUB:
             case WOP_TRAP:
+                break;
+            /* haxe-parity compiler Task 5: the handler target is validated
+               exactly like a jump (it IS a jump the VM takes on a trap),
+               and A is the register the catch arm's error record lands
+               in, so it has to be inside the frame. */
+            case WOP_TRY: {
+                RCHK(A);
+                int64_t tgt = (int64_t)pc + 1 + wo_ins_sbx(ins);
+                if (tgt < 0 || tgt >= (int64_t)mm->ninstr)
+                    BAIL("method %u pc %u: catch handler out of code", (unsigned)i,
+                         (unsigned)pc);
+                break;
+            }
+            case WOP_ENDTRY:
                 break;
             default:
                 BAIL("method %u pc %u: unknown opcode %u", (unsigned)i,

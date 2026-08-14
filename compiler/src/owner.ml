@@ -511,6 +511,9 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   | ListLit (first :: _) -> (
     match expr_ty ctx first with Some (Scalar n) -> Some (Multi n) | _ -> None)
   | ListLit [] | MapLit -> None
+  (* haxe-parity Task 5: a `try` yields its try arm's type (types.ml has
+     already required the catch arm to agree). *)
+  | Try t -> expr_ty ctx t.body
   | Ident n -> (
     match find_local ctx n with
     | Some l -> Some l.l_ty
@@ -1063,6 +1066,7 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
      literal-specific one. *)
   | ListLit items -> List.iter (read_expr ctx) items
   | MapLit -> ()
+  | Try t -> analyze_try ctx e t.body t.ename t.handler
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)
     record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
@@ -1556,6 +1560,51 @@ and fixpoint (ctx : ctx) (run : unit -> unit) : unit =
    else today. Borrows only (l_holds = false), so pop_scope's drop
    recording never sees them; every pre-existing call site passes
    nothing and is byte-identical. *)
+(* haxe-parity Task 5: `try body catch (e) handler`. The two arms are
+   alternate flows joining at one point — the same shape `if`/`switch`
+   already have, so the same join machinery applies: whatever one arm
+   moved out, the arm that still holds it drops at its own end
+   (branch_join_drops), and the state after the whole expression is the
+   join of both.
+
+   What is genuinely different from a branch is WHERE the catch arm starts
+   from: a trap can be raised anywhere inside the body, so the handler may
+   run after *any prefix* of it. Taking the entry state as the handler's
+   starting point is the conservative reading — it never claims the body's
+   moves happened — and the join then makes the surviving path responsible
+   for the drop. The frame also needs a live mask at the try itself (like
+   every other trap-capable site): that mask is what the VM's unwind uses
+   to release the body's own values before landing in the handler.
+
+   `e` is a local of the predeclared `Error` record, owned by the handler
+   scope (the record and its two Texts are freshly allocated at landing),
+   so pop_scope records its drop like any other owned local's. *)
+and analyze_try (ctx : ctx) (e : Ast.expr) (body : Ast.expr) (ename : string)
+    (handler : Ast.stmt list) : unit =
+  record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx));
+  let entry = snapshot ctx in
+  let div0 = ctx.diverged in
+  read_expr ctx body;
+  let body_sn = snapshot ctx in
+  let body_div = ctx.diverged in
+  restore entry;
+  ctx.diverged <- div0;
+  let ety = Ast.Scalar Types.error_record_name in
+  let ebind =
+    { l_name = ename; l_ty = ety; l_class = oclass_of ctx ety; l_node = e.id; l_pos = e.pos;
+      l_holds = (match oclass_of ctx ety with Copy -> false | _ -> true); l_src = None;
+      l_bkind = AShared; l_state = Live }
+  in
+  analyze_block ctx ~pre:[ ebind ] ~node:e.id ~pos:e.pos ~label:"CATCH" handler;
+  let catch_sn = snapshot ctx in
+  let catch_div = ctx.diverged in
+  if (not body_div) && not catch_div then begin
+    branch_join_drops ctx ~node:e.id ~label:"TRYBODY" ~pos:e.pos ~moving:catch_sn ~other:body_sn;
+    branch_join_drops ctx ~node:e.id ~label:"CATCHJOIN" ~pos:e.pos ~moving:body_sn ~other:catch_sn
+  end;
+  restore (if body_div then catch_sn else if catch_div then body_sn else join body_sn catch_sn);
+  ctx.diverged <- body_div && catch_div
+
 and analyze_block (ctx : ctx) ?(pre = []) ~node ~pos ~label (body : Ast.stmt list) : unit =
   push_scope ctx ~node ~pos ~label;
   List.iter (declare ctx) pre;

@@ -136,6 +136,8 @@ let keyword_kind = function
   | "case" -> Some Token.KwCase
   | "default" -> Some Token.KwDefault
   | "typedef" -> Some Token.KwTypedef
+  | "try" -> Some Token.KwTry
+  | "catch" -> Some Token.KwCatch
   | "INSERT" -> Some Token.KwInsert
   | "SELECT" -> Some Token.KwSelect
   | _ -> None

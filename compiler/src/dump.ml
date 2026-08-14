@@ -63,6 +63,8 @@ let kind_label (k : Token.kind) : string =
   | Token.KwCase -> "KW_CASE"
   | Token.KwDefault -> "KW_DEFAULT"
   | Token.KwTypedef -> "KW_TYPEDEF"
+  | Token.KwTry -> "KW_TRY"
+  | Token.KwCatch -> "KW_CATCH"
   | Token.LBrace -> "LBRACE"
   | Token.RBrace -> "RBRACE"
   | Token.LParen -> "LPAREN"
@@ -222,6 +224,10 @@ let rec expr_str (e : Ast.expr) : string =
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))
   | Ast.MapLit -> "{}"
+  (* Like SWITCH above: a one-line summary, not a full unparse of the
+     catch arm's statements. *)
+  | Ast.Try { body; ename; handler } ->
+    Printf.sprintf "TRY %s CATCH (%s) { %d stmt }" (expr_str body) ename (List.length handler)
   (* haxe-parity Task 3: arm bodies are `stmt list`, not one `expr` — no
      golden AST/bc fixture pins a switch (direct assertions instead, see
      runner.ml, same convention haxe-parity Task 2 used), so this is a

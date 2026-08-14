@@ -192,6 +192,10 @@ let op_rc_dec = 28
 let op_builtin = 29
 let op_db_stub = 30
 
+(* haxe-parity Task 5: try/catch (runtime/src/wob.h's WOP_TRY/WOP_ENDTRY) *)
+let op_try = 32
+let op_endtry = 33
+
 let b_now = 0
 let b_print = 1
 let b_print_int = 2
@@ -218,6 +222,13 @@ let b_int_to_text = 13
    internal: never a source-callable name (not in is_builtin_name /
    types.ml's builtin_signatures — 08-builtin-surface.md is unchanged). *)
 let b_variant_tag = 14
+
+(* haxe-parity Task 5: fills the catch arm's freshly allocated `Error`
+   record from the trap the VM landed with (field order 0 code, 1 line,
+   2 method, 3 msg — Types.error_record_fields). runtime/src/wob.h
+   WO_B_ERR_FILL = 15. Compiler-internal, like b_variant_tag: never a
+   source-callable name. *)
+let b_err_fill = 15
 
 let ins_abc op a b c = op lor (a lsl 8) lor (b lsl 16) lor (c lsl 24)
 let ins_abx op a bx = op lor (a lsl 8) lor (bx lsl 16)
@@ -867,6 +878,9 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | ListLit (first :: _) -> (
     match ty_of_expr p f first with Some (Scalar n) -> Some (Multi n) | _ -> None)
   | ListLit [] | MapLit -> None
+  (* haxe-parity Task 5: a `try` yields its try arm's type — types.ml has
+     already required the catch arm to agree. *)
+  | Try t -> ty_of_expr p f t.body
   | Ident n -> (
     match List.assoc_opt n f.f_env with
     | Some (_, t) -> Some t
@@ -1270,6 +1284,7 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     | Some imm ->
       sync_mask p f v e.id;
       put f (ins_abc op_builtin dst imm b_map_new))
+  | Try t -> emit_try p f v ~dst ?expected e t.body t.ename t.handler
   | Ident n -> (
     match lookup_local f n with
     | Some (r, _) -> if r <> dst then put f (ins_abc op_move dst r 0)
@@ -1801,6 +1816,100 @@ and emit_switch ?(want_value = true) (p : pctx) (f : fstate) (v : views) (e : As
     f.f_gc <- g0;
     List.iter (fun (o, g, _) -> mask_meet f o g) rest;
     f.f_div <- div0
+
+(* haxe-parity Task 5: `try body catch (e) handler`.
+
+     TRY ereg, ->handler     register the region; ereg is where the error
+     <body -> dst>           record lands if it fires
+     ENDTRY                  the region completed: pop it
+     JMP ->exit
+   handler:
+     NEW ereg, Error         the record is the compiler's allocation, so
+     BUILTIN ereg, err_fill  its drop is the ordinary scope-end one
+     <handler -> dst>
+     <scope drops, join drops>
+   exit:
+
+   The two arms are joined exactly like a switch's: each arm's ending
+   owned/gc masks meet, and each drops what the other moved
+   (emit_join_drops with the labels owner.ml's analyze_try recorded). The
+   VM releases whatever the body itself owned before landing — the live
+   mask at the try site is what it reads — so the handler starts from the
+   entry state, which is what the owner pass assumed. *)
+and emit_try (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast.expr)
+    (body : Ast.expr) (ename : string) (handler : Ast.stmt list) : unit =
+  (* dst is reserved for the whole construct — same reason emit_switch
+     does it: a handler-local `let` must never be handed dst's register *)
+  let saved_nlocals = f.f_nlocals in
+  if f.f_nlocals <= dst then f.f_nlocals <- dst + 1;
+  if f.f_temp <= dst then f.f_temp <- dst + 1;
+  bump f dst;
+  let ereg = alloc_local p f e.pos in
+  f.f_cur_line <- e.pos.line;
+  let try_pc = here f in
+  put f (ins_asbx op_try ereg 0);
+  let entry_owned = f.f_owned and entry_gc = f.f_gc in
+  let div0 = f.f_div in
+  (match expected with
+  | Some t -> emit_expr p f v ~dst ~expected:t body
+  | None -> emit_expr p f v ~dst body);
+  f.f_cur_line <- e.pos.line;
+  put f (ins_abc op_endtry 0 0 0);
+  emit_join_drops p f v ~node:e.id ~label:"TRYBODY";
+  let body_owned = f.f_owned and body_gc = f.f_gc and body_div = f.f_div in
+  let skip_pc = here f in
+  put f (ins_asbx op_jmp 0 0);
+  patch_jump p f ~file:f.f_file ~pos:e.pos try_pc (here f);
+  f.f_owned <- entry_owned;
+  f.f_gc <- entry_gc;
+  f.f_div <- div0;
+  let saved_env = f.f_env and saved_decls = f.f_declared in
+  let saved_locals = f.f_nlocals in
+  (match class_of_name p Types.error_record_name with
+  | Some ecid ->
+    f.f_cur_line <- e.pos.line;
+    put f (ins_abx op_new ereg (check_bx p f e.pos "class" ecid));
+    put f (ins_abc op_builtin ereg ereg b_err_fill)
+  | None ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+      ~message:"no class-table entry for the `Error` record — a `try` cannot bind its error";
+    put f (ins_abx op_loadk ereg (const_int p 0)));
+  f.f_env <- (ename, (ereg, Ast.Scalar Types.error_record_name)) :: f.f_env;
+  Hashtbl.replace f.f_decl e.id ereg;
+  f.f_declared <- e.id :: f.f_declared;
+  mask_set f (match Hashtbl.find_opt v.v_holder e.id with Some k -> k | None -> Owner.LOwned) ereg;
+  (match List.rev handler with
+  | [] -> ()
+  | last :: rev_init -> (
+    List.iter (emit_stmt p f v) (List.rev rev_init);
+    match last.Ast.s_kind with
+    | Ast.ExprStmt ve ->
+      stmt_reset f;
+      f.f_cur_line <- last.Ast.s_pos.line;
+      (match expected with
+      | Some t -> emit_expr p f v ~dst ~expected:t ve
+      | None -> emit_expr p f v ~dst ve)
+    | _ -> emit_stmt p f v last));
+  emit_scope_drops p f v ~node:e.id ~label:"CATCH";
+  emit_rc p f v ~node:e.id ~acquire:false ~groups:(declared_since f saved_decls) ();
+  f.f_nlocals <- saved_locals;
+  f.f_env <- saved_env;
+  f.f_declared <- saved_decls;
+  f.f_temp <- saved_locals;
+  emit_join_drops p f v ~node:e.id ~label:"CATCHJOIN";
+  patch_jump p f ~file:f.f_file ~pos:e.pos skip_pc (here f);
+  f.f_nlocals <- saved_nlocals;
+  (* the state after the try is what both arms agree on *)
+  if body_div then ()
+  else if f.f_div then begin
+    f.f_owned <- body_owned;
+    f.f_gc <- body_gc;
+    f.f_div <- div0
+  end
+  else begin
+    mask_meet f body_owned body_gc;
+    f.f_div <- div0
+  end
 
 and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (cn : string)
     (fields : (string * Ast.expr) list) : unit =
@@ -2921,6 +3030,16 @@ let emit_method (p : pctx) (v : views) ~(file : string) ~(self_class : (int * st
    Program assembly
    ============================================================ *)
 
+(* haxe-parity Task 5: does this program catch anywhere? Only then does the
+   `Error` record earn a class-table entry — so no image that never writes
+   `try` gains a class it does not use. *)
+let program_uses_try (prog : Ast.program) : bool =
+  let found = ref false in
+  Types.walk_program
+    (fun _ (e : Ast.expr) -> match e.Ast.kind with Ast.Try _ -> found := true | _ -> ())
+    prog;
+  !found
+
 (* Structural satisfaction, Go-style (spec section 2): a class satisfies
    an interface when it has a method of the same name and parameter count
    for every method the interface declares. There is no `implements`
@@ -3056,6 +3175,25 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
           | Ast.Const _ -> ())
         u.prog.decls)
     units;
+  (* haxe-parity Task 5: the record `catch (e)` binds needs a real
+     class-table entry (it is an ordinary heap object with two owned Texts,
+     so the drop plan is the ordinary one). Added only for a program that
+     actually catches — every existing image keeps its exact class table —
+     and only when nothing already claims the name. Its field order is
+     Types.error_record_fields, which is the same order the VM's
+     WO_B_ERR_FILL builtin writes. *)
+  if
+    (not (SM.mem Types.error_record_name !class_id))
+    && List.exists (fun u -> program_uses_try u.prog) units
+  then begin
+    let cid = !nclasses in
+    class_id := SM.add Types.error_record_name cid !class_id;
+    incr nclasses;
+    classes :=
+      { cr_name = Types.error_record_name; cr_gc = false;
+        cr_fields = Array.of_list Types.error_record_fields; cr_methods = [] }
+      :: !classes
+  end;
   let class_id = !class_id in
   let p_classes = Array.of_list (List.rev !classes) in
   let p_ifaces = Array.of_list (List.rev !ifaces) in

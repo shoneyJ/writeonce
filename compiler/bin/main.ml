@@ -330,7 +330,9 @@ let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
   let module_of = module_of_file ~root in
   Woc_lib.Types.check_modules collector ~module_of per_file_syms parsed;
   let module_syms = Woc_lib.Types.module_symbols ~module_of per_file_syms in
-  let syms = merge_symbols (List.map snd per_file_syms) in
+  (* haxe-parity Task 5: the predeclared `Error` record joins the merged
+     table only — see Types.with_builtin_records for why not per-file. *)
+  let syms = Woc_lib.Types.with_builtin_records (merge_symbols (List.map snd per_file_syms)) in
   (* `~file_syms` (hotfix, multi-file double-report): `per_file_syms` and
      `parsed` are both `List.map`s over the same original file list, in
      the same order, so pairing them positionally is exact -- each

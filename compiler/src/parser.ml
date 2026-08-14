@@ -719,7 +719,35 @@ let with_no_brace (st : state) (value : bool) (f : unit -> 'a) : 'a =
 
 (* ---- expression parsing -------------------------------------------------- *)
 
-let rec parse_expr (st : state) : Ast.expr = parse_or st
+let rec parse_expr (st : state) : Ast.expr =
+  match peek st with Token.KwTry -> parse_try st | _ -> parse_or st
+
+(* haxe-parity Task 5: `try body catch (e) arm`. `try` binds looser than
+   every operator, so the body is a full operator expression and `catch`
+   is what ends it (`try a / b catch (e) 0` catches the division, not just
+   `a`). A newline before `catch` is insignificant — the workload wraps
+   long try bodies (mcp.wo's `try self.dispatch(...)` / `catch (e)
+   err(...)`). The arm is either a braced block or one expression; both
+   become a `stmt list`, so `{}` right after the catch variable is always
+   the empty block, never the empty-map literal. *)
+and parse_try (st : state) : Ast.expr =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st);
+  (* 'try' *)
+  let body = parse_or st in
+  skip_newlines st;
+  expect st Token.KwCatch "`catch` after a `try` expression";
+  expect st Token.LParen "'(' before the catch variable";
+  let ename = expect_ident st "catch variable name" in
+  expect st Token.RParen "')' after the catch variable";
+  let handler =
+    if peek st = Token.LBrace then with_no_brace st false (fun () -> parse_block st)
+    else
+      let e = parse_expr st in
+      [ { Ast.s_id = fresh_id st; s_pos = e.pos; s_kind = Ast.ExprStmt e } ]
+  in
+  { Ast.id; pos; kind = Ast.Try { body; ename; handler } }
 
 and parse_or (st : state) : Ast.expr =
   let lhs = ref (parse_and st) in
@@ -1730,6 +1758,13 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
   | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
   | Ast.MapLit -> e
+  | Ast.Try { body; ename; handler } ->
+    { e with
+      Ast.kind =
+        Ast.Try
+          { body = subst_expr consts bound body; ename;
+            handler = subst_block consts (StringSet.add ename bound) handler }
+    }
   | Ast.Switch (subject, arms) ->
     { e with
       Ast.kind =

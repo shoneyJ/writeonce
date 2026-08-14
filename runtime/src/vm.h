@@ -21,12 +21,32 @@ typedef struct wo_frame {
     uint32_t base;   /* register-window base in the value stack */
 } wo_frame;
 
+/* One live `try` region (haxe-parity compiler Task 5, WOP_TRY). `depth`
+ * is the frame depth that registered it, so a trap raised deeper unwinds
+ * every frame above that one and lands here; `pc` is the handler's
+ * instruction in that frame's method; `reg` is the window-relative
+ * register the error record is built into. */
+typedef struct wo_catch {
+    uint32_t depth;
+    uint32_t pc;
+    uint32_t reg;
+} wo_catch;
+
+#define WO_MAX_CATCH 64u
+
 typedef struct wo_vm {
     const wo_module *mod;
     wo_rt rt;
     uint64_t regs[WO_STACK_SLOTS];
     wo_frame frames[WO_MAX_FRAMES];
     uint32_t depth;
+    /* the catch stack, innermost last; ncatch = 0 means every trap is
+     * the uncaught kind and behaves exactly as it did before Task 5 */
+    wo_catch catches[WO_MAX_CATCH];
+    uint32_t ncatch;
+    /* the error a caught trap landed with, read by WO_B_ERR_FILL while
+     * the catch arm builds its record */
+    wo_err caught;
 } wo_vm;
 
 /* heap_cap = arena byte capacity (the CLI's WO_HEAP_MB feeds this) */

@@ -173,6 +173,33 @@ let stdlib_modules = [ "fs"; "proc"; "net"; "time"; "json"; "env" ]
 
 let is_stdlib_module (name : string) : bool = List.mem name stdlib_modules
 
+(* haxe-parity Task 5: the record `catch (e)` binds — the VM's structured
+   trap error, one shape forever (spec §6). Predeclared rather than
+   written: no source declares it, every program that catches gets it, and
+   the field ORDER here is the contract with the VM's WO_B_ERR_FILL
+   builtin (runtime/src/wob.h), which writes fields 0..3 by index. *)
+let error_record_name = "Error"
+
+let error_record_fields : (string * field_ty) list =
+  [ ("code", Scalar "Int"); ("line", Scalar "Int"); ("method", Scalar "Text");
+    ("msg", Scalar "Text") ]
+
+(* Adds the predeclared records to a symbol table. Applied to the MERGED
+   table only (bin/main.ml), never to a per-file one: one entry per file
+   would read as a cross-file duplicate declaration (WO-E214). A source
+   that declares its own `Error` keeps it — its own fields are then the
+   ones `catch (e)` binds, which is either what it wanted or a type error
+   it will hear about at the use site. *)
+let with_builtin_records (syms : symbols) : symbols =
+  if StringMap.mem error_record_name syms.classes then syms
+  else
+    let info =
+      { name = error_record_name; is_class = false; is_record = true; is_gc = false; table = None;
+        fields = List.map (fun (n, t) -> (n, t, None, [])) error_record_fields; methods = [];
+        id = -1; pos = { line = 0; col = 0 }; pub = true }
+    in
+    { syms with classes = StringMap.add error_record_name info syms.classes }
+
 let rec has_recursive_structure (cls : class_info) : bool =
   List.exists (fun (_, ty, _, _) ->
     match ty with
@@ -844,6 +871,10 @@ let typecheck_program ~file ~(module_of : string -> string)
     | ListLit (first :: _) -> (
         match confident_typ cenv first with Some t -> Some (TMulti t) | None -> None)
     | ListLit [] | MapLit -> None
+    (* haxe-parity Task 5: a `try` expression's type is its try arm's — the
+       handler is checked to agree (typecheck_expr below), so either arm
+       would answer, and the try arm is the one that always has a value. *)
+    | Try { body; _ } -> confident_typ cenv body
     | Ident name -> StringMap.find_opt name cenv
     | Field (base, field_name) -> (
         match confident_typ cenv base with
@@ -1169,6 +1200,40 @@ let typecheck_program ~file ~(module_of : string -> string)
          | t :: _ -> { typ = TMulti t; is_nil = false }
          | [] -> { typ = TScalar "Int"; is_nil = false })
     | MapLit -> { typ = TScalar "Int"; is_nil = false }
+    | Try { body; ename; handler } ->
+        let body_res = typecheck_expr env cenv body in
+        (* The catch arm sees exactly one new name: the error record. *)
+        let herr = TScalar error_record_name in
+        let benv = StringMap.add ename herr env in
+        let bcenv = StringMap.add ename herr cenv in
+        let handler_res =
+          match List.rev handler with
+          | [] -> None
+          | last :: rev_init -> (
+              let env', cenv' = List.fold_left typecheck_stmt (benv, bcenv) (List.rev rev_init) in
+              match last.s_kind with
+              | ExprStmt e -> Some (confident_typ cenv' e, e.pos)
+              | _ ->
+                  let _ = typecheck_stmt (env', cenv') last in
+                  None)
+        in
+        (* Both arms must yield one type where the value is used. Reported
+           only when BOTH types are confident — the same "stay silent when
+           underivable" contract every other confident-type consumer here
+           follows, which also keeps a `catch (e) nil` arm quiet until
+           optionals land. *)
+        (match (handler_res, confident_typ cenv body) with
+         | Some (Some ht, hpos), Some bt when not (typ_equal syms ht bt) ->
+             Diag.Collector.add collector
+               (Diag.error ~code:type_mismatch_code ~file ~line:hpos.line ~col:hpos.col
+                  ~message:
+                    (Printf.sprintf
+                       "the `catch` arm yields `%s`, but the `try` arm yields `%s` — both arms of \
+                        a `try` expression must have one type"
+                       (typ_label ht) (typ_label bt))
+                  ())
+         | _ -> ());
+        { typ = body_res.typ; is_nil = false }
 
   (* haxe-parity Task 3: the one deriver behind both `Switch` call sites
      -- `typecheck_expr`'s own case above (every "the value is used"
@@ -1798,6 +1863,9 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
   | Interp inner -> walk_expr bound visit inner
   | ListLit items -> List.iter (walk_expr bound visit) items
   | MapLit -> ()
+  | Try { body; ename; handler } ->
+    walk_expr bound visit body;
+    walk_block (StringSet.add ename bound) visit handler
   | DbStub _ -> ()
   | Switch (subject, arms) ->
       walk_expr bound visit subject;

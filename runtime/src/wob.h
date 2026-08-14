@@ -120,8 +120,20 @@ enum {
     WOP_BUILTIN = 29, /* A B C: r[A] = builtin C, args from r[B] */
     WOP_DB_STUB = 30, /* traps WO_T_DB "engine not linked" */
     WOP_TRAP = 31,    /* Bx: explicit trap */
+    /* haxe-parity compiler Task 5: try/catch over the trap system.
+     * TRY pushes a catch frame {this frame, this window, handler pc =
+     * pc + sBx, error register A}; a trap raised while it is the
+     * innermost one unwinds every frame above this one exactly as an
+     * uncaught trap does (drop maps run, registers null), releases what
+     * the try region itself owned in this frame, and resumes at the
+     * handler instead of leaving the VM. ENDTRY pops it — the try
+     * region completed without trapping. Uncaught behavior is
+     * unchanged: with no catch frame live, a trap is byte-for-byte
+     * today's surface. */
+    WOP_TRY = 32,    /* A sBx: push catch frame, handler at pc + sBx */
+    WOP_ENDTRY = 33, /* pop the innermost catch frame */
 };
-#define WOP_MAX 31u
+#define WOP_MAX 33u
 
 /* ---- builtin ids (WOP_BUILTIN operand C) ---- */
 enum {
@@ -152,8 +164,20 @@ enum {
      * WO_T_BOUNDS on a null receiver or a native class id — the same
      * defense ICALL keeps for a miscompiled receiver. */
     WO_B_VARIANT_TAG = 14,
+    /* haxe-parity compiler Task 5: materialize the caught error. The
+     * catch arm's error record is an ordinary compiler-generated class
+     * whose field order this builtin is the contract for — (record
+     * object) -> the same object, with field 0 = code (i64), 1 = line
+     * (i64), 2 = method (fresh owned Text), 3 = msg (fresh owned Text),
+     * read from the error the VM landed here with. The compiler
+     * allocates and owns the record (so its drop is the ordinary one);
+     * the VM only fills it, which is why the pending error never has to
+     * outlive the landing. Traps WO_T_BOUNDS on a receiver that is not
+     * a 4-field class object, WO_T_OOM if either Text cannot be
+     * allocated. */
+    WO_B_ERR_FILL = 15,
 };
-#define WO_B_MAX 14u
+#define WO_B_MAX 15u
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {

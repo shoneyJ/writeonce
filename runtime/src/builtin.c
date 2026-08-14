@@ -3,6 +3,7 @@
 #include "builtin.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "cont.h"
@@ -176,6 +177,43 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return WO_T_BOUNDS;
         }
         R[A] = o->class_id;
+        return 0;
+    }
+    case WO_B_ERR_FILL: { /* haxe-parity compiler Task 5: try/catch */
+        /* Fills the catch arm's record from the error the VM landed with.
+         * Field order is this builtin's contract with the compiler
+         * (docs/plan/oop-vm/00-wob-format.md): 0 code, 1 line, 2 method,
+         * 3 msg. The record is the compiler's own allocation, so its drop
+         * is the ordinary one and the two fresh Texts belong to it. */
+        if (!R[B]) {
+            *msg = "null error record";
+            return WO_T_BOUNDS;
+        }
+        wo_hdr *o = (wo_hdr *)(uintptr_t)R[B];
+        if (o->class_id >= vm->mod->class_cnt ||
+            vm->mod->classes[o->class_id].field_cnt < 4) {
+            *msg = "error record is not a 4-field class";
+            return WO_T_BOUNDS;
+        }
+        wo_str *meth = wo_str_new(rt, vm->caught.method,
+                                  (uint32_t)strlen(vm->caught.method));
+        if (!meth) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        wo_str *text = wo_str_new(rt, vm->caught.msg,
+                                  (uint32_t)strlen(vm->caught.msg));
+        if (!text) {
+            wo_str_free(rt, meth);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        uint64_t *fs = wo_fields(o);
+        fs[0] = vm->caught.code;
+        fs[1] = vm->caught.line;
+        fs[2] = (uint64_t)(uintptr_t)meth;
+        fs[3] = (uint64_t)(uintptr_t)text;
+        R[A] = R[B];
         return 0;
     }
     default: /* unreachable: loader validated the id */

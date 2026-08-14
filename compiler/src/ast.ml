@@ -247,6 +247,20 @@ and expr_kind =
      literal without lookahead nothing else needs. *)
   | ListLit of expr list
   | MapLit
+  (* haxe-parity Task 5: `try body catch (ename) handler` — an expression,
+     like `switch`. `body` is an expression (the workload's only form);
+     `handler` is a `stmt list` so both arm spellings share one shape,
+     exactly as a switch arm does: `catch (e) nil` parses as a single
+     ExprStmt, `catch (e) { ... }` as its statements, and the arm's value
+     is its trailing ExprStmt (an arm with no trailing expression yields
+     nothing, which is legal in statement position). The error record the
+     handler binds is the structured trap error {code, line, method, msg}
+     — the `Error` record type, predeclared by types.ml. *)
+  | Try of {
+      body : expr;
+      ename : string;
+      handler : stmt list;
+    }
 
 (* ---- statements (Task 5) ---------------------------------------------
 
