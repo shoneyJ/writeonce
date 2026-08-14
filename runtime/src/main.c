@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "cont.h"
 #include "gc.h"
 #include "vm.h"
 
@@ -128,9 +129,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (self_rc == 0) {
-        /* no embedded image: today's contract, unchanged */
-        if (argc != 2) {
-            fprintf(stderr, "usage: wovm <file.wob>\n");
+        /* no embedded image: the image path is argv[1], and program mode
+           passes everything after it to the program itself */
+        if (argc < 2) {
+            fprintf(stderr, "usage: wovm <file.wob> [args...]\n");
             return 2;
         }
         if (wo_load_file(&mod, argv[1], err, sizeof err) != 0) {
@@ -155,14 +157,46 @@ int main(int argc, char **argv) {
         wo_module_free(&mod);
         return 2;
     }
+    /* Program mode: an entry that declares one parameter gets the program's
+     * OWN arguments as a `multi Text` — not the program name, and not the
+     * image path a plain `wovm image.wob args...` invocation carries. So
+     * `args[0]` is the first real argument (the workload's own contract:
+     * `args[0] == "watch"`, `args[1]` the log file). An entry with no
+     * parameters is called exactly as before. */
+    uint64_t argv_val = 0;
+    uint32_t entry_argc = mod.methods[mod.entry].arg_cnt;
+    if (entry_argc == 1) {
+        wo_multi *args = wo_multi_new(&VM.rt, WO_K_TEXT);
+        if (!args) {
+            fprintf(stderr, "wovm: cannot allocate the argument list\n");
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        int first = self_rc == 0 ? 2 : 1; /* skip the image path when there is one */
+        for (int i = first; i < argc; i++) {
+            wo_str *s = wo_str_new(&VM.rt, argv[i], (uint32_t)strlen(argv[i]));
+            if (!s || wo_multi_push(args, (uint64_t)(uintptr_t)s) != 0) {
+                fprintf(stderr, "wovm: cannot allocate the argument list\n");
+                wo_vm_destroy(&VM);
+                wo_module_free(&mod);
+                return 2;
+            }
+        }
+        argv_val = (uint64_t)(uintptr_t)args;
+    }
     uint64_t ret = 0;
     wo_err terr;
-    int rc = wo_vm_call(&VM, mod.entry, NULL, 0, &ret, &terr);
+    int rc = wo_vm_call(&VM, mod.entry, entry_argc == 1 ? &argv_val : NULL, entry_argc, &ret,
+                        &terr);
     if (rc != 0)
         fprintf(stderr, "trap %u in %s at line %u: %s\n", (unsigned)terr.code,
                 terr.method, (unsigned)terr.line, terr.msg);
+    /* the entry's return value IS the exit code (docs/plan/oop-vm/
+     * 08-builtin-surface.md's "Program entry"): 0..255, a trap is 1 */
+    int exit_code = rc == 0 ? (int)((uint64_t)ret & 0xFF) : 1;
     gc_pump(&VM);
     wo_vm_destroy(&VM);
     wo_module_free(&mod);
-    return rc == 0 ? 0 : 1;
+    return exit_code;
 }

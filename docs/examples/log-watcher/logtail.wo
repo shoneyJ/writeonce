@@ -129,7 +129,7 @@ pub fn sanitize(line: Text) -> Text {
       }
       continue;
     }
-    if c >= 32 or c == 9 { out = out + char_of(c); }
+    if c >= 32 or c == 9 { out = out .. char_of(c); }
     i = i + 1;
   }
   return out;

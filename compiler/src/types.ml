@@ -1314,6 +1314,36 @@ let typecheck_program ~file ~(module_of : string -> string)
                   ())
          | _ -> ());
         { typ = TScalar "Bool"; is_nil = false }
+    | Binary (((Add | Sub | Mul | Div | Mod) as op), left, right) ->
+        let lres = typecheck_expr env cenv left in
+        let rres = typecheck_expr env cenv right in
+        (* `+` is arithmetic, never string addition (docs/plan/oop-vm/
+           08-builtin-surface.md's operator table) — and a Text operand here
+           is not a harmless type slip: the emitter would lower it to ADD on
+           two heap pointers, producing a wild pointer with no diagnostic. So
+           this is reported off CONFIDENT types (the same "stay silent when
+           underivable" contract as every other check here) and names the
+           operator that does concatenate. *)
+        let text_side (e : expr) (r : expr_type_result) : bool =
+          match confident_typ cenv e with
+          | Some t -> unwrap_nullable t = TScalar "Text"
+          | None -> ( match e.kind with StrLit _ | Interp _ -> true | _ -> ignore r; false)
+        in
+        if text_side left lres || text_side right rres then
+          Diag.Collector.add collector
+            (Diag.error ~code:type_mismatch_code ~file ~line:e.pos.line ~col:e.pos.col
+               ~message:
+                 (Printf.sprintf
+                    "`%s` is arithmetic and never joins text — use `..` to concatenate"
+                    (match op with
+                     | Add -> "+"
+                     | Sub -> "-"
+                     | Mul -> "*"
+                     | Div -> "/"
+                     | _ -> "%"))
+               ());
+        { typ = (match confident_typ cenv left with Some t -> t | None -> TScalar "Int");
+          is_nil = false }
     | Binary (_, left, right) ->
         let _ = typecheck_expr env cenv left in
         let _ = typecheck_expr env cenv right in

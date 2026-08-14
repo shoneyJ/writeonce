@@ -482,9 +482,12 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
     /* entry: a zero-arg free fn */
     if (entry != WOB_NONE) {
         if (entry >= m->method_cnt) BAIL("entry method out of range");
-        if (m->methods[entry].arg_cnt != 0 ||
+        /* program mode: an entry is a free fn taking nothing, or one
+           argument — the `multi Text` of command-line arguments the runtime
+           builds (runtime/src/main.c). */
+        if (m->methods[entry].arg_cnt > 1 ||
             m->methods[entry].class_id != WOB_NONE)
-            BAIL("entry must be a zero-arg free fn");
+            BAIL("entry must be a free fn taking no arguments or one argv `multi Text`");
     }
     m->entry = entry;
     return 0;

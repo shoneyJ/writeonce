@@ -203,7 +203,7 @@ class Supervisor {
     }
     let line = json.encode(Detection { ts: time.iso(now), path: log_path,
          source: source, event: event, lastError: last_error });
-    try fs.append(self.cfg.detections, line + "\n") catch (e) {
+    try fs.append(self.cfg.detections, line .. "\n") catch (e) {
       print("DETECTIONS-SINK-ERROR ${self.cfg.detections}: ${e.msg}");
     }
   }

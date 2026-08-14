@@ -1339,6 +1339,10 @@ let container_imm (p : pctx) (expected : Ast.field_ty option) (map : bool) : int
     | _ -> None)
   | None -> None
 
+(* `nil` written literally on either side of a comparison — see emit_binary's
+   Eq/Ne cases for why the distinction matters. *)
+let is_nil_lit (e : Ast.expr) : bool = match e.Ast.kind with Ast.NilLit -> true | _ -> false
+
 let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast.expr) : unit =
   f.f_cur_line <- e.pos.line;
   (match e.kind with
@@ -1600,14 +1604,26 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
   | Le -> simple op_le
   | Gt -> swapped op_lt
   | Ge -> swapped op_le
-  | Eq -> if is_text p f l || is_text p f r then simple op_eqs else simple op_eq
+  (* A comparison against `nil` is a WORD compare, never a content compare:
+     nil is the zero word, and EQS would dereference it as a `wo_str*` (the
+     VM's str_check traps on that, so an `x != nil` guard would trap instead
+     of answering). Text-vs-Text still uses EQS. *)
+  | Eq ->
+    if is_nil_lit l || is_nil_lit r then simple op_eq
+    else if is_text p f l || is_text p f r then simple op_eqs
+    else simple op_eq
   | Ne ->
     (* no NE opcode in the v1 set: `a != b` is `(a == b) == 0`. The
        format doc governs, so this is a lowering, not a new opcode. *)
     let a = emit_operand p f v l in
     let b = emit_operand p f v r in
     let t = alloc_temp p f pos in
-    put f (ins_abc (if is_text p f l || is_text p f r then op_eqs else op_eq) t a b);
+    put f
+      (ins_abc
+         (if is_nil_lit l || is_nil_lit r then op_eq
+          else if is_text p f l || is_text p f r then op_eqs
+          else op_eq)
+         t a b);
     let z = alloc_temp p f pos in
     put f (ins_abx op_loadk z (check_bx p f pos "constant" (const_int p 0)));
     put f (ins_abc op_eq dst t z)
@@ -3623,10 +3639,19 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                   mr_code = [||]; mr_lines = []; mr_drops = [] }
                 :: !methods;
               bodies := (u, None, m, !nmethods) :: !bodies;
-              (* the entry point is the zero-argument free fn `main` —
-                 the loader's own rule for an entry (a zero-arg free fn)
-                 plus one fixed name so `wovm image.wob` needs no flag *)
-              if m.name = "main" && m.params = [] then begin
+              (* Program mode: the entry is the free fn `main`, taking either
+                 nothing or one `multi Text` of command-line arguments (the
+                 runtime builds it — runtime/src/main.c). One fixed name, so
+                 `wovm image.wob` needs no flag, and its return value is the
+                 process exit code. *)
+              let entry_shaped =
+                m.name = "main"
+                && match m.params with
+                   | [] -> true
+                   | [ (pa : Ast.param) ] -> ( match pa.Ast.ty with Ast.Multi "Text" -> true | _ -> false)
+                   | _ -> false
+              in
+              if entry_shaped then begin
                 entry := !nmethods;
                 (match m.ret with
                  | Some ty when ty <> Ast.Scalar "Int" ->

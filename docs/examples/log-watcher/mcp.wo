@@ -125,9 +125,9 @@ class Mcp {
       }
       let resp = self.handle(req);
       let head = "HTTP/1.1 ${resp.status} ${status_text(resp.status)}\r\n";
-      head = head + "Content-Type: application/json\r\nConnection: close\r\n";
+      head = head .. "Content-Type: application/json\r\nConnection: close\r\n";
       head = head + "Content-Length: ${len(resp.body)}\r\n\r\n";
-      try net.write(c, head + resp.body) catch (e) {}
+      try net.write(c, head .. resp.body) catch (e) {}
     }
   }
 
@@ -140,7 +140,7 @@ class Mcp {
     while header_end == -1 {
       let got = net.read(c, 8192);
       if len(got) == 0 { return nil; }           -- peer closed mid-headers
-      buf = buf + got;
+      buf = buf .. got;
       header_end = index_of(buf, "\r\n\r\n");
       if len(buf) > BODY_MAX * 2 { return nil; } -- runaway header block
     }
@@ -169,7 +169,7 @@ class Mcp {
     while len(body) < want {
       let got = net.read(c, want - len(body));
       if len(got) == 0 { break; }
-      body = body + got;
+      body = body .. got;
     }
     let method = "";
     if len(req_line) > 0 { method = req_line[0]; }
@@ -329,7 +329,7 @@ class Tools {
       if want > CHUNK { want = CHUNK; }
       let chunk = fs.read_at(path, offset, want);
       if len(chunk) == 0 { break; }
-      let lines = split(carry + chunk, "\n");
+      let lines = split(carry .. chunk, "\n");
       carry = pop(lines);                        -- last piece has no newline yet
       for line in lines {
         if index_of(to_lower(line), lc) >= 0 {
