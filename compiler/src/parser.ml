@@ -448,7 +448,7 @@ let parse_default_expr (st : state) : Ast.default_expr =
    consume. Every pre-existing call site passes nothing and keeps the
    class-body behavior byte-identical (a comma there is still the same
    "unexpected" error as before). *)
-let parse_field ?(comma_ends = false) (st : state) : Ast.field =
+let parse_field ?(comma_ends = false) ?(pub_read = false) (st : state) : Ast.field =
   let pos = peek_pos st in
   let name = expect_field_name st "field name" in
   expect st Token.Colon "':'";
@@ -470,7 +470,8 @@ let parse_field ?(comma_ends = false) (st : state) : Ast.field =
     | Token.Newline | Token.RBrace | Token.Eof -> continue_ := false
     | _ -> unexpected st "an annotation, '=', or end of field"
   done;
-  { Ast.id = fresh_id st; pos; name; ty; default = !default; annotations = List.rev !annotations }
+  { Ast.id = fresh_id st; pos; name; ty; default = !default; annotations = List.rev !annotations;
+    pub_read }
 
 (* ---- param / signature parsing ------------------------------------------ *)
 
@@ -571,12 +572,19 @@ let parse_sig_head (st : state) : sig_head =
    them, and requiring a terminator after it would wrongly reject
    `} else {` on one line, the normal style for chained if/else. *)
 
+(* A `;` terminates the statement by itself — whatever follows on the same
+   line is the next statement, which is how the driving workload writes a
+   short guard body (`{ skip(res, ...); return; }`, `{ i = i + 1;
+   continue; }`). Requiring a newline *after* the semicolon (the earlier
+   rule) made one-line blocks a syntax error. With no `;`, a newline (or
+   the enclosing block's close) is still what ends the statement. *)
 let end_of_stmt (st : state) : unit =
-  ignore (accept st Token.Semicolon);
-  match peek st with
-  | Token.Newline -> ignore (advance st)
-  | Token.RBrace | Token.Eof -> ()
-  | _ -> unexpected st "end of statement (newline or ';')"
+  if accept st Token.Semicolon then ()
+  else
+    match peek st with
+    | Token.Newline -> ignore (advance st)
+    | Token.RBrace | Token.Eof -> ()
+    | _ -> unexpected st "end of statement (newline or ';')"
 
 (* ---- statement-level recovery -------------------------------------------
 
@@ -998,6 +1006,34 @@ and parse_primary (st : state) : Ast.expr =
     let e = with_no_brace st false (fun () -> parse_expr st) in
     expect st Token.RParen "')'";
     e
+  | Token.LBracket ->
+    (* `[]` / `[a, b, c]` — a fresh `multi`. Newlines inside the brackets
+       are insignificant (the workload writes single-line literals, but a
+       long one must be allowed to wrap like a call's argument list). *)
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    let items = ref [] in
+    skip_newlines st;
+    while peek st <> Token.RBracket && not (at_end st) do
+      items := with_no_brace st false (fun () -> parse_expr st) :: !items;
+      skip_newlines st;
+      if accept st Token.Comma then skip_newlines st
+    done;
+    expect st Token.RBracket "']' to close the list literal";
+    { Ast.id; pos; kind = Ast.ListLit (List.rev !items) }
+  | Token.LBrace when not st.no_brace ->
+    (* `{}` — a fresh empty `map`. Only the empty form: see ast.ml's
+       MapLit doc comment for why `{ k: v }` is not grammar. *)
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    skip_newlines st;
+    if peek st <> Token.RBrace then
+      fail st (peek_pos st) syntax_code
+        "only the empty map literal `{}` is an expression — build entries with `set(m, k, v)`";
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.MapLit }
   | Token.Ident _ when looks_like_ctor st -> parse_ctor_literal st
   | Token.Ident s ->
     let pos = peek_pos st in
@@ -1092,7 +1128,7 @@ and parse_let_stmt (st : state) : Ast.stmt =
   ignore (advance st);
   (* 'let' *)
   let name = expect_ident st "let-binding name" in
-  let ty = if accept st Token.Colon then Some (expect_ident st "let-binding type") else None in
+  let ty = if accept st Token.Colon then Some (parse_field_ty st) else None in
   expect st Token.Eq "'=' in let binding";
   let value = parse_expr st in
   end_of_stmt st;
@@ -1227,10 +1263,11 @@ and parse_expr_no_brace (st : state) : Ast.expr = with_no_brace st true (fun () 
    visibility is a different, not-yet-designed question — see
    ast.ml's method_decl.pub doc comment), so this default is what keeps
    every existing call site's behavior byte-identical. *)
-let parse_method ?(pub = false) (st : state) : Ast.method_decl =
+let parse_method ?(pub = false) ?(is_static = false) (st : state) : Ast.method_decl =
   let h = parse_sig_head st in
   let body = parse_block st in
-  { Ast.id = h.s_id; pos = h.s_pos; name = h.s_name; params = h.s_params; ret = h.s_ret; body; pub }
+  { Ast.id = h.s_id; pos = h.s_pos; name = h.s_name; params = h.s_params; ret = h.s_ret; body; pub;
+    is_static }
 
 (* A free top-level function is grammatically identical to a class
    method (signature + brace-delimited body span) — Task 6's brief
@@ -1383,13 +1420,32 @@ let parse_class_or_type ?(pub = false) (st : state) (ann : type_annotations) : A
     | Token.Eof ->
       fail st (peek_pos st) syntax_code "unexpected end of input inside type/class body"
     | Token.KwFn -> methods := parse_method st :: !methods
-    (* bare `const` only — `static const` (Task 7's `static`) is not
-       recognized here at all: `static` lexes as a plain Ident, matches
-       none of this loop's arms (not looks_like_field: the next token is
-       `const`, not a Colon), and falls through to the same clean
-       "expected a field, method, or ..." error every other unrecognized
-       class-body construct gets — no half-swallow, per the brief. *)
     | Token.KwConst -> consts := parse_const_decl st :: !consts
+    (* haxe-parity Task 7: `static`. It is not a keyword (it lexes as a
+       plain Ident, so `static` stays a usable identifier elsewhere) —
+       one token of lookahead separates the marker from a field named
+       `static`, whose next token is a Colon. `static const` is a
+       class-scoped constant: the same substitution a bare class `const`
+       already gets, so both spellings land in the same list. `static fn`
+       carries the marker into the method record. *)
+    | Token.Ident "static" when (tok_at st (st.pos + 1)).kind = Token.KwConst ->
+      ignore (advance st);
+      consts := parse_const_decl st :: !consts
+    | Token.Ident "static" when (tok_at st (st.pos + 1)).kind = Token.KwFn ->
+      ignore (advance st);
+      methods := parse_method ~is_static:true st :: !methods
+    (* haxe-parity Task 7: `pub(read) field: T` — read-public, write-
+       private. `pub` with no `(read)` is not class-member grammar (member
+       visibility beyond this one accessor form is undesigned), so the
+       error names what is accepted. *)
+    | Token.KwPub ->
+      ignore (advance st);
+      expect st Token.LParen "'(' after `pub` in a class body — the only member form is `pub(read)`";
+      (match peek st with
+      | Token.Ident "read" -> ignore (advance st)
+      | _ -> unexpected st "`read` — the only accessor form is `pub(read)`");
+      expect st Token.RParen "')'";
+      fields := parse_field ~pub_read:true st :: !fields
     (* looks_like_field MUST be checked before is_sync_ident: `on`/
        `service`/`policy` are plain Idents here (Task 3 deliberately kept
        them as usable identifiers, unlike rt where they're real keywords
@@ -1672,6 +1728,8 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
   | Ast.Ctor (cn, fields) ->
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
+  | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
+  | Ast.MapLit -> e
   | Ast.Switch (subject, arms) ->
     { e with
       Ast.kind =

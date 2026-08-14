@@ -503,6 +503,14 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   | IntLit _ -> Some (Scalar "Int")
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
+  (* A non-empty list literal knows its element type, so an unannotated
+     `let names = ["a", "b"]` is still classified Owned and dropped. An
+     empty `[]`/`{}` is contextual: only the destination's declared type
+     says what it holds, so this stays None and the annotation (or the
+     field/parameter it is built into) decides. *)
+  | ListLit (first :: _) -> (
+    match expr_ty ctx first with Some (Scalar n) -> Some (Multi n) | _ -> None)
+  | ListLit [] | MapLit -> None
   | Ident n -> (
     match find_local ctx n with
     | Some l -> Some l.l_ty
@@ -1043,6 +1051,18 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
     read_expr ctx a;
     read_expr ctx b
   | Interp inner -> read_expr ctx inner
+  (* A list literal reads each element and hands it to the fresh
+     container, exactly as `push(m, v)` does — so it inherits `push`'s own
+     open gap, recorded in docs/plan/oop-vm/08-builtin-surface.md: an
+     element that is a *borrowed* non-constant Text (or any borrowed
+     owned value) is stored by pointer while the container's declared
+     element kind makes it the container's to free. The workload's own
+     literals are string constants (never freed) plus borrowed params
+     handed straight to a stdlib call, so nothing reachable today hits
+     it; it is a runtime-semantics gap to close with `push`, not a
+     literal-specific one. *)
+  | ListLit items -> List.iter (read_expr ctx) items
+  | MapLit -> ()
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)
     record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
@@ -1542,12 +1562,13 @@ and analyze_block (ctx : ctx) ?(pre = []) ~node ~pos ~label (body : Ast.stmt lis
   List.iter (analyze_stmt ctx) body;
   pop_scope ctx
 
-and analyze_let (ctx : ctx) (s : Ast.stmt) (name : string) (ty : string option) (value : Ast.expr)
+and analyze_let (ctx : ctx) (s : Ast.stmt) (name : string) (ty : Ast.field_ty option)
+    (value : Ast.expr)
     : unit =
   read_expr ctx value;
   let vty =
     match ty with
-    | Some tn -> Scalar tn
+    | Some t -> t
     | None -> ( match expr_ty ctx value with Some t -> t | None -> Scalar "Int")
   in
   let cls = oclass_of ctx vty in

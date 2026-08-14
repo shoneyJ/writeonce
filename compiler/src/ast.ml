@@ -109,6 +109,12 @@ type field = {
      rt's own field-annotation handling; nothing downstream needs those
      arguments in Task 4. *)
   annotations : string list;
+  (* haxe-parity Task 7: `pub(read) name: T` — the field's value is
+     readable from outside the declaring class, but writable only from
+     inside it (Haxe's `(default, null)` property pattern). Reads need no
+     check at all; the write side is types.ml's, at every assignment
+     whose target is a field of another class's instance. *)
+  pub_read : bool;
 }
 
 (* ---- expressions (Task 5) ------------------------------------------
@@ -228,6 +234,19 @@ and expr_kind =
      uses either, so neither is grammar here (YAGNI, recorded in the
      task report). *)
   | Switch of expr * switch_arm list
+  (* Container literals, the driving workload's own spelling for a fresh
+     container: `[]` / `[a, b, c]` for a `multi T`, `{}` for an empty
+     `map<K, V>`. They lower to exactly what `multi_new()`/`map_new()`
+     already lower to (the element kinds come from the destination's
+     declared type — docs/plan/oop-vm/08-builtin-surface.md's
+     "a fresh container needs a destination of declared type"), plus one
+     `push` per element for a non-empty list. A literal with no typed
+     destination is WO-E403, the same as a bare `let m = map_new()`.
+     Non-empty map literals are not grammar: the workload has none, and
+     `{ k: v }` in expression position cannot be told from a constructor
+     literal without lookahead nothing else needs. *)
+  | ListLit of expr list
+  | MapLit
 
 (* ---- statements (Task 5) ---------------------------------------------
 
@@ -257,7 +276,11 @@ and stmt = {
 and stmt_kind =
   | Let of {
       name : string;
-      ty : string option;
+      (* The full annotation grammar, not just a bare name: the driving
+         workload writes `let rest: multi Text = []`, `let headers:
+         map<Text, Text> = {}` and `let port: ?Int = nil`, all of which
+         parse_field_ty already understood for fields and parameters. *)
+      ty : field_ty option;
       value : expr;
     }
   | Assign of {
@@ -383,6 +406,13 @@ type method_decl = {
      passes `pub = false` for a class body's own methods — this field
      is meaningful only when the surrounding decl is `Fn`. *)
   pub : bool;
+  (* haxe-parity Task 7: `static fn` on a class — no instance, no `self`,
+     called as `Flock.held(path)`. Lowered as an ordinary method record
+     with no receiver slot (emit.ml), so its `arg_cnt` counts parameters
+     only, and it can never satisfy an interface method (nothing to
+     dispatch on). Always false for a free `fn` and for an interface
+     signature. *)
+  is_static : bool;
 }
 
 (* `@table(name: "...", index: [a, b], index: [c])` — optional storage

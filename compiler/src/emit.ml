@@ -783,6 +783,12 @@ let class_method (p : pctx) (cname : string) (m : string) : Types.method_info op
   | Some (c : Types.class_info) ->
     List.find_opt (fun (mi : Types.method_info) -> mi.Types.name = m) c.Types.methods
 
+(* haxe-parity Task 7: the `static fn` behind `Flock.held(path)`. Kept
+   separate from class_method so an instance method is never callable
+   through a class name, and a static never through an instance. *)
+let static_method (p : pctx) (cname : string) (m : string) : Types.method_info option =
+  match class_method p cname m with Some mi when mi.Types.is_static -> Some mi | _ -> None
+
 let iface_method (p : pctx) (iname : string) (m : string) : (int * Types.method_sig_info) option =
   match SM.find_opt iname p.p_iface_id with
   | None -> None
@@ -856,6 +862,11 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | IntLit _ -> Some (Scalar "Int")
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
+  (* Same rule as owner.ml's expr_ty: a non-empty list literal knows its
+     element type; an empty `[]`/`{}` is contextual on its destination. *)
+  | ListLit (first :: _) -> (
+    match ty_of_expr p f first with Some (Scalar n) -> Some (Multi n) | _ -> None)
+  | ListLit [] | MapLit -> None
   | Ident n -> (
     match List.assoc_opt n f.f_env with
     | Some (_, t) -> Some t
@@ -922,6 +933,11 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
            receiver is always caught by the `Some bt` arm above, so
            locals/params still shadow a same-named alias here too. *)
         match base.kind with
+        (* haxe-parity Task 7: a static call's base names a class, which is
+           never a value — checked before the `use`-alias reading, since a
+           class name and a module alias are both bare Idents here. *)
+        | Ident cls_name when static_method p cls_name mname <> None -> (
+          match static_method p cls_name mname with Some mi -> mi.Types.ret | None -> None)
         | Ident alias -> (
           match use_edge_for p ~file:f.f_file alias with
           | Some u when u.Types.ue_is_stdlib -> None (* nothing to infer a return type from yet *)
@@ -1207,6 +1223,53 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | IntLit n -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p n)))
   | BoolLit b -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p (if b then 1 else 0))))
   | StrLit s -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_text p s)))
+  (* Container literals lower to exactly what `multi_new()`/`map_new()`
+     lower to — the element kinds are the destination's, never guessed
+     (docs/plan/oop-vm/08-builtin-surface.md) — plus one `multi_push` per
+     element, in source order. *)
+  | ListLit items -> (
+    match container_imm p expected false with
+    | None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:
+          "a list literal needs a destination of declared type `multi T` — its element kind is \
+           the container's drop plan and cannot be guessed";
+      put f (ins_abx op_loadk dst (const_int p 0))
+    | Some imm ->
+      sync_mask p f v e.id;
+      put f (ins_abc op_builtin dst imm b_multi_new);
+      let elem_ty =
+        match expected with
+        | Some t -> ( match unwrap t with Multi en -> Some (Scalar en) | _ -> None)
+        | None -> None
+      in
+      let outer = f.f_temp in
+      if f.f_temp <= dst then f.f_temp <- dst + 1;
+      List.iter
+        (fun (item : Ast.expr) ->
+          let save = f.f_temp in
+          let base = alloc_temps p f e.pos 2 in
+          put f (ins_abc op_move base dst 0);
+          (match elem_ty with
+          | Some et -> emit_expr p f v ~dst:(base + 1) ~expected:et item
+          | None -> emit_expr p f v ~dst:(base + 1) item);
+          sync_mask p f v e.id;
+          f.f_cur_line <- item.pos.line;
+          put f (ins_abc op_builtin base base b_multi_push);
+          f.f_temp <- save)
+        items;
+      f.f_temp <- outer)
+  | MapLit -> (
+    match container_imm p expected true with
+    | None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:
+          "an empty map literal needs a destination of declared type `map<K, V>` — its key and \
+           value kinds are the container's drop plan and cannot be guessed";
+      put f (ins_abx op_loadk dst (const_int p 0))
+    | Some imm ->
+      sync_mask p f v e.id;
+      put f (ins_abc op_builtin dst imm b_map_new))
   | Ident n -> (
     match lookup_local f n with
     | Some (r, _) -> if r <> dst then put f (ins_abc op_move dst r 0)
@@ -1936,6 +1999,14 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
       match unwrap bt with
       | Scalar cn -> (
         match class_method p cn mname with
+        | Some mi when mi.Types.is_static ->
+          (* haxe-parity Task 7: a static has no receiver — reaching it
+             through an instance is an error, not an implicit `Cls.` *)
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:
+              (Printf.sprintf "`%s` is a `static fn` — call it as `%s.%s(...)`, not on an instance"
+                 mname cn mname);
+          put f (ins_abx op_loadk dst (const_int p 0))
         | Some mi ->
           emit_direct p f v ~dst e ~key:(cn ^ "." ^ mname) ~recv:(Some base) ~params:mi.Types.params
             args
@@ -1978,6 +2049,16 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
            once qualification disambiguates them, not two spellings of
            whichever one the flat merge happened to keep. *)
       match base.kind with
+      (* haxe-parity Task 7: `Flock.held(path)` — the base names a class,
+         so there is no receiver to pass and the window holds parameters
+         only (`recv:None`, exactly like a free fn). Checked before the
+         `use`-alias reading: both are bare Idents at this point. *)
+      | Ident cls_name when static_method p cls_name mname <> None -> (
+        match static_method p cls_name mname with
+        | Some mi ->
+          emit_direct p f v ~dst e ~key:(cls_name ^ "." ^ mname) ~recv:None ~params:mi.Types.params
+            args
+        | None -> ())
       | Ident alias -> (
         match use_edge_for p ~file:f.f_file alias with
         | Some u when u.Types.ue_is_stdlib ->
@@ -2272,7 +2353,7 @@ and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   f.f_cur_line <- s.s_pos.line;
   match s.s_kind with
   | Let { name; ty; value } ->
-    let declared = match ty with Some t -> Some (Scalar t) | None -> None in
+    let declared = ty in
     let vty =
       match declared with
       | Some t -> t
@@ -2855,6 +2936,10 @@ let satisfies (p : pctx) (cid : int) (ir : ifacerec) : int list option =
       if not (List.mem mname cr.cr_methods) then None
       else
         match class_method p cr.cr_name mname with
+        (* A `static fn` has no receiver to dispatch on, so it can never
+           satisfy an interface method however well its name and arity
+           line up (haxe-parity Task 7). *)
+        | Some mi when mi.Types.is_static -> None
         | Some mi when List.length mi.Types.params = nparams -> (
           match SM.find_opt (cr.cr_name ^ "." ^ mname) p.p_method_id with
           | Some midx -> go (midx :: acc) tl
@@ -2985,11 +3070,18 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                 let key = c.name ^ "." ^ m.name in
                 if not (SM.mem key !method_id) then begin
                   method_id := SM.add key !nmethods !method_id;
+                  (* haxe-parity Task 7: a `static fn` has no receiver, so
+                     its window holds parameters only and its body binds
+                     no `self` (self_class = None below) — otherwise it is
+                     an ordinary method record, keyed `Class.name` like
+                     any other. *)
                   methods :=
-                    { mr_name = m.name; mr_class = Some cid; mr_argc = 1 + List.length m.params;
+                    { mr_name = m.name; mr_class = Some cid;
+                      mr_argc = (if m.is_static then 0 else 1) + List.length m.params;
                       mr_regc = 1; mr_code = [||]; mr_lines = []; mr_drops = [] }
                     :: !methods;
-                  bodies := (u, Some (cid, c.name), m, !nmethods) :: !bodies;
+                  bodies :=
+                    (u, (if m.is_static then None else Some (cid, c.name)), m, !nmethods) :: !bodies;
                   incr nmethods
                 end)
               c.methods

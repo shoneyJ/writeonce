@@ -147,6 +147,16 @@ let find_variant_in (unions : union_info StringMap.t) (name : string) :
 let find_variant (syms : symbols) (name : string) : (union_info * variant_info) option =
   find_variant_in syms.unions name
 
+(* haxe-parity Task 7: the static member behind `Flock.held(path)` — a
+   qualified name whose head is a class, not a value. Instance methods are
+   deliberately excluded: `Cls.method(...)` on a non-static method is not
+   a call with an implicit receiver, it is an error, and returning None
+   here is what lets the caller say so. *)
+let static_method_of (syms : symbols) (cls_name : string) (m_name : string) : method_info option =
+  match StringMap.find_opt cls_name syms.classes with
+  | Some cls -> List.find_opt (fun (m : method_info) -> m.name = m_name && m.is_static) cls.methods
+  | None -> None
+
 (* Builtin scalars *)
 let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"]
 
@@ -332,7 +342,7 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
             ret = m.ret;
             body = m.body;
             mutates = false;
-            is_static = false;
+            is_static = m.is_static;
             id = m.id;
             pos = m.pos; }
         ) (c.methods : Ast.method_decl list) in
@@ -828,6 +838,12 @@ let typecheck_program ~file ~(module_of : string -> string)
     | IntLit _ -> Some (TScalar "Int")
     | StrLit _ -> Some (TScalar "Text")
     | BoolLit _ -> Some (TScalar "Bool")
+    (* A non-empty list literal is confident about its element type; an
+       empty `[]`/`{}` is contextual on its destination, exactly like
+       `multi_new()`/`map_new()` above. *)
+    | ListLit (first :: _) -> (
+        match confident_typ cenv first with Some t -> Some (TMulti t) | None -> None)
+    | ListLit [] | MapLit -> None
     | Ident name -> StringMap.find_opt name cenv
     | Field (base, field_name) -> (
         match confident_typ cenv base with
@@ -893,7 +909,18 @@ let typecheck_program ~file ~(module_of : string -> string)
                             match s.ret with Some ft -> Some (resolve_field_ty ft) | None -> Some TVoid)
                         | None -> None)
                     | None -> None))
-            | _ -> None)
+            | _ -> (
+                (* haxe-parity Task 7: a static call (`Flock.held(path)`).
+                   The base names a class, so it has no confident *value*
+                   type above — only this shape reaches here with a
+                   resolvable member. *)
+                match base.kind with
+                | Ident cls_name -> (
+                    match static_method_of syms cls_name mname with
+                    | Some m -> (
+                        match m.ret with Some ft -> Some (resolve_field_ty ft) | None -> Some TVoid)
+                    | None -> None)
+                | _ -> None))
         | _ -> None)
     | Ctor (class_name, _fields) ->
         (* `Ctor`'s class name is never a placeholder -- unlike
@@ -1133,6 +1160,15 @@ let typecheck_program ~file ~(module_of : string -> string)
            { typ = TScalar "Int"; is_nil = false })
     | DbStub _ -> { typ = TVoid; is_nil = false }
     | Switch (subject, arms) -> typecheck_switch ~want_value:true env cenv subject arms
+    | ListLit items ->
+        let elem_types = List.map (fun i -> (typecheck_expr env cenv i).typ) items in
+        (* Same contextual answer the builtin container constructors give
+           when the destination is what decides (see confident_typ): an
+           empty literal has no element type to report. *)
+        (match elem_types with
+         | t :: _ -> { typ = TMulti t; is_nil = false }
+         | [] -> { typ = TScalar "Int"; is_nil = false })
+    | MapLit -> { typ = TScalar "Int"; is_nil = false }
 
   (* haxe-parity Task 3: the one deriver behind both `Switch` call sites
      -- `typecheck_expr`'s own case above (every "the value is used"
@@ -1506,14 +1542,21 @@ let typecheck_program ~file ~(module_of : string -> string)
   and typecheck_stmt ((env, cenv) : typ StringMap.t * typ StringMap.t) (s : stmt) :
       typ StringMap.t * typ StringMap.t =
     match s.s_kind with
-    | Let { name; ty = _ty; value } ->
+    | Let { name; ty; value } ->
         let val_res = typecheck_expr env cenv value in
+        (* A written annotation is the authority — it is the only thing
+           that types a contextual value (`[]`, `{}`, `nil`), and for
+           everything else it is what the author declared the binding to
+           be. Only an unannotated `let` falls back to inference. *)
+        let declared = Option.map resolve_field_ty ty in
+        let bound_typ = match declared with Some t -> t | None -> val_res.typ in
         let new_cenv =
-          match confident_typ cenv value with
-          | Some t -> StringMap.add name t cenv
-          | None -> StringMap.remove name cenv
+          match (declared, confident_typ cenv value) with
+          | Some t, _ -> StringMap.add name t cenv
+          | None, Some t -> StringMap.add name t cenv
+          | None, None -> StringMap.remove name cenv
         in
-        (StringMap.add name val_res.typ env, new_cenv)
+        (StringMap.add name bound_typ env, new_cenv)
     | Assign { target; value } ->
         let _ = typecheck_expr env cenv target in
         let _ = typecheck_expr env cenv value in
@@ -1753,6 +1796,8 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
     walk_expr bound visit r
   | Ctor (_, fields) -> List.iter (fun (_, v) -> walk_expr bound visit v) fields
   | Interp inner -> walk_expr bound visit inner
+  | ListLit items -> List.iter (walk_expr bound visit) items
+  | MapLit -> ()
   | DbStub _ -> ()
   | Switch (subject, arms) ->
       walk_expr bound visit subject;

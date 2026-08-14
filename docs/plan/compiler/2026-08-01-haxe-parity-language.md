@@ -6,6 +6,8 @@
 >
 > **Style rule (user convention):** concept, reason, and required behavior in words only; the executor writes the code.
 
+**Spec:** [`docs/superpowers/specs/2026-08-01-systems-track-design.md`](../../superpowers/specs/2026-08-01-systems-track-design.md) (Part 1 verdict table, normative), amended by [`docs/superpowers/specs/2026-08-10-logwatcher-gap-closure-design.md`](../../superpowers/specs/2026-08-10-logwatcher-gap-closure-design.md).
+
 **Goal:** Plan 8 — implement every **adopt** row of the systems-track spec's Haxe keyword verdict table: the language grows boolean operators (`and`/`or`), switch expressions, records, optionals, try/catch, enum payloads, static members, using-extensions, modules, `pub(read)`, build flags, and interpolation — with the reject rows enforced as diagnostics. (`abstract` was an adopt row until 2026-08-10; it is now a reject row. `is` was cut the same day — 0 uses in the driving workload, parked post-iteration-12 — emptying this plan's old Task 7, which is deleted rather than deferred.)
 
 **Architecture:** Plan 8 of the roadmap. Depends on OOP plans 1–3 (woc + wovm + corpus). Overwhelmingly compiler work in `compiler/src/`; the VM changes are exactly three, called out in their tasks: catch frames (try/catch), variant objects (enum payloads), and boxed optionals for scalars. Everything else lowers onto existing opcodes. The spec's verdict table (`docs/superpowers/specs/2026-08-01-systems-track-design.md` Part 1) is normative — this plan sequences it.

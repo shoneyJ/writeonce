@@ -220,6 +220,8 @@ let rec expr_str (e : Ast.expr) : string =
          (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
+  | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))
+  | Ast.MapLit -> "{}"
   (* haxe-parity Task 3: arm bodies are `stmt list`, not one `expr` — no
      golden AST/bc fixture pins a switch (direct assertions instead, see
      runner.ml, same convention haxe-parity Task 2 used), so this is a
@@ -249,7 +251,7 @@ let rec dump_stmt (s : Ast.stmt) : string list =
   in
   match s.Ast.s_kind with
   | Ast.Let { name; ty; value } ->
-    let ty_part = match ty with None -> "" | Some t -> ": " ^ t in
+    let ty_part = match ty with None -> "" | Some t -> ": " ^ field_ty_str t in
     [ Printf.sprintf "%s LET %s%s = %s" (pos_str s.Ast.s_pos) name ty_part (expr_str value) ]
   | Ast.Assign { target; value } ->
     [ Printf.sprintf "%s ASSIGN %s = %s" (pos_str s.Ast.s_pos) (expr_str target) (expr_str value) ]
