@@ -47,28 +47,12 @@ wovm-test:
     make -C runtime test-iso
     bash runtime/test/cli_smoke.sh
 
-# the language track's acceptance test: docs/examples/log-watcher must compile
-# with zero diagnostics AND run — watch alerts on an error line, run schedules
-# a cron.d entry, the MCP server answers JSON-RPC (initialize, tools/list,
-# 401 without a token), and SIGTERM stops a server parked in accept. This is
-# the test the whole track exists to pass; the corpus below gates the
-# individual behaviors underneath it.
-log-watcher:
-    ./scripts/log-watcher-accept.sh
-
-# the same script's opt-in soak: each mode under load for DURATION seconds,
-# resident memory and descriptor count compared against a warmed baseline
-# (256 KiB / zero-fd tolerance) — the check that catches what a seconds-long
-# run cannot. `just log-watcher-soak 60` for a longer sit.
-log-watcher-soak DURATION="30":
-    LW_SOAK={{DURATION}} ./scripts/log-watcher-accept.sh
-
-# build the sample the way a user would: `woc <dir>` reads wo.toml and
-# produces docs/examples/log-watcher/target/log-watcher (self-contained,
-# needs woc-build + wovm-build once)
-log-watcher-build:
-    ./compiler/_build/default/bin/woc docs/examples/log-watcher
-    @ls -la docs/examples/log-watcher/target/log-watcher
+# the sample workload's own recipes live beside it (build from wo.toml,
+# the acceptance test, the soak): `just log-watcher` runs the acceptance,
+# `just log-watcher::build` / `::soak 60` the rest — see the module's
+# justfile for what each does. This is the test the whole track exists to
+# pass; the corpus below gates the individual behaviors underneath it.
+mod log-watcher "docs/examples/log-watcher"
 
 # conformance harness (plan 3): walks tests/corpus/{run,compile-fail,trap},
 # exact outcome per fixture kind — see docs/plan/oop-vm/02-corpus.md.

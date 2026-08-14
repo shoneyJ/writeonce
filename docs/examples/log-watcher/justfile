@@ -1,0 +1,32 @@
+# docs/examples/log-watcher — the systems-track sample workload.
+# Mounted into the root justfile as a module: `just log-watcher::<recipe>`
+# from the repo root, or plain `just <recipe>` from this directory.
+# Recipes run with this directory as the working directory.
+
+# source_directory(), not justfile_directory(): inside a `mod`, the latter
+# names the ROOT justfile's directory and every path here would miss
+ROOT := source_directory() / "../../.."
+
+# default: the acceptance test (what `just log-watcher::` runs)
+default: accept
+
+# build the self-contained executable from wo.toml: `woc <dir>` reads the
+# manifest and produces target/log-watcher (needs the compiler and runtime
+# built once: `just woc-build` and `just wovm-build` at the root)
+build:
+    {{ROOT}}/compiler/_build/default/bin/woc .
+    @ls -la target/log-watcher
+
+# the language track's acceptance test: this sample must compile with zero
+# diagnostics AND run — watch alerts on an error line, run schedules a
+# cron.d entry, the MCP server answers JSON-RPC (initialize, tools/list,
+# 401 without a token), and SIGTERM stops a server parked in accept.
+accept:
+    {{ROOT}}/scripts/log-watcher-accept.sh
+
+# the same script's opt-in soak: each mode under load for DURATION seconds,
+# resident memory and descriptor count compared against a warmed baseline
+# (256 KiB / zero-fd tolerance) — the check that catches what a seconds-long
+# run cannot. `just log-watcher::soak 60` for a longer sit.
+soak DURATION="30":
+    LW_SOAK={{DURATION}} {{ROOT}}/scripts/log-watcher-accept.sh
