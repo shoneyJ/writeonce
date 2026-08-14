@@ -198,14 +198,31 @@ let finish (collector : Woc_lib.Diag.Collector.t) (lookup : Woc_lib.Diag.source_
    check-pass calls see, so a class declared in one file resolves for a
    field/constructor/etc. in another regardless of discovery order. *)
 
+(* Parses every discovered file, then makes one more constant-substitution
+   pass so a `const` declared in one file reaches its siblings: files in a
+   directory are one module and unconditionally visible to each other
+   (haxe-parity Task 1), and the workload relies on it (logtail.wo's
+   `const CHUNK` is read from mcp.wo). Parser.parse already substituted each
+   file's own constants; this second pass only fills names that were still
+   unresolved, since a file's own const wins over a sibling's. *)
 let parse_all (collector : Woc_lib.Diag.Collector.t) (sources : (string * string) list) :
     (string * Woc_lib.Ast.program) list =
-  List.map
-    (fun (f, src) ->
-      let toks = Woc_lib.Lexer.tokenize collector ~file:f src in
-      let prog = Woc_lib.Parser.parse collector ~file:f toks in
-      (f, prog))
-    sources
+  let parsed =
+    List.map
+      (fun (f, src) ->
+        let toks = Woc_lib.Lexer.tokenize collector ~file:f src in
+        let prog = Woc_lib.Parser.parse collector ~file:f toks in
+        (f, prog))
+      sources
+  in
+  let module SM = Woc_lib.Parser.StringMap in
+  let all_consts =
+    List.fold_left
+      (fun acc (_, prog) -> SM.fold SM.add (Woc_lib.Parser.top_level_consts prog) acc)
+      SM.empty parsed
+  in
+  if SM.is_empty all_consts then parsed
+  else List.map (fun (f, prog) -> (f, Woc_lib.Parser.subst_consts ~extra:all_consts prog)) parsed
 
 let merge_symbols (syms_list : Woc_lib.Types.symbols list) : Woc_lib.Types.symbols =
   let module SM = Woc_lib.Types.StringMap in

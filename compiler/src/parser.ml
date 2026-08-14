@@ -1843,10 +1843,19 @@ let params_bound (base : StringSet.t) (params : Ast.param list) : StringSet.t =
 let const_map (consts : Ast.const_decl list) : Ast.expr StringMap.t =
   List.fold_left (fun acc (c : Ast.const_decl) -> StringMap.add c.Ast.name c.Ast.value acc) StringMap.empty consts
 
-let subst_consts (prog : Ast.program) : Ast.program =
-  let top_consts =
-    const_map (List.filter_map (function Ast.Const c -> Some c | _ -> None) prog.Ast.decls)
-  in
+(* Every top-level `const` a program declares, for a caller that needs to
+   substitute one file's constants into ANOTHER file of the same module —
+   every file in a directory is unconditionally visible to every other
+   (haxe-parity Task 1's discovery contract), so a `const CHUNK = 65536` in
+   one file is in scope in its neighbours. *)
+let top_level_consts (prog : Ast.program) : Ast.expr StringMap.t =
+  const_map (List.filter_map (function Ast.Const c -> Some c | _ -> None) prog.Ast.decls)
+
+(* [extra] holds constants declared elsewhere (a sibling file's); this
+   program's own top-level ones win on a name collision, exactly as a
+   class-level const outranks a top-level one below. *)
+let subst_consts ?(extra = StringMap.empty) (prog : Ast.program) : Ast.program =
+  let top_consts = StringMap.fold StringMap.add (top_level_consts prog) extra in
   let decls' =
     List.map
       (function

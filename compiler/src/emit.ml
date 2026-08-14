@@ -2076,14 +2076,54 @@ and emit_default_value (p : pctx) (f : fstate) ~(dst : int) ~(fty : Ast.field_ty
   let bad () =
     err p ~code:cannot_lower_code ~file:f.f_file ~pos
       ~message:
-        "cannot lower this field default — only Int/Text/Bool literals, `now()`, and `[]` are \
-         supported";
+        "cannot lower this field default — only Int/Text/Bool literals, `nil`, `now()`, `[]`, \
+         `{}` and `Rec {}` are supported";
     put f (ins_abx op_loadk dst (const_int p 0))
   in
   match d with
   | Ast.DefaultNow -> put f (ins_abc op_builtin dst dst b_now)
   | Ast.DefaultOpaque toks -> (
     match List.map (fun (t : Token.t) -> t.Token.kind) toks with
+    (* `= nil` — the zero word, whatever `?T` the field is *)
+    | [ Token.KwNil ] -> put f (ins_abx op_loadk dst (const_int p 0))
+    (* `= {}` — a fresh empty container of the field's own declared type,
+       the same rule `[]` above follows *)
+    | [ Token.LBrace; Token.RBrace ] -> (
+      match container_imm p (Some fty) (match unwrap fty with Map _ -> true | _ -> false) with
+      | Some imm ->
+        put f
+          (ins_abc op_builtin dst imm (match unwrap fty with Map _ -> b_map_new | _ -> b_multi_new))
+      | None -> bad ())
+    (* `= Rec {}` — a record built from ITS own field defaults, which is how
+       the workload's `st: TailState = TailState {}` self-initializes. Only
+       the empty literal: a default with real field values is a general
+       expression, and defaults are an opaque token span by design. *)
+    | [ Token.Ident cn; Token.LBrace; Token.RBrace ] -> (
+      match class_of_name p cn with
+      | None -> bad ()
+      | Some cid ->
+        put f (ins_abx op_new dst (check_bx p f pos "class" cid));
+        let outer = f.f_temp in
+        if f.f_temp <= dst then f.f_temp <- dst + 1;
+        (match Types.StringMap.find_opt cn p.p_syms.Types.classes with
+        | None -> ()
+        | Some (ci : Types.class_info) ->
+          List.iter
+            (fun (fname, _, fdefault, _) ->
+              match fdefault with
+              | Some d2 -> (
+                match field_of p cid fname with
+                | None -> ()
+                | Some (idx, fty2) ->
+                  let save = f.f_temp in
+                  let t = alloc_temp p f pos in
+                  emit_default_value p f ~dst:t ~fty:fty2 ~pos d2;
+                  f.f_cur_line <- pos.line;
+                  put f (ins_abc op_setf dst (check_field_idx p f pos idx) t);
+                  f.f_temp <- save)
+              | None -> ())
+            ci.Types.fields);
+        f.f_temp <- outer)
     | [ Token.Int n ] -> put f (ins_abx op_loadk dst (check_bx p f pos "constant" (const_int p n)))
     | [ Token.Dash; Token.Int n ] ->
       put f (ins_abx op_loadk dst (check_bx p f pos "constant" (const_int p (-n))))
