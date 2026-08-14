@@ -37,10 +37,17 @@ running", and every item below came from a measurement on the sample itself:
    and static tables, and `fs.read_all`/`net.read` no longer mis-size a short
    read's buffer. Measured: `run` **1 051 040 B → 2 112 B**, `watch`
    **128 B → 64 B**; what remains is items 2 and 3 below, by stack.
-2. **A projected temporary is never dropped** — `for e in parse_dir(d).entries`
-   keeps the elements (correct) and leaks the record shell, once per rescan.
-3. **The runtime leaks its own argv container** — 128 bytes in 2 allocations on
-   every run, `main.c`'s `multi Text` of arguments.
+2. ~~A projected temporary is never dropped~~ — **done 2026-08-14**. The
+   projection was one of six shapes with no owner: a call result compared
+   against `nil`, an argument the callee only borrows, a container read's
+   copy, a loop's iterable, a projected record, and any of those escaped by a
+   `return` from inside the statement that built them. Measured: `run`
+   **2 112 B → 64 B** and flat from 8 s to 20 s, the full MCP mix
+   **21 312 B / 63 → 64 B / 1**, every handler flat from 2 to 6 requests. The
+   64 bytes left are item 3, on every path.
+3. **The runtime leaks its own argv container** — 64 bytes in 1 allocation on
+   every run, `main.c`'s `multi Text` of arguments. It is now the ONLY leak the
+   sample reports in any mode.
 4. **A stopping program does not stop** — `env.stopping()` sets a flag, but
    `net.accept`/`net.read` restart on `EINTR`, so a server parked in `accept`
    ignores SIGTERM and needs `kill -9`.

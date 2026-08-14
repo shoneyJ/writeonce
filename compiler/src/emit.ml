@@ -474,6 +474,20 @@ type fstate = {
      value in tail position its type (`return []` / `return nil` /
      `return {}`), the same role a `let`'s annotation plays *)
   f_ret : Ast.field_ty option;
+  (* Registers holding a value this STATEMENT created and nobody took
+     ownership of — today only the base of a projection (`parse_dir(d).entries`
+     evaluates a whole record to read one field of it). They are dropped at the
+     end of the statement, not at the projection: `for e in f().entries`
+     borrows that field for the whole loop, so the record has to outlive it. *)
+  mutable f_stmt_drops : int list;
+  (* The same registers, seen from a `return`: a statement-end drop is skipped
+     by a return taken from INSIDE the statement, and a loop's iterable drop by
+     a return taken from inside the loop (`check_path` returns out of `for p in
+     self.allowed_paths()` — one container leaked per MCP request). This list
+     is what a return has to release on its way out; emit_stmt restores it to
+     the enclosing statement's, so a register is only ever in it while it is
+     live. *)
+  mutable f_esc_drops : int list;
   f_code : code;
   mutable f_cur_line : int; (* line of the construct being lowered *)
   mutable f_line : int; (* last line written to the table *)
@@ -1352,23 +1366,77 @@ let container_imm (p : pctx) (expected : Ast.field_ty option) (map : bool) : int
    result, a concatenation, an interpolation — and left alone when it was read
    out of a place, whose owner still holds it. Types the emitter cannot
    resolve are left alone: a missed drop is a leak, a wrong drop is a crash. *)
+(* Is this expression a value someone ELSE owns? Places are, and so is an
+   interpolation segment wrapping one: `"${path}"`'s Text-typed inner value is
+   passed through untouched (emit's Interp case only converts an Int), so the
+   register holds the place's own string — dropping it frees a live local, an
+   ASan-confirmed use-after-free in the MCP mode. *)
+let rec is_borrowed_value (e : Ast.expr) : bool =
+  match e.Ast.kind with
+  | Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true
+  | Ast.Interp inner -> is_borrowed_value inner
+  | _ -> false
+
+(* A value the emitter materialised into a temporary and nobody took ownership
+   of: a fresh container or record used as an expression rather than bound to a
+   name — `for raw in split(content, "\n")`, `join(slice(tokens, 0, 5), " ")`,
+   `parse_dir(dir).entries`. The ownership tables only track BINDINGS, so these
+   had no owner and no drop at all (measured: the workload's supervisor mode
+   leaked every split, slice and projected record it evaluated). A value read
+   out of a place is never dropped here — its owner still holds it — and
+   neither is one the callee takes ownership of; both are the caller's to keep
+   straight, which is why this is applied at the specific sites that borrow.
+   Kinds 1/4/5 are OWNED/MULTI/MAP; Text has its own copy rule above. *)
+let is_fresh_owned_temp (p : pctx) (f : fstate) (e : Ast.expr) : bool =
+  (not (is_borrowed_value e))
+  && (match ty_of_expr p f e with
+     | Some t -> ( match field_kind p t with 1 | 4 | 5 -> true | _ -> false)
+     | None -> false)
+
+(* ~keep names the register the RESULT lives in: an operand or argument temp can
+   be that same register (emit_operand allocates from f_temp, which in tail
+   position is exactly where dst sits), and dropping it would free the value
+   just produced — an ASan-confirmed use-after-free in the MCP mode's
+   interpolation chains. *)
+let drop_fresh_owned ?keep (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
+  if (match keep with Some k -> k <> reg | None -> true) && is_fresh_owned_temp p f e then
+    put f (ins_abc op_drop reg 0 0)
+
+(* `c[i]` is the one PLACE whose register does NOT hold the place's own value:
+   emit_expr's Index case appends a text_copy, so a container read already
+   hands back a copy the reader owns. Two consequences, both measured in the
+   workload: it needs no SECOND copy at an ownership boundary (`let u =
+   tokens[0]` was copying twice and abandoning the first), and it must be
+   DROPPED at a boundary that takes its own copy — a ctor field, a push, a
+   builtin argument — where every other place is left alone. Seen through an
+   interpolation for the same reason is_borrowed_value is. *)
+let rec is_container_read (e : Ast.expr) : bool =
+  match e.Ast.kind with
+  | Ast.Index _ -> true
+  | Ast.Interp inner -> is_container_read inner
+  | _ -> false
+
 (* The mirror of drop_fresh_text: a Text read out of a PLACE is copied when it
    crosses an ownership boundary (a binding, a return), so the place keeps its
    own value and the new owner gets its own. A freshly built Text is already
    nobody else's and passes through untouched. *)
 let copy_place_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
-  let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+  let is_place =
+    (match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false)
+    && not (is_container_read e)
+  in
   let is_text =
     match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
   in
   if is_place && is_text then put f (ins_abc op_builtin reg reg b_text_copy)
 
-let drop_fresh_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
-  let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+let drop_fresh_text ?keep (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
+  let is_place = is_borrowed_value e && not (is_container_read e) in
   let is_text =
     match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
   in
-  if (not is_place) && is_text then put f (ins_abc op_drop reg 0 0)
+  if (match keep with Some k -> k <> reg | None -> true) && (not is_place) && is_text then
+    put f (ins_abc op_drop reg 0 0)
 
 (* `nil` written literally on either side of a comparison — see emit_binary's
    Eq/Ne cases for why the distinction matters. *)
@@ -1507,6 +1575,19 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
           match field_of p cid fname with
           | Some (idx, _) ->
             let b = emit_operand p f v base in
+            (* reading a field of a value this expression just built — the
+               record is nobody else's, so the statement owns it (f_stmt_drops).
+               It is parked in a LOCAL slot, not left in the operand temp: a
+               statement that opens a scope reclaims every temp for its body
+               (`for e in parse_dir(d).entries` reused the register as its loop
+               condition), and the statement-end DROP would then release a
+               scalar and leak the record — measured, once per rescan. *)
+            if is_fresh_owned_temp p f base then begin
+              let g = alloc_local p f e.pos in
+              put f (ins_abc op_move g b 0);
+              f.f_stmt_drops <- g :: f.f_stmt_drops;
+              f.f_esc_drops <- g :: f.f_esc_drops
+            end;
             put f (ins_abc op_getf dst b (check_field_idx p f e.pos idx))
           | None ->
             err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
@@ -1546,6 +1627,9 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       emit_expr p f v ~dst:w base;
       emit_expr p f v ~dst:(w + 1) idx;
       put f (ins_abc op_builtin dst w bid);
+      (* a freshly built KEY (`m["${a}/${b}"]`) is this read's to release; the
+         container in `w` is not, and the result may point into it *)
+      drop_fresh_text ~keep:dst p f (w + 1) idx;
       (* a Text read out of a container is COPIED: the container keeps owning
          its element, the reader owns the copy (see owner.ml's copies_out) *)
       if (match ty_of_expr p f e with Some t -> field_kind p t = 3 | None -> false) then
@@ -1632,15 +1716,28 @@ and emit_tail (p : pctx) (f : fstate) (v : views) (e : Ast.expr) : int =
 and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop) (l : Ast.expr)
     (r : Ast.expr) : unit =
   let pos = l.pos in
+  (* An operand nobody owns dies with the instruction that read it — the same
+     rule CONCAT states below, applied to the comparisons: `if parse_expr(s)
+     == nil` abandoned a whole CronFields record (five containers) per cron
+     line, and `tokens[0] == "@reboot"` abandoned the container read's copy.
+     Scalar operands make both helpers no-ops (they are typed, not owned). *)
+  let reap a b =
+    drop_fresh_owned ~keep:dst p f a l;
+    drop_fresh_text ~keep:dst p f a l;
+    drop_fresh_owned ~keep:dst p f b r;
+    drop_fresh_text ~keep:dst p f b r
+  in
   let simple o =
     let a = emit_operand p f v l in
     let b = emit_operand p f v r in
-    put f (ins_abc o dst a b)
+    put f (ins_abc o dst a b);
+    reap a b
   in
   let swapped o =
     let a = emit_operand p f v l in
     let b = emit_operand p f v r in
-    put f (ins_abc o dst b a)
+    put f (ins_abc o dst b a);
+    reap a b
   in
   (* `x == nil` / `nil == x`: the literal takes ITS destination type from the
      other operand, so the sentinel-vs-zero choice matches what x actually
@@ -1656,6 +1753,8 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     | Some t -> emit_expr p f v ~dst:b ~expected:t nil_e
     | None -> emit_expr p f v ~dst:b nil_e);
     put f (ins_abc o dst a b);
+    drop_fresh_owned ~keep:dst p f a other;
+    drop_fresh_text ~keep:dst p f a other;
     f.f_temp <- save
   in
   let nil_compare o = nil_compare_into p f v ~dst o l r in
@@ -1664,7 +1763,19 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
   | Sub -> simple op_sub
   | Mul -> simple op_mul
   | Div -> simple op_div
-  | Concat -> simple op_concat
+  | Concat ->
+    (* CONCAT allocates a new Text and leaves its operands untouched, so an
+       operand that was itself freshly built — the partial result of a longer
+       chain, an interpolation segment's `int_to_text`, a nested call — has no
+       owner once this instruction has read it. A three-segment interpolation
+       allocates three strings and abandons two; that was the largest single
+       leak class in the workload's MCP mode. An operand read out of a place
+       keeps its owner, and a constant's drop is a no-op (WO_F_CONST). *)
+    let a = emit_operand p f v l in
+    let b = emit_operand p f v r in
+    put f (ins_abc op_concat dst a b);
+    drop_fresh_text ~keep:dst p f a l;
+    drop_fresh_text ~keep:dst p f b r
   | Lt -> simple op_lt
   | Le -> simple op_le
   | Gt -> swapped op_lt
@@ -2528,7 +2639,15 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
               | None -> ());
               sync_mask p f v e.id;
               f.f_cur_line <- e.pos.line;
-              put f (ins_abc op_builtin dst base sm.Types.sm_builtin)
+              put f (ins_abc op_builtin dst base sm.Types.sm_builtin);
+              (* every stdlib member only READS its arguments, so one that was
+                 freshly built here (`net.write(c, head .. resp.body)`) has no
+                 other owner and dies with the call *)
+              List.iteri
+                (fun i (a : Ast.expr) ->
+                  drop_fresh_owned ~keep:dst p f (base + i) a;
+                  drop_fresh_text ~keep:dst p f (base + i) a)
+                args
             end)
         | Some u -> (
           let target_mid = Types.path_str u.Types.ue_segments in
@@ -2617,6 +2736,20 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
      and unions can't, WO-E304 polices those borrows); interface-typed
      call results (ty_of_expr names the interface, not the concrete
      class — still leak, disclosed). *)
+  (* Task 2 widened the same rule to Text and to containers. Text qualifies now
+     that every store COPIES it (Task 1), so a callee cannot retain the
+     caller's: `rpc_result(id, "…${TOOL_SCHEMAS}…")` built a 1 KB string per
+     MCP request and `parse_file("${dir}/${name}", res)` one per cron file,
+     neither with an owner. Containers qualify for the same reason a projected
+     record does — nothing else holds them. Both are reaped through the stash
+     below, never by reading the argument register back after the CALL: the
+     callee's frame OVERLAPS those registers (vm.c's window overlap), so after
+     it returns they hold the callee's leftovers, not the arguments. *)
+  let fresh_borrowed_value (a : Ast.expr) : bool =
+    is_fresh_owned_temp p f a
+    || ((not (is_borrowed_value a))
+       && match ty_of_expr p f a with Some t -> field_kind p t = 3 | None -> false)
+  in
   let owned_heap_temp (a : Ast.expr) : bool =
     (match a.kind with
     | Ident n -> lookup_local f n = None (* a local is a place, never a temp *)
@@ -2639,7 +2772,8 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
     List.mapi
       (fun i a ->
         let conv = match List.nth_opt params i with Some (_, _, c) -> c | None -> Ast.Borrow in
-        if conv = Ast.Borrow && owned_heap_temp a then Some i else None)
+        if conv = Ast.Borrow && (owned_heap_temp a || fresh_borrowed_value a) then Some i
+        else None)
       args
     |> List.filter_map Fun.id
   in
@@ -2769,6 +2903,24 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       sync_mask p f v e.id;
       f.f_cur_line <- e.pos.line;
       put f (ins_abc op_builtin dst base id);
+      (* Arguments the builtin only READ: a freshly built one (`join(slice(t, 0,
+         5), " ")`, `len(split(s, ","))`) has no owner but this expression, so
+         it dies here. Excluded: the readers whose RESULT points into the
+         argument (get/latest/key_at/val_at — dropping the container would
+         dangle the value just read) and the stores, which either copy (Text,
+         handled by copied_container_call) or take ownership (OWNED/GCREF). *)
+      let reader = List.mem name [ "get"; "latest"; "key_at"; "val_at" ] in
+      (if not (List.mem name [ "push"; "set" ]) then
+         List.iteri
+           (fun i (a : Ast.expr) ->
+             (* a reader's result points into arg0 (the container) — dropping
+                that would dangle the value just read. Its KEY argument is an
+                ordinary borrowed argument. *)
+             if not (reader && i = 0) then begin
+               drop_fresh_owned ~keep:dst p f (base + i) a;
+               drop_fresh_text ~keep:dst p f (base + i) a
+             end)
+           args);
       Some base
     end
   in
@@ -2876,7 +3028,21 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
 
 and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   stmt_reset f;
+  (* Statements NEST — a `for`'s own registration is made while its iterable is
+     emitted, and every statement in its body runs this same function. Saving
+     and restoring is what keeps the inner ones from wiping the outer one's
+     list (the first version did, so the projected record never got its drop). *)
+  let outer = f.f_stmt_drops in
+  let outer_esc = f.f_esc_drops in
+  f.f_stmt_drops <- [];
   f.f_cur_line <- s.s_pos.line;
+  emit_stmt_body p f v s;
+  (* whatever this statement built and nobody took: see fstate.f_stmt_drops *)
+  List.iter (fun r -> put f (ins_abc op_drop r 0 0)) f.f_stmt_drops;
+  f.f_stmt_drops <- outer;
+  f.f_esc_drops <- outer_esc
+
+and emit_stmt_body (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   match s.s_kind with
   | Let { name; ty; value } ->
     let declared = ty in
@@ -3102,6 +3268,7 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
   | None ->
     emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_return s.s_id with Some items -> emit_drops p f items | None -> ());
+    List.iter (fun r -> put f (ins_abc op_drop r 0 0)) f.f_esc_drops;
     emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_ret0 0 0 0);
@@ -3134,6 +3301,7 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
        releases below — a balanced pair must never reach rc 0 in between *)
     emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_return s.s_id with Some items -> emit_drops p f items | None -> ());
+    List.iter (fun r -> if r <> t then put f (ins_abc op_drop r 0 0)) f.f_esc_drops;
     emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_ret t 0 0);
@@ -3316,6 +3484,8 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     let rv = alloc_local p f s.s_pos in
     f.f_temp <- f.f_nlocals;
     emit_expr p f v ~dst:rc iter;
+    (* live until the loop ends — or until a `return` leaves from inside it *)
+    if is_fresh_owned_temp p f iter then f.f_esc_drops <- rc :: f.f_esc_drops;
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_builtin rn rc b_len);
     put f (ins_abx op_loadk ri (check_bx p f s.s_pos "constant" (const_int p 0)));
@@ -3362,6 +3532,9 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     end
     else mask_meet f entry_owned entry_gc;
     f.f_div <- div0;
+    (* a freshly built map iterated in place belongs to this loop: drop it
+       once the loop is done with it (see drop_fresh_owned) *)
+    drop_fresh_owned p f rc iter;
     f.f_nlocals <- saved_locals;
     f.f_env <- saved_env;
     f.f_declared <- saved_decls;
@@ -3378,6 +3551,8 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     let rv = alloc_local p f s.s_pos in
     f.f_temp <- f.f_nlocals;
     emit_expr p f v ~dst:rc iter;
+    (* live until the loop ends — or until a `return` leaves from inside it *)
+    if is_fresh_owned_temp p f iter then f.f_esc_drops <- rc :: f.f_esc_drops;
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_builtin rn rc b_count);
     put f (ins_abx op_loadk ri (check_bx p f s.s_pos "constant" (const_int p 0)));
@@ -3428,6 +3603,9 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     end
     else mask_meet f entry_owned entry_gc;
     f.f_div <- div0;
+    (* `for raw in split(content, "\n")` — the list exists only for this loop,
+       so this is where it dies *)
+    drop_fresh_owned p f rc iter;
     f.f_nlocals <- saved_locals;
     f.f_env <- saved_env;
     f.f_declared <- saved_decls;
@@ -3489,7 +3667,9 @@ and emit_do_while (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (body : Ast
 let emit_method (p : pctx) (v : views) ~(file : string) ~(self_class : (int * string) option)
     (m : Ast.method_decl) (rec_ : methrec) : unit =
   let f =
-    { f_file = file; f_fn = m.name; f_ret = m.ret; f_code = code_create (); f_cur_line = m.pos.line;
+    { f_file = file; f_fn = m.name; f_ret = m.ret; f_stmt_drops = []; f_esc_drops = [];
+      f_code = code_create ();
+      f_cur_line = m.pos.line;
       f_line = -1; f_lines = []; f_owned = 0L; f_gc = 0L; f_last_owned = 0L; f_last_gc = 0L;
       f_drops = []; f_nlocals = 0; f_temp = 0; f_max = 0; f_env = []; f_decl = Hashtbl.create 16;
       f_node = Hashtbl.create 64; f_kind = Hashtbl.create 16; f_declared = []; f_div = false; f_maxjmp = 0;

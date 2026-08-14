@@ -109,6 +109,29 @@ reserve `dst` before allocating more temps, or an arm-local `let` can be handed
 the same register and clobber a live value before its drop runs. `emit_switch`
 carries the comment explaining the ASan-confirmed leak that taught this.
 
+## Who owns a value nobody named
+
+The drop tables (`owner.ml`) track **bindings**. Everything a statement builds
+and never binds is the emitter's problem, and the workload found six of them:
+an operand of a comparison (`if parse_expr(s) == nil`), an argument a callee
+only borrows, a container read's copy (`c[i]` is the one place expression whose
+register holds a **copy**, so it needs no second copy at a boundary and does
+need a drop), a loop's iterable, the record a projection reads a field of, and
+any of those escaped by a `return` from inside the statement that built them.
+
+Two rules the measurements imposed, both easy to get backwards:
+
+- **Never drop an argument register after a `CALL`.** The callee's frame
+  overlaps those registers (vm.c's window overlap), so after it returns they
+  hold the callee's leftovers. Copy the value into a stash slot allocated
+  *below* the call window before the call — `call_window`'s `temp_idx` — and
+  drop the stash.
+- **A statement-owned temporary must live in a local slot, not a temp.** A
+  statement that opens a scope resets `f_temp` to `f_nlocals` for its body, so
+  a loop reuses the register; the end-of-statement `DROP` then releases a loop
+  counter and the value leaks. `f_stmt_drops` holds locals; `f_esc_drops` is
+  the same registers seen from a `return`.
+
 ## Verifying a change
 
 - `just woc-test` — unit assertions plus the golden suite (token/AST/owner/bc

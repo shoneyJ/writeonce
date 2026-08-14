@@ -101,7 +101,7 @@ read, including through a `try`'s arms, so the classification matches reality.
       temporary and Task 3's argv container, by stack. `just oop-e2e` 71/0,
       `just woc-test` 565/0, `wovm` unit gates green, `just log-watcher` 6/0.
 
-### Task 2: A temporary whose field is projected must still be dropped
+### Task 2 ✅: A temporary whose field is projected must still be dropped
 
 **Concept & reason:** `for e in parse_dir(self.cron_dir).entries` compiles to
 "call, keep the record in a register, read its field, iterate" — and the record
@@ -112,19 +112,44 @@ call result is projected without a `let`. The temporary must be owned by the
 statement that created it and dropped at that statement's end, after every use
 of the projection.
 
-- [ ] Failing measurement: the `run` mode's per-rescan growth over ~60 seconds,
-      with the rescan interval shortened, as the number to beat.
-- [ ] Give a projected temporary a real owner and a drop at the end of its
-      statement, including when the projection feeds a loop that outlives the
-      expression.
-- [ ] Re-measure: rescan no longer grows the process; corpus and unit gates
-      stay green.
+- [x] Failing measurement: `run` 2 112 B in 19 allocations; the MCP mix
+      21 312 B in 63; per handler, `tools/list` 2 144 B, `get_running_crons`
+      2 624 B, `list_logs` 5 184 B, `tail_log` 2 752 B — and 2 requests to 6
+      grew `list_logs` from 5 to 13 allocations, so this was growth, not
+      residue.
+- [x] The projection was one shape of six. Every one of them is the same
+      sentence — *a value this expression built, that nothing else owns* — and
+      each needed its own site because the drop tables only track bindings:
+      a call result compared against `nil` (`if parse_expr(s) == nil` abandoned
+      a whole schedule record and its five containers per cron line); an
+      argument a callee only **borrows** (`rpc_result(id, "…")`, a 1 KB string
+      per MCP request); a container read's copy (`tokens[0]` copies by rule,
+      and `let u = tokens[0]` was copying twice and abandoning the first); a
+      loop's iterable; the projected record itself; and any of those left
+      behind by a `return` taken from inside the statement that built them
+      (`check_path` returns out of `for p in self.allowed_paths()`).
+- [x] Two lowering bugs found while measuring, both silent: an argument
+      register cannot be dropped **after** a `CALL` (the callee's frame
+      overlaps it — the value read back is the callee's leftovers), so the
+      reap moved into the stash slot `call_window` already emits before the
+      call; and a statement-owned temporary cannot live in a temp register (a
+      loop reclaims every temp for its body and the end-of-statement `DROP`
+      then released a loop counter), so it is parked in a local slot.
+- [x] Re-measured: **`run` 2 112 B → 64 B**, identical at 8 s and 20 s;
+      **MCP mix 21 312 B / 63 → 64 B / 1**; every handler flat from 2 to 6
+      requests (`list_logs` 5 184 → 64, `tail_log` 2 752 → 64,
+      `get_running_crons` 2 624 → 64, `tools/list` 2 144 → 64); `watch` 64 B.
+      The remaining 64 bytes are Task 3's argv container, on every path. Gates:
+      `just oop-e2e` 71/0, `just woc-test` 565/0, `just wovm-test` green,
+      `just log-watcher` 6/0. The image grew 35 893 → 46 137 bytes — the drops
+      themselves.
 
 ### Task 3: The runtime's argv container has no owner
 
 **Concept & reason:** program mode builds the `multi Text` of arguments in
 `runtime/src/main.c` and hands it to the entry method, which borrows it. Nobody
-frees it — ASan reports it on every run (128 bytes in 2 allocations). It is
+frees it — ASan reports it on every run (64 bytes in 1 allocation, and since Task 2 it is the only leak the
+sample reports in any mode). It is
 bounded, so it is not the reason a daemon grows, but it is the runtime leaking
 its own allocation, and it pollutes every future ASan reading of the sample.
 The runtime owns that container and must release it after the entry returns,
