@@ -182,7 +182,8 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             if (nm != WOB_NONE && (nm >= m->const_cnt || m->consts[nm].tag != WOB_K_TEXT))
                 BAIL("class %u field %u: bad name constant", (unsigned)i, (unsigned)j);
             uint32_t fc = m->metapool[meta_pool + fcnt + j];
-            if (fc != WOB_NONE && fc != WOB_FIELD_JSON_RAW && fc >= kcnt)
+            if (fc != WOB_NONE && fc != WOB_FIELD_JSON_RAW && fc != WOB_FIELD_NIL_SCALAR &&
+                fc >= kcnt)
                 BAIL("class %u field %u: field class out of range", (unsigned)i, (unsigned)j);
         }
         m->classes[i].name = name;

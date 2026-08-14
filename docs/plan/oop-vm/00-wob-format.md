@@ -62,6 +62,10 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 - **the OS half** — fs.exists/list/stat/read_all/read_at/append, time.sleep/local/iso, env.get/stopping, net.listen/accept/read/write/close, proc.run. Ids 40–56; `runtime/src/sysio.c`. A member that returns a record takes that record's **class id as its last argument**, so the VM allocates what it fills without knowing any source type name.
 - **json** — encode (value + the value's static kind), decode (text + the class id to build). Ids 57–58; `runtime/src/json.c`. Decode yields the zero word on malformed input rather than trapping, which is what makes `json.decode(t) as T` a checked decode.
 
+**`?T` and nil.** A heap-shaped optional (`?Text`, `?Rec`, `?multi`, `?map`, `?@gc`) stores what `T` stores and spells nil as the **zero word** — every per-kind drop plan already ignores a zero slot, so `?T`'s field kind is `T`'s. A **nullable scalar** (`?Int`, `?Bool`, `?Timestamp`, `?Id`) cannot: `0` is a perfectly good `Int`, and real programs store it in a `?Int`. Its nil is therefore `WO_NIL_SCALAR` = −2^62 (not `INT64_MIN`: the compiler's own integers are 63-bit, so that value is not expressible on the emitting side). Such a field is marked `WOB_FIELD_NIL_SCALAR` in `field_class[i]`, which is how the runtime knows to write that word where it must produce absence itself — today only `json.decode` leaving a key absent, and `parse_int` on unparseable input.
+
+`EQS` accepts a nil operand for the same reason: two `?Text` values compare with it, and the answer is "both absent is equal, one absent is not". A non-nil operand must still be a real Text.
+
 **Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT, IO (a syscall the source cannot prevent said no — errno's message rides in the error record).
 
 ## Enum payload variants (haxe-parity compiler Task 4)

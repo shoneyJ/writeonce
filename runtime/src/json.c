@@ -125,7 +125,9 @@ static void enc_value(jbuf *b, const wo_module *mod, uint64_t v, uint8_t kind, u
     }
     switch (kind) {
     case WO_K_SCALAR:
-        jb_int(b, (int64_t)v);
+        /* a nullable scalar holding its nil word is JSON null, not a number */
+        if (fclass == WOB_FIELD_NIL_SCALAR && v == WO_NIL_SCALAR) jb_put(b, "null", 4);
+        else jb_int(b, (int64_t)v);
         return;
     case WO_K_TEXT: {
         const wo_str *s = (const wo_str *)(uintptr_t)v;
@@ -307,6 +309,12 @@ static int jparse_object(jp *j, uint32_t class_id, uint64_t *out) {
     wo_hdr *o = wo_obj_new(j->rt, class_id);
     if (!o) return -1;
     uint64_t *fs = wo_fields(o);
+    /* NEW zeroes every slot, which is nil for a heap-shaped field but a real
+       `0` for a scalar one — so a nullable scalar starts at its own nil word
+       (wob.h's WO_NIL_SCALAR) and stays there if the object omits the key. */
+    for (uint32_t i = 0; i < c->field_cnt; i++)
+        if (c->field_class && c->field_class[i] == WOB_FIELD_NIL_SCALAR)
+            fs[i] = WO_NIL_SCALAR;
     jskip_ws(j);
     if (j->p >= j->end || *j->p != '{') {
         wo_drop_obj(j->rt, o);
@@ -387,8 +395,9 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
         return 0;
     }
     char c = *j->p;
-    if (c == 'n') { /* null: the zero word, for every kind */
-        return jskip_value(j) == 0 ? (*out = 0, 0) : -1;
+    if (c == 'n') { /* null: this field's own nil word */
+        uint64_t nilw = fclass == WOB_FIELD_NIL_SCALAR ? WO_NIL_SCALAR : 0;
+        return jskip_value(j) == 0 ? (*out = nilw, 0) : -1;
     }
     if (c == '{') {
         if ((kind == WO_K_OWNED || kind == WO_K_GCREF) && fclass < j->mod->class_cnt)

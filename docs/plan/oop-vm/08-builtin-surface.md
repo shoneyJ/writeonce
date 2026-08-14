@@ -38,7 +38,7 @@ maps to one `BUILTIN` id of the format doc.
 | `substr(t, start, len)` | `substr` | 3 | fresh `Text`, clamped (never traps) |
 | `trim(t)` / `to_lower(t)` | same | 1 | fresh `Text` |
 | `char_of(b)` | `char_of` | 1 | fresh one-byte `Text` |
-| `parse_int(t)` | `parse_int` | 1 | `?Int` — an unparseable text is `0`, which is how `?Int` spells nil |
+| `parse_int(t)` | `parse_int` | 1 | `?Int` — an unparseable text yields nil (`WO_NIL_SCALAR`), so `parse_int("0")` and a failed parse are distinguishable |
 | `split(t, sep)` / `split_ws(t)` | same | 2 / 1 | fresh `multi Text` |
 | `join(m, sep)` | `join` | 2 | fresh `Text` from a `multi Text` |
 | `slice(m, from, to)` | `slice` | 3 | fresh `multi` over `[from, to)`; `Text` elements are COPIED, so slice and source never both own one value |
@@ -228,7 +228,9 @@ interpolation — the haxe keyword verdict table's low-risk batch, added
 
 ## `?T`
 
-A nullable field stores exactly what `T` stores and spells nil as `0`.
+A nullable **heap-shaped** field (`?Text`, `?Rec`, `?multi`, `?map`, `?@gc`) stores exactly what `T` stores and spells nil as `0`. A nullable **scalar** (`?Int`, `?Bool`, `?Timestamp`, `?Id`) spells nil as `WO_NIL_SCALAR` (−2^62) instead, because `0` is a real `Int` a program legitimately stores in a `?Int` — the driving workload does exactly that (a cron `*` field expands to `0`). The class table marks such a field so the runtime can write absence itself where it must (`json.decode` on an absent key, `parse_int` on unparseable input); see [`00-wob-format.md`](00-wob-format.md).
+
+The rest of this section describes the heap-shaped case.
 The v1 format has no kind byte for it (field kinds run `0..5`; the loader
 rejects `6`), and it needs none: every per-kind drop plan already ignores
 a zero slot. `?T`'s field kind is therefore `T`'s. Note the consequence

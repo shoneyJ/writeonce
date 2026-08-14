@@ -40,6 +40,20 @@
  * field_elem[i]: for a MULTI field, its element kind; for a MAP field, the
  *   key kind in the low byte and the value kind in the next; 0 otherwise. */
 #define WOB_FIELD_JSON_RAW 0xFFFFFFFEu
+/* A `?Int`/`?Bool`/`?Timestamp`/`?Id` field. Absence cannot be the zero word
+ * for a scalar — 0 is a perfectly good Int, and the driving workload stores it
+ * in a `?Int` (a cron `*` field expands to `0`) — so a nullable SCALAR spells
+ * nil as WO_NIL_SCALAR instead. Heap-shaped optionals (`?Text`, `?Rec`,
+ * `?multi`, …) keep the zero word: a null pointer is unambiguous. The marker
+ * exists so the runtime can tell the two apart where it must write absence
+ * itself, which today is json.decode leaving an absent key nil. */
+#define WOB_FIELD_NIL_SCALAR 0xFFFFFFFDu
+
+/* nil for a nullable scalar: -(2^62). Not INT64_MIN, deliberately — the
+ * compiler's own integers are OCaml's 63-bit native ints, so INT64_MIN is not
+ * expressible on the emitting side at all. One (absurd) value is unavailable
+ * inside a `?Int`; that is the whole cost of the choice. */
+#define WO_NIL_SCALAR ((uint64_t)(int64_t)(-4611686018427387904LL))
 
 /* ---- constant pool tags ---- */
 #define WOB_K_INT 0u  /* tag byte, then i64 */

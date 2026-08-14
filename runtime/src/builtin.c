@@ -367,8 +367,8 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = (uint64_t)(uintptr_t)out;
         return 0;
     }
-    case WO_B_PARSE_INT: { /* optional-shaped: unparseable is 0, which is
-                            * exactly how a `?Int` spells nil */
+    case WO_B_PARSE_INT: { /* optional-shaped: unparseable is WO_NIL_SCALAR,
+                            * how a nullable scalar spells nil (wob.h) */
         wo_str *s = native_check(R[B], WO_CLS_STR, msg);
         if (!s) return WO_T_BOUNDS;
         uint32_t i = 0;
@@ -381,7 +381,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             acc = acc * 10 + (s->data[i++] - '0');
             digits++;
         }
-        R[A] = digits ? (uint64_t)(neg ? -acc : acc) : 0;
+        R[A] = digits ? (uint64_t)(neg ? -acc : acc) : WO_NIL_SCALAR;
         return 0;
     }
     case WO_B_SPLIT:

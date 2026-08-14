@@ -1312,9 +1312,30 @@ let check_field_idx (p : pctx) (f : fstate) (pos : Ast.pos) (v : int) : int =
    Both exist so json.encode/json.decode can work off metadata instead of
    per-type generated code. *)
 let wob_field_json_raw = 0xFFFFFFFE
+let wob_field_nil_scalar = 0xFFFFFFFD
+
+(* nil for a nullable SCALAR is not the zero word: `0` is a real Int, and the
+   driving workload stores it in a `?Int` (a cron `*` field expands to `0`), so
+   absence needs a value no plain Int will ever hold. runtime/src/wob.h's
+   WO_NIL_SCALAR = INT64_MIN. Heap-shaped optionals keep the zero word — a null
+   pointer is unambiguous. *)
+(* -(2^62). NOT INT64_MIN: OCaml's native int is 63-bit, so INT64_MIN cannot be
+   written here at all (and `min_int * 2` silently wraps to 0 — the bug this
+   comment exists to prevent recurring). Mirrors runtime/src/wob.h's
+   WO_NIL_SCALAR exactly. *)
+let nil_scalar_word = -4611686018427387904
+
+(* is this a `?scalar` — an optional whose representation is a plain register,
+   so its nil has to be the sentinel rather than the zero word? *)
+let is_nullable_scalar (p : pctx) (ty : Ast.field_ty) : bool =
+  match ty with
+  | Ast.Nullable inner -> field_kind p inner = 0 (* WO_K_SCALAR *)
+  | _ -> false
 
 let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
   let name_of t = match t with Ast.Scalar n -> Some n | _ -> None in
+  if is_nullable_scalar p ty then wob_field_nil_scalar
+  else
   match unwrap ty with
   | Ast.Scalar n when n = Types.json_value_type -> wob_field_json_raw
   | Ast.Scalar n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
@@ -1349,9 +1370,17 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | IntLit n -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p n)))
   | BoolLit b -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p (if b then 1 else 0))))
   | StrLit s -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_text p s)))
-  (* haxe-parity Task 6: `nil` is the zero word, whatever `?T` it stands
-     in for (docs/plan/oop-vm/08-builtin-surface.md's `?T` section). *)
-  | NilLit -> put f (ins_abx op_loadk dst (const_int p 0))
+  (* haxe-parity Task 6: `nil` is the zero word for a heap-shaped `?T` and the
+     WO_NIL_SCALAR sentinel for a `?scalar` — see nil_scalar_word. The
+     destination decides: a written annotation, the field being built, or the
+     enclosing method's return type. With no destination at all, the zero word
+     is the safe answer (a heap slot). *)
+  | NilLit ->
+    let dest = match expected with Some _ -> expected | None -> f.f_ret in
+    let word =
+      match dest with Some t when is_nullable_scalar p t -> nil_scalar_word | _ -> 0
+    in
+    put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p word)))
   (* Container literals lower to exactly what `multi_new()`/`map_new()`
      lower to — the element kinds are the destination's, never guessed
      (docs/plan/oop-vm/08-builtin-surface.md) — plus one `multi_push` per
@@ -1594,6 +1623,23 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     let b = emit_operand p f v r in
     put f (ins_abc o dst b a)
   in
+  (* `x == nil` / `nil == x`: the literal takes ITS destination type from the
+     other operand, so the sentinel-vs-zero choice matches what x actually
+     holds. *)
+  let nil_compare_into p f v ~dst o (l : Ast.expr) (r : Ast.expr) : unit =
+    let other = if is_nil_lit l then r else l in
+    let nil_e = if is_nil_lit l then l else r in
+    let a = emit_operand p f v other in
+    let bt = ty_of_expr p f other in
+    let save = f.f_temp in
+    let b = alloc_temp p f pos in
+    (match bt with
+    | Some t -> emit_expr p f v ~dst:b ~expected:t nil_e
+    | None -> emit_expr p f v ~dst:b nil_e);
+    put f (ins_abc o dst a b);
+    f.f_temp <- save
+  in
+  let nil_compare o = nil_compare_into p f v ~dst o l r in
   match op with
   | Add -> simple op_add
   | Sub -> simple op_sub
@@ -1605,25 +1651,29 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
   | Gt -> swapped op_lt
   | Ge -> swapped op_le
   (* A comparison against `nil` is a WORD compare, never a content compare:
-     nil is the zero word, and EQS would dereference it as a `wo_str*` (the
-     VM's str_check traps on that, so an `x != nil` guard would trap instead
-     of answering). Text-vs-Text still uses EQS. *)
+     EQS would dereference nil as a `wo_str*` (the VM's str_check traps on
+     that, so an `x != nil` guard would trap instead of answering). The literal
+     `nil` is emitted with the OTHER side's declared type as its destination,
+     so a `?scalar` compares against the sentinel and a heap optional against
+     zero. Text-vs-Text still uses EQS. *)
   | Eq ->
-    if is_nil_lit l || is_nil_lit r then simple op_eq
+    if is_nil_lit l || is_nil_lit r then nil_compare op_eq
     else if is_text p f l || is_text p f r then simple op_eqs
     else simple op_eq
   | Ne ->
     (* no NE opcode in the v1 set: `a != b` is `(a == b) == 0`. The
        format doc governs, so this is a lowering, not a new opcode. *)
-    let a = emit_operand p f v l in
-    let b = emit_operand p f v r in
     let t = alloc_temp p f pos in
-    put f
-      (ins_abc
-         (if is_nil_lit l || is_nil_lit r then op_eq
-          else if is_text p f l || is_text p f r then op_eqs
-          else op_eq)
-         t a b);
+    (if is_nil_lit l || is_nil_lit r then begin
+       let save = f.f_temp in
+       f.f_temp <- t + 1;
+       nil_compare_into p f v ~dst:t op_eq l r;
+       f.f_temp <- save
+     end
+     else
+       let a = emit_operand p f v l in
+       let b = emit_operand p f v r in
+       put f (ins_abc (if is_text p f l || is_text p f r then op_eqs else op_eq) t a b));
     let z = alloc_temp p f pos in
     put f (ins_abx op_loadk z (check_bx p f pos "constant" (const_int p 0)));
     put f (ins_abc op_eq dst t z)
@@ -2162,8 +2212,13 @@ and emit_default_value (p : pctx) (f : fstate) ~(dst : int) ~(fty : Ast.field_ty
   | Ast.DefaultNow -> put f (ins_abc op_builtin dst dst b_now)
   | Ast.DefaultOpaque toks -> (
     match List.map (fun (t : Token.t) -> t.Token.kind) toks with
-    (* `= nil` — the zero word, whatever `?T` the field is *)
-    | [ Token.KwNil ] -> put f (ins_abx op_loadk dst (const_int p 0))
+    (* `= nil` — the field's own nil word (zero for a heap shape, the sentinel
+       for a `?scalar`) *)
+    | [ Token.KwNil ] ->
+      put f
+        (ins_abx op_loadk dst
+           (check_bx p f pos "constant"
+              (const_int p (if is_nullable_scalar p fty then nil_scalar_word else 0))))
     (* `= {}` — a fresh empty container of the field's own declared type,
        the same rule `[]` above follows *)
     | [ Token.LBrace; Token.RBrace ] -> (

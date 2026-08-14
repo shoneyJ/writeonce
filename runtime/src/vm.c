@@ -19,15 +19,6 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
 
 void wo_vm_destroy(wo_vm *vm) { wo_rt_destroy(&vm->rt); }
 
-/* Trap unwinding — the spec's "traps never leak" promise (spec §6). Walk
- * frames innermost to outermost; in each, look up the drop-table entry for
- * that frame's current instruction (the trap pc for the innermost frame;
- * the instruction before the saved resume pc — i.e. the CALL — for outer
- * frames); apply the owned mask by recursive drop and the gc mask by
- * decrement, nulling registers as they go. A borrow held by a dying
- * register does not block its drop — the borrower IS the dying frame.
- * Window overlap is safe: a slot dropped by the callee frame is nulled, so
- * an outer mask covering the same physical slot sees 0 and skips. */
 /* The drop-table entry governing instruction [pc]: the last one recorded
  * at or before it. NULL = nothing live there. */
 static const wo_dropent *vm_dropent(const wo_methodrec *me, uint32_t pc) {
@@ -445,10 +436,20 @@ dispatch:
         NEXT();
     }
     CASE(EQS) : {
+        /* Text content equality — and the one comparison that must accept a
+         * nil operand: two `?Text` values compare with this opcode, and the
+         * language's answer is "both absent is equal, one absent is not"
+         * (trapping instead would make `a != b` on optionals unusable). Only a
+         * NON-nil value still has to actually be a Text. */
+        uint64_t bv = R[wo_ins_b(ins)], cv = R[wo_ins_c(ins)];
+        if (!bv || !cv) {
+            R[wo_ins_a(ins)] = bv == cv ? 1 : 0;
+            NEXT();
+        }
         const char *why;
-        wo_str *x = str_check(R[wo_ins_b(ins)], &why);
+        wo_str *x = str_check(bv, &why);
         if (!x) TRAPF(WO_T_BOUNDS, "%s", why);
-        wo_str *y = str_check(R[wo_ins_c(ins)], &why);
+        wo_str *y = str_check(cv, &why);
         if (!y) TRAPF(WO_T_BOUNDS, "%s", why);
         R[wo_ins_a(ins)] = wo_str_eq(x, y) ? 1 : 0;
         NEXT();
