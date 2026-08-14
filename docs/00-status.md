@@ -180,18 +180,21 @@ recorded, not silently owed:
 - **`using` extensions and `#if` build flags are absent**, and the reject rows
   (`extends`/`cast`/`Dynamic`/…) still have no doctrine-citing diagnostics —
   plan 8 Tasks 7–8's remainder.
-- **A borrowed non-constant Text pushed into a container is a double-free
-  hazard** — `push(m, v)`'s open gap, now shared by list literals (`[a, b]`).
-  **Reached for real on 2026-08-14**: the MCP server answers `initialize`,
-  `tools/list` and an unauthorized request correctly, but a `tools/call` of
-  `tail_log` returns `{"isError":true,"text":"tool failed: not a text value"}`
-  — `Mcp.allowed_paths` pushes `e.log_path` (a Text the entry record owns)
-  into a fresh `multi Text`, so two owners free one string and a later read
-  finds recycled memory. The fix is a coordinated pair, not a one-liner:
-  `multi_push`/`map_set` must COPY a TEXT element (as `slice` already does),
-  and `owner.ml` must then stop treating a pushed Text as escaping so the
-  caller's own fresh temporaries are still dropped. Until then, treat
-  `push`-of-a-borrowed-Text as unsound.
+- ~~A borrowed non-constant Text pushed into a container is a double-free
+  hazard~~ — **closed 2026-08-14 by copy-on-push**: `push`/`set`/`m[i] = v`
+  copy a TEXT element, key or value into the container, and the compiler drops
+  a *freshly built* Text right after the call (a value read out of a place
+  keeps its owner). The failure it fixed was real: a `tools/call` of `tail_log`
+  used to answer `{"isError":true,"text":"tool failed: not a text value"}`; all
+  four MCP tools now return `isError:false` with correct payloads.
+  `OWNED`/`GCREF` elements still move, and `set`'s `@gc` retention gap is still
+  open (see [`oop-vm/08-builtin-surface.md`](plan/oop-vm/08-builtin-surface.md)).
+- **A blocking `accept`/`read` swallows SIGTERM.** `env.stopping()` installs a
+  handler that only sets a flag, and `net.accept`/`net.read` retry on `EINTR`,
+  so a server parked in `accept` never observes it: a plain TERM does not stop
+  the process (`timeout -k` / `kill -9` does). Graceful shutdown needs an
+  interruptible wait — the shard-actor runtime's event loop (iteration 8) is
+  where that belongs, not a patch to the blocking calls.
 - **A temporary record whose field is iterated is never dropped** —
   `for e in parse_dir(dir).entries` keeps the entries alive (good) but leaks
   the `ParseResult` shell (its drop is recorded for no register). Found in the

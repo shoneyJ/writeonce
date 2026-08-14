@@ -68,6 +68,20 @@ Reads differ by container, deliberately (amended 2026-08-14):
 **Shadowing.** A user-declared free `fn` of the same name always wins. A
 declared name is never silently replaced by a builtin.
 
+**Containers copy the Text they are given (2026-08-14).** `push(m, v)`,
+`set(m, k, v)` and the `m[i] = v` element write COPY a `TEXT` element, key or
+value into the container. The container's declared kinds already make it the
+owner of what it holds, so storing a pointer the caller still owns gave one
+string two owners — the driving workload's `push(res, e.log_path)` freed a
+record's field out from under it, and a later read of the recycled memory
+trapped `BOUNDS "not a text value"`. Copying is the only rule correct for both
+shapes: a value read out of a place keeps its owner, and a freshly built Text
+(a call result, a `..` chain, an interpolation) stays the caller's — the
+compiler emits that drop right after the call (emit.ml's `drop_fresh_text`).
+`OWNED`/`GCREF` elements still MOVE: they are not copyable, and the `@gc`
+escape below is what keeps their counting right. Only the `@gc` half of the
+old hazard remains open.
+
 **`push` and `@gc` elements.** `push(m, v)`'s value argument is never a
 resolved callee parameter (`push` has no declared signature), so the
 owner pass's ordinary Take-gated transfer never reaches it; a `@gc` value
