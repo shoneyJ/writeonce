@@ -19,19 +19,29 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
-**Story iteration 5 — language surface (Haxe-parity adoptions).**
+**Close the gaps the log-watcher milestone left open.** The acceptance target
+of the whole language track — _compile and run log-watcher_ — is **met** as of
+2026-08-14: `docs/examples/log-watcher` (1285 lines, 7 files) compiles with
+zero diagnostics, and the image runs (`wovm lw.wob watch app.log 2 1` tails a
+live file, classifies levels and fires `ALERT … last entry is error, quiet for
+2s`). What remains is the *strictness* half of iteration 5 plus one runtime
+gate, in this order:
+
+1. **`?T` forced handling** (plan 8 Task 6's diagnostics half, `WO-E211`–`E213`
+   still dead). Optionals are currently **lenient**: `nil` is the zero word, a
+   `?T` is usable where `T` is expected, and nothing narrows. The
+   representation and the comparisons are right; the refusals are missing.
+2. **`pub(read)` write enforcement** — parsed and recorded on the field; the
+   typechecker does not yet refuse a write from outside the declaring class.
+3. **`using` extensions and `#if` build flags + reject-row diagnostics** (plan 8
+   Tasks 7–8's remainder). Nothing in the workload needs them, so they are the
+   tail of the plan, not a blocker.
+4. **ASan over the workload** — the corpus is ASan-clean, but log-watcher's own
+   run has never been under the sanitizer, and iteration 4's `gc/held-cycle`
+   leak is still open (see the known-gaps section).
+
 Plan: [`plan/compiler/2026-08-01-haxe-parity-language.md`](plan/compiler/2026-08-01-haxe-parity-language.md) ·
 Story slice: [`docs/stories/language-runtime-database/05-language-surface.md`](stories/language-runtime-database/05-language-surface.md)
-
-The language grows from milestone grammar to a daily-driver surface: every
-**adopt** row of the systems-track verdict table (switch expressions, typedef
-records, `?T` optionals, enum payloads, try/catch, statics, `using`, modules,
-`is`, `pub(read)`, `#if`) lands with a golden + must-fail fixture pair; every
-**reject** row refuses with a doctrine-citing diagnostic. **First task: `?T`
-forced handling (plan 8 Task 6)** — plumbed since iteration 3 but unenforced
-(`WO-E211`–`E213` dead), and the log-watcher port (iterations 6–7) uses
-optionals throughout in place of the Haxe original's sentinel values, so
-nothing else in this plan can land ahead of it.
 
 Two tracks run in this repo. The critical path is the **language track**:
 iterations 3 → 4 → 5 → 6 → 7, ending at _compile and run log-watcher_. The
@@ -52,9 +62,9 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 2   | [VM core (`wovm`)](stories/language-runtime-database/02-vm-core.md)                          | ✅                           |
 | 3   | [Compiler front (`woc`)](stories/language-runtime-database/03-compiler-front.md)             | ✅ (known gaps below)        |
 | 4   | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
-| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 **next**                  |
-| 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ⬜                           |
-| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | ⬜ acceptance                |
+| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done, strictness open |
+| 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
+| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | ✅ compiles and runs         |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ⬜ closes iteration 4's gate |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
 | 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | ⬜                           |
@@ -67,12 +77,46 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 ## In progress
 
-| Track    | Item                                                                   | Where                                                      |
-| -------- | ---------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | Iteration 5 — Haxe-parity language surface, `?T` forced handling first | [plan 8](plan/compiler/2026-08-01-haxe-parity-language.md) |
+| Track    | Item                                                                        | Where                                                      |
+| -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Language | Iteration 5's strictness half — `?T` forced handling, `pub(read)` writes, `using`, `#if` | [plan 8](plan/compiler/2026-08-01-haxe-parity-language.md) |
 
-Nothing else should be started until iteration 5 lands. Off-critical-path work
-is parked by explicit scope directive (2026-08-08).
+Off-critical-path work is parked by explicit scope directive (2026-08-08).
+
+### Landed 2026-08-14 — the compile-and-run milestone
+
+One session, driven end to end by compiling `docs/examples/log-watcher` and
+watching its diagnostic count fall (481 → 0). In order:
+
+- **let annotations, container literals, statics, `pub(read)`** — `let x: multi
+  Text = []`, `map<K, V>`, `?T`; `[]`/`[a, b]`/`{}` as expressions; `static
+  const`/`static fn` with `Cls.fn(...)` calls; a `;` ends a statement so
+  one-line guard bodies parse.
+- **try/catch over the trap system** (plan 8 Task 5) — VM catch frames
+  (`TRY`/`ENDTRY`), unwind-to-handler with the try region's own values
+  released, `err_fill` for the `{code, line, method, msg}` record, expression
+  and block catch arms. Uncaught traps unchanged.
+- **`nil` + 23 text/container builtins** — len, byte_at, print_err,
+  starts_with/ends_with, index_of/last_index_of, substr, trim, to_lower,
+  char_of, parse_int, split/split_ws, join, slice, pop/shift, sort, reverse,
+  remove, key_at/val_at, multi_set.
+- **`for k, v in m`** over a map, and `m[i] = v` for a `multi`.
+- **the systems stdlib's OS half** (`runtime/src/sysio.c`) — fs, time, env,
+  net, proc behind the reserved module names, with predeclared `Stat`,
+  `TimeParts` and `Proc` records and the new `WO_T_IO` trap.
+- **json** (`runtime/src/json.c`) + **`.wob` v2** — per-field names, referenced
+  classes and element kinds in the class table, so encode/decode are one
+  metadata-driven implementation; `json.decode(t) as T` is the language's only
+  cast, yielding `?T`.
+- **program mode** — `fn main(args: multi Text) -> Int`, argv delivered by the
+  runtime, return value as the exit code.
+- **two safety fixes found by running it**: `+` on `Text` was lowering to ADD
+  on two heap pointers (now WO-E201 pointing at `..`; seven sites in the sample
+  were corrected), and `x == nil` was lowering to EQS, which dereferences the
+  zero word (now EQ).
+
+Gates at the end of that session: corpus 71/0, `woc` runtest 565/0, every
+`wovm` unit gate green in both dispatch flavors.
 
 ---
 
@@ -122,6 +166,37 @@ is parked by explicit scope directive (2026-08-08).
   to `set` is under-counted and the collector can free it while the map still
   points at it. Nothing in the corpus exercises this yet. See
   [`oop-vm/08-builtin-surface.md`](plan/oop-vm/08-builtin-surface.md).
+
+**Known gaps carried out of the 2026-08-14 compile-and-run milestone** —
+recorded, not silently owed:
+
+- **Optionals are lenient.** `?T` has its representation (the zero word) and
+  its comparisons, but `WO-E211`–`E213` are still dead: a `?T` may be used
+  where `T` is required, and nothing narrows inside an `if x != nil` branch.
+  The workload leans on that leniency today.
+- **`pub(read)` is parsed, not enforced.** The marker rides on the field
+  (`Ast.field.pub_read`); no check refuses a write from outside the declaring
+  class yet.
+- **`using` extensions and `#if` build flags are absent**, and the reject rows
+  (`extends`/`cast`/`Dynamic`/…) still have no doctrine-citing diagnostics —
+  plan 8 Tasks 7–8's remainder.
+- **A borrowed non-constant Text pushed into a container is a double-free
+  hazard** — `push(m, v)`'s open gap, now shared by list literals (`[a, b]`)
+  and documented in `owner.ml`'s own comment. The workload's literals are
+  string constants or borrowed params handed straight to a stdlib call, so
+  nothing reachable today hits it.
+- **json's two documented limits**: a `Bool` field encodes as `0`/`1` (the
+  class-table kind byte does not distinguish it from an integer), and a JSON
+  number with a fraction or exponent decodes by truncation.
+- **`net` fd lifetime is the program's problem.** `net.close` exists; the
+  sample's MCP server never calls it, so a long-running `mcp` session leaks
+  descriptors. That is the sample's bug to fix, not the runtime's.
+- **The workload has never run under ASan**, and iteration 4's `gc/held-cycle`
+  leak (above) is still open. The corpus itself stays ASan-clean.
+- **No corpus fixtures cover the new surface.** By explicit direction
+  (2026-08-14) the acceptance for this work is the log-watcher program itself,
+  not fixture pairs; `tests/corpus/` still gates every pre-existing behavior
+  (71 checks, 0 failures).
 - **E201/E203 and seven other `WO-E2xx` codes remain declared but unemitted**
   — see [`oop-vm/01-error-catalog.md`](plan/oop-vm/01-error-catalog.md).
 - **CLOSED — milestone-1's ASan gate (`just oop-accept`) failing on
