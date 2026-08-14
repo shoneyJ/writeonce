@@ -45,9 +45,11 @@ running", and every item below came from a measurement on the sample itself:
    **2 112 B → 64 B** and flat from 8 s to 20 s, the full MCP mix
    **21 312 B / 63 → 64 B / 1**, every handler flat from 2 to 6 requests. The
    64 bytes left are item 3, on every path.
-3. **The runtime leaks its own argv container** — 64 bytes in 1 allocation on
-   every run, `main.c`'s `multi Text` of arguments. It is now the ONLY leak the
-   sample reports in any mode.
+3. ~~The runtime leaks its own argv container~~ — **done 2026-08-14**. The
+   entry only borrows its arguments, so `main.c` releases the container it
+   built, after the entry returns and after a trap alike. **All three modes
+   now report ZERO leaks under ASan** — `watch`, `run`, and the full MCP mix —
+   which is the clean baseline item 6's soak needs to read against.
 4. **A stopping program does not stop** — `env.stopping()` sets a flag, but
    `net.accept`/`net.read` restart on `EINTR`, so a server parked in `accept`
    ignores SIGTERM and needs `kill -9`.

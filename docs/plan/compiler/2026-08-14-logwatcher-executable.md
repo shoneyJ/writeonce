@@ -144,7 +144,7 @@ of the projection.
       `just log-watcher` 6/0. The image grew 35 893 → 46 137 bytes — the drops
       themselves.
 
-### Task 3: The runtime's argv container has no owner
+### Task 3 ✅: The runtime's argv container has no owner
 
 **Concept & reason:** program mode builds the `multi Text` of arguments in
 `runtime/src/main.c` and hands it to the entry method, which borrows it. Nobody
@@ -155,9 +155,16 @@ its own allocation, and it pollutes every future ASan reading of the sample.
 The runtime owns that container and must release it after the entry returns,
 before the heap is torn down.
 
-- [ ] Drop the argument container once the entry method has returned (both the
-      plain `wovm image.wob …` path and the single-binary path).
-- [ ] `watch` under ASan reports **zero** leaks for a clean exit.
+- [x] Drop the argument container once the entry method has returned — one
+      site covers both invocation shapes (`self_rc` only picks the argv
+      offset, it does not build a second container), and it runs after a trap
+      too: the container outlives the unwind. `multi_free` recurses, so the
+      argument strings go with it.
+- [x] **All three modes report ZERO leaks under ASan**: `watch` and `run` over
+      eight seconds with a clean SIGTERM exit, and the full MCP mix (four
+      tools, twice each) with a clean exit. Gates: `just oop-accept` ALL
+      CRITERIA MET, `just oop-e2e` 71/0, `just wovm-test` green,
+      `just log-watcher` 6/0.
 
 ### Task 4: A stopping program must actually stop
 

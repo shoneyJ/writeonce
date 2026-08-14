@@ -195,6 +195,14 @@ int main(int argc, char **argv) {
     /* the entry's return value IS the exit code (docs/plan/oop-vm/
      * 08-builtin-surface.md's "Program entry"): 0..255, a trap is 1 */
     int exit_code = rc == 0 ? (int)((uint64_t)ret & 0xFF) : 1;
+    /* the entry only BORROWS its arguments -- a parameter is never a `take`,
+     * and the drop tables never drop one -- so the runtime that built the
+     * container is the one that releases it, elements included. Without this
+     * the workload reported a leak on every path, in every mode, which is
+     * exactly the noise a soak measurement cannot afford. It runs before the
+     * heap is torn down, and after a trap too: the container outlives the
+     * unwind. */
+    if (argv_val) wo_drop_kind(&VM.rt, WO_K_MULTI, argv_val);
     gc_pump(&VM);
     wo_vm_destroy(&VM);
     wo_module_free(&mod);
