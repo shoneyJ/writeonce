@@ -1,6 +1,9 @@
 # Cargo build artifacts
 /target
 
+# `woc .` manifest builds (wo.toml [build] target)
+/docs/examples/log-watcher/target
+
 # Rust runtime (crates/rt/): compiled binary + build artifacts
 /crates/rt/target
 /crates/rt/Cargo.lock

@@ -9,3 +9,9 @@ description = "The Haxe log-watcher ported file-for-file: the systems-track samp
 
 [runtime]
 wo = ">= 0.1"
+
+# `woc .` in this directory (or `woc docs/examples/log-watcher` from the
+# repo root) builds target/log-watcher from this manifest. Paths resolve
+# against this file's directory.
+[build]
+runtime = "../../../runtime/wovm"

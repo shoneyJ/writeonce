@@ -40,6 +40,7 @@
 
 let usage_msg =
   "usage: woc <path>\n\
+   usage: woc <dir>              (builds when <dir>/wo.toml exists)\n\
    usage: woc --emit <path> -o <out.wob>\n\
    usage: woc build <dir> -o <app> [--runtime <path>]\n\
    usage: woc --dump-tokens <path>\n\
@@ -56,7 +57,11 @@ let usage_msg =
    \n\
    With no flag, <path> is fully compiled (lexed, parsed, typechecked,\n\
    ownership-checked) and nothing is printed on success; diagnostics,\n\
-   if any, print to stderr.\n\
+   if any, print to stderr. One exception: a directory containing a\n\
+   wo.toml manifest is BUILT instead — `woc .` inside a project (or\n\
+   `woc path/to/project` from anywhere) reads the manifest's `name` plus\n\
+   the optional [build] runtime/target keys (paths relative to the\n\
+   manifest) and produces <target>/<name> exactly as `woc build` would.\n\
    \n\
    --dump-tokens prints one line per lexed token to stdout, in source\n\
    order (\"LINE:COL KIND\" or \"LINE:COL KIND(payload)\"), ending with\n\
@@ -559,6 +564,100 @@ let build_mode ~(runtime : string option) (path : string) (out : string) : unit 
     finish collector lookup
   end
 
+(* ---- manifest build ---------------------------------------------------
+   `woc <dir>` where <dir>/wo.toml exists is a BUILD, not a check: the
+   manifest names the application, so pointing woc at the project is enough
+   (`woc .` inside it). The schema is the one the sample already carried —
+   top-level `name` (the executable's basename), `version`, `description`,
+   a `[runtime]` section whose `wo` constraint is accepted and not yet
+   enforced — plus one new section this feature adds:
+
+     [build]
+     runtime = "../runtime/wovm" # optional: wovm to prepend, relative to
+                                 # the manifest's own directory (default:
+                                 # `runtime/wovm` relative to the CWD, the
+                                 # same as `woc build` with no --runtime)
+     target = "target"           # optional: output directory, relative to
+                                 # the manifest's directory
+
+   Anything else is an error: a typo'd key silently ignored would build the
+   wrong thing. A directory WITHOUT wo.toml keeps today's meaning (check
+   only), and the corpus is full of those. *)
+let manifest_parse (path : string) : (string * string) list =
+  let fail line msg =
+    Printf.eprintf "woc: %s:%d: %s\n" path line msg;
+    exit 2
+  in
+  let ic = try open_in path with Sys_error m -> Printf.eprintf "woc: %s\n" m; exit 2 in
+  let kvs = ref [] in
+  let section = ref "" in
+  let lineno = ref 0 in
+  (try
+     while true do
+       let raw = input_line ic in
+       incr lineno;
+       let line = String.trim raw in
+       if line = "" || (String.length line >= 1 && line.[0] = '#') then ()
+       else if line.[0] = '[' then begin
+         if line.[String.length line - 1] <> ']' then fail !lineno "malformed section header";
+         section := String.sub line 1 (String.length line - 2);
+         if !section <> "runtime" && !section <> "build" then
+           fail !lineno (Printf.sprintf "unknown section [%s] (runtime and build exist)" !section)
+       end
+       else
+         match String.index_opt line '=' with
+         | None -> fail !lineno "expected `key = \"value\"`"
+         | Some eq ->
+           let key = String.trim (String.sub line 0 eq) in
+           let v = String.trim (String.sub line (eq + 1) (String.length line - eq - 1)) in
+           if String.length v < 2 || v.[0] <> '"' || v.[String.length v - 1] <> '"' then
+             fail !lineno (Printf.sprintf "`%s`: only quoted string values are supported" key);
+           let v = String.sub v 1 (String.length v - 2) in
+           let known =
+             match (!section, key) with
+             | "", ("name" | "version" | "description") -> true
+             | "runtime", "wo" -> true (* accepted, not yet enforced *)
+             | "build", ("runtime" | "target") -> true
+             | _ -> false
+           in
+           if not known then
+             fail !lineno
+               (if !section = "" then
+                  Printf.sprintf "unknown key `%s` (name, version, description exist)" key
+                else
+                  Printf.sprintf "unknown key `%s` in [%s]" key !section);
+           kvs := ((if !section = "" then key else !section ^ "." ^ key), v) :: !kvs
+     done
+   with End_of_file -> close_in ic);
+  !kvs
+
+let manifest_build (dir : string) : unit =
+  let mf = Filename.concat dir "wo.toml" in
+  let kvs = manifest_parse mf in
+  let get k = List.assoc_opt k kvs in
+  let name =
+    match get "name" with
+    | Some n when n <> "" && not (String.contains n '/') -> n
+    | Some _ ->
+      Printf.eprintf "woc: %s: `name` must be a bare file name\n" mf;
+      exit 2
+    | None ->
+      Printf.eprintf "woc: %s: `name` is required\n" mf;
+      exit 2
+  in
+  (* paths in the manifest are the PROJECT's, so they resolve against the
+     manifest's directory — `woc .` inside the project and `woc path/to/it`
+     from anywhere must build the same thing *)
+  let resolve rel = if Filename.is_relative rel then Filename.concat dir rel else rel in
+  let runtime = Option.map resolve (get "build.runtime") in
+  let target = resolve (match get "build.target" with Some t when t <> "" -> t | _ -> "target") in
+  (if not (Sys.file_exists target) then
+     try Sys.mkdir target 0o755
+     with Sys_error m ->
+       Printf.eprintf "woc: %s\n" m;
+       exit 2);
+  build_mode ~runtime dir (Filename.concat target name)
+
 let () =
   match Sys.argv with
   | [| _; "--dump-tokens"; path |] -> dump_tokens path
@@ -569,7 +668,11 @@ let () =
   | [| _; "build"; path; "-o"; out |] -> build_mode ~runtime:None path out
   | [| _; "build"; path; "-o"; out; "--runtime"; rt |] -> build_mode ~runtime:(Some rt) path out
   | [| _; "build"; path; "--runtime"; rt; "-o"; out |] -> build_mode ~runtime:(Some rt) path out
-  | [| _; path |] -> check_only path
+  | [| _; path |] ->
+    if Sys.file_exists path && Sys.is_directory path
+       && Sys.file_exists (Filename.concat path "wo.toml")
+    then manifest_build path
+    else check_only path
   | _ ->
     prerr_string usage_msg;
     exit 2
