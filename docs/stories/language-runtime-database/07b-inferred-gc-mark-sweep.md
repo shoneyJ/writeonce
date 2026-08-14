@@ -8,6 +8,15 @@
 > (iterations 3–7) must not be delayed, and because the collector should be
 > settled before iteration 8 multiplies shards.
 
+
+> **Status (2026-08-14):** **not on the driving workload's path**, measured:
+> `docs/examples/log-watcher` declares no `@gc` class — 35 classes in its image,
+> none with the gc flag, and 0 `RC_INC` / 0 `RC_DEC` instructions against 78
+> `DROP`s. Its memory story is arena + deterministic drops end to end, so this
+> iteration (and iteration 4's open `gc/held-cycle` leak, and `set`'s `@gc`
+> retention gap) cannot affect whether log-watcher runs. It stays queued for
+> workloads that build cycles; the `gc/` corpus fixtures remain its only users.
+
 ## Goals
 
 - **The developer stops deciding which types are garbage collected.** `@gc`

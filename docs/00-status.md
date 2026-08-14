@@ -19,29 +19,47 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
-**Close the gaps the log-watcher milestone left open.** The acceptance target
-of the whole language track — _compile and run log-watcher_ — is **met** as of
-2026-08-14: `docs/examples/log-watcher` (1285 lines, 7 files) compiles with
-zero diagnostics, and the image runs (`wovm lw.wob watch app.log 2 1` tails a
-live file, classifies levels and fires `ALERT … last entry is error, quiet for
-2s`). What remains is the *strictness* half of iteration 5 plus one runtime
-gate, in this order:
+**Make log-watcher executable — nothing else.** The compile-and-run half of the
+language track is met (2026-08-14): the sample compiles with zero diagnostics,
+`woc build` produces a 106 KB standalone binary, and all three modes work —
+`watch` alerts on a live file, `run` schedules a cron.d entry, `mcp` answers
+JSON-RPC with all four tools returning `isError:false`. `just log-watcher`
+gates it: 6 checks, 0 failures.
 
-1. **`?T` forced handling** (plan 8 Task 6's diagnostics half, `WO-E211`–`E213`
-   still dead). Optionals are currently **lenient**: `nil` is the zero word, a
-   `?T` is usable where `T` is expected, and nothing narrows. The
-   representation and the comparisons are right; the refusals are missing.
-2. **`pub(read)` write enforcement** — parsed and recorded on the field; the
-   typechecker does not yet refuse a write from outside the declaring class.
-3. **`using` extensions and `#if` build flags + reject-row diagnostics** (plan 8
-   Tasks 7–8's remainder). Nothing in the workload needs them, so they are the
-   tail of the plan, not a blocker.
-4. **ASan over the workload** — the corpus is ASan-clean, but log-watcher's own
-   run has never been under the sanitizer, and iteration 4's `gc/held-cycle`
-   leak is still open (see the known-gaps section).
+What is left is the difference between "it runs" and "you can leave it
+running", and every item below came from a measurement on the sample itself:
 
-Plan: [`plan/compiler/2026-08-01-haxe-parity-language.md`](plan/compiler/2026-08-01-haxe-parity-language.md) ·
-Story slice: [`docs/stories/language-runtime-database/05-language-surface.md`](stories/language-runtime-database/05-language-surface.md)
+1. **The ownership pass does not know what the stdlib returns** — so a binding
+   holding a fresh `fs.read_all`/`fs.list`/`net.read`/`json.encode` result is
+   classified Copy and never dropped. Measured: >1 MB leaked in eight seconds
+   of `run` mode, the largest single allocation being one `fs.read_all` result.
+2. **A projected temporary is never dropped** — `for e in parse_dir(d).entries`
+   keeps the elements (correct) and leaks the record shell, once per rescan.
+3. **The runtime leaks its own argv container** — 128 bytes in 2 allocations on
+   every run, `main.c`'s `multi Text` of arguments.
+4. **A stopping program does not stop** — `env.stopping()` sets a flag, but
+   `net.accept`/`net.read` restart on `EINTR`, so a server parked in `accept`
+   ignores SIGTERM and needs `kill -9`.
+5. **The MCP server never closes an accepted connection** — `net.close` exists
+   and is unused; every request costs a descriptor.
+6. **Nothing soaks** — every check is seconds long, which is exactly the window
+   where a leak hides. The acceptance script needs a soak mode measuring RSS
+   and descriptors across a real duration.
+
+Plan: [`plan/compiler/2026-08-14-logwatcher-executable.md`](plan/compiler/2026-08-14-logwatcher-executable.md) ·
+Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](stories/language-runtime-database/07-logwatcher-proof.md)
+
+**Deferred by name, with the measurement that says so:**
+
+- Iteration 5's *strictness* half (`?T` forced handling, `pub(read)` write
+  enforcement, `using`, `#if`, reject rows) — it makes the language refuse
+  more; it does not make this program run. Plan 8 stays open for it.
+- Everything `@gc`: iteration 7b, `set`'s `@gc` retention gap, iteration 4's
+  `gc/held-cycle` leak. The sample declares **no `@gc` class** — 35 classes,
+  none with the gc flag, 0 `RC_INC`/`RC_DEC` against 78 `DROP`s — so none of it
+  can affect this workload.
+- Iterations 8–12 (shard-actor runtime, database engine, `@table`/query, HTTP
+  layer, fibers, blue-green): unchanged, and unblocked by this plan.
 
 Two tracks run in this repo. The critical path is the **language track**:
 iterations 3 → 4 → 5 → 6 → 7, ending at _compile and run log-watcher_. The
@@ -62,10 +80,10 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 2   | [VM core (`wovm`)](stories/language-runtime-database/02-vm-core.md)                          | ✅                           |
 | 3   | [Compiler front (`woc`)](stories/language-runtime-database/03-compiler-front.md)             | ✅ (known gaps below)        |
 | 4   | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
-| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done, strictness open |
+| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done, strictness ⏸ deferred |
 | 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
-| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | ✅ compiles and runs         |
-| 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ⬜ closes iteration 4's gate |
+| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | 🔄 **runs; executable in progress** |
+| 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ⏸ off the workload's path (no `@gc`) |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
 | 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | ⬜                           |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | ⬜ needs a spec first        |
@@ -79,7 +97,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | Iteration 5's strictness half — `?T` forced handling, `pub(read)` writes, `using`, `#if` | [plan 8](plan/compiler/2026-08-01-haxe-parity-language.md) |
+| Language | Iteration 7 — make log-watcher executable (leaks, stop signal, fd lifetime, soak) | [executable plan](plan/compiler/2026-08-14-logwatcher-executable.md) |
 
 Off-critical-path work is parked by explicit scope directive (2026-08-08).
 

@@ -3,6 +3,18 @@
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).
 
+
+> **Status (2026-08-14):** the *grammar* half landed — modules, `and`/`or`,
+> interpolation, `const`, loop control, switch expressions, typedef records,
+> enum payloads, try/catch, `nil`/`?T`, statics, `pub(read)` syntax, container
+> literals, `for k, v in m`, and `as` — which is what let the driving workload
+> compile. The *strictness* half (`?T` forced handling `WO-E211`–`E213`,
+> `pub(read)` write enforcement, `using`, `#if`, reject-row diagnostics) is
+> **deliberately deferred** behind
+> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md):
+> it makes the language refuse more, not the program run. Plan 8 stays open
+> for it.
+
 ## Goals
 
 - The language grows from milestone grammar to a daily-driver surface: the

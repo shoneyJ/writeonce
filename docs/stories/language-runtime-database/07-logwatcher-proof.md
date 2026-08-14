@@ -13,6 +13,17 @@
   systems track's acceptance bar: nothing in a real daemon exceeded the
   language.
 
+> **Status (2026-08-14):** the compile-and-run half is **met** — the sample
+> compiles with zero diagnostics, `woc build` produces a 106 KB standalone
+> binary, and all three modes work (`watch` alerts, `run` schedules a cron.d
+> entry, `mcp` answers JSON-RPC with all four tools returning `isError:false`).
+> The remaining half is **executable**: under ASan both long-running modes leak
+> (watch 128 B, run >1 MB in eight seconds), the MCP server never closes an
+> accepted connection, and a server parked in `accept` ignores SIGTERM. That
+> work is sequenced in
+> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md)
+> and nothing else blocks this iteration.
+
 ## Acceptance Criteria
 
 - What to achieve?
@@ -33,6 +44,11 @@
     - **when** the iteration closes,
     - **then** every row names its `.hx` sibling and deliberate
       divergences, and the could-not-express column is empty.
+- What to achieve? *(added 2026-08-14 — compiling is not running)*
+    - **Given** any of the three modes started under a sanitizer build,
+    - **when** it is signalled to stop after a soak,
+    - **then** it exits cleanly on SIGTERM alone, reports zero leaks, and
+      its resident size and descriptor count are flat across the soak.
 
 ## Out Of Scope
 
@@ -52,6 +68,14 @@
 
 ## Proposed Solution
 
-- Execute the existing plan: `docs/superpowers/plans/2026-08-01-log-watcher-sample.md`
-  (five tasks: tail state machine, cron, probes+supervisor, MCP subset,
-  main + README + live acceptance scenario in the `oop-accept` gate).
+- The authoring plan (`docs/superpowers/plans/2026-08-01-log-watcher-sample.md`)
+  is spent: the `.wo` files exist and compile.
+- What remains is
+  [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md)
+  — six tasks, every one traced to a measurement on this sample: the ownership
+  pass learning stdlib return types, dropping a projected temporary, the
+  runtime's own argv container, honouring the stop signal in blocking calls,
+  closing accepted connections, and a soak that would have caught all of it.
+- `just log-watcher` (`scripts/log-watcher-accept.sh`) is this iteration's gate:
+  compile, watch alert, cron schedule, and three MCP checks today; the soak
+  joins it in the last task.
