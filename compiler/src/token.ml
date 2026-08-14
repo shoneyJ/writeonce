@@ -93,6 +93,9 @@ type kind =
      identifier — `nil` appears in the corpus and the driving workload
      only ever as this literal. *)
   | KwNil
+  (* haxe-parity: `expr as Type` — the checked-decode cast. Only meaningful
+     over `json.decode(text)`, whose result has no type until one is named. *)
+  | KwAs
   (* haxe-parity Task 4: `typedef Name = { ... }` structural records. A
      real keyword (grepped the corpus/sample first, same discipline as
      every keyword above — `typedef` appears only as this declaration's

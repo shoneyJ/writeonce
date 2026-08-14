@@ -514,6 +514,9 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   (* haxe-parity Task 6: `nil` is the zero word — contextual on its
      destination, and never something this frame owns. *)
   | NilLit -> None
+  (* a checked decode's value is a fresh instance of the named type (or
+     nil) — owned, so the binding that holds it gets its drop *)
+  | As (_, ty) -> Some (Nullable ty)
   (* haxe-parity Task 5: a `try` yields its try arm's type (types.ml has
      already required the catch arm to agree). *)
   | Try t -> expr_ty ctx t.body
@@ -1069,6 +1072,7 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
      literal-specific one. *)
   | ListLit items -> List.iter (read_expr ctx) items
   | MapLit | NilLit -> ()
+  | As (inner, _) -> read_expr ctx inner
   | Try t -> analyze_try ctx e t.body t.ename t.handler
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)

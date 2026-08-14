@@ -160,7 +160,7 @@ let dump (img : string) : string =
   let line fmt = Buffer.add_string out (fmt ^ "\n") in
   if u32 img 0 <> magic then raise (Bad "bad magic");
   let ver = u32 img 4 in
-  if ver <> 1 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  if ver <> 2 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
@@ -204,10 +204,20 @@ let dump (img : string) : string =
     o := !o + 12;
     let kinds = List.init fcnt (fun j -> kind_name (u8 img (!o + j))) in
     o := !o + fcnt + ((4 - (fcnt mod 4)) mod 4);
+    (* v2 per-field metadata: names, referenced class ids, element kinds. The
+       dump shows each field as name:kind — the names are what json.encode
+       renders as keys, so a wrong one is worth seeing. *)
+    let names = List.init fcnt (fun j -> u32 img (!o + (j * 4))) in
+    o := !o + (fcnt * 12);
+    let fields =
+      List.map2
+        (fun nmk k -> if nmk = 0xFFFFFFFF then k else Printf.sprintf "%s:%s" (kname nmk) k)
+        names kinds
+    in
     line
       (Printf.sprintf "c%-3d %s flags=%s fields=[%s]" i (kname nm)
          (if flags land 1 <> 0 then "gc" else "-")
-         (String.concat ", " kinds))
+         (String.concat ", " fields))
   done;
   (* interfaces + vtable rows *)
   line "== INTERFACES ==";

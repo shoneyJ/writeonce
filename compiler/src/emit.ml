@@ -152,7 +152,7 @@ let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
    ============================================================ *)
 
 let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
-let wob_version = 1
+let wob_version = 2 (* v2: per-field class-table metadata *)
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
 let k_int = 0
@@ -255,6 +255,11 @@ let b_map_remove = 36
 let b_map_key_at = 37
 let b_map_val_at = 38
 let b_multi_set = 39
+
+(* json (runtime/src/json.c): encode takes the value's static kind as its
+   second argument, decode the class id to build as its second. *)
+let b_json_encode = 57
+let b_json_decode = 58
 
 let ins_abc op a b c = op lor (a lsl 8) lor (b lsl 16) lor (c lsl 24)
 let ins_abx op a bx = op lor (a lsl 8) lor (bx lsl 16)
@@ -947,6 +952,7 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | ListLit [] | MapLit -> None
   (* haxe-parity Task 6: contextual on its destination (see owner.ml). *)
   | NilLit -> None
+  | As (_, ty) -> Some (Nullable ty)
   (* haxe-parity Task 5: a `try` yields its try arm's type — types.ml has
      already required the catch arm to agree. *)
   | Try t -> ty_of_expr p f t.body
@@ -1296,6 +1302,34 @@ let check_field_idx (p : pctx) (f : fstate) (pos : Ast.pos) (v : int) : int =
    takes a bare identifier), so a fresh container must be created
    somewhere its type is declared — otherwise WO-E403 at the creation
    site, where the reader can act on it. *)
+(* v2 class-table metadata for one field (runtime/src/wob.h):
+   - field_class: the class a field refers to — its own class for an
+     owned/@gc field, its ELEMENT's class for a container of records — or the
+     json-raw marker for a `json.Value` field, else "none".
+   - field_elem: a container field's element kinds (a multi's element kind; a
+     map's key kind and value kind packed as the container_imm immediate),
+     0 for everything else.
+   Both exist so json.encode/json.decode can work off metadata instead of
+   per-type generated code. *)
+let wob_field_json_raw = 0xFFFFFFFE
+
+let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
+  let name_of t = match t with Ast.Scalar n -> Some n | _ -> None in
+  match unwrap ty with
+  | Ast.Scalar n when n = Types.json_value_type -> wob_field_json_raw
+  | Ast.Scalar n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
+  | Ast.Multi e | Ast.Map (_, e) -> (
+    match name_of (Ast.Scalar e) with
+    | Some n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
+    | None -> wob_none)
+  | Ast.Ref _ | Ast.Nullable _ -> wob_none
+
+let field_elem_meta (p : pctx) (ty : Ast.field_ty) : int =
+  match unwrap ty with
+  | Ast.Multi e -> field_kind p (Ast.Scalar e)
+  | Ast.Map (k, v) -> field_kind p (Ast.Scalar k) lor (field_kind p (Ast.Scalar v) lsl 4)
+  | _ -> 0
+
 let container_imm (p : pctx) (expected : Ast.field_ty option) (map : bool) : int option =
   match expected with
   | Some t -> (
@@ -1371,6 +1405,34 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       sync_mask p f v e.id;
       put f (ins_abc op_builtin dst imm b_map_new))
   | Try t -> emit_try p f v ~dst ?expected e t.body t.ename t.handler
+  (* `json.decode(text) as T` is the ONE `as` this language has: a checked
+     decode, lowered to json_decode(text, class id of T). The decode needs
+     the target class, and the target class is exactly what `as` names — so
+     the two are one instruction, never separable. Any other `as` (and a
+     bare `json.decode(...)` with no `as`) is WO-E403: there is no
+     reinterpret cast in the doctrine. *)
+  | As (inner, ty) -> (
+    let target = match unwrap ty with Scalar n -> class_of_name p n | _ -> None in
+    match (inner.kind, target) with
+    | Call ({ kind = Field ({ kind = Ident "json"; _ }, "decode"); _ }, [ src ]), Some cid ->
+      let base = alloc_temps p f e.pos 2 in
+      let save = f.f_temp in
+      emit_expr p f v ~dst:base src;
+      f.f_temp <- save;
+      put f (ins_abx op_loadk (base + 1) (check_bx p f e.pos "constant" (const_int p cid)));
+      sync_mask p f v e.id;
+      f.f_cur_line <- e.pos.line;
+      put f (ins_abc op_builtin dst base b_json_decode)
+    | Call ({ kind = Field ({ kind = Ident "json"; _ }, "decode"); _ }, _), None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:"`as` needs a declared class or record type to decode into";
+      put f (ins_abx op_loadk dst (const_int p 0))
+    | _ ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:
+          "`as` is only a checked JSON decode (`json.decode(text) as T`) — this language has no \
+           reinterpret cast";
+      put f (ins_abx op_loadk dst (const_int p 0)))
   | Ident n -> (
     match lookup_local f n with
     | Some (r, _) -> if r <> dst then put f (ins_abc op_move dst r 0)
@@ -2300,11 +2362,38 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
           (* the systems stdlib: one builtin per member. A member whose
              result is a record takes that record's class id as its last
              argument, so the VM allocates what it fills (sysio.c). *)
-          match Types.stdlib_member alias mname with
+          match (if alias = "json" then None else Types.stdlib_member alias mname) with
+          | None when alias = "json" && mname = "encode" -> (
+            (* json.encode(x): the VM needs x's STATIC kind, since a register
+               alone cannot say whether it holds an i64 or a pointer.
+               Everything below the top level comes from object headers and
+               the class table (runtime/src/json.c). *)
+            match args with
+            | [ a ] ->
+              let base = alloc_temps p f e.pos 2 in
+              let save = f.f_temp in
+              emit_expr p f v ~dst:base a;
+              f.f_temp <- save;
+              let kind =
+                match ty_of_expr p f a with Some t -> field_kind p t | None -> 3 (* Text *)
+              in
+              put f (ins_abx op_loadk (base + 1) (check_bx p f e.pos "constant" (const_int p kind)));
+              sync_mask p f v e.id;
+              f.f_cur_line <- e.pos.line;
+              put f (ins_abc op_builtin dst base b_json_encode)
+            | _ ->
+              err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+                ~message:"`json.encode` takes exactly one argument";
+              put f (ins_abx op_loadk dst (const_int p 0)))
+          | None when alias = "json" && mname = "decode" ->
+            err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+              ~message:
+                "`json.decode(text)` needs a target type — write `json.decode(text) as T`, whose \
+                 result is `?T`";
+            put f (ins_abx op_loadk dst (const_int p 0))
           | None ->
             err p ~code:stdlib_not_linked_code ~file:f.f_file ~pos:e.pos
-              ~message:
-                (Printf.sprintf "stdlib module `%s` has no member `%s`" alias mname);
+              ~message:(Printf.sprintf "stdlib module `%s` has no member `%s`" alias mname);
             put f (ins_abx op_loadk dst (const_int p 0))
           | Some sm ->
             if List.length args <> sm.Types.sm_arity then begin
@@ -3572,6 +3661,13 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
   (* names are constants; interning them first keeps the pool's low
      indexes stable and readable in a disassembly *)
   let class_name_k = Array.map (fun c -> const_text p c.cr_name) p_classes in
+  (* Field-name constants are interned HERE, with every other constant, and
+     never during serialization: the constant pool is written before the
+     class table, so a name interned later would be missing from the image
+     (found the hard way — the loader rejected every class). *)
+  let class_field_names =
+    Array.map (fun c -> Array.map (fun ((fname : string), _) -> const_text p fname) c.cr_fields) p_classes
+  in
   let iface_name_k = Array.map (fun i -> const_text p i.ir_name) p_ifaces in
   let method_name_k = Array.map (fun m -> const_text p m.mr_name) p_methods in
   (* ---- pass 2: method bodies ---- *)
@@ -3644,7 +3740,14 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
       let pad = (4 - (Array.length c.cr_fields mod 4)) mod 4 in
       for _ = 1 to pad do
         Buf.u8 cls 0
-      done)
+      done;
+      (* v2 per-field metadata (wob.h's "class-table field metadata"): the
+         names json.encode renders as keys, the classes json.decode has to
+         build for a nested field, and the element kinds a container field
+         needs when decode creates one. *)
+      Array.iter (fun kidx -> Buf.u32 cls kidx) class_field_names.(cid);
+      Array.iter (fun (_, ty) -> Buf.u32 cls (field_class_meta p ty)) c.cr_fields;
+      Array.iter (fun (_, ty) -> Buf.u32 cls (field_elem_meta p ty)) c.cr_fields)
     p_classes;
   let ifs = Buf.create () in
   Array.iteri

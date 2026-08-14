@@ -59,6 +59,12 @@ uint32_t wb_class(wb_t *b, uint32_t name_const, uint32_t flags,
     put_u32(&b->classes, field_cnt);
     put(&b->classes, kinds, field_cnt);
     for (uint32_t pad = field_cnt; pad % 4; pad++) put_u8(&b->classes, 0);
+    /* v2 per-field metadata (wob.h): a hand-built image records no field
+       names and no referenced classes — WOB_NONE reads as "not recorded",
+       which every consumer but json.encode/decode ignores. */
+    for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, WOB_NONE);
+    for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, WOB_NONE);
+    for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, 0);
     return b->class_cnt++;
 }
 

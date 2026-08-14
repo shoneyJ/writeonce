@@ -1,21 +1,23 @@
 == CONSTANTS ==
 k0   TEXT "Item"
 k1   TEXT "Bag"
-k2   TEXT "touch"
-k3   TEXT "pair"
-k4   TEXT "fixed"
-k5   TEXT "touch3"
-k6   TEXT "triple"
-k7   TEXT "write_through"
-k8   TEXT "main"
-k9   INT  0
-k10  INT  1
-k11  INT  5
-k12  INT  2
-k13  INT  3
+k2   TEXT "n"
+k3   TEXT "items"
+k4   TEXT "touch"
+k5   TEXT "pair"
+k6   TEXT "fixed"
+k7   TEXT "touch3"
+k8   TEXT "triple"
+k9   TEXT "write_through"
+k10  TEXT "main"
+k11  INT  0
+k12  INT  1
+k13  INT  5
+k14  INT  2
+k15  INT  3
 == CLASSES ==
-c0   Item flags=- fields=[SCALAR]
-c1   Bag flags=- fields=[MULTI]
+c0   Item flags=- fields=[n:SCALAR]
+c1   Bag flags=- fields=[items:MULTI]
 == INTERFACES ==
 == VTABLES ==
 == METHODS ==
@@ -48,10 +50,10 @@ m2   fixed args=1 regs=5 [free fn]
   lines: 0->27
   drops: (none)
   0000  GETF      r3, r0, f0
-  0001  LOADK     r4, k9
+  0001  LOADK     r4, k11
   0002  BUILTIN   r1, r3, multi_get
   0003  GETF      r3, r0, f0
-  0004  LOADK     r4, k10
+  0004  LOADK     r4, k12
   0005  BUILTIN   r2, r3, multi_get
   0006  CALL      r1, m0
   0007  RET       r1
@@ -97,7 +99,7 @@ m5   write_through args=3 regs=7 [free fn]
   0003  GETF      r5, r0, f0
   0004  MOVE      r6, r2
   0005  BUILTIN   r4, r5, multi_get
-  0006  LOADK     r5, k11
+  0006  LOADK     r5, k13
   0007  BORROW_X  r4
   0008  BORROW_S  r3
   0009  SETF      r4, f0, r5
@@ -114,22 +116,22 @@ m6   main args=0 regs=6 [free fn] [ENTRY]
   0002  SETF      r0, f0, r1
   0003  GETF      r1, r0, f0
   0004  NEW       r2, c0
-  0005  LOADK     r3, k10
+  0005  LOADK     r3, k12
   0006  SETF      r2, f0, r3
   0007  BUILTIN   r1, r1, multi_push
   0008  GETF      r1, r0, f0
   0009  NEW       r2, c0
-  0010  LOADK     r3, k12
+  0010  LOADK     r3, k14
   0011  SETF      r2, f0, r3
   0012  BUILTIN   r1, r1, multi_push
   0013  GETF      r1, r0, f0
   0014  NEW       r2, c0
-  0015  LOADK     r3, k13
+  0015  LOADK     r3, k15
   0016  SETF      r2, f0, r3
   0017  BUILTIN   r1, r1, multi_push
   0018  MOVE      r2, r0
-  0019  LOADK     r3, k9
-  0020  LOADK     r4, k10
+  0019  LOADK     r3, k11
+  0020  LOADK     r4, k12
   0021  CALL      r2, m1
   0022  MOVE      r1, r2
   0023  BUILTIN   r1, r1, print_int
@@ -138,15 +140,15 @@ m6   main args=0 regs=6 [free fn] [ENTRY]
   0026  MOVE      r1, r2
   0027  BUILTIN   r1, r1, print_int
   0028  MOVE      r2, r0
-  0029  LOADK     r3, k9
-  0030  LOADK     r4, k10
-  0031  LOADK     r5, k12
+  0029  LOADK     r3, k11
+  0030  LOADK     r4, k12
+  0031  LOADK     r5, k14
   0032  CALL      r2, m4
   0033  MOVE      r1, r2
   0034  BUILTIN   r1, r1, print_int
   0035  MOVE      r2, r0
-  0036  LOADK     r3, k9
-  0037  LOADK     r4, k10
+  0036  LOADK     r3, k11
+  0037  LOADK     r4, k12
   0038  CALL      r2, m5
   0039  MOVE      r1, r2
   0040  BUILTIN   r1, r1, print_int

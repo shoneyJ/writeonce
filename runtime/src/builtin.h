@@ -14,4 +14,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
  * wo_builtin dispatches every id at or above WO_B_SYS_FIRST here. */
 int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
+/* json.encode / json.decode (runtime/src/json.c), same contract again. */
+int wo_builtin_json(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
+
 #endif /* WO_BUILTIN_H */

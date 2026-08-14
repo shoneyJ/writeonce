@@ -850,6 +850,17 @@ and parse_multiplicative (st : state) : Ast.expr =
   done;
   !lhs
 
+(* `as` binds tighter than every binary operator and looser than a call, so
+   `json.decode(raw) as FileConfig` casts the call's result, and
+   `x as T == y` compares the cast value. *)
+and parse_as (st : state) (e : Ast.expr) : Ast.expr =
+  if peek st <> Token.KwAs then e
+  else begin
+    ignore (advance st);
+    let ty = parse_field_ty st in
+    parse_as st { Ast.id = fresh_id st; pos = e.Ast.pos; kind = Ast.As (e, ty) }
+  end
+
 and parse_unary (st : state) : Ast.expr =
   match peek st with
   | Token.Dash ->
@@ -858,7 +869,7 @@ and parse_unary (st : state) : Ast.expr =
     ignore (advance st);
     let operand = parse_unary st in
     { Ast.id; pos; kind = Ast.Unary (Ast.Neg, operand) }
-  | _ -> parse_postfix st
+  | _ -> parse_as st (parse_postfix st)
 
 and parse_postfix (st : state) : Ast.expr =
   let base = ref (parse_primary st) in
@@ -1767,6 +1778,7 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
   | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
   | Ast.MapLit | Ast.NilLit -> e
+  | Ast.As (inner, ty) -> { e with Ast.kind = Ast.As (subst_expr consts bound inner, ty) }
   | Ast.Try { body; ename; handler } ->
     { e with
       Ast.kind =

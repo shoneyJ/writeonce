@@ -30,15 +30,31 @@ maps to one `BUILTIN` id of the format doc.
 | `set(m, k, v)` | `map_set` | 3 | insert or replace in a `map` |
 | `has(m, k)` | `map_has` | 2 | `1`/`0` |
 | `int_to_text(n)` | `int_to_text` | 1 | decimal rendering of an `Int`, as a fresh owned `Text` — haxe-parity Task 2's one fenced VM addition, the type-directed half of string interpolation (below); also directly callable |
+| `len(x)` | `len` | 1 | byte length of a `Text`, or element/entry count of a container |
+| `byte_at(t, i)` | `byte_at` | 2 | byte value at an index; out of range traps `BOUNDS` |
+| `print_err(t)` | `print_err` | 1 | a `Text` to stderr, newline-terminated |
+| `starts_with(t, p)` / `ends_with(t, s)` | same | 2 | `1`/`0` |
+| `index_of(t, n)` / `last_index_of(t, n)` | same | 2 | first/last byte offset, `-1` when absent |
+| `substr(t, start, len)` | `substr` | 3 | fresh `Text`, clamped (never traps) |
+| `trim(t)` / `to_lower(t)` | same | 1 | fresh `Text` |
+| `char_of(b)` | `char_of` | 1 | fresh one-byte `Text` |
+| `parse_int(t)` | `parse_int` | 1 | `?Int` — an unparseable text is `0`, which is how `?Int` spells nil |
+| `split(t, sep)` / `split_ws(t)` | same | 2 / 1 | fresh `multi Text` |
+| `join(m, sep)` | `join` | 2 | fresh `Text` from a `multi Text` |
+| `slice(m, from, to)` | `slice` | 3 | fresh `multi` over `[from, to)`; `Text` elements are COPIED, so slice and source never both own one value |
+| `pop(m)` / `shift(m)` | same | 1 | removes and returns the last/first element (ownership moves to the caller); empty traps `BOUNDS` |
+| `sort(m)` / `reverse(m)` | same | 1 | in place; `sort` compares `Text` by content, everything else as signed integers |
+| `remove(m, k)` | `map_remove` | 2 | `1`/`0`; drops the removed key and value |
+| `key_at(m, i)` / `val_at(m, i)` | same | 2 | slot-ordered map enumeration — what `for k, v in m` lowers onto |
+| `m[i] = v` on a `multi` | `multi_set` | 3 | in-place element write, dropping the element it replaces |
 
 `get`, `set`, `push`, `count` and `has` resolve on the container they are
 given, so one source name covers the `multi` and `map` ids the runtime
 keeps apart.
 
 **Sugar.** `c[i]` is exactly `get(c, i)` and `m[k] = v` is exactly
-`set(m, k, v)`. There is no element *write* into a `multi` — v1 has
-`multi_push` and `multi_get` and no element store — so `m[i] = v` on a
-`multi` is `WO-E403`.
+`set(m, k, v)` for a `map` and `multi_set(m, i, v)` for a `multi` (the
+element it replaces is the container's, so the VM drops it).
 
 **Shadowing.** A user-declared free `fn` of the same name always wins. A
 declared name is never silently replaced by a builtin.
@@ -218,3 +234,64 @@ rejects `6`), and it needs none: every per-kind drop plan already ignores
 a zero slot. `?T`'s field kind is therefore `T`'s. Note the consequence
 for `@gc`: `?SomeGcClass` is a `GCREF` field like any other, so it
 participates in refcounting and cycle detection normally.
+
+## The systems stdlib's OS half (`fs`, `time`, `env`, `net`, `proc`)
+
+Reserved module names resolve to one builtin per member
+(`runtime/src/sysio.c`). Every one is a thin blocking libc call, so the
+failure surface is uniform: a syscall that fails traps `WO_T_IO` carrying
+errno's own message, and the source decides with `try ... catch` whether
+that is fatal. Absence is never a trap — a missing path from `fs.stat` and an
+unset `env.get` are nil.
+
+| member | signature | notes |
+| --- | --- | --- |
+| `fs.exists(path)` | `-> Bool` | |
+| `fs.list(dir)` | `-> multi Text` | names only, unsorted; unreadable dir traps `IO` |
+| `fs.stat(path)` | `-> ?Stat` | `Stat { size, mtime (ms), inode, dir }` |
+| `fs.read_all(path, cap)` | `-> Text` | truncated at `cap` |
+| `fs.read_at(path, off, len)` | `-> Text` | short read allowed (a growing file is normal) |
+| `fs.append(path, text)` | — | creates the file if absent |
+| `time.now()` | `-> Int` | wall-clock ms; the existing `now` builtin |
+| `time.sleep(ms)` | — | |
+| `time.local(ms)` | `-> TimeParts` | `{ year, month, day, hour, minute, second, dow }`, dow 0 = Sunday |
+| `time.iso(ms)` | `-> Text` | UTC, second precision |
+| `env.get(name)` | `-> ?Text` | unset is nil |
+| `env.stopping()` | `-> Bool` | SIGTERM/SIGINT latch, handlers installed on first use |
+| `net.listen(host, port)` | `-> Int` | IPv4, SO_REUSEADDR, backlog 64; returns an fd |
+| `net.accept(fd)` | `-> Int` | |
+| `net.read(fd, max)` | `-> Text` | one read; the empty Text is EOF |
+| `net.write(fd, text)` | — | writes all of it |
+| `net.close(fd)` | — | |
+| `proc.run(cmd, args)` | `-> ?Proc` | `Proc { code, out, err }`; stdout/stderr captured and capped |
+
+`Stat`, `TimeParts` and `Proc` are **predeclared records**: no source declares
+them, and their field ORDER is the contract with `sysio.c`, which writes them
+by index. The compiler passes the record's class id as the member's last
+argument, so the VM allocates what it fills.
+
+## `json`
+
+`json.encode(x) -> Text` and `json.decode(text) as T -> ?T`. Both are
+metadata-driven (`runtime/src/json.c`): the class table's per-field names,
+referenced classes and element kinds (`.wob` v2) are what let one
+implementation encode and decode any record shape, with no per-type generated
+code.
+
+- `encode` takes the value's *static* kind alongside it, because a register
+  alone cannot say whether it holds an i64 or a pointer; everything below the
+  top level comes from object headers and the class table.
+- `decode` parses and binds straight into the target class: keys are matched
+  against field names, a nested object is built as that field's class, an
+  array as a `multi` of that field's element kind, unknown keys are skipped,
+  and absent keys stay nil. Malformed input yields nil — never a trap, which
+  is what makes the `as` form a *checked* decode. `as` exists for no other
+  purpose: there is no reinterpret cast in the doctrine.
+- `json.Value` is a reserved type name for a decoded value the source does not
+  inspect: it holds the raw JSON slice it came from (kind TEXT) and encodes
+  back verbatim.
+
+Two documented limits: a `Bool` field is a SCALAR slot like any other integer,
+so it encodes as `0`/`1` rather than `false`/`true` (the kind byte does not
+distinguish them); and a JSON number with a fraction or exponent decodes by
+truncation to `Int`, since the language has no float.

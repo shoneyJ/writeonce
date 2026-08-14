@@ -139,6 +139,7 @@ let keyword_kind = function
   | "try" -> Some Token.KwTry
   | "catch" -> Some Token.KwCatch
   | "nil" -> Some Token.KwNil
+  | "as" -> Some Token.KwAs
   | "INSERT" -> Some Token.KwInsert
   | "SELECT" -> Some Token.KwSelect
   | _ -> None

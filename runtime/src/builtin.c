@@ -63,7 +63,8 @@ static int elem_cmp(uint8_t kind, uint64_t a, uint64_t b) {
 int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     wo_rt *rt = &vm->rt;
     uint8_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
-    /* the OS half lives in its own translation unit — see sysio.c */
+    /* the OS half and json live in their own translation units */
+    if (C >= WO_B_JSON_ENCODE) return wo_builtin_json(vm, R, ins, msg);
     if (C >= WO_B_SYS_FIRST) return wo_builtin_sys(vm, R, ins, msg);
     switch (C) {
     case WO_B_NOW: { /* wall-clock milliseconds */

@@ -59,6 +59,9 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_ENV_GET] = 1,      [WO_B_ENV_STOPPING] = 0, [WO_B_NET_LISTEN] = 2,
     [WO_B_NET_ACCEPT] = 1,   [WO_B_NET_READ] = 2,    [WO_B_NET_WRITE] = 2,
     [WO_B_NET_CLOSE] = 1,    [WO_B_PROC_RUN] = 3,
+    /* json (json.c): encode takes the value's static kind, decode the class
+       id to build */
+    [WO_B_JSON_ENCODE] = 2,  [WO_B_JSON_DECODE] = 2,
 };
 
 static int vtab_cmp(const void *a, const void *b) {
@@ -137,7 +140,7 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         m->classes = calloc(kcnt, sizeof(wo_classdesc));
         if (!m->classes) BAIL("out of memory");
     }
-    size_t pool_len = 0;
+    size_t pool_len = 0, meta_pool = 0;
     for (uint32_t i = 0; i < kcnt; i++) {
         uint32_t name, flags, fcnt;
         if (rd_u32(&k, &name) || rd_u32(&k, &flags) || rd_u32(&k, &fcnt))
@@ -159,15 +162,47 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         uint32_t pad = (4u - fcnt % 4u) % 4u;
         if (pad > k.len - k.off) BAIL("class %u: truncated pad", (unsigned)i);
         k.off += pad;
+        /* v2: three u32 arrays of per-field metadata (names, referenced
+           class ids, container element kinds) — wob.h's "class-table field
+           metadata" note. A name of WOB_NONE means "not recorded", which is
+           what a hand-built test image writes; any other value must be a
+           real Text constant, since json.encode renders it as a key. */
+        size_t meta_words = (size_t)fcnt * 3u;
+        if (meta_words * 4u > k.len - k.off) BAIL("class %u: truncated field metadata", (unsigned)i);
+        uint32_t *mp = realloc(m->metapool, (meta_pool + (meta_words ? meta_words : 1)) * sizeof(uint32_t));
+        if (!mp) BAIL("out of memory");
+        m->metapool = mp;
+        for (size_t w = 0; w < meta_words; w++) {
+            uint32_t val;
+            if (rd_u32(&k, &val)) BAIL("class %u: truncated field metadata", (unsigned)i);
+            m->metapool[meta_pool + w] = val;
+        }
+        for (uint32_t j = 0; j < fcnt; j++) {
+            uint32_t nm = m->metapool[meta_pool + j];
+            if (nm != WOB_NONE && (nm >= m->const_cnt || m->consts[nm].tag != WOB_K_TEXT))
+                BAIL("class %u field %u: bad name constant", (unsigned)i, (unsigned)j);
+            uint32_t fc = m->metapool[meta_pool + fcnt + j];
+            if (fc != WOB_NONE && fc != WOB_FIELD_JSON_RAW && fc >= kcnt)
+                BAIL("class %u field %u: field class out of range", (unsigned)i, (unsigned)j);
+        }
         m->classes[i].name = name;
         m->classes[i].flags = flags;
         m->classes[i].field_cnt = fcnt;
         m->classes[i].kinds = (const uint8_t *)(uintptr_t)pool_len; /* offset */
+        /* offsets too; fixed up to pointers once the pool stops moving */
+        m->classes[i].field_names = (const uint32_t *)(uintptr_t)meta_pool;
+        m->classes[i].field_class = (const uint32_t *)(uintptr_t)(meta_pool + fcnt);
+        m->classes[i].field_elem = (const uint32_t *)(uintptr_t)(meta_pool + 2u * (size_t)fcnt);
         pool_len += fcnt ? fcnt : 1;
+        meta_pool += meta_words ? meta_words : 1;
         m->class_cnt = i + 1;
     }
-    for (uint32_t i = 0; i < m->class_cnt; i++)
+    for (uint32_t i = 0; i < m->class_cnt; i++) {
         m->classes[i].kinds = m->kindpool + (uintptr_t)m->classes[i].kinds;
+        m->classes[i].field_names = m->metapool + (uintptr_t)m->classes[i].field_names;
+        m->classes[i].field_class = m->metapool + (uintptr_t)m->classes[i].field_class;
+        m->classes[i].field_elem = m->metapool + (uintptr_t)m->classes[i].field_elem;
+    }
 
     /* ---- interfaces + vtable rows (expanded to sorted triples) ---- */
     cur_t s = {buf, len, ioff};
@@ -485,6 +520,7 @@ void wo_module_free(wo_module *m) {
     free(m->consts);
     free(m->classes);
     free(m->kindpool);
+    free(m->metapool);
     free(m->vtabs);
     for (uint32_t i = 0; i < m->method_cnt; i++) {
         free(m->methods[i].code);

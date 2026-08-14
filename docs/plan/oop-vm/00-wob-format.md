@@ -1,4 +1,4 @@
-# The `.wob` format v1 — normative reference
+# The `.wob` format v2 — normative reference
 
 > Copied verbatim from the normative section of
 > [`docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md`](../../superpowers/plans/2026-08-01-wob-format-and-vm-core.md)
@@ -11,11 +11,19 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 1, then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 2, then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
 **Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL).
 
-**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`), field count, then one kind byte per field padded to a 4-byte boundary. Field kinds: 0 SCALAR, 1 OWNED, 2 GCREF, 3 TEXT, 4 MULTI, 5 MAP. Runtime object layout: 16-byte header then one 8-byte slot per field, in declaration order.
+**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
+
+1. `field_names[i]` — constant index of the field's name, or all-ones for "not recorded" (what a hand-built test image writes).
+2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; all-ones for none.
+3. `field_elem[i]` — a container field's element kinds: a MULTI's element kind, or a MAP's key kind in the low nibble and value kind in the next; 0 otherwise.
+
+Field kinds: 0 SCALAR, 1 OWNED, 2 GCREF, 3 TEXT, 4 MULTI, 5 MAP. Runtime object layout: 16-byte header then one 8-byte slot per field, in declaration order.
+
+The metadata exists for exactly one reason: `json.encode`/`json.decode` are runtime services driven by class metadata (`runtime/src/json.c`) rather than per-type generated code, so the names a JSON object needs and the shapes a decode has to build must live in the image. Every other part of the runtime ignores it.
 
 **Interface section** — per interface: name constant index, method count. Global *slot ids* are assigned sequentially across interfaces in declaration order. Then a vtable row count and rows: class id, interface id, one method index per interface method.
 
@@ -43,10 +51,18 @@ All integers little-endian; offsets are absolute file offsets.
 | 29 | BUILTIN A B C | register A = builtin C applied to args starting at register B (fixed arity per builtin; `multi_new`/`map_new` carry kind immediates in B instead) |
 | 30 | DB_STUB | trap T_DB "engine not linked" (spec: SQL-layer statements in milestone 1) |
 | 31 | TRAP Bx | explicit trap with code Bx |
+| 32 | TRY A sBx | push a catch frame for this frame and window: handler at pc + sBx, error record register A (haxe-parity Task 5) |
+| 33 | ENDTRY | pop the innermost catch frame — the try region completed without trapping |
 
-**Builtins:** now (ms), print (text), print_int, words (whitespace token count), multi_new/multi_push/multi_get/count/latest, map_new/map_set/map_get/map_has, int_to_text (haxe-parity Task 2), variant_tag (haxe-parity Task 4 — see "Enum payload variants" below).
+**try/catch (Task 5).** A trap raised while a catch frame is live unwinds every frame *above* the catching one exactly as an uncaught trap does (drop maps run, registers null), then releases what the try region owned in the catching frame — the difference between the drop entry at the trapping instruction and the one at the handler pc — and resumes at the handler instead of leaving the VM. A frame that returns takes its still-open catch frames with it, so a `return` out of a try region cannot leave a handler pointing at a dead window. With no catch frame live, a trap behaves byte-for-byte as it did before v2. The catch arm's error record is an ordinary compiler-allocated object filled by the `err_fill` builtin (field order: 0 code, 1 line, 2 method, 3 msg).
 
-**Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT.
+**Builtins:** now (ms), print (text), print_int, words (whitespace token count), multi_new/multi_push/multi_get/count/latest, map_new/map_set/map_get/map_has, int_to_text (haxe-parity Task 2), variant_tag (haxe-parity Task 4 — see "Enum payload variants" below), err_fill (Task 5's catch record), then the systems stdlib:
+
+- **text/containers** — len, byte_at, print_err, starts_with, ends_with, index_of, last_index_of, substr, trim, to_lower, char_of, parse_int, split, split_ws, join, slice, pop, shift, sort, reverse, remove, key_at, val_at, multi_set. Ids 16–39; `runtime/src/builtin.c`.
+- **the OS half** — fs.exists/list/stat/read_all/read_at/append, time.sleep/local/iso, env.get/stopping, net.listen/accept/read/write/close, proc.run. Ids 40–56; `runtime/src/sysio.c`. A member that returns a record takes that record's **class id as its last argument**, so the VM allocates what it fills without knowing any source type name.
+- **json** — encode (value + the value's static kind), decode (text + the class id to build). Ids 57–58; `runtime/src/json.c`. Decode yields the zero word on malformed input rather than trapping, which is what makes `json.decode(t) as T` a checked decode.
+
+**Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT, IO (a syscall the source cannot prevent said no — errno's message rides in the error record).
 
 ## Enum payload variants (haxe-parity compiler Task 4)
 

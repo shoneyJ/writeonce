@@ -12,7 +12,7 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 1u
+#define WOB_VERSION 2u /* v2 adds per-field names/types to the class table */
 #define WOB_HDR_SIZE 44u
 #define WOB_OFF_MAGIC 0u
 #define WOB_OFF_VERSION 4u
@@ -22,6 +22,24 @@
 #define WOB_OFF_METHOD 32u
 #define WOB_OFF_ENTRY 40u
 #define WOB_NONE 0xFFFFFFFFu /* "no entry method" / "free fn" class id */
+
+/* ---- class-table field metadata (v2) ----
+ * Every class row carries, after its kind bytes, three u32 arrays — one
+ * entry per field: the constant index of the field's NAME, the class id the
+ * field REFERS to, and the element kinds of a container field. They exist
+ * for one reason: `json.encode`/`json.decode` are runtime services driven by
+ * class metadata (runtime/src/json.c) instead of per-type generated code, so
+ * the names a JSON object needs and the shapes a decode must build have to
+ * be in the image. Absent metadata is WOB_NONE / 0, which every other part
+ * of the runtime ignores.
+ *
+ * field_class[i]: the class id of an OWNED/GCREF field, or of a container
+ *   field's element when that element is a class; WOB_FIELD_JSON_RAW marks a
+ *   `json.Value` field, whose Text holds raw JSON that encode emits verbatim
+ *   and decode captures unparsed; WOB_NONE otherwise.
+ * field_elem[i]: for a MULTI field, its element kind; for a MAP field, the
+ *   key kind in the low byte and the value kind in the next; 0 otherwise. */
+#define WOB_FIELD_JSON_RAW 0xFFFFFFFEu
 
 /* ---- constant pool tags ---- */
 #define WOB_K_INT 0u  /* tag byte, then i64 */
@@ -235,8 +253,16 @@ enum {
     WO_B_NET_WRITE = 54,   /* (fd, text) -> 0 */
     WO_B_NET_CLOSE = 55,   /* (fd) -> 0 */
     WO_B_PROC_RUN = 56,    /* (cmd, multi Text args, cls) -> Proc {code, out, err} */
+    /* ---- json (runtime/src/json.c): metadata-driven, not per-type code.
+     * encode takes the STATIC kind of its argument, because a register alone
+     * cannot say whether it holds an i64 or a pointer; everything below the
+     * top level comes from object headers and the class table. decode takes
+     * the class id to build, and yields nil (0) on malformed input — never a
+     * trap, which is what makes `json.decode(t) as T` a checked decode. ---- */
+    WO_B_JSON_ENCODE = 57, /* (value, kind) -> Text */
+    WO_B_JSON_DECODE = 58, /* (text, cls) -> ?instance of cls */
 };
-#define WO_B_MAX 56u
+#define WO_B_MAX 58u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 
@@ -264,6 +290,12 @@ typedef struct wo_classdesc {
     uint32_t flags; /* bit0: instances are @gc */
     uint32_t field_cnt;
     const uint8_t *kinds; /* field_cnt kind bytes, declaration order */
+    /* v2 per-field metadata, field_cnt entries each — see the
+     * "class-table field metadata" note above. Both may be NULL for a
+     * class an image wrote with no metadata at all. */
+    const uint32_t *field_names; /* constant index of each field's name */
+    const uint32_t *field_class; /* referenced class id / JSON_RAW / NONE */
+    const uint32_t *field_elem;  /* container element kinds */
 } wo_classdesc;
 #define WO_CLASSF_GC 0x01u
 

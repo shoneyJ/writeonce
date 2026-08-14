@@ -173,6 +173,12 @@ let stdlib_modules = [ "fs"; "proc"; "net"; "time"; "json"; "env" ]
 
 let is_stdlib_module (name : string) : bool = List.mem name stdlib_modules
 
+(* The one reserved stdlib TYPE name: `json.Value`, a decoded JSON value.
+   Represented as a Text holding the raw JSON slice (see wob_kind_of_typ),
+   so `json.encode(v)` re-emits it verbatim and nothing has to model a
+   dynamic value tree. *)
+let json_value_type = "json.Value"
+
 (* haxe-parity Task 5: the record `catch (e)` binds — the VM's structured
    trap error, one shape forever (spec §6). Predeclared rather than
    written: no source declares it, every program that catches gets it, and
@@ -252,7 +258,14 @@ let stdlib_members : stdlib_member list =
     m "net" "write" 2 54 None None;
     m "net" "close" 1 55 None None;
     (* proc *)
-    m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name) ]
+    m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
+    (* json — both members are lowered specially (emit.ml): encode needs its
+       argument's static kind, and decode has no type until an `as` names one,
+       so neither goes through the generic builtin path. They are listed here
+       for their SIGNATURES: `json.encode(x) -> Text`, and `json.decode(t)`
+       yielding nothing on its own. *)
+    m "json" "encode" 1 57 (Some (TScalar "Text")) None;
+    m "json" "decode" 1 58 None None ]
 
 let stdlib_member (m : string) (name : string) : stdlib_member option =
   List.find_opt (fun s -> s.sm_module = m && s.sm_name = name) stdlib_members
@@ -339,7 +352,11 @@ let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
            WO_K_TEXT. Emitting WO_K_SCALAR here leaked every string a
            class owned. Found by the emitter, this function's first
            caller. *)
-        if name = "Text" then WO_K_TEXT
+        (* `json.Value` is a Text at the representation level: a decoded
+           value the source never inspects, carrying the raw JSON slice it
+           came from, which json.encode emits back verbatim. Kinding it TEXT
+           is what makes it drop correctly and pass through concatenation. *)
+        if name = "Text" || name = json_value_type then WO_K_TEXT
         else if is_builtin_scalar name then WO_K_SCALAR
         else if StringMap.mem name syms.unions then
           (* haxe-parity Task 4: an all-bare union value is a plain
@@ -993,6 +1010,9 @@ let typecheck_program ~file ~(module_of : string -> string)
        as an empty container literal — nothing about the literal itself
        says which `?T` it is the absent value of. *)
     | NilLit -> None
+    (* A checked decode yields `?T` — the named type, or nil when the text
+       did not fit it. *)
+    | As (_, ty) -> Some (TNullable (resolve_field_ty ty))
     (* haxe-parity Task 5: a `try` expression's type is its try arm's — the
        handler is checked to agree (typecheck_expr below), so either arm
        would answer, and the try arm is the one that always has a value. *)
@@ -1342,6 +1362,9 @@ let typecheck_program ~file ~(module_of : string -> string)
        what lets a comparison or a binding treat it as the absent value of
        whatever `?T` it meets. *)
     | NilLit -> { typ = TScalar "Int"; is_nil = true }
+    | As (inner, ty) ->
+        let _ = typecheck_expr env cenv inner in
+        { typ = TNullable (resolve_field_ty ty); is_nil = false }
     | Try { body; ename; handler } ->
         let body_res = typecheck_expr env cenv body in
         (* The catch arm sees exactly one new name: the error record. *)
@@ -2024,6 +2047,7 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
   | Interp inner -> walk_expr bound visit inner
   | ListLit items -> List.iter (walk_expr bound visit) items
   | MapLit | NilLit -> ()
+  | As (inner, _) -> walk_expr bound visit inner
   | Try { body; ename; handler } ->
     walk_expr bound visit body;
     walk_block (StringSet.add ename bound) visit handler

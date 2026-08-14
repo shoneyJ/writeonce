@@ -1,14 +1,15 @@
 == CONSTANTS ==
 k0   TEXT "Item"
-k1   TEXT "consume"
-k2   TEXT "twice"
-k3   TEXT "main"
-k4   INT  2
-k5   INT  3
-k6   INT  5
-k7   INT  0
+k1   TEXT "n"
+k2   TEXT "consume"
+k3   TEXT "twice"
+k4   TEXT "main"
+k5   INT  2
+k6   INT  3
+k7   INT  5
+k8   INT  0
 == CLASSES ==
-c0   Item flags=- fields=[SCALAR]
+c0   Item flags=- fields=[n:SCALAR]
 == INTERFACES ==
 == VTABLES ==
 == METHODS ==
@@ -31,12 +32,12 @@ m1   twice args=2 regs=6 [free fn]
   drops: pc 14 owned={r2} gc={}
   drops: pc 19 owned={} gc={}
   0000  NEW       r2, c0
-  0001  LOADK     r3, k4
+  0001  LOADK     r3, k5
   0002  SETF      r2, f0, r3
   0003  MOVE      r3, r1
   0004  JZ        r3, -> 0013
   0005  NEW       r3, c0
-  0006  LOADK     r4, k5
+  0006  LOADK     r4, k6
   0007  SETF      r3, f0, r4
   0008  GETF      r4, r3, f0
   0009  DROP      r3
@@ -54,9 +55,9 @@ m2   main args=0 regs=4 [free fn] [ENTRY]
   lines: 0->24 7->23
   drops: (none)
   0000  NEW       r1, c0
-  0001  LOADK     r3, k6
+  0001  LOADK     r3, k7
   0002  SETF      r1, f0, r3
-  0003  LOADK     r2, k7
+  0003  LOADK     r2, k8
   0004  CALL      r1, m1
   0005  MOVE      r0, r1
   0006  BUILTIN   r0, r0, print_int

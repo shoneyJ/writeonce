@@ -253,6 +253,13 @@ and expr_kind =
      literal without lookahead nothing else needs. *)
   | ListLit of expr list
   | MapLit
+  (* `expr as Type` — a CHECKED conversion, not a reinterpretation: its only
+     meaning in this language is "decode this JSON text into that type",
+     yielding `?Type` (nil when the text does not fit). Anything else is a
+     WO-E403 at emission: there is no reinterpret-cast in the doctrine (the
+     systems-track spec's reject table lists `cast`), and this form exists
+     only because a decode's result type cannot be inferred. *)
+  | As of expr * field_ty
   (* haxe-parity Task 5: `try body catch (ename) handler` — an expression,
      like `switch`. `body` is an expression (the workload's only form);
      `handler` is a `stmt list` so both arm spellings share one shape,

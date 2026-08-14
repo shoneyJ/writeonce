@@ -2382,7 +2382,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 1 then fail "unsupported version";
+  if u32 4 <> 2 then fail "unsupported version";
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2423,6 +2423,18 @@ let validate_image (img : string) : string list =
       if u8 (!o + j) > 5 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
     done;
     o := !o + fcnt + ((4 - (fcnt mod 4)) mod 4);
+    (* v2: three u32 arrays of per-field metadata — names (a Text constant or
+       "not recorded"), the referenced class id (or the json-raw marker), and
+       container element kinds. Mirrors runtime/src/loader.c's own checks. *)
+    for j = 0 to fcnt - 1 do
+      let nmk = u32 (!o + (j * 4)) in
+      if nmk <> 0xFFFFFFFF && not (text_const nmk) then
+        fail (Printf.sprintf "class %d field %d: bad name constant" i j);
+      let fc = u32 (!o + ((fcnt + j) * 4)) in
+      if fc <> 0xFFFFFFFF && fc <> 0xFFFFFFFE && fc >= kcnt then
+        fail (Printf.sprintf "class %d field %d: field class out of range" i j)
+    done;
+    o := !o + (fcnt * 12);
     if !o > len then fail (Printf.sprintf "class %d: truncated" i)
   done;
   (* interfaces + vtable rows *)
@@ -3294,7 +3306,7 @@ let () =
     (count_substring ~needle:"Status.Pending flags" dump = 1
     && count_substring ~needle:"Status.Failed flags" dump = 1);
   check "t4 table: Status.Failed's payload Text is a TEXT slot"
-    (count_substring ~needle:"Status.Failed flags=- fields=[TEXT]" dump = 1);
+    (count_substring ~needle:"Status.Failed flags=- fields=[reason:TEXT]" dump = 1);
   check "t4 table: bare union gets no class entries"
     (count_substring ~needle:"Kind" dump
      - count_substring ~needle:"Kind" (String.concat "" [ "" ])
@@ -3302,7 +3314,7 @@ let () =
     && count_substring ~needle:"Kind flags" dump = 0
     && count_substring ~needle:"Kind.Lo" dump = 0);
   check "t4 table: a bare-union record field is a SCALAR slot, a payload one OWNED"
-    (count_substring ~needle:"Holder flags=- fields=[SCALAR, OWNED]" dump = 1)
+    (count_substring ~needle:"Holder flags=- fields=[k:SCALAR, st:OWNED]" dump = 1)
 
 let () =
   (* lowering shapes: variant_tag for a payload union's switch only; a

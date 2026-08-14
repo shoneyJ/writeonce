@@ -1,17 +1,18 @@
 == CONSTANTS ==
 k0   TEXT "Book"
 k1   TEXT "Toy"
-k2   TEXT "Priced"
-k3   TEXT "current_price"
-k4   TEXT "quote"
-k5   TEXT "main"
-k6   INT  2
-k7   INT  3
-k8   INT  10
-k9   INT  5
+k2   TEXT "base"
+k3   TEXT "Priced"
+k4   TEXT "current_price"
+k5   TEXT "quote"
+k6   TEXT "main"
+k7   INT  2
+k8   INT  3
+k9   INT  10
+k10  INT  5
 == CLASSES ==
-c0   Book flags=- fields=[SCALAR]
-c1   Toy flags=- fields=[SCALAR]
+c0   Book flags=- fields=[base:SCALAR]
+c1   Toy flags=- fields=[base:SCALAR]
 == INTERFACES ==
 i0   Priced methods=1 slots=s0..s0
 == VTABLES ==
@@ -22,14 +23,14 @@ m0   current_price args=1 regs=3 [class c0]
   lines: 0->15
   drops: (none)
   0000  GETF      r1, r0, f0
-  0001  LOADK     r2, k6
+  0001  LOADK     r2, k7
   0002  ADD       r1, r1, r2
   0003  RET       r1
 m1   current_price args=1 regs=3 [class c1]
   lines: 0->23
   drops: (none)
   0000  GETF      r1, r0, f0
-  0001  LOADK     r2, k7
+  0001  LOADK     r2, k8
   0002  MUL       r1, r1, r2
   0003  RET       r1
 m2   quote args=1 regs=2 [free fn]
@@ -45,10 +46,10 @@ m3   main args=0 regs=4 [free fn] [ENTRY]
   drops: pc 19 owned={r0} gc={}
   drops: pc 20 owned={} gc={}
   0000  NEW       r0, c0
-  0001  LOADK     r1, k8
+  0001  LOADK     r1, k9
   0002  SETF      r0, f0, r1
   0003  NEW       r1, c1
-  0004  LOADK     r2, k9
+  0004  LOADK     r2, k10
   0005  SETF      r1, f0, r2
   0006  MOVE      r3, r0
   0007  CALL      r3, m2

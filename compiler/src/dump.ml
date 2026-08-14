@@ -66,6 +66,7 @@ let kind_label (k : Token.kind) : string =
   | Token.KwTry -> "KW_TRY"
   | Token.KwCatch -> "KW_CATCH"
   | Token.KwNil -> "KW_NIL"
+  | Token.KwAs -> "KW_AS"
   | Token.LBrace -> "LBRACE"
   | Token.RBrace -> "RBRACE"
   | Token.LParen -> "LPAREN"
@@ -226,6 +227,7 @@ let rec expr_str (e : Ast.expr) : string =
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))
   | Ast.MapLit -> "{}"
   | Ast.NilLit -> "nil"
+  | Ast.As (inner, ty) -> Printf.sprintf "%s as %s" (expr_str inner) (field_ty_str ty)
   (* Like SWITCH above: a one-line summary, not a full unparse of the
      catch arm's statements. *)
   | Ast.Try { body; ename; handler } ->
