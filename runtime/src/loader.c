@@ -42,6 +42,15 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_MAP_NEW] = 0,   [WO_B_MAP_SET] = 3,   [WO_B_MAP_GET] = 2,
     [WO_B_MAP_HAS] = 2,   [WO_B_INT_TO_TEXT] = 1,
     [WO_B_VARIANT_TAG] = 1, [WO_B_ERR_FILL] = 1,
+    /* systems stdlib */
+    [WO_B_LEN] = 1,          [WO_B_BYTE_AT] = 2,     [WO_B_PRINT_ERR] = 1,
+    [WO_B_STARTS_WITH] = 2,  [WO_B_ENDS_WITH] = 2,   [WO_B_INDEX_OF] = 2,
+    [WO_B_LAST_INDEX_OF] = 2, [WO_B_SUBSTR] = 3,     [WO_B_TRIM] = 1,
+    [WO_B_TO_LOWER] = 1,     [WO_B_CHAR_OF] = 1,     [WO_B_PARSE_INT] = 1,
+    [WO_B_SPLIT] = 2,        [WO_B_SPLIT_WS] = 1,    [WO_B_JOIN] = 2,
+    [WO_B_SLICE] = 3,        [WO_B_POP] = 1,         [WO_B_SHIFT] = 1,
+    [WO_B_SORT] = 1,         [WO_B_REVERSE] = 1,     [WO_B_MAP_REMOVE] = 2,
+    [WO_B_MAP_KEY_AT] = 2,   [WO_B_MAP_VAL_AT] = 2,
 };
 
 static int vtab_cmp(const void *a, const void *b) {

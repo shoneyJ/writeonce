@@ -230,6 +230,31 @@ let b_variant_tag = 14
    source-callable name. *)
 let b_err_fill = 15
 
+(* systems stdlib (runtime/src/wob.h WO_B_LEN..WO_B_MAP_VAL_AT) *)
+let b_len = 16
+let b_byte_at = 17
+let b_print_err = 18
+let b_starts_with = 19
+let b_ends_with = 20
+let b_index_of = 21
+let b_last_index_of = 22
+let b_substr = 23
+let b_trim = 24
+let b_to_lower = 25
+let b_char_of = 26
+let b_parse_int = 27
+let b_split = 28
+let b_split_ws = 29
+let b_join = 30
+let b_slice = 31
+let b_pop = 32
+let b_shift = 33
+let b_sort = 34
+let b_reverse = 35
+let b_map_remove = 36
+let b_map_key_at = 37
+let b_map_val_at = 38
+
 let ins_abc op a b c = op lor (a lsl 8) lor (b lsl 16) lor (c lsl 24)
 let ins_abx op a bx = op lor (a lsl 8) lor (bx lsl 16)
 let ins_asbx op a sbx = ins_abx op a (sbx + 32768)
@@ -831,12 +856,34 @@ let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty opt
     match argty with
     | Some t -> ( match unwrap t with Multi e -> Some (Scalar e) | Map (_, v) -> Some (Scalar v) | _ -> None)
     | None -> None)
+  (* systems stdlib — kept in sync with Types.builtin_confident_ret (both
+     tables, same contract, different type languages). This is also what
+     classifies a `let` holding a fresh Text or a fresh `multi` as owned, so
+     a missing entry here is a leak, not just a lost type. *)
+  | "len" | "byte_at" | "index_of" | "last_index_of" -> Some (Scalar "Int")
+  | "print_err" | "sort" | "reverse" -> Some (Scalar "Int")
+  | "starts_with" | "ends_with" | "remove" -> Some (Scalar "Bool")
+  | "substr" | "trim" | "to_lower" | "char_of" | "join" -> Some (Scalar "Text")
+  | "parse_int" -> Some (Nullable (Scalar "Int"))
+  | "split" | "split_ws" -> Some (Multi "Text")
+  | "slice" -> (
+    match argty with Some t -> ( match unwrap t with Multi e -> Some (Multi e) | _ -> None) | None -> None)
+  | "pop" | "shift" -> (
+    match argty with Some t -> ( match unwrap t with Multi e -> Some (Scalar e) | _ -> None) | None -> None)
+  | "key_at" -> (
+    match argty with Some t -> ( match unwrap t with Map (k, _) -> Some (Scalar k) | _ -> None) | None -> None)
+  | "val_at" -> (
+    match argty with Some t -> ( match unwrap t with Map (_, v) -> Some (Scalar v) | _ -> None) | None -> None)
   | _ -> None
 
 let is_builtin_name (n : string) =
   List.mem n
     [ "now"; "print"; "print_int"; "words"; "multi_new"; "push"; "get"; "count"; "latest";
-      "map_new"; "set"; "has"; "int_to_text" ]
+      "map_new"; "set"; "has"; "int_to_text";
+      (* systems stdlib *)
+      "len"; "byte_at"; "print_err"; "starts_with"; "ends_with"; "index_of"; "last_index_of";
+      "substr"; "trim"; "to_lower"; "char_of"; "parse_int"; "split"; "split_ws"; "join"; "slice";
+      "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at" ]
 
 (* ---- unions and variants (haxe-parity Task 4) ------------------------
 
@@ -878,6 +925,8 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | ListLit (first :: _) -> (
     match ty_of_expr p f first with Some (Scalar n) -> Some (Multi n) | _ -> None)
   | ListLit [] | MapLit -> None
+  (* haxe-parity Task 6: contextual on its destination (see owner.ml). *)
+  | NilLit -> None
   (* haxe-parity Task 5: a `try` yields its try arm's type — types.ml has
      already required the catch arm to agree. *)
   | Try t -> ty_of_expr p f t.body
@@ -1237,6 +1286,9 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | IntLit n -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p n)))
   | BoolLit b -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p (if b then 1 else 0))))
   | StrLit s -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_text p s)))
+  (* haxe-parity Task 6: `nil` is the zero word, whatever `?T` it stands
+     in for (docs/plan/oop-vm/08-builtin-surface.md's `?T` section). *)
+  | NilLit -> put f (ins_abx op_loadk dst (const_int p 0))
   (* Container literals lower to exactly what `multi_new()`/`map_new()`
      lower to — the element kinds are the destination's, never guessed
      (docs/plan/oop-vm/08-builtin-surface.md) — plus one `multi_push` per
@@ -2376,8 +2428,18 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     else if
       id = b_print || id = b_print_int || id = b_words || id = b_count || id = b_latest
       || id = b_int_to_text
+      (* systems stdlib, one argument *)
+      || id = b_len || id = b_print_err || id = b_trim || id = b_to_lower || id = b_char_of
+      || id = b_parse_int || id = b_split_ws || id = b_pop || id = b_shift || id = b_sort
+      || id = b_reverse
     then 1
-    else if id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has then 2
+    else if
+      id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has
+      (* systems stdlib, two arguments *)
+      || id = b_byte_at || id = b_starts_with || id = b_ends_with || id = b_index_of
+      || id = b_last_index_of || id = b_split || id = b_join || id = b_map_remove
+      || id = b_map_key_at || id = b_map_val_at
+    then 2
     else 3
   in
   let container_id first_arg on_multi on_map =
@@ -2410,6 +2472,33 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   | "count" -> fixed b_count
   | "latest" -> fixed b_latest
   | "int_to_text" -> fixed b_int_to_text
+  (* systems stdlib: every one of these resolves to a single id — no
+     container-kind branching, no destination immediate (the ones that
+     return a fresh container fix their own element kind: `split`/`split_ws`
+     are always `multi Text`, `slice` copies its source's kind). *)
+  | "len" -> fixed b_len
+  | "byte_at" -> fixed b_byte_at
+  | "print_err" -> fixed b_print_err
+  | "starts_with" -> fixed b_starts_with
+  | "ends_with" -> fixed b_ends_with
+  | "index_of" -> fixed b_index_of
+  | "last_index_of" -> fixed b_last_index_of
+  | "substr" -> fixed b_substr
+  | "trim" -> fixed b_trim
+  | "to_lower" -> fixed b_to_lower
+  | "char_of" -> fixed b_char_of
+  | "parse_int" -> fixed b_parse_int
+  | "split" -> fixed b_split
+  | "split_ws" -> fixed b_split_ws
+  | "join" -> fixed b_join
+  | "slice" -> fixed b_slice
+  | "pop" -> fixed b_pop
+  | "shift" -> fixed b_shift
+  | "sort" -> fixed b_sort
+  | "reverse" -> fixed b_reverse
+  | "remove" -> fixed b_map_remove
+  | "key_at" -> fixed b_map_key_at
+  | "val_at" -> fixed b_map_val_at
   | "multi_new" | "map_new" ->
     let is_map = name = "map_new" in
     if args <> [] then bad (Printf.sprintf "builtin `%s` takes no arguments" name)

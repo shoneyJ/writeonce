@@ -56,6 +56,10 @@ typedef struct wo_str {
 } wo_str;
 
 wo_str *wo_str_new(wo_rt *rt, const char *bytes, uint32_t len); /* NULL=OOM */
+/* A Text of [len] UNINITIALIZED bytes for a caller that writes them itself
+ * (the systems-stdlib `join`, which knows the total length up front and
+ * would otherwise need one allocation per element). NULL = OOM. */
+wo_str *wo_str_alloc(wo_rt *rt, uint32_t len);
 wo_str *wo_str_concat(wo_rt *rt, const wo_str *a, const wo_str *b);
 int wo_str_eq(const wo_str *a, const wo_str *b); /* content equality */
 void wo_str_free(wo_rt *rt, wo_str *s);          /* no-op on WO_F_CONST */

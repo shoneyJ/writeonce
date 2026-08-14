@@ -197,6 +197,12 @@ and expr_kind =
   | IntLit of int
   | StrLit of string
   | BoolLit of bool
+  (* haxe-parity Task 6: `nil`, the absent value of a `?T`. One
+     representation for every T: the zero word — "a nullable field stores
+     exactly what T stores and spells nil as 0", docs/plan/oop-vm/
+     08-builtin-surface.md. Nothing to allocate, nothing to unbox, and
+     every per-kind drop plan already ignores a zero slot. *)
+  | NilLit
   | Ident of string
   | Field of expr * string
   | Index of expr * expr

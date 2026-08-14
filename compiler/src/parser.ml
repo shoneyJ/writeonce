@@ -1026,6 +1026,11 @@ and parse_primary (st : state) : Ast.expr =
     let id = fresh_id st in
     ignore (advance st);
     { Ast.id; pos; kind = Ast.BoolLit false }
+  | Token.KwNil ->
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.NilLit }
   | Token.LParen ->
     ignore (advance st);
     (* Parens make the enclosed expression unambiguous again, so a
@@ -1757,7 +1762,7 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
   | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
-  | Ast.MapLit -> e
+  | Ast.MapLit | Ast.NilLit -> e
   | Ast.Try { body; ename; handler } ->
     { e with
       Ast.kind =

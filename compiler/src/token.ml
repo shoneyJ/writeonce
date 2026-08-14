@@ -89,6 +89,10 @@ type kind =
      followed). *)
   | KwTry
   | KwCatch
+  (* haxe-parity Task 6: the `?T` absent value. A keyword, not an
+     identifier — `nil` appears in the corpus and the driving workload
+     only ever as this literal. *)
+  | KwNil
   (* haxe-parity Task 4: `typedef Name = { ... }` structural records. A
      real keyword (grepped the corpus/sample first, same discipline as
      every keyword above — `typedef` appears only as this declaration's

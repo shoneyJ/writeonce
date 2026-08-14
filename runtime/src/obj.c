@@ -76,7 +76,7 @@ wo_hdr *wo_obj_new(wo_rt *rt, uint32_t class_id) {
     return o;
 }
 
-static wo_str *str_alloc(wo_rt *rt, uint32_t len) {
+wo_str *wo_str_alloc(wo_rt *rt, uint32_t len) {
     wo_str *s = wo_arena_alloc(&rt->arena, sizeof(wo_str) + len);
     if (!s) return NULL;
     memset(&s->h, 0, sizeof(s->h));
@@ -86,14 +86,14 @@ static wo_str *str_alloc(wo_rt *rt, uint32_t len) {
 }
 
 wo_str *wo_str_new(wo_rt *rt, const char *bytes, uint32_t len) {
-    wo_str *s = str_alloc(rt, len);
+    wo_str *s = wo_str_alloc(rt, len);
     if (!s) return NULL;
     memcpy(s->data, bytes, len);
     return s;
 }
 
 wo_str *wo_str_concat(wo_rt *rt, const wo_str *a, const wo_str *b) {
-    wo_str *s = str_alloc(rt, a->len + b->len);
+    wo_str *s = wo_str_alloc(rt, a->len + b->len);
     if (!s) return NULL;
     memcpy(s->data, a->data, a->len);
     memcpy(s->data + a->len, b->data, b->len);

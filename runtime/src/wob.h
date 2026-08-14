@@ -176,8 +176,37 @@ enum {
      * a 4-field class object, WO_T_OOM if either Text cannot be
      * allocated. */
     WO_B_ERR_FILL = 15,
+    /* ---- systems stdlib: text and container surface (the driving
+     * workload's own vocabulary — docs/plan/oop-vm/08-builtin-surface.md
+     * lists the source spelling of each). Every one that returns a fresh
+     * Text or a fresh `multi` allocates it here, so a `?T` result spells
+     * absence as 0 like every other nullable. ---- */
+    WO_B_LEN = 16,           /* (text|multi|map) -> i64 length */
+    WO_B_BYTE_AT = 17,       /* (text, i) -> i64 byte; out of range traps BOUNDS */
+    WO_B_PRINT_ERR = 18,     /* (text) -> stderr, newline-terminated */
+    WO_B_STARTS_WITH = 19,   /* (text, prefix) -> 1/0 */
+    WO_B_ENDS_WITH = 20,     /* (text, suffix) -> 1/0 */
+    WO_B_INDEX_OF = 21,      /* (text, needle) -> first byte offset, -1 = absent */
+    WO_B_LAST_INDEX_OF = 22, /* (text, needle) -> last byte offset, -1 = absent */
+    WO_B_SUBSTR = 23,        /* (text, start, len) -> fresh Text, clamped */
+    WO_B_TRIM = 24,          /* (text) -> fresh Text without leading/trailing space */
+    WO_B_TO_LOWER = 25,      /* (text) -> fresh Text, ASCII-lowercased */
+    WO_B_CHAR_OF = 26,       /* (i64) -> fresh one-byte Text */
+    WO_B_PARSE_INT = 27,     /* (text) -> i64; unparseable is 0, `?Int`'s own nil */
+    WO_B_SPLIT = 28,         /* (text, sep) -> fresh multi Text */
+    WO_B_SPLIT_WS = 29,      /* (text) -> fresh multi Text, whitespace-separated */
+    WO_B_JOIN = 30,          /* (multi Text, sep) -> fresh Text */
+    WO_B_SLICE = 31,         /* (multi, from, to) -> fresh multi; Text elements are
+                              * COPIED, so the two containers never share a value */
+    WO_B_POP = 32,           /* (multi) -> last element, removed; empty traps BOUNDS */
+    WO_B_SHIFT = 33,         /* (multi) -> first element, removed; empty traps BOUNDS */
+    WO_B_SORT = 34,          /* (multi) -> 0; in place, Text by content else by value */
+    WO_B_REVERSE = 35,       /* (multi) -> 0; in place */
+    WO_B_MAP_REMOVE = 36,    /* (map, key) -> 1/0; drops the removed key and value */
+    WO_B_MAP_KEY_AT = 37,    /* (map, i) -> key at slot i (insertion order) */
+    WO_B_MAP_VAL_AT = 38,    /* (map, i) -> value at slot i */
 };
-#define WO_B_MAX 15u
+#define WO_B_MAX 38u
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {

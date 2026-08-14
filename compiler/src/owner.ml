@@ -511,6 +511,9 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   | ListLit (first :: _) -> (
     match expr_ty ctx first with Some (Scalar n) -> Some (Multi n) | _ -> None)
   | ListLit [] | MapLit -> None
+  (* haxe-parity Task 6: `nil` is the zero word — contextual on its
+     destination, and never something this frame owns. *)
+  | NilLit -> None
   (* haxe-parity Task 5: a `try` yields its try arm's type (types.ml has
      already required the catch arm to agree). *)
   | Try t -> expr_ty ctx t.body
@@ -1065,7 +1068,7 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
      it; it is a runtime-semantics gap to close with `push`, not a
      literal-specific one. *)
   | ListLit items -> List.iter (read_expr ctx) items
-  | MapLit -> ()
+  | MapLit | NilLit -> ()
   | Try t -> analyze_try ctx e t.body t.ename t.handler
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)

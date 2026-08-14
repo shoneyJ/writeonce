@@ -621,6 +621,33 @@ let builtin_signatures : (string * int * builtin_arg_req list) list =
     ("set", 3, [ ReqMap; ReqAny; ReqAny ]);
     ("has", 2, [ ReqMap; ReqAny ]);
     ("int_to_text", 1, [ ReqInt ]);
+    (* systems stdlib (docs/plan/oop-vm/08-builtin-surface.md): the text and
+       container vocabulary the driving workload writes. `len` resolves on a
+       text OR either container, so its argument is unchecked here the same
+       way `get`'s key is. *)
+    ("len", 1, [ ReqAny ]);
+    ("byte_at", 2, [ ReqText; ReqInt ]);
+    ("print_err", 1, [ ReqText ]);
+    ("starts_with", 2, [ ReqText; ReqText ]);
+    ("ends_with", 2, [ ReqText; ReqText ]);
+    ("index_of", 2, [ ReqText; ReqText ]);
+    ("last_index_of", 2, [ ReqText; ReqText ]);
+    ("substr", 3, [ ReqText; ReqInt; ReqInt ]);
+    ("trim", 1, [ ReqText ]);
+    ("to_lower", 1, [ ReqText ]);
+    ("char_of", 1, [ ReqInt ]);
+    ("parse_int", 1, [ ReqText ]);
+    ("split", 2, [ ReqText; ReqText ]);
+    ("split_ws", 1, [ ReqText ]);
+    ("join", 2, [ ReqMulti; ReqText ]);
+    ("slice", 3, [ ReqMulti; ReqInt; ReqInt ]);
+    ("pop", 1, [ ReqMulti ]);
+    ("shift", 1, [ ReqMulti ]);
+    ("sort", 1, [ ReqMulti ]);
+    ("reverse", 1, [ ReqMulti ]);
+    ("remove", 2, [ ReqMap; ReqAny ]);
+    ("key_at", 2, [ ReqMap; ReqInt ]);
+    ("val_at", 2, [ ReqMap; ReqInt ]);
   ]
 
 let rec unwrap_nullable (t : typ) : typ =
@@ -692,6 +719,21 @@ let builtin_confident_ret (name : string) (arg0 : typ option) : typ option =
   | "has" -> Some (TScalar "Bool")
   | "latest" -> ( match arg0 with Some (TMulti e) -> Some e | _ -> None)
   | "get" -> ( match arg0 with Some (TMulti e) -> Some e | Some (TMap (_, v)) -> Some v | _ -> None)
+  (* systems stdlib. Every fresh-Text and fresh-`multi` result is an owned
+     value, so these entries are what make a `let` holding one get its
+     drop (owner.ml classifies through this table too). *)
+  | "len" | "byte_at" | "index_of" | "last_index_of" -> Some (TScalar "Int")
+  | "print_err" | "sort" | "reverse" -> Some (TScalar "Int")
+  | "starts_with" | "ends_with" | "remove" -> Some (TScalar "Bool")
+  | "substr" | "trim" | "to_lower" | "char_of" | "join" -> Some (TScalar "Text")
+  (* `parse_int` is optional-shaped: an unparseable text is 0, which is how
+     a `?Int` spells nil (08-builtin-surface.md's `?T` section). *)
+  | "parse_int" -> Some (TNullable (TScalar "Int"))
+  | "split" | "split_ws" -> Some (TMulti (TScalar "Text"))
+  | "slice" -> ( match arg0 with Some (TMulti e) -> Some (TMulti e) | _ -> None)
+  | "pop" | "shift" -> ( match arg0 with Some (TMulti e) -> Some e | _ -> None)
+  | "key_at" -> ( match arg0 with Some (TMap (k, _)) -> Some k | _ -> None)
+  | "val_at" -> ( match arg0 with Some (TMap (_, v)) -> Some v | _ -> None)
   | _ -> None
 
 (* `use_edge`/`uses_of_program`/`path_str` -- relocated here (hotfix)
@@ -871,6 +913,10 @@ let typecheck_program ~file ~(module_of : string -> string)
     | ListLit (first :: _) -> (
         match confident_typ cenv first with Some t -> Some (TMulti t) | None -> None)
     | ListLit [] | MapLit -> None
+    (* haxe-parity Task 6: `nil` is contextual on its destination, the same
+       as an empty container literal — nothing about the literal itself
+       says which `?T` it is the absent value of. *)
+    | NilLit -> None
     (* haxe-parity Task 5: a `try` expression's type is its try arm's — the
        handler is checked to agree (typecheck_expr below), so either arm
        would answer, and the try arm is the one that always has a value. *)
@@ -1200,6 +1246,11 @@ let typecheck_program ~file ~(module_of : string -> string)
          | t :: _ -> { typ = TMulti t; is_nil = false }
          | [] -> { typ = TScalar "Int"; is_nil = false })
     | MapLit -> { typ = TScalar "Int"; is_nil = false }
+    (* `is_nil` is what marks the literal: the `typ` is the same
+       placeholder every contextual value here reports, and the flag is
+       what lets a comparison or a binding treat it as the absent value of
+       whatever `?T` it meets. *)
+    | NilLit -> { typ = TScalar "Int"; is_nil = true }
     | Try { body; ename; handler } ->
         let body_res = typecheck_expr env cenv body in
         (* The catch arm sees exactly one new name: the error record. *)
@@ -1862,7 +1913,7 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
   | Ctor (_, fields) -> List.iter (fun (_, v) -> walk_expr bound visit v) fields
   | Interp inner -> walk_expr bound visit inner
   | ListLit items -> List.iter (walk_expr bound visit) items
-  | MapLit -> ()
+  | MapLit | NilLit -> ()
   | Try { body; ename; handler } ->
     walk_expr bound visit body;
     walk_block (StringSet.add ename bound) visit handler
