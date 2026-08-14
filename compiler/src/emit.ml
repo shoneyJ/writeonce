@@ -3135,6 +3135,12 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
            stored *)
         let t = alloc_temp p f value.pos in
         emit_expr p f v ~dst:t ~expected:ty value;
+        (* an assignment is an ownership boundary exactly as a `let` is —
+           `api_key = j.mcp.apiKey` made the local ALIAS the record's field,
+           so dropping the record left the local dangling and its own drop
+           freed the string a second time. Copy before the old value dies:
+           the source can live inside what is about to be dropped. *)
+        copy_place_text p f t value;
         f.f_cur_line <- s.s_pos.line;
         if overwrite then begin
           put f (ins_abc op_drop r 0 0);
@@ -3146,7 +3152,10 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         end;
         put f (ins_abc op_move r t 0)
       end
-      else emit_expr p f v ~dst:r ~expected:ty value;
+      else begin
+        emit_expr p f v ~dst:r ~expected:ty value;
+        copy_place_text p f r value
+      end;
       (* a whole-local target cannot be an unprovable alias of anything
          (relate answers Overlap or Disjoint for a place with no
          projections), so this normally finds nothing; consumed anyway so

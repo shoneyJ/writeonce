@@ -166,7 +166,7 @@ before the heap is torn down.
       CRITERIA MET, `just oop-e2e` 71/0, `just wovm-test` green,
       `just log-watcher` 6/0.
 
-### Task 4: A stopping program must actually stop
+### Task 4 ✅: A stopping program must actually stop
 
 **Concept & reason:** `env.stopping()` installs SIGTERM/SIGINT handlers that set
 a flag, and `net.accept`/`net.read` retry on `EINTR` — so a server parked in
@@ -182,11 +182,32 @@ would put a trap in the middle of every accept loop the language will ever
 write, and the shard-actor runtime (iteration 8) replaces these blocking calls
 with an event loop anyway.
 
-- [ ] Failing measurement: `mcp` mode ignores SIGTERM and needs `kill -9`.
-- [ ] Blocking stdlib calls observe the stop flag on interruption; the process
-      exits cleanly, flushing output.
-- [ ] `just log-watcher` no longer needs `kill -9` in teardown, and the script's
-      hard-kill fallback becomes belt-and-braces rather than the mechanism.
+- [x] Failing measurement: `mcp` mode ignored SIGTERM and needed `kill -9`.
+- [x] The calls that genuinely PARK — `net.accept`, a socket read/write,
+      `time.sleep`, a child wait — no longer restart the syscall when the stop
+      flag is set on an interruption. They hand back `WO_SYS_STOPPED`
+      (builtin.h), which is **not** a trap code: no error record, no catch
+      handler sees it (a `try` must not be able to swallow SIGTERM), and the
+      VM unwinds the whole stack through the same drop machinery an uncaught
+      trap uses, so every live value is still released. `wo_vm_call` gained a
+      third outcome (1 = stopped) and the CLI maps it to the status the
+      program's own `return 0` would have produced. A regular-file read keeps
+      its plain retry — it does not park.
+- [x] **Found and fixed while measuring: an assignment was not an ownership
+      boundary.** `api_key = j.mcp.apiKey` MOVED the field pointer into the
+      local, so the local aliased the record; the first stop unwind dropped
+      the record and then the alias, freeing the same string twice (a SIGSEGV
+      in `class_free`). `let` copied a Text place, assignment did not — it
+      does now. The same double free was latent on the normal exit path,
+      hidden only by the drop ORDER the compiler happens to emit.
+- [x] `just log-watcher` is **7 checks** now: the seventh is the stop itself —
+      SIGTERM sent to a server parked in `accept` with no traffic coming, with
+      the hard kill demoted to a fallback whose use is the failure.
+- [x] Re-measured, all under ASan: `mcp` stopped while parked (rc 0, zero
+      leaks), `mcp` stopped after serving traffic (rc 0, zero leaks), `watch`
+      and `run` stopped mid-poll (rc 0, zero leaks), and SIGINT behaves as
+      SIGTERM. Gates: `just oop-accept` ALL CRITERIA MET, `oop-e2e` 71/0,
+      `woc-test` 565/0, `wovm-test` green, `just log-watcher` 7/0.
 
 ### Task 5: The MCP server must close what it accepts
 

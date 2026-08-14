@@ -55,7 +55,10 @@ void wo_vm_destroy(wo_vm *vm);
 
 /* Call a method with raw argument words. argc must equal the method's
  * declared arity. 0 = done, *ret filled; -1 = trapped, *err filled and the
- * stack fully unwound (depth 0). */
+ * stack fully unwound (depth 0); 1 = STOPPED — a blocking stdlib call was
+ * interrupted with the stop flag set (builtin.h's WO_SYS_STOPPED), the stack
+ * is unwound the same way, *ret and *err are untouched, and there is nothing
+ * to report: the program was told to stop and did. */
 int wo_vm_call(wo_vm *vm, uint32_t method_idx, const uint64_t *args,
                uint32_t argc, uint64_t *ret, wo_err *err);
 

@@ -94,7 +94,7 @@ printf 'info service starting\n' >>"$LOG"
 sleep 2
 printf 'error disk full\n' >>"$LOG"
 sleep 6
-kill -9 "$WATCH_PID" 2>/dev/null
+kill -TERM "$WATCH_PID" 2>/dev/null
 wait "$WATCH_PID" 2>/dev/null
 WATCH_PID=""
 if grep -q "^watching " "$WORK/watch.out" && grep -q "^ALERT .*last entry is error" "$WORK/watch.out"; then
@@ -203,8 +203,26 @@ else
   bad "mcp auth" "got: $(printf '%s' "$NOAUTH" | tr '\n' '|' | cut -c1-160)"
 fi
 
-kill -9 "$SRV_PID" 2>/dev/null
-wait "$SRV_PID" 2>/dev/null
+# The stop check (executable plan, Task 4): the server is parked in
+# `net.accept` with no traffic coming, and TERM alone has to end it. Before
+# the runtime observed the stop flag on an interrupted blocking call this
+# needed `kill -9`, which is not a shutdown — no drops, no flush, nothing a
+# supervisor or a deploy can rely on. The hard kill below stays as a
+# belt-and-braces fallback, and reaching it is the failure.
+kill -TERM "$SRV_PID" 2>/dev/null
+STOPPED=""
+for _ in $(seq 1 40); do
+  if ! kill -0 "$SRV_PID" 2>/dev/null; then STOPPED=1; break; fi
+  sleep 0.1
+done
+if [[ -n "$STOPPED" ]]; then
+  wait "$SRV_PID" 2>/dev/null
+  ok "mcp stop (SIGTERM ends a server parked in accept)"
+else
+  kill -9 "$SRV_PID" 2>/dev/null
+  wait "$SRV_PID" 2>/dev/null
+  bad "mcp stop" "still running 4s after SIGTERM; needed kill -9"
+fi
 SRV_PID=""
 
 echo

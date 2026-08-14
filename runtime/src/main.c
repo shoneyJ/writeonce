@@ -189,12 +189,16 @@ int main(int argc, char **argv) {
     wo_err terr;
     int rc = wo_vm_call(&VM, mod.entry, entry_argc == 1 ? &argv_val : NULL, entry_argc, &ret,
                         &terr);
-    if (rc != 0)
+    if (rc < 0)
         fprintf(stderr, "trap %u in %s at line %u: %s\n", (unsigned)terr.code,
                 terr.method, (unsigned)terr.line, terr.msg);
     /* the entry's return value IS the exit code (docs/plan/oop-vm/
-     * 08-builtin-surface.md's "Program entry"): 0..255, a trap is 1 */
-    int exit_code = rc == 0 ? (int)((uint64_t)ret & 0xFF) : 1;
+     * 08-builtin-surface.md's "Program entry"): 0..255, a trap is 1. A stop
+     * (rc == 1) is not a failure and not a trap — SIGTERM landing in a
+     * blocking call is the operator asking for the shutdown the program
+     * would have taken at its own next `env.stopping()` check, so it exits
+     * with the status that check's `return 0` would have produced. */
+    int exit_code = rc == 0 ? (int)((uint64_t)ret & 0xFF) : (rc > 0 ? 0 : 1);
     /* the entry only BORROWS its arguments -- a parameter is never a `take`,
      * and the drop tables never drop one -- so the runtime that built the
      * container is the one that releases it, elements included. Without this

@@ -82,6 +82,13 @@ static void on_stop(int sig) {
     stop_flag = 1;
 }
 
+/* An interrupted blocking call asks this before restarting the syscall: a
+ * set flag means the program was told to stop, and the calls below stop
+ * instead of restarting (builtin.h's WO_SYS_STOPPED). Only the calls that
+ * genuinely PARK consult it — accept, a socket read/write, sleep and a child
+ * wait. A regular-file read is not one of them and keeps its plain retry. */
+static int stop_pending(void) { return stop_flag != 0; }
+
 static void install_stop_handlers(void) {
     if (stop_installed) return;
     stop_installed = 1;
@@ -262,7 +269,10 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         int64_t ms = (int64_t)R[B];
         if (ms > 0) {
             struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L}, rem;
-            while (nanosleep(&ts, &rem) != 0 && errno == EINTR) ts = rem;
+            while (nanosleep(&ts, &rem) != 0 && errno == EINTR) {
+                if (stop_pending()) return WO_SYS_STOPPED;
+                ts = rem;
+            }
         }
         R[A] = 0;
         return 0;
@@ -358,9 +368,11 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     }
     case WO_B_NET_ACCEPT: {
         int fd;
-        do {
+        for (;;) {
             fd = accept((int)R[B], NULL, NULL);
-        } while (fd < 0 && errno == EINTR);
+            if (fd >= 0 || errno != EINTR) break;
+            if (stop_pending()) return WO_SYS_STOPPED;
+        }
         if (fd < 0) {
             *msg = strerror(errno);
             return WO_T_IO;
@@ -378,9 +390,14 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return WO_T_OOM;
         }
         ssize_t n;
-        do {
+        for (;;) {
             n = read((int)R[B], s->data, (size_t)max);
-        } while (n < 0 && errno == EINTR);
+            if (n >= 0 || errno != EINTR) break;
+            if (stop_pending()) {
+                wo_str_free(rt, s);
+                return WO_SYS_STOPPED;
+            }
+        }
         if (n < 0) {
             wo_str_free(rt, s);
             *msg = strerror(errno);
@@ -411,7 +428,10 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         while (at < body->len) {
             ssize_t n = write((int)R[B], body->data + at, body->len - at);
             if (n < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR) {
+                    if (stop_pending()) return WO_SYS_STOPPED;
+                    continue;
+                }
                 *msg = strerror(errno);
                 return WO_T_IO;
             }
@@ -497,6 +517,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         close(ep[0]);
         int status = 0;
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            if (stop_pending()) return WO_SYS_STOPPED;
         }
         wo_hdr *o = record_of(vm, R[B + 2], 3, msg);
         if (!o) return R[B + 2] >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;

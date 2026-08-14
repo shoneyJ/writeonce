@@ -7,6 +7,14 @@
 
 #include "vm.h"
 
+/* Not a trap code: the stop flag (SIGTERM/SIGINT, armed by `env.stopping`)
+ * was set when a BLOCKING call was interrupted, so the call does not restart
+ * the syscall — it hands this back and the VM ends the program with it. A
+ * service parked in `accept` otherwise never observes the flag and only
+ * `kill -9` ends it. Negative so it cannot collide with a WO_T_* code, and
+ * deliberately NOT catchable: `try` must not be able to swallow a stop. */
+#define WO_SYS_STOPPED (-2)
+
 int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 /* The systems stdlib's OS half (runtime/src/sysio.c): same contract as

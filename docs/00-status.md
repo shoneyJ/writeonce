@@ -50,9 +50,15 @@ running", and every item below came from a measurement on the sample itself:
    built, after the entry returns and after a trap alike. **All three modes
    now report ZERO leaks under ASan** — `watch`, `run`, and the full MCP mix —
    which is the clean baseline item 6's soak needs to read against.
-4. **A stopping program does not stop** — `env.stopping()` sets a flag, but
-   `net.accept`/`net.read` restart on `EINTR`, so a server parked in `accept`
-   ignores SIGTERM and needs `kill -9`.
+4. ~~A stopping program does not stop~~ — **done 2026-08-14**. A blocking
+   call that parks (`net.accept`, socket read/write, `time.sleep`, a child
+   wait) now ends the program when it is interrupted with the stop flag set,
+   instead of restarting the syscall. A stop is not a trap: `try` cannot
+   swallow it, and the stack unwinds through the same drop machinery, so the
+   exit is clean and leak-free in every mode. It also uncovered a real
+   double-free: an **assignment** of a Text place was a move, not a copy, so
+   `api_key = j.mcp.apiKey` aliased the record — `let` copied, assignment now
+   does too. `just log-watcher` is 7 checks; the seventh is the stop.
 5. **The MCP server never closes an accepted connection** — `net.close` exists
    and is unused; every request costs a descriptor.
 6. **Nothing soaks** — every check is seconds long, which is exactly the window

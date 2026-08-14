@@ -474,6 +474,17 @@ dispatch:
     CASE(BUILTIN) : {
         const char *bmsg = "builtin failed";
         int brc = wo_builtin(vm, R, ins, &bmsg);
+        /* A stop is not a trap: no error record, no catch handler gets a
+         * look (`try` must not be able to swallow SIGTERM), and no message.
+         * The stack is unwound exactly as an uncaught trap unwinds it, so
+         * every live value is still released on the way out; the CLI turns
+         * this into the same exit status a clean `return 0` gives. */
+        if (brc == WO_SYS_STOPPED) {
+            vm->frames[vm->depth - 1].pc = pc - 1;
+            vm->ncatch = 0;
+            vm_unwind(vm, 0);
+            return 1;
+        }
         if (brc) TRAPF((uint32_t)brc, "%s", bmsg);
         NEXT();
     }
