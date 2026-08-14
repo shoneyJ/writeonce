@@ -9,4 +9,9 @@
 
 int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
+/* The systems stdlib's OS half (runtime/src/sysio.c): same contract as
+ * wo_builtin above — 0 on success, a WO_T_* code with *msg set on failure.
+ * wo_builtin dispatches every id at or above WO_B_SYS_FIRST here. */
+int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
+
 #endif /* WO_BUILTIN_H */

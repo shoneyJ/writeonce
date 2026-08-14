@@ -184,6 +184,79 @@ let error_record_fields : (string * field_ty) list =
   [ ("code", Scalar "Int"); ("line", Scalar "Int"); ("method", Scalar "Text");
     ("msg", Scalar "Text") ]
 
+(* The other predeclared records: the results the systems stdlib's
+   record-returning members fill. Field ORDER is the contract with
+   runtime/src/sysio.c, which writes them by index (the compiler passes the
+   record's class id as the member's last argument, so the VM allocates what
+   it fills without knowing any source type name). *)
+let stat_record_name = "Stat"
+
+let stat_record_fields : (string * field_ty) list =
+  [ ("size", Scalar "Int"); ("mtime", Scalar "Int"); ("inode", Scalar "Int");
+    ("dir", Scalar "Bool") ]
+
+let time_record_name = "TimeParts"
+
+let time_record_fields : (string * field_ty) list =
+  [ ("year", Scalar "Int"); ("month", Scalar "Int"); ("day", Scalar "Int");
+    ("hour", Scalar "Int"); ("minute", Scalar "Int"); ("second", Scalar "Int");
+    ("dow", Scalar "Int") ]
+
+let proc_record_name = "Proc"
+
+let proc_record_fields : (string * field_ty) list =
+  [ ("code", Scalar "Int"); ("out", Scalar "Text"); ("err", Scalar "Text") ]
+
+let predeclared_records : (string * (string * field_ty) list) list =
+  [ (error_record_name, error_record_fields); (stat_record_name, stat_record_fields);
+    (time_record_name, time_record_fields); (proc_record_name, proc_record_fields) ]
+
+(* One member of a reserved stdlib module (`fs.stat`, `net.write`, ...).
+   [sm_builtin] is its .wob builtin id (runtime/src/wob.h); [sm_record] names
+   the predeclared record whose class id the emitter appends as the call's
+   last argument, so [sm_arity] is the SOURCE-visible argument count, not the
+   builtin's. `time.now` deliberately reuses the existing `now` builtin
+   rather than adding a second clock. *)
+type stdlib_member = {
+  sm_module : string;
+  sm_name : string;
+  sm_arity : int;
+  sm_builtin : int;
+  sm_ret : typ option; (* None = yields no value *)
+  sm_record : string option;
+}
+
+let stdlib_members : stdlib_member list =
+  let m sm_module sm_name sm_arity sm_builtin sm_ret sm_record =
+    { sm_module; sm_name; sm_arity; sm_builtin; sm_ret; sm_record }
+  in
+  [ (* fs *)
+    m "fs" "exists" 1 40 (Some (TScalar "Bool")) None;
+    m "fs" "list" 1 41 (Some (TMulti (TScalar "Text"))) None;
+    m "fs" "stat" 1 42 (Some (TNullable (TScalar stat_record_name))) (Some stat_record_name);
+    m "fs" "read_all" 2 43 (Some (TScalar "Text")) None;
+    m "fs" "read_at" 3 44 (Some (TScalar "Text")) None;
+    m "fs" "append" 2 45 None None;
+    (* time *)
+    m "time" "now" 0 0 (Some (TScalar "Int")) None;
+    m "time" "sleep" 1 46 None None;
+    m "time" "local" 1 47 (Some (TScalar time_record_name)) (Some time_record_name);
+    m "time" "iso" 1 48 (Some (TScalar "Text")) None;
+    (* env *)
+    m "env" "get" 1 49 (Some (TNullable (TScalar "Text"))) None;
+    m "env" "stopping" 0 50 (Some (TScalar "Bool")) None;
+    (* net *)
+    m "net" "listen" 2 51 (Some (TScalar "Int")) None;
+    m "net" "accept" 1 52 (Some (TScalar "Int")) None;
+    m "net" "read" 2 53 (Some (TScalar "Text")) None;
+    m "net" "write" 2 54 None None;
+    m "net" "close" 1 55 None None;
+    (* proc *)
+    m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name) ]
+
+let stdlib_member (m : string) (name : string) : stdlib_member option =
+  List.find_opt (fun s -> s.sm_module = m && s.sm_name = name) stdlib_members
+
 (* Adds the predeclared records to a symbol table. Applied to the MERGED
    table only (bin/main.ml), never to a per-file one: one entry per file
    would read as a cross-file duplicate declaration (WO-E214). A source
@@ -191,14 +264,17 @@ let error_record_fields : (string * field_ty) list =
    ones `catch (e)` binds, which is either what it wanted or a type error
    it will hear about at the use site. *)
 let with_builtin_records (syms : symbols) : symbols =
-  if StringMap.mem error_record_name syms.classes then syms
-  else
-    let info =
-      { name = error_record_name; is_class = false; is_record = true; is_gc = false; table = None;
-        fields = List.map (fun (n, t) -> (n, t, None, [])) error_record_fields; methods = [];
-        id = -1; pos = { line = 0; col = 0 }; pub = true }
-    in
-    { syms with classes = StringMap.add error_record_name info syms.classes }
+  List.fold_left
+    (fun (acc : symbols) ((name : string), (fields : (string * field_ty) list)) ->
+      if StringMap.mem name acc.classes then acc
+      else
+        let info =
+          { name; is_class = false; is_record = true; is_gc = false; table = None;
+            fields = List.map (fun (n, t) -> (n, t, None, [])) fields; methods = []; id = -1;
+            pos = { line = 0; col = 0 }; pub = true }
+        in
+        { acc with classes = StringMap.add name info acc.classes })
+    syms predeclared_records
 
 let rec has_recursive_structure (cls : class_info) : bool =
   List.exists (fun (_, ty, _, _) ->
@@ -922,6 +998,14 @@ let typecheck_program ~file ~(module_of : string -> string)
        would answer, and the try arm is the one that always has a value. *)
     | Try { body; _ } -> confident_typ cenv body
     | Ident name -> StringMap.find_opt name cenv
+    (* `c[i]` — a container read is exactly as confident as the container
+       itself (a `switch` over `w.result()` where `w` came out of a map
+       depends on this chain resolving). *)
+    | Index (base, _) -> (
+        match Option.map unwrap_nullable (confident_typ cenv base) with
+        | Some (TMulti e') -> Some e'
+        | Some (TMap (_, v)) -> Some v
+        | _ -> None)
     | Field (base, field_name) -> (
         match confident_typ cenv base with
         | Some (TScalar class_name) -> (
@@ -990,13 +1074,18 @@ let typecheck_program ~file ~(module_of : string -> string)
                 (* haxe-parity Task 7: a static call (`Flock.held(path)`).
                    The base names a class, so it has no confident *value*
                    type above — only this shape reaches here with a
-                   resolvable member. *)
+                   resolvable member. A reserved stdlib module's member
+                   (`fs.stat(path)`) has the same shape and is resolved from
+                   the stdlib table. *)
                 match base.kind with
-                | Ident cls_name -> (
-                    match static_method_of syms cls_name mname with
+                | Ident head -> (
+                    match static_method_of syms head mname with
                     | Some m -> (
                         match m.ret with Some ft -> Some (resolve_field_ty ft) | None -> Some TVoid)
-                    | None -> None)
+                    | None -> (
+                        match stdlib_member head mname with
+                        | Some sm -> ( match sm.sm_ret with Some t -> Some t | None -> Some TVoid)
+                        | None -> None))
                 | _ -> None))
         | _ -> None)
     | Ctor (class_name, _fields) ->
@@ -1027,12 +1116,14 @@ let typecheck_program ~file ~(module_of : string -> string)
            needs `int_to_text` first) -- unlike the placeholders below,
            this is a fact, not a guess. *)
         Some (TScalar "Text")
-    | Index _ | Unary _ | Binary _ | DbStub _ ->
-        (* Not chased: `Index`/the arithmetic-ladder `Binary` ops have no
-           reliable per-node type in this pass at all (see above);
-           `Unary`/`DbStub` would be cheap to add but nothing in this
-           task's fixtures or the log-watcher sample needs them, and a
-           narrower deriver is the safer default. *)
+    | Unary _ | Binary _ | DbStub _ ->
+        (* Not chased: the arithmetic-ladder `Binary` ops have no reliable
+           per-node type in this pass at all (see above); `Unary`/`DbStub`
+           would be cheap to add but nothing in this task's fixtures or the
+           log-watcher sample needs them, and a narrower deriver is the
+           safer default. (`Index` IS chased now — a container read is as
+           confident as its container, which is what lets a `switch` over a
+           value pulled out of a map resolve.) *)
         None
     | Switch _ ->
         (* haxe-parity Task 3: same "not chased" call as `Index`/`Binary`
@@ -1273,7 +1364,13 @@ let typecheck_program ~file ~(module_of : string -> string)
            underivable" contract every other confident-type consumer here
            follows, which also keeps a `catch (e) nil` arm quiet until
            optionals land. *)
+        (* A try arm that yields nothing is statement position (`try
+           fs.append(...) catch (e) { ... }`): there is no value to agree
+           about, so whatever the catch arm's last statement evaluates to is
+           discarded exactly like the try arm's own result. *)
         (match (handler_res, confident_typ cenv body) with
+         | _, Some TVoid -> ()
+         | _ when body_res.typ = TVoid -> ()
          | Some (Some ht, hpos), Some bt when not (typ_equal syms ht bt) ->
              Diag.Collector.add collector
                (Diag.error ~code:type_mismatch_code ~file ~line:hpos.line ~col:hpos.col

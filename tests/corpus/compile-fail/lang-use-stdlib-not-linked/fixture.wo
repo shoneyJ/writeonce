@@ -1,12 +1,14 @@
--- haxe-parity Task 1 (modules): `fs` is a reserved stdlib namespace —
--- `use fs` resolves and `fs.stat(...)` typechecks as UNKNOWN-BUT-
--- RESERVED (no E207/E225/arity error; the six namespaces' members
--- arrive in plan 9). A call through it that survives all the way to
--- emission is WO-E406, not silently accepted and not a generic
--- WO-E403 "cannot resolve the receiver" -- there is nothing wrong with
--- the reference, only nothing to lower it to yet.
+-- haxe-parity Task 1 (modules) + systems stdlib: `fs` is a reserved
+-- stdlib namespace, so `use fs` resolves and a qualified call through it
+-- typechecks without any module-level complaint (no E207/E225). What
+-- WO-E406 now marks is the one thing left that a reserved namespace
+-- cannot answer: a member it does not have. `fs.stat`/`fs.read_all`/...
+-- are linked (runtime/src/sysio.c); `fs.slurp` is not any member of any
+-- version of `fs`, and saying so at the call site is the whole point of
+-- keeping a dedicated code for it rather than a generic WO-E403
+-- "cannot resolve the receiver".
 use fs
 
 fn main() {
-  print_int(fs.stat("x"))
+  print(fs.slurp("x"))
 }

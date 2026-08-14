@@ -51,6 +51,14 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_SLICE] = 3,        [WO_B_POP] = 1,         [WO_B_SHIFT] = 1,
     [WO_B_SORT] = 1,         [WO_B_REVERSE] = 1,     [WO_B_MAP_REMOVE] = 2,
     [WO_B_MAP_KEY_AT] = 2,   [WO_B_MAP_VAL_AT] = 2, [WO_B_MULTI_SET] = 3,
+    /* systems stdlib, OS half (sysio.c). Record-returning members count
+       their result record's class id as an argument. */
+    [WO_B_FS_EXISTS] = 1,    [WO_B_FS_LIST] = 1,     [WO_B_FS_STAT] = 2,
+    [WO_B_FS_READ_ALL] = 2,  [WO_B_FS_READ_AT] = 3,  [WO_B_FS_APPEND] = 2,
+    [WO_B_TIME_SLEEP] = 1,   [WO_B_TIME_LOCAL] = 2,  [WO_B_TIME_ISO] = 1,
+    [WO_B_ENV_GET] = 1,      [WO_B_ENV_STOPPING] = 0, [WO_B_NET_LISTEN] = 2,
+    [WO_B_NET_ACCEPT] = 1,   [WO_B_NET_READ] = 2,    [WO_B_NET_WRITE] = 2,
+    [WO_B_NET_CLOSE] = 1,    [WO_B_PROC_RUN] = 3,
 };
 
 static int vtab_cmp(const void *a, const void *b) {

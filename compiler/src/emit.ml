@@ -463,6 +463,10 @@ type loop_frame = {
 type fstate = {
   f_file : string;
   f_fn : string;
+  (* the enclosing method's declared return type — what gives a contextual
+     value in tail position its type (`return []` / `return nil` /
+     `return {}`), the same role a `let`'s annotation plays *)
+  f_ret : Ast.field_ty option;
   f_code : code;
   mutable f_cur_line : int; (* line of the construct being lowered *)
   mutable f_line : int; (* last line written to the table *)
@@ -845,6 +849,21 @@ let iface_method (p : pctx) (iname : string) (m : string) : (int * Types.method_
         | None -> None
         | Some sg -> Some (slot, sg))))
 
+(* Types.typ -> this file's own Ast.field_ty view. Needed for the one table
+   that is stated in the typechecker's language and consumed here: the
+   systems stdlib's declared return shapes (Types.stdlib_members). Container
+   element types beyond one scalar level cannot be spelled as a field_ty
+   (`Multi of string`), so a nested container yields None — nothing in the
+   stdlib returns one. *)
+let rec field_ty_of_typ (t : Types.typ) : Ast.field_ty option =
+  match t with
+  | Types.TScalar n -> Some (Scalar n)
+  | Types.TRef n -> Some (Ref n)
+  | Types.TMulti (Types.TScalar n) -> Some (Multi n)
+  | Types.TMap (Types.TScalar k, Types.TScalar v) -> Some (Map (k, v))
+  | Types.TNullable inner -> ( match field_ty_of_typ inner with Some ft -> Some (Nullable ft) | None -> None)
+  | Types.TMulti _ | Types.TMap _ | Types.TVoid -> None
+
 let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty option =
   match name with
   | "int_to_text" -> Some (Scalar "Text")
@@ -1004,7 +1023,12 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
           match static_method p cls_name mname with Some mi -> mi.Types.ret | None -> None)
         | Ident alias -> (
           match use_edge_for p ~file:f.f_file alias with
-          | Some u when u.Types.ue_is_stdlib -> None (* nothing to infer a return type from yet *)
+          (* the systems stdlib's own declared return shapes (Types.
+             stdlib_members) — the source of `st.size` resolving at all *)
+          | Some u when u.Types.ue_is_stdlib -> (
+            match Types.stdlib_member alias mname with
+            | Some sm -> ( match sm.Types.sm_ret with Some t -> field_ty_of_typ t | None -> None)
+            | None -> None)
           | Some u -> (
             let target_mid = Types.path_str u.Types.ue_segments in
             match Hashtbl.find_opt p.p_module_syms target_mid with
@@ -1295,7 +1319,15 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
      (docs/plan/oop-vm/08-builtin-surface.md) — plus one `multi_push` per
      element, in source order. *)
   | ListLit items -> (
-    match container_imm p expected false with
+    (* the destination decides the element kinds; when there is no declared
+       destination, a non-empty literal knows its own element type and a
+       tail-position literal (`return []`) takes the method's return type *)
+    let dest =
+      match expected with
+      | Some _ -> expected
+      | None -> ( match ty_of_expr p f e with Some t -> Some t | None -> f.f_ret)
+    in
+    match container_imm p dest false with
     | None ->
       err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
         ~message:
@@ -1306,7 +1338,7 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       sync_mask p f v e.id;
       put f (ins_abc op_builtin dst imm b_multi_new);
       let elem_ty =
-        match expected with
+        match dest with
         | Some t -> ( match unwrap t with Multi en -> Some (Scalar en) | _ -> None)
         | None -> None
       in
@@ -1327,7 +1359,8 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
         items;
       f.f_temp <- outer)
   | MapLit -> (
-    match container_imm p expected true with
+    let dest = match expected with Some _ -> expected | None -> f.f_ret in
+    match container_imm p dest true with
     | None ->
       err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
         ~message:
@@ -2223,12 +2256,52 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
         | None -> ())
       | Ident alias -> (
         match use_edge_for p ~file:f.f_file alias with
-        | Some u when u.Types.ue_is_stdlib ->
-          err p ~code:stdlib_not_linked_code ~file:f.f_file ~pos:e.pos
-            ~message:
-              (Printf.sprintf "stdlib module `%s` is not linked in this milestone (called as `%s.%s`)"
-                 alias alias mname);
-          put f (ins_abx op_loadk dst (const_int p 0))
+        | Some u when u.Types.ue_is_stdlib -> (
+          (* the systems stdlib: one builtin per member. A member whose
+             result is a record takes that record's class id as its last
+             argument, so the VM allocates what it fills (sysio.c). *)
+          match Types.stdlib_member alias mname with
+          | None ->
+            err p ~code:stdlib_not_linked_code ~file:f.f_file ~pos:e.pos
+              ~message:
+                (Printf.sprintf "stdlib module `%s` has no member `%s`" alias mname);
+            put f (ins_abx op_loadk dst (const_int p 0))
+          | Some sm ->
+            if List.length args <> sm.Types.sm_arity then begin
+              err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+                ~message:
+                  (Printf.sprintf "`%s.%s` takes %d argument(s), given %d" alias mname
+                     sm.Types.sm_arity (List.length args));
+              put f (ins_abx op_loadk dst (const_int p 0))
+            end
+            else begin
+              let extra = match sm.Types.sm_record with Some _ -> 1 | None -> 0 in
+              let n = sm.Types.sm_arity + extra in
+              let base = alloc_temps p f e.pos (max n 1) in
+              List.iteri
+                (fun i (a : Ast.expr) ->
+                  let save = f.f_temp in
+                  emit_expr p f v ~dst:(base + i) a;
+                  f.f_temp <- save)
+                args;
+              (match sm.Types.sm_record with
+              | Some rec_name -> (
+                match class_of_name p rec_name with
+                | Some cid ->
+                  put f
+                    (ins_abx op_loadk (base + sm.Types.sm_arity)
+                       (check_bx p f e.pos "constant" (const_int p cid)))
+                | None ->
+                  err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+                    ~message:
+                      (Printf.sprintf "no class-table entry for the `%s` record — `%s.%s` cannot \
+                                       build its result"
+                         rec_name alias mname))
+              | None -> ());
+              sync_mask p f v e.id;
+              f.f_cur_line <- e.pos.line;
+              put f (ins_abc op_builtin dst base sm.Types.sm_builtin)
+            end)
         | Some u -> (
           let target_mid = Types.path_str u.Types.ue_segments in
           let target_fi =
@@ -3129,7 +3202,7 @@ and emit_do_while (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (body : Ast
 let emit_method (p : pctx) (v : views) ~(file : string) ~(self_class : (int * string) option)
     (m : Ast.method_decl) (rec_ : methrec) : unit =
   let f =
-    { f_file = file; f_fn = m.name; f_code = code_create (); f_cur_line = m.pos.line;
+    { f_file = file; f_fn = m.name; f_ret = m.ret; f_code = code_create (); f_cur_line = m.pos.line;
       f_line = -1; f_lines = []; f_owned = 0L; f_gc = 0L; f_last_owned = 0L; f_last_gc = 0L;
       f_drops = []; f_nlocals = 0; f_temp = 0; f_max = 0; f_env = []; f_decl = Hashtbl.create 16;
       f_node = Hashtbl.create 64; f_kind = Hashtbl.create 16; f_declared = []; f_div = false; f_maxjmp = 0;
@@ -3206,6 +3279,25 @@ let program_uses_try (prog : Ast.program) : bool =
     (fun _ (e : Ast.expr) -> match e.Ast.kind with Ast.Try _ -> found := true | _ -> ())
     prog;
   !found
+
+(* Which predeclared records does this program actually need a class-table
+   entry for? `Error` when it catches; a stdlib result record when it calls
+   the member that fills one. Nothing else gains a class it never uses, so
+   every image that predates this surface keeps its exact class table. *)
+let needed_records (prog : Ast.program) : string list =
+  let want = ref [] in
+  let add n = if not (List.mem n !want) then want := n :: !want in
+  Types.walk_program
+    (fun _ (e : Ast.expr) ->
+      match e.Ast.kind with
+      | Ast.Try _ -> add Types.error_record_name
+      | Ast.Call ({ Ast.kind = Ast.Field ({ Ast.kind = Ast.Ident head; _ }, mname); _ }, _) -> (
+        match Types.stdlib_member head mname with
+        | Some { Types.sm_record = Some r; _ } -> add r
+        | _ -> ())
+      | _ -> ())
+    prog;
+  !want
 
 (* Structural satisfaction, Go-style (spec section 2): a class satisfies
    an interface when it has a method of the same name and parameter count
@@ -3349,18 +3441,20 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
      and only when nothing already claims the name. Its field order is
      Types.error_record_fields, which is the same order the VM's
      WO_B_ERR_FILL builtin writes. *)
-  if
-    (not (SM.mem Types.error_record_name !class_id))
-    && List.exists (fun u -> program_uses_try u.prog) units
-  then begin
-    let cid = !nclasses in
-    class_id := SM.add Types.error_record_name cid !class_id;
-    incr nclasses;
-    classes :=
-      { cr_name = Types.error_record_name; cr_gc = false;
-        cr_fields = Array.of_list Types.error_record_fields; cr_methods = [] }
-      :: !classes
-  end;
+  List.iter
+    (fun (name, fields) ->
+      if
+        (not (SM.mem name !class_id))
+        && List.exists (fun u -> List.mem name (needed_records u.prog)) units
+      then begin
+        let cid = !nclasses in
+        class_id := SM.add name cid !class_id;
+        incr nclasses;
+        classes :=
+          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [] }
+          :: !classes
+      end)
+    Types.predeclared_records;
   let class_id = !class_id in
   let p_classes = Array.of_list (List.rev !classes) in
   let p_ifaces = Array.of_list (List.rev !ifaces) in

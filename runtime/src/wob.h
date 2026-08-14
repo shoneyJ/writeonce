@@ -84,6 +84,11 @@ enum {
     WO_T_BOUNDS = 6,
     WO_T_KEY = 7,
     WO_T_EXPLICIT = 8,
+    /* systems stdlib: a syscall the source cannot prevent said no (a
+     * missing directory, a closed socket, a failed exec). errno's own
+     * message rides along in the error record, and `try ... catch` is how
+     * a program that expects the failure handles it. */
+    WO_T_IO = 9,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */
@@ -208,8 +213,32 @@ enum {
     WO_B_MULTI_SET = 39,     /* (multi, i, v) -> 0; in-place element write,
                               * dropping the element it replaces. `m[i] = v`
                               * for a multi, the mirror of map_set. */
+    /* ---- systems stdlib: the OS half (runtime/src/sysio.c). Members that
+     * return a record take their result record's CLASS ID as their last
+     * argument — the compiler predeclares the record and passes the id, so
+     * the VM allocates what it fills without knowing source type names.
+     * Field orders are the contract, documented per case in sysio.c. ---- */
+    WO_B_FS_EXISTS = 40,   /* (path) -> 1/0 */
+    WO_B_FS_LIST = 41,     /* (dir) -> multi Text; unreadable dir traps IO */
+    WO_B_FS_STAT = 42,     /* (path, cls) -> ?Stat {size, mtime, inode, dir} */
+    WO_B_FS_READ_ALL = 43, /* (path, cap) -> Text, truncated at cap */
+    WO_B_FS_READ_AT = 44,  /* (path, off, len) -> Text, short read allowed */
+    WO_B_FS_APPEND = 45,   /* (path, text) -> 0; creates the file if absent */
+    WO_B_TIME_SLEEP = 46,  /* (ms) -> 0 */
+    WO_B_TIME_LOCAL = 47,  /* (ms, cls) -> Parts {year..second, dow} */
+    WO_B_TIME_ISO = 48,    /* (ms) -> Text, UTC seconds precision */
+    WO_B_ENV_GET = 49,     /* (name) -> ?Text; unset is nil */
+    WO_B_ENV_STOPPING = 50, /* () -> 1/0; SIGTERM/SIGINT latch */
+    WO_B_NET_LISTEN = 51,  /* (host, port) -> fd */
+    WO_B_NET_ACCEPT = 52,  /* (fd) -> fd */
+    WO_B_NET_READ = 53,    /* (fd, max) -> Text; empty = EOF */
+    WO_B_NET_WRITE = 54,   /* (fd, text) -> 0 */
+    WO_B_NET_CLOSE = 55,   /* (fd) -> 0 */
+    WO_B_PROC_RUN = 56,    /* (cmd, multi Text args, cls) -> Proc {code, out, err} */
 };
-#define WO_B_MAX 39u
+#define WO_B_MAX 56u
+/* ids at or above this one live in sysio.c, not builtin.c */
+#define WO_B_SYS_FIRST WO_B_FS_EXISTS
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {
