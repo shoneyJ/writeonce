@@ -273,7 +273,8 @@ let rec dump_stmt (s : Ast.stmt) : string list =
     (header :: indent_block then_body) @ else_lines
   | Ast.While { cond; body } ->
     Printf.sprintf "%s WHILE %s" (pos_str s.Ast.s_pos) (expr_str cond) :: indent_block body
-  | Ast.For { var; iter; body } ->
+  | Ast.For { var; var2; iter; body } ->
+    let var = match var2 with Some v2 -> var ^ ", " ^ v2 | None -> var in
     Printf.sprintf "%s FOR %s IN %s" (pos_str s.Ast.s_pos) var (expr_str iter) :: indent_block body
   | Ast.Return None -> [ Printf.sprintf "%s RETURN" (pos_str s.Ast.s_pos) ]
   | Ast.Return (Some e) -> [ Printf.sprintf "%s RETURN %s" (pos_str s.Ast.s_pos) (expr_str e) ]

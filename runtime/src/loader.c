@@ -50,7 +50,7 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_SPLIT] = 2,        [WO_B_SPLIT_WS] = 1,    [WO_B_JOIN] = 2,
     [WO_B_SLICE] = 3,        [WO_B_POP] = 1,         [WO_B_SHIFT] = 1,
     [WO_B_SORT] = 1,         [WO_B_REVERSE] = 1,     [WO_B_MAP_REMOVE] = 2,
-    [WO_B_MAP_KEY_AT] = 2,   [WO_B_MAP_VAL_AT] = 2,
+    [WO_B_MAP_KEY_AT] = 2,   [WO_B_MAP_VAL_AT] = 2, [WO_B_MULTI_SET] = 3,
 };
 
 static int vtab_cmp(const void *a, const void *b) {

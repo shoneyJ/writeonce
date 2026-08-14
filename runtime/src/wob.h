@@ -205,8 +205,11 @@ enum {
     WO_B_MAP_REMOVE = 36,    /* (map, key) -> 1/0; drops the removed key and value */
     WO_B_MAP_KEY_AT = 37,    /* (map, i) -> key at slot i (insertion order) */
     WO_B_MAP_VAL_AT = 38,    /* (map, i) -> value at slot i */
+    WO_B_MULTI_SET = 39,     /* (multi, i, v) -> 0; in-place element write,
+                              * dropping the element it replaces. `m[i] = v`
+                              * for a multi, the mirror of map_set. */
 };
-#define WO_B_MAX 38u
+#define WO_B_MAX 39u
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {

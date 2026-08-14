@@ -582,6 +582,20 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = C == WO_B_MAP_KEY_AT ? m->keys[i] : m->vals[i];
         return 0;
     }
+    case WO_B_MULTI_SET: { /* `m[i] = v`: the replaced element was the
+                            * container's, so it dies here */
+        wo_multi *m = native_check(R[B], WO_CLS_MULTI, msg);
+        if (!m) return WO_T_BOUNDS;
+        uint64_t i = R[B + 1];
+        if (i >= m->len) {
+            *msg = "multi index out of range";
+            return WO_T_BOUNDS;
+        }
+        if (m->items[i] != R[B + 2]) wo_drop_kind(rt, m->elem_kind, m->items[i]);
+        m->items[i] = R[B + 2];
+        R[A] = 0;
+        return 0;
+    }
     default: /* unreachable: loader validated the id */
         *msg = "unknown builtin";
         return WO_T_EXPLICIT;

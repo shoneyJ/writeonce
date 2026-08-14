@@ -1505,11 +1505,23 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
         read_expr ctx cond;
         analyze_block ctx ~node:s.s_id ~pos:s.s_pos ~label:"WHILE" body);
     ctx.loop_stack <- List.tl ctx.loop_stack
-  | For { var; iter; body } ->
+  | For { var; var2; iter; body } ->
     read_expr ctx iter;
     let src = place_of iter in
-    let item_ty =
-      match expr_ty ctx iter with Some t -> ( match elem_ty t with Some e -> e | None -> t) | None -> Scalar "Int"
+    let iter_ty = expr_ty ctx iter in
+    (* `for k, v in m` binds the map's key and value types; the one-name
+       form binds the element type (elem_ty). Both cursors are BORROWS of
+       what the container owns, so neither is ever dropped by the body. *)
+    let key_ty, item_ty =
+      match (iter_ty, var2) with
+      | Some (Map (k, v)), Some _ -> (Some (Scalar k), Scalar v)
+      | Some (Nullable (Map (k, v))), Some _ -> (Some (Scalar k), Scalar v)
+      | Some t, _ -> (None, ( match elem_ty t with Some e -> e | None -> t))
+      | None, _ -> (None, Scalar "Int")
+    in
+    let cursor (n : string) (t : Ast.field_ty) : local =
+      { l_name = n; l_ty = t; l_class = oclass_of ctx t; l_node = s.s_id; l_pos = s.s_pos;
+        l_holds = false; l_src = src; l_bkind = AShared; l_state = Borrowed s.s_pos }
     in
     ctx.loop_stack <- s.s_id :: ctx.loop_stack;
     fixpoint ctx
@@ -1517,10 +1529,11 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
         push_scope ctx ~node:s.s_id ~pos:s.s_pos ~label:"FOR";
         (* the cursor borrows an element of the iterable for the whole
            body: moving the container out from under it is E302 *)
-        declare ctx
-          { l_name = var; l_ty = item_ty; l_class = oclass_of ctx item_ty; l_node = s.s_id;
-            l_pos = s.s_pos; l_holds = false; l_src = src; l_bkind = AShared;
-            l_state = Borrowed s.s_pos };
+        (match (key_ty, var2) with
+        | Some kt, Some v2 ->
+          declare ctx (cursor var kt);
+          declare ctx (cursor v2 item_ty)
+        | _ -> declare ctx (cursor var item_ty));
         List.iter (analyze_stmt ctx) body;
         pop_scope ctx);
     ctx.loop_stack <- List.tl ctx.loop_stack

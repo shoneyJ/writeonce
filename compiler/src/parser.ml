@@ -1202,10 +1202,14 @@ and parse_for_stmt (st : state) : Ast.stmt =
   ignore (advance st);
   (* 'for' *)
   let var = expect_ident st "loop variable name" in
+  (* `for k, v in m` — the map form (see Ast.For.var2) *)
+  let var2 =
+    if accept st Token.Comma then Some (expect_ident st "second loop variable name") else None
+  in
   expect st Token.KwIn "`in`";
   let iter = parse_expr_no_brace st in
   let body = parse_block st in
-  { Ast.s_id = id; s_pos = pos; s_kind = Ast.For { var; iter; body } }
+  { Ast.s_id = id; s_pos = pos; s_kind = Ast.For { var; var2; iter; body } }
 
 and parse_return_stmt (st : state) : Ast.stmt =
   let pos = peek_pos st in
@@ -1820,9 +1824,13 @@ and subst_stmt (consts : Ast.expr StringMap.t) (bound : StringSet.t) (s : Ast.st
     }
   | Ast.While { cond; body } ->
     { s with Ast.s_kind = Ast.While { cond = e cond; body = subst_block consts bound body } }
-  | Ast.For { var; iter; body } ->
-    let bound' = StringSet.add var bound in
-    { s with Ast.s_kind = Ast.For { var; iter = e iter; body = subst_block consts bound' body } }
+  | Ast.For { var; var2; iter; body } ->
+    let bound' =
+      match var2 with
+      | Some v2 -> StringSet.add v2 (StringSet.add var bound)
+      | None -> StringSet.add var bound
+    in
+    { s with Ast.s_kind = Ast.For { var; var2; iter = e iter; body = subst_block consts bound' body } }
   | Ast.Return opt -> { s with Ast.s_kind = Ast.Return (Option.map e opt) }
   | Ast.ExprStmt ex -> { s with Ast.s_kind = Ast.ExprStmt (e ex) }
   | Ast.Break | Ast.Continue -> s

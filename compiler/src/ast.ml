@@ -318,6 +318,11 @@ and stmt_kind =
     }
   | For of {
       var : string;
+      (* `for k, v in m` over a `map<K, V>`: the second name binds the value
+         for that key. None is the one-name form, over a `multi`. Map
+         enumeration is slot-ordered (runtime/src/cont.h's parallel arrays),
+         which is insertion order. *)
+      var2 : string option;
       iter : expr;
       body : stmt list;
     }

@@ -1686,14 +1686,22 @@ let typecheck_program ~file ~(module_of : string -> string)
     | While { cond; body } ->
         let _ = typecheck_expr env cenv cond in
         List.fold_left typecheck_stmt (env, cenv) body
-    | For { var; iter; body } ->
+    | For { var; var2; iter; body } ->
         let iter_res = typecheck_expr env cenv iter in
-        let env_body = StringMap.add var iter_res.typ env in
-        let cenv_body =
-          match confident_typ cenv iter with
-          | Some (TMulti inner_t) -> StringMap.add var inner_t cenv
-          | _ -> StringMap.remove var cenv
+        (* `for k, v in m`: the names take the map's key and value types.
+           The one-name form over a `multi` keeps the element type. *)
+        let bind (env0 : typ StringMap.t) (t : typ option) : typ StringMap.t =
+          match (t, var2) with
+          | Some (TMap (kt, vt)), Some v2 -> StringMap.add v2 vt (StringMap.add var kt env0)
+          | Some (TMulti it), None -> StringMap.add var it env0
+          | Some other, None -> StringMap.add var other env0
+          | _ -> (
+              match var2 with
+              | Some v2 -> StringMap.remove v2 (StringMap.remove var env0)
+              | None -> StringMap.remove var env0)
         in
+        let env_body = bind env (Some iter_res.typ) in
+        let cenv_body = bind cenv (confident_typ cenv iter) in
         List.fold_left typecheck_stmt (env_body, cenv_body) body
     | Return opt_e ->
         (match opt_e with Some e -> let _ = typecheck_expr env cenv e in () | None -> ());
@@ -1878,9 +1886,14 @@ and walk_stmt (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (s : s
     walk_expr bound visit cond;
     walk_block bound visit body;
     bound
-  | For { var; iter; body } ->
+  | For { var; var2; iter; body } ->
     walk_expr bound visit iter;
-    walk_block (StringSet.add var bound) visit body;
+    let bound' =
+      match var2 with
+      | Some v2 -> StringSet.add v2 (StringSet.add var bound)
+      | None -> StringSet.add var bound
+    in
+    walk_block bound' visit body;
     bound
   | Return (Some e) ->
     walk_expr bound visit e;

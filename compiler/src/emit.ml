@@ -254,6 +254,7 @@ let b_reverse = 35
 let b_map_remove = 36
 let b_map_key_at = 37
 let b_map_val_at = 38
+let b_multi_set = 39
 
 let ins_abc op a b c = op lor (a lsl 8) lor (b lsl 16) lor (c lsl 24)
 let ins_abx op a bx = op lor (a lsl 8) lor (bx lsl 16)
@@ -2605,7 +2606,7 @@ and emit_stmt (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   | Return opt -> emit_return p f v s opt
   | If { cond; then_body; else_body } -> emit_if p f v s cond then_body else_body
   | While { cond; body } -> emit_while p f v s cond body
-  | For { var; iter; body } -> emit_for p f v s var iter body
+  | For { var; var2; iter; body } -> emit_for p f v s var var2 iter body
   | Break -> emit_break p f v s
   | Continue -> emit_continue p f v s
   | DoWhile { body; cond } -> emit_do_while p f v s body cond
@@ -2735,10 +2736,20 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         put f (ins_abc op_builtin sink w b_map_set);
         release_guards f guards
       | Multi _ ->
-        err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
-          ~message:
-            "element assignment into a `multi` — the v1 instruction set has push/get but no \
-             element write"
+        (* `m[i] = x` is the multi_set builtin — container, index, value in
+           three consecutive registers, exactly the map_set shape above.
+           The element it replaces is the container's, so the VM drops it. *)
+        let w = alloc_temps p f s.s_pos 3 in
+        emit_expr p f v ~dst:w base;
+        Hashtbl.replace f.f_node target.id w;
+        emit_expr p f v ~dst:(w + 1) idx;
+        emit_expr p f v ~dst:(w + 2) value;
+        let sink = alloc_temp p f s.s_pos in
+        f.f_cur_line <- s.s_pos.line;
+        let guards = residual_guards p f v s.s_id None in
+        acquire_guards f guards;
+        put f (ins_abc op_builtin sink w b_multi_set);
+        release_guards f guards
       | _ ->
         err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
           ~message:"element assignment into a value that is neither a `multi` nor a `map`")
@@ -2928,9 +2939,76 @@ and emit_while (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (cond : Ast.ex
    because BUILTIN's argument window is consecutive. A `map` has no
    key-enumeration builtin in v1, so iterating one is WO-E403 rather
    than invented bytecode. *)
-and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string) (iter : Ast.expr)
-    (body : Ast.stmt list) : unit =
+and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
+    (var2 : string option) (iter : Ast.expr) (body : Ast.stmt list) : unit =
   match ty_of_expr p f iter with
+  | Some t
+    when (match (unwrap t, var2) with Map _, Some _ -> true | _ -> false) ->
+    (* `for k, v in m` — slot-ordered enumeration over the map's parallel
+       arrays: `len` bounds it, `key_at`/`val_at` read slot i. Both cursors
+       are borrows of what the map owns, so nothing is dropped per
+       iteration (owner.ml declares them l_holds = false). *)
+    let kt, vt = match unwrap t with Map (k, v') -> (Scalar k, Scalar v') | _ -> (Scalar "Int", Scalar "Int") in
+    let v2 = match var2 with Some n -> n | None -> "_" in
+    let saved_locals = f.f_nlocals in
+    let saved_env = f.f_env in
+    let saved_decls = f.f_declared in
+    let div0 = f.f_div in
+    let rc = alloc_local p f s.s_pos in
+    let ri = alloc_local p f s.s_pos in
+    let rn = alloc_local p f s.s_pos in
+    let rk = alloc_local p f s.s_pos in
+    let rv = alloc_local p f s.s_pos in
+    f.f_temp <- f.f_nlocals;
+    emit_expr p f v ~dst:rc iter;
+    f.f_cur_line <- s.s_pos.line;
+    put f (ins_abc op_builtin rn rc b_len);
+    put f (ins_abx op_loadk ri (check_bx p f s.s_pos "constant" (const_int p 0)));
+    f.f_env <- (v2, (rv, vt)) :: (var, (rk, kt)) :: f.f_env;
+    Hashtbl.replace f.f_decl s.s_id rk;
+    f.f_declared <- s.s_id :: f.f_declared;
+    let top = here f in
+    let entry_owned = f.f_owned and entry_gc = f.f_gc in
+    f.f_temp <- f.f_nlocals;
+    let tc = alloc_temp p f s.s_pos in
+    put f (ins_abc op_lt tc ri rn);
+    let jz = here f in
+    put f (ins_asbx op_jz tc 0);
+    (* the builtin window is (container, index) in two consecutive slots *)
+    let w = alloc_temps p f s.s_pos 2 in
+    put f (ins_abc op_move w rc 0);
+    put f (ins_abc op_move (w + 1) ri 0);
+    put f (ins_abc op_builtin rk w b_map_key_at);
+    put f (ins_abc op_builtin rv w b_map_val_at);
+    let lf = { lf_node = s.s_id; lf_breaks = []; lf_continues = [] } in
+    f.f_loops <- lf :: f.f_loops;
+    List.iter (emit_stmt p f v) body;
+    f.f_loops <- List.tl f.f_loops;
+    emit_scope_drops p f v ~node:s.s_id ~label:"FOR";
+    emit_rc p f v ~node:s.s_id ~acquire:false ~groups:(declared_since f saved_decls) ();
+    let continue_target = here f in
+    List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc continue_target) lf.lf_continues;
+    f.f_temp <- f.f_nlocals;
+    f.f_cur_line <- s.s_pos.line;
+    let one = alloc_temp p f s.s_pos in
+    put f (ins_abx op_loadk one (check_bx p f s.s_pos "constant" (const_int p 1)));
+    put f (ins_abc op_add ri ri one);
+    let back = here f in
+    put f (ins_asbx op_jmp 0 0);
+    patch_jump p f ~file:f.f_file ~pos:s.s_pos back top;
+    let exit_pc = here f in
+    patch_jump p f ~file:f.f_file ~pos:s.s_pos jz exit_pc;
+    List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc exit_pc) lf.lf_breaks;
+    if f.f_div then begin
+      f.f_owned <- entry_owned;
+      f.f_gc <- entry_gc
+    end
+    else mask_meet f entry_owned entry_gc;
+    f.f_div <- div0;
+    f.f_nlocals <- saved_locals;
+    f.f_env <- saved_env;
+    f.f_declared <- saved_decls;
+    f.f_temp <- saved_locals
   | Some t when (match unwrap t with Multi _ -> true | _ -> false) ->
     let elem = match unwrap t with Multi e -> Scalar e | other -> other in
     let saved_locals = f.f_nlocals in
