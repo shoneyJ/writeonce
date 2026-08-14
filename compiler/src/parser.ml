@@ -1121,6 +1121,15 @@ and desugar_interp (st : state) (pos : Ast.pos) (segs : Token.str_part list) : A
     let sub_collector = Diag.Collector.create () in
     let sub_toks = Lexer.tokenize sub_collector ~file:st.file raw in
     let sub_st = make sub_collector ~file:st.file sub_toks in
+    (* The sub-parse must mint ids from the OUTER id space and hand back what
+       it used. A fresh state starts at 1, so every interpolation used to
+       produce nodes whose ids collided with unrelated nodes of the same file —
+       and every side table downstream (drops, moves, rc sites, masks,
+       f_decl) is keyed by node id, so a collision silently attributes one
+       construct's ownership table to another. That surfaced as a WO-E404
+       ("ownership table names `headers`, which has no register") on a method
+       whose interpolation happened to collide with a later local's node. *)
+    sub_st.next_id <- st.next_id;
     let parsed =
       try
         let e = parse_expr sub_st in
@@ -1128,6 +1137,7 @@ and desugar_interp (st : state) (pos : Ast.pos) (segs : Token.str_part list) : A
         else None
       with Parse_error -> None
     in
+    st.next_id <- sub_st.next_id;
     match parsed with
     | Some e -> e
     | None -> fail st pos syntax_code "malformed \"${...}\" interpolation expression"

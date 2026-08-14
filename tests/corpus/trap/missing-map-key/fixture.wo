@@ -3,6 +3,13 @@
 -- missing key traps KEY"). Unprovable at compile time -- the key is a
 -- runtime `Text` value -- so it traps rather than failing to compile:
 -- the hybrid boundary's runtime half.
+--
+-- Written as `get(...)` on purpose: the two map reads differ. `get(m, k)`
+-- ASSERTS the key is there and traps KEY when it isn't (this fixture);
+-- `m[k]` is the OPTIONAL read and yields nil for a missing key, which is
+-- what makes `let v = m[k]; if v != nil { ... }` the ordinary lookup idiom
+-- (the driving workload's own header lookup). Before 2026-08-14 both
+-- spellings trapped, and this fixture used the sugar.
 class Catalog {
   prices: map<Text, Int>
 }
@@ -10,5 +17,5 @@ class Catalog {
 fn main() {
   let c = Catalog { prices: map_new() }
   set(c.prices, "mug", 499)
-  print_int(c.prices["shirt"])
+  print_int(get(c.prices, "shirt"))
 }

@@ -10,7 +10,8 @@
      newline;
    - single- or double-quoted strings support the same backslash
      escapes as rt: n, t, backslash, or either quote character, each
-     backslash-prefixed; anything else verbatim;
+     backslash-prefixed; anything else verbatim. `\r` and `\0` were added
+     2026-08-14 (a program writing HTTP needs CRLF, and rt never had to);
    - integer literals are plain runs of ASCII digits;
    - identifiers may contain internal dashes, exactly like rt's
      read_ident_chars (crates/rt/src/lexer.rs) — so `foo-bar` lexes as
@@ -291,6 +292,12 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
             match advance lx with
             | Some 'n' -> Buffer.add_char buf '\n'
             | Some 't' -> Buffer.add_char buf '\t'
+            (* `\r` — added 2026-08-14: without it a program cannot write CRLF
+               at all, and the driving workload's HTTP server needs it (its
+               `index_of(buf, "\r\n\r\n")` was searching for a literal
+               backslash-r, so it never found a header terminator). *)
+            | Some 'r' -> Buffer.add_char buf '\r'
+            | Some '0' -> Buffer.add_char buf '\000'
             | Some '\\' -> Buffer.add_char buf '\\'
             | Some '"' -> Buffer.add_char buf '"'
             | Some '\'' -> Buffer.add_char buf '\''

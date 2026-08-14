@@ -255,6 +255,7 @@ let b_map_remove = 36
 let b_map_key_at = 37
 let b_map_val_at = 38
 let b_multi_set = 39
+let b_map_get_opt = 59
 
 (* json (runtime/src/json.c): encode takes the value's static kind as its
    second argument, decode the class id to build as its second. *)
@@ -1518,7 +1519,12 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | Index (base, idx) -> (
     let bid =
       match ty_of_expr p f base with
-      | Some bt -> ( match unwrap bt with Multi _ -> Some b_multi_get | Map _ -> Some b_map_get | _ -> None)
+      (* `m[k]` on a map is the OPTIONAL read — a missing key is nil, which is
+         what makes `let v = m[k]; if v != nil { ... }` the ordinary lookup
+         idiom. `get(m, k)` keeps asserting (WO_B_MAP_GET traps KEY). A `multi`
+         index still traps out of range: a bad index is a fault, not an
+         absence. *)
+      | Some bt -> ( match unwrap bt with Multi _ -> Some b_multi_get | Map _ -> Some b_map_get_opt | _ -> None)
       | None -> None
     in
     match bid with
@@ -2446,7 +2452,13 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
               emit_expr p f v ~dst:base a;
               f.f_temp <- save;
               let kind =
-                match ty_of_expr p f a with Some t -> field_kind p t | None -> 3 (* Text *)
+                match ty_of_expr p f a with
+                (* a `json.Value` is raw JSON already: kind 255 tells the
+                   builtin to emit it verbatim instead of quoting it *)
+                | Some t when (match unwrap t with Scalar n -> n = Types.json_value_type | _ -> false)
+                  -> 255
+                | Some t -> field_kind p t
+                | None -> 3 (* Text *)
               in
               put f (ins_abx op_loadk (base + 1) (check_bx p f e.pos "constant" (const_int p kind)));
               sync_mask p f v e.id;

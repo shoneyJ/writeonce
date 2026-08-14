@@ -273,12 +273,21 @@ enum {
      * top level comes from object headers and the class table. decode takes
      * the class id to build, and yields nil (0) on malformed input — never a
      * trap, which is what makes `json.decode(t) as T` a checked decode. ---- */
-    WO_B_JSON_ENCODE = 57, /* (value, kind) -> Text */
+    WO_B_JSON_ENCODE = 57, /* (value, kind) -> Text; kind 255 = the value is a
+                            * `json.Value`, i.e. raw JSON to emit verbatim */
     WO_B_JSON_DECODE = 58, /* (text, cls) -> ?instance of cls */
+    /* `m[k]` on a map is the OPTIONAL read: a missing key is nil, not a trap.
+     * `get(m, k)` (WO_B_MAP_GET) stays the asserting form. Indexing a `multi`
+     * out of range still traps — a bad index is a fault, not an absence. */
+    WO_B_MAP_GET_OPT = 59, /* (map, key) -> value or nil */
 };
-#define WO_B_MAX 58u
+#define WO_B_MAX 59u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
+
+/* json.encode's "this is already JSON" kind (a `json.Value`): not a field
+ * kind, only an argument marker. */
+#define WO_JSON_KIND_RAW 255u
 
 /* ---- instruction encode/decode: op:8 A:8 then B:8 C:8 or Bx:16 ---- */
 static inline uint32_t wo_ins_abc(uint8_t op, uint8_t a, uint8_t b, uint8_t c) {

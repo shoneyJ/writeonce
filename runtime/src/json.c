@@ -548,7 +548,11 @@ int wo_builtin_json(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_JSON_ENCODE: {
         jbuf b = {NULL, 0, 0, 0};
         uint8_t kind = (uint8_t)R[B + 1];
-        enc_value(&b, vm->mod, R[B], kind, WOB_NONE);
+        /* a `json.Value` argument is raw JSON already (an id echoed back into
+           a response, say) — quoting it as a Text would change `1` into `"1"` */
+        uint32_t fclass = kind == WO_JSON_KIND_RAW ? WOB_FIELD_JSON_RAW : WOB_NONE;
+        if (kind == WO_JSON_KIND_RAW) kind = WO_K_TEXT;
+        enc_value(&b, vm->mod, R[B], kind, fclass);
         if (b.oom) {
             free(b.p);
             *msg = "out of memory";

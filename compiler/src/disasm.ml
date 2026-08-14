@@ -147,6 +147,10 @@ let ins_str (i : int) (pc : int) : string =
     else Printf.sprintf "BUILTIN   r%d, r%d, %s" a b (builtin_name c)
   | 30 -> "DB_STUB"
   | 31 -> Printf.sprintf "TRAP      %d" bx
+  (* haxe-parity Task 5: try/catch. The handler target is rendered the way
+     jumps are — absolute, so a disassembly can be read against the pc column. *)
+  | 32 -> Printf.sprintf "TRY       r%d, handler -> %04d" a target
+  | 33 -> "ENDTRY"
   | op -> Printf.sprintf "?OP%d" op
 
 (* ---- the dump ---- *)

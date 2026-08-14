@@ -179,6 +179,16 @@ let is_stdlib_module (name : string) : bool = List.mem name stdlib_modules
    dynamic value tree. *)
 let json_value_type = "json.Value"
 
+(* The reserved stdlib TYPE names and their representations. `net.Conn` is a
+   file descriptor — a SCALAR — and getting this wrong is not cosmetic: an
+   unknown qualified name would fall through to "some user class", i.e.
+   WO_K_OWNED, and the frame would DROP an integer at scope end. Anything
+   qualified with a stdlib module and not listed here is an error at the use
+   site rather than a guess (types.ml's check_use_edges). *)
+let stdlib_scalar_types = [ "net.Conn" ]
+
+let is_stdlib_scalar_type (name : string) : bool = List.mem name stdlib_scalar_types
+
 (* haxe-parity Task 5: the record `catch (e)` binds — the VM's structured
    trap error, one shape forever (spec §6). Predeclared rather than
    written: no source declares it, every program that catches gets it, and
@@ -357,6 +367,7 @@ let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
            came from, which json.encode emits back verbatim. Kinding it TEXT
            is what makes it drop correctly and pass through concatenation. *)
         if name = "Text" || name = json_value_type then WO_K_TEXT
+        else if is_stdlib_scalar_type name then WO_K_SCALAR
         else if is_builtin_scalar name then WO_K_SCALAR
         else if StringMap.mem name syms.unions then
           (* haxe-parity Task 4: an all-bare union value is a plain
@@ -1130,6 +1141,11 @@ let typecheck_program ~file ~(module_of : string -> string)
            `a == 1 and b == 2` without a false "underivable" silence on
            the left-hand comparison. *)
         Some (TScalar "Bool")
+    (* `a .. b` is CONCAT, which always produces a fresh Text — and string
+       interpolation desugars to exactly such a chain (parser.ml), so without
+       this arm every interpolated value looked underivable and every check
+       built on confident types silently skipped it. *)
+    | Binary (Concat, _, _) -> Some (TScalar "Text")
     | Interp _ ->
         (* An interpolation always *produces* Text by construction
            (emit.ml decides, per-segment, whether the embedded value

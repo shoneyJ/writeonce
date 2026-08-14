@@ -126,7 +126,7 @@ class Mcp {
       let resp = self.handle(req);
       let head = "HTTP/1.1 ${resp.status} ${status_text(resp.status)}\r\n";
       head = head .. "Content-Type: application/json\r\nConnection: close\r\n";
-      head = head + "Content-Length: ${len(resp.body)}\r\n\r\n";
+      head = head .. "Content-Length: ${len(resp.body)}\r\n\r\n";
       try net.write(c, head .. resp.body) catch (e) {}
     }
   }

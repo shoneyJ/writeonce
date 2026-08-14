@@ -181,10 +181,21 @@ recorded, not silently owed:
   (`extends`/`cast`/`Dynamic`/…) still have no doctrine-citing diagnostics —
   plan 8 Tasks 7–8's remainder.
 - **A borrowed non-constant Text pushed into a container is a double-free
-  hazard** — `push(m, v)`'s open gap, now shared by list literals (`[a, b]`)
-  and documented in `owner.ml`'s own comment. The workload's literals are
-  string constants or borrowed params handed straight to a stdlib call, so
-  nothing reachable today hits it.
+  hazard** — `push(m, v)`'s open gap, now shared by list literals (`[a, b]`).
+  **Reached for real on 2026-08-14**: the MCP server answers `initialize`,
+  `tools/list` and an unauthorized request correctly, but a `tools/call` of
+  `tail_log` returns `{"isError":true,"text":"tool failed: not a text value"}`
+  — `Mcp.allowed_paths` pushes `e.log_path` (a Text the entry record owns)
+  into a fresh `multi Text`, so two owners free one string and a later read
+  finds recycled memory. The fix is a coordinated pair, not a one-liner:
+  `multi_push`/`map_set` must COPY a TEXT element (as `slice` already does),
+  and `owner.ml` must then stop treating a pushed Text as escaping so the
+  caller's own fresh temporaries are still dropped. Until then, treat
+  `push`-of-a-borrowed-Text as unsound.
+- **A temporary record whose field is iterated is never dropped** —
+  `for e in parse_dir(dir).entries` keeps the entries alive (good) but leaks
+  the `ParseResult` shell (its drop is recorded for no register). Found in the
+  same disassembly; a leak, not a corruption.
 - **json's two documented limits**: a `Bool` field encodes as `0`/`1` (the
   class-table kind byte does not distinguish it from an integer), and a JSON
   number with a fraction or exponent decodes by truncation.
@@ -193,6 +204,9 @@ recorded, not silently owed:
   descriptors. That is the sample's bug to fix, not the runtime's.
 - **The workload has never run under ASan**, and iteration 4's `gc/held-cycle`
   leak (above) is still open. The corpus itself stays ASan-clean.
+- **`json.encode` of a `Bool` and of a nil scalar are asymmetric**: a nullable
+  scalar encodes as `null` (the field metadata says so), a plain `Bool` still
+  encodes as `0`/`1`.
 - **No corpus fixtures cover the new surface.** By explicit direction
   (2026-08-14) the acceptance for this work is the log-watcher program itself,
   not fixture pairs; `tests/corpus/` still gates every pre-existing behavior

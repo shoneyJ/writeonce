@@ -63,9 +63,11 @@ static int elem_cmp(uint8_t kind, uint64_t a, uint64_t b) {
 int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     wo_rt *rt = &vm->rt;
     uint8_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
-    /* the OS half and json live in their own translation units */
-    if (C >= WO_B_JSON_ENCODE) return wo_builtin_json(vm, R, ins, msg);
-    if (C >= WO_B_SYS_FIRST) return wo_builtin_sys(vm, R, ins, msg);
+    /* the OS half and json live in their own translation units; ids outside
+       both ranges (WO_B_MAP_GET_OPT and anything added after it) stay here */
+    if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
+        return wo_builtin_json(vm, R, ins, msg);
+    if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
     switch (C) {
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;
@@ -183,6 +185,12 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "missing map key";
             return WO_T_KEY;
         }
+        return 0;
+    }
+    case WO_B_MAP_GET_OPT: { /* `m[k]`: a missing key is nil, not a trap */
+        wo_map *m = native_check(R[B], WO_CLS_MAP, msg);
+        if (!m) return WO_T_BOUNDS;
+        if (wo_map_get(m, R[B + 1], &R[A]) != 0) R[A] = 0;
         return 0;
     }
     case WO_B_MAP_HAS: {

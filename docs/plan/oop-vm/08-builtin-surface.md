@@ -52,9 +52,18 @@ maps to one `BUILTIN` id of the format doc.
 given, so one source name covers the `multi` and `map` ids the runtime
 keeps apart.
 
-**Sugar.** `c[i]` is exactly `get(c, i)` and `m[k] = v` is exactly
-`set(m, k, v)` for a `map` and `multi_set(m, i, v)` for a `multi` (the
-element it replaces is the container's, so the VM drops it).
+**Sugar.** `m[k] = v` is exactly `set(m, k, v)` for a `map` and
+`multi_set(m, i, v)` for a `multi` (the element it replaces is the container's,
+so the VM drops it).
+
+Reads differ by container, deliberately (amended 2026-08-14):
+
+- `c[i]` on a **`multi`** is `get(c, i)` — an out-of-range index traps
+  `BOUNDS`, because a bad index is a fault, not an absence.
+- `m[k]` on a **`map`** is the **optional** read (`map_get_opt`): a missing key
+  yields nil, which is what makes `let v = m[k]; if v != nil { … }` the
+  ordinary lookup idiom the driving workload uses for HTTP headers.
+  `get(m, k)` remains the **asserting** read and still traps `KEY`.
 
 **Shadowing.** A user-declared free `fn` of the same name always wins. A
 declared name is never silently replaced by a builtin.
