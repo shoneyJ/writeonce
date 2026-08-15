@@ -80,6 +80,11 @@
 ## Info
 
 - Governing spec: [`docs/superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md`](../../superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md).
+- **Gated by the benchmark (2026-08-15):** this is the "implement garbage
+  collection" lever of the performance arc — tri-color mark-sweep replacing
+  RC changes the write path's tail latency, so landing it means re-running
+  iteration [9e](09e-durability-throughput-scale.md) and recording the
+  delta (does tracing help or hurt p99 under write load?).
 - **Constraint added by the database track (2026-08-15):** a GC-managed value
   in a `@table` field is a compile error (the engine/heap bulkhead — 9b
   design, section 6). Once GC-ness is inferred rather than annotated, the
