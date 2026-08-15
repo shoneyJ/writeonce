@@ -2,6 +2,14 @@
 
 > A two-layer multi-paradigm language for an e-commerce platform with ACID transactions across relational, document, and graph storage.
 
+> **Query layer superseded (2026-08-15):** the SQL + Cypher query layer below
+> is design history — on the C stack, programs query their tables through the
+> language-integrated surface specified in
+> [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md)
+> (fork 1's decision record). This document remains the reference for the
+> schema layer's vocabulary and for the `wo-db` prototype's engine semantics;
+> SQL text is at most a future export format, never a program surface.
+
 **Previous**: [Phase 1 — Database Evaluation](./01-evaluation.md) | **Next**: [Phase 3 — In-Memory Engine](./03-inmemory-engine.md) | **Index**: [database.md](../database.md)
 
 ---

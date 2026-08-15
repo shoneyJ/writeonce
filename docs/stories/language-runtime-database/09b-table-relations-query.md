@@ -8,9 +8,14 @@
 > precedes iteration 10 because `service` blocks will want to return query
 > results.
 >
-> **No spec exists yet.** This iteration frames the outcome and records the
-> open questions; the design must be brainstormed before a plan is written.
-> The three questions in *Info* are genuine forks, not details.
+> **Spec exists (2026-08-15):**
+> [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md)
+> settles the three forks recorded in *Info* below (kept as the decision
+> record): the SQL/Cypher layer is superseded as the program surface,
+> the syntax is a compiler-desugared comprehension, and the references
+> contribute vocabulary + semantics (System.Linq) and execution + integrity
+> vocabulary (PostgreSQL, surveyed with the spec). Plan:
+> [`2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md).
 
 ## Goals
 
@@ -119,10 +124,18 @@ iteration makes it mean something in the C stack.
 
 ## Proposed Solution
 
-- **Brainstorm a spec first**, settling the three forks above; only then write
-  the plan. This iteration deliberately ships no plan pointer, because
-  choosing between "replace the SQL layer" and "sit beside it" changes what
-  the plan contains.
+- ~~Brainstorm a spec first~~ — **done 2026-08-15**; the spec settles all
+  three forks and the plan exists (pointers in the header note). The fork-1
+  outcome for the record: language-integrated query is the only program
+  surface; `docs/runtime/database/02-wo-language.md`'s SQL/Cypher layer stays
+  as design history and as the `wo-db` prototype's engine-semantics
+  reference, never as syntax.
+- **The acceptance workload is a new sample**: `docs/examples/employee` —
+  `Department`/`Employee` with `@unique`, a composite index, a `ref`/
+  `backlink` pair, and a report mode that is one `GROUP BY` after another
+  (headcount, avg/min/max salary by department). It is 9b's acceptance the
+  way log-watcher was iterations 1–7's; the ecommerce query rewrite (the
+  fifth criterion below) follows as its own step once employee is green.
 - Study `.dev/reference/dotnet-runtime`'s `System.Linq` operator set for the
   vocabulary, and `docs/runtime/database/02-wo-language.md` plus
   `prototypes/wo-db/` for the semantics already committed to.
