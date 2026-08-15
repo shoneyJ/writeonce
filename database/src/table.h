@@ -78,6 +78,29 @@ typedef struct db_row {
 
 #define DB_SLAB_ROWS 256u
 
+/* Secondary index (iteration 9, Task 4): built from the class table's v3
+ * metadata at first touch, maintained ONLY inside the row choke points.
+ * Hash multimap: bucket per column-value hash, ids within; equality is
+ * re-checked against the actual rows on the unique path (a hash is a hint,
+ * never an answer). */
+typedef struct db_ibucket {
+    uint64_t hash;
+    uint64_t *ids;
+    uint32_t len, cap;
+} db_ibucket;
+
+typedef struct db_index {
+    uint32_t flags; /* bit0 = unique */
+    uint32_t col_cnt;
+    const uint32_t *cols; /* into the loader's idx pool */
+    db_ibucket *buckets;  /* open addressing by hash; hash==0 stored as 1 */
+    size_t bcap, blen;
+} db_index;
+
+/* wo_row_insert failure classes — *msg carries the sentence, this carries
+ * the machine-readable kind so db.c maps to the right trap. */
+enum { DB_ERR_NONE = 0, DB_ERR_OOM = 1, DB_ERR_BADKIND = 2, DB_ERR_UNIQUE = 3, DB_ERR_MISC = 4 };
+
 typedef struct db_table {
     uint32_t class_id;
     size_t row_size; /* 16 + field_cnt * 8 */
@@ -94,6 +117,9 @@ typedef struct db_table {
     uint64_t *hkeys;
     uint64_t *hvals;
     size_t hcap, hlen;
+    /* secondary indexes, from the class table's v3 metadata */
+    db_index *indexes;
+    uint32_t index_cnt;
 } db_table;
 
 typedef struct wo_db {
@@ -112,7 +138,7 @@ void wo_db_destroy(wo_db *db);
  * table) into a fresh row. Returns the new id, or 0 with *msg set (OOM, or
  * a GCREF field — which the compiler should have refused upstream). */
 uint64_t wo_row_insert(wo_db *db, uint32_t class_id, const uint64_t *vals,
-                       const char **msg);
+                       const char **msg, int *err_kind);
 
 /* Read: decode the row's fields into VM values freshly allocated from
  * [rt] — always copies, never a pointer into the slab (the out-gate).
@@ -139,5 +165,11 @@ db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id);
 /* Engine-internal: free one engine-encoded slot value of [kind] (wal.c's
  * decode error paths). */
 void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v);
+
+/* Engine-internal, replay only: after wal.c fills a raw row's slots, this
+ * runs the index maintenance the normal insert runs inline — including the
+ * unique check, whose violation during replay is corruption, not data
+ * (0 ok, -1). */
+int wo_row_raw_commit(wo_db *db, uint32_t class_id, db_row *r);
 
 #endif /* WO_TABLE_H */

@@ -266,6 +266,120 @@ static void hdel(db_table *t, uint64_t id) {
 
 /* ---- tables and rows ---------------------------------------------------- */
 
+/* ---- secondary indexes (Task 4) ---------------------------------------- */
+
+/* hash of one row's index columns: kind-driven, never trusted for equality */
+static uint64_t idx_hash(const wo_classdesc *c, const db_index *ix, const db_row *r) {
+    uint64_t h = 0x9e3779b97f4a7c15ull;
+    for (uint32_t i = 0; i < ix->col_cnt; i++) {
+        uint32_t col = ix->cols[i];
+        uint64_t v = r->slots[col];
+        if (c->kinds[col] == WO_K_TEXT) {
+            const db_text *t = (const db_text *)(uintptr_t)v;
+            uint64_t th = 1469598103934665603ull; /* FNV-1a over bytes; nil = 0 */
+            if (t)
+                for (uint32_t b = 0; b < t->len; b++) th = (th ^ (uint8_t)t->bytes[b]) * 1099511628211ull;
+            else th = 0;
+            v = th;
+        }
+        h ^= hmix(v + i);
+    }
+    return h ? h : 1; /* 0 marks an empty bucket */
+}
+
+static int idx_cols_equal(const wo_classdesc *c, const db_index *ix, const db_row *a,
+                          const db_row *b) {
+    for (uint32_t i = 0; i < ix->col_cnt; i++) {
+        uint32_t col = ix->cols[i];
+        if (c->kinds[col] == WO_K_TEXT) {
+            const db_text *x = (const db_text *)(uintptr_t)a->slots[col];
+            const db_text *y = (const db_text *)(uintptr_t)b->slots[col];
+            if (!x || !y) {
+                if (x != y) return 0;
+            } else if (x->len != y->len || memcmp(x->bytes, y->bytes, x->len) != 0)
+                return 0;
+        } else if (a->slots[col] != b->slots[col])
+            return 0;
+    }
+    return 1;
+}
+
+static db_ibucket *idx_bucket(db_index *ix, uint64_t h, int create) {
+    if (ix->bcap == 0) {
+        if (!create) return NULL;
+        ix->buckets = calloc(64, sizeof(db_ibucket));
+        if (!ix->buckets) return NULL;
+        ix->bcap = 64;
+    }
+    if (create && ix->blen * 10 >= ix->bcap * 7) {
+        size_t ncap = ix->bcap * 2;
+        db_ibucket *nb = calloc(ncap, sizeof(db_ibucket));
+        if (!nb) return NULL;
+        for (size_t i = 0; i < ix->bcap; i++) {
+            if (!ix->buckets[i].hash) continue;
+            size_t j = ix->buckets[i].hash & (ncap - 1);
+            while (nb[j].hash) j = (j + 1) & (ncap - 1);
+            nb[j] = ix->buckets[i];
+        }
+        free(ix->buckets);
+        ix->buckets = nb;
+        ix->bcap = ncap;
+    }
+    size_t j = h & (ix->bcap - 1);
+    while (ix->buckets[j].hash) {
+        if (ix->buckets[j].hash == h) return &ix->buckets[j];
+        j = (j + 1) & (ix->bcap - 1);
+    }
+    if (!create) return NULL;
+    ix->buckets[j].hash = h;
+    ix->blen++;
+    return &ix->buckets[j];
+}
+
+/* Add [r] to every index; unique violation reports which without mutating
+ * anything (checks run before any add). 0 ok, DB_ERR_* otherwise. */
+static int idx_add_row(wo_db *db, db_table *t, db_row *r) {
+    const wo_classdesc *c = &db->classes[t->class_id];
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        if (!(ix->flags & 1u)) continue;
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
+        if (!b) continue;
+        for (uint32_t i = 0; i < b->len; i++) {
+            db_row *other = wo_row_ptr(db, t->class_id, b->ids[i]);
+            if (other && idx_cols_equal(c, ix, r, other)) return DB_ERR_UNIQUE;
+        }
+    }
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 1);
+        if (!b) return DB_ERR_OOM;
+        if (b->len == b->cap) {
+            uint32_t ncap = b->cap ? b->cap * 2 : 4;
+            uint64_t *ni = realloc(b->ids, (size_t)ncap * 8u);
+            if (!ni) return DB_ERR_OOM;
+            b->ids = ni;
+            b->cap = ncap;
+        }
+        b->ids[b->len++] = r->id;
+    }
+    return 0;
+}
+
+static void idx_remove_row(wo_db *db, db_table *t, db_row *r) {
+    const wo_classdesc *c = &db->classes[t->class_id];
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
+        if (!b) continue;
+        for (uint32_t i = 0; i < b->len; i++)
+            if (b->ids[i] == r->id) {
+                b->ids[i] = b->ids[--b->len];
+                break;
+            }
+    }
+}
+
 int wo_db_init(wo_db *db, const wo_classdesc *classes, uint32_t class_cnt,
                uint32_t shard, uint32_t nshards) {
     if (!nshards || shard >= nshards) return -1;
@@ -298,6 +412,11 @@ static void table_destroy(wo_db *db, db_table *t) {
     free(t->free_slots);
     free(t->hkeys);
     free(t->hvals);
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        for (size_t b = 0; b < t->indexes[x].bcap; b++) free(t->indexes[x].buckets[b].ids);
+        free(t->indexes[x].buckets);
+    }
+    free(t->indexes);
 }
 
 void wo_db_destroy(wo_db *db) {
@@ -312,9 +431,22 @@ static db_table *table_of(wo_db *db, uint32_t class_id) {
     if (class_id >= db->class_cnt) return NULL;
     db_table *t = &db->tables[class_id];
     if (!t->row_size) { /* lazy init on first touch */
+        const wo_classdesc *c = &db->classes[class_id];
         t->class_id = class_id;
-        t->row_size = sizeof(db_row) + (size_t)db->classes[class_id].field_cnt * 8u;
+        t->row_size = sizeof(db_row) + (size_t)c->field_cnt * 8u;
         t->next_id = db->shard + 1; /* S+1, then += N: interleaved, local-only */
+        if (c->idx_cnt) {
+            t->indexes = calloc(c->idx_cnt, sizeof(db_index));
+            if (!t->indexes) return NULL;
+            const uint32_t *im = c->idx_meta;
+            for (uint32_t x = 0; x < c->idx_cnt; x++) {
+                t->indexes[x].flags = im[0];
+                t->indexes[x].col_cnt = im[1];
+                t->indexes[x].cols = im + 2;
+                im += 2 + im[1];
+            }
+            t->index_cnt = c->idx_cnt;
+        }
     }
     return t;
 }
@@ -356,7 +488,8 @@ static uint32_t slot_alloc(db_table *t) {
 }
 
 uint64_t wo_row_insert(wo_db *db, uint32_t class_id, const uint64_t *vals,
-                       const char **msg) {
+                       const char **msg, int *err_kind) {
+    if (err_kind) *err_kind = DB_ERR_MISC;
     db_table *t = table_of(db, class_id);
     if (!t) {
         *msg = "no such class";
@@ -375,7 +508,10 @@ uint64_t wo_row_insert(wo_db *db, uint32_t class_id, const uint64_t *vals,
     uint32_t i = 0;
     for (; i < c->field_cnt; i++) {
         r->slots[i] = db_val_encode(db->classes, c->kinds[i], vals[i], &ok, msg);
-        if (!ok) break;
+        if (!ok) {
+            if (err_kind) *err_kind = DB_ERR_BADKIND;
+            break;
+        }
     }
     if (!ok) {
         for (uint32_t j = 0; j < i; j++) db_val_free(c->kinds[j], r->slots[j]);
@@ -395,13 +531,28 @@ uint64_t wo_row_insert(wo_db *db, uint32_t class_id, const uint64_t *vals,
     t->next_id += db->nshards;
     if (hput(t, r->id, (uint64_t)g + 1) != 0) {
         for (uint32_t j = 0; j < c->field_cnt; j++) db_val_free(c->kinds[j], r->slots[j]);
+        if (err_kind) *err_kind = DB_ERR_OOM;
         *msg = "out of memory indexing a row";
         return 0;
     }
     t->bitmap[g >> 6] |= 1ull << (g & 63);
     t->count++;
-    /* INDEX HOOK (Task 4): secondary indexes update here, inside the choke
-       point, never anywhere else. */
+    /* THE index hook (Task 4): inside the choke point, never anywhere else.
+       A unique violation un-applies the row entirely — id never handed out
+       twice matters less than the row never having existed. */
+    int irc = idx_add_row(db, t, r);
+    if (irc != 0) {
+        t->bitmap[g >> 6] &= ~(1ull << (g & 63));
+        hdel(t, r->id);
+        t->count--;
+        t->next_id -= db->nshards; /* the id was never observable: reclaim it */
+        for (uint32_t j = 0; j < c->field_cnt; j++) db_val_free(c->kinds[j], r->slots[j]);
+        if (t->free_cnt < t->free_cap) t->free_slots[t->free_cnt++] = g;
+        if (err_kind) *err_kind = irc;
+        *msg = irc == DB_ERR_UNIQUE ? "unique index violation" : "out of memory indexing a row";
+        return 0;
+    }
+    if (err_kind) *err_kind = DB_ERR_NONE;
     return r->id;
 }
 
@@ -444,10 +595,14 @@ db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id) {
     /* keep the interleave: only ids this shard owns move its counter */
     if ((id - 1) % db->nshards == db->shard && id >= t->next_id)
         t->next_id = id + db->nshards;
-    /* INDEX HOOK (Task 4): replayed rows re-index here, same as inserts —
-       the caller fills slots BEFORE indexes exist on them (Task 4 will move
-       the hook to a post-fill call, recorded in the binding doc). */
+    /* indexes: NOT here — the slots are still zero. wal.c fills them and
+       then calls wo_row_raw_commit, which is where replayed rows re-index. */
     return r;
+}
+
+int wo_row_raw_commit(wo_db *db, uint32_t class_id, db_row *r) {
+    db_table *t = &db->tables[class_id];
+    return idx_add_row(db, t, r) == 0 ? 0 : -1;
 }
 
 void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
@@ -463,8 +618,9 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id) {
     if (!s1) return -1;
     uint32_t g = (uint32_t)(s1 - 1);
     db_row *r = slot_row(t, g);
-    /* INDEX HOOK (Task 4): secondary indexes remove here, before the row's
-       values die. */
+    /* the index hook's remove side: before the row's values die, while the
+       columns are still comparable */
+    idx_remove_row(db, t, r);
     const wo_classdesc *c = &db->classes[class_id];
     for (uint32_t i = 0; i < c->field_cnt; i++) db_val_free(c->kinds[i], r->slots[i]);
     t->bitmap[g >> 6] &= ~(1ull << (g & 63));

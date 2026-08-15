@@ -1,0 +1,26 @@
+-- iteration 9 Task 4, the other half: the unique trap is catchable (the
+-- employee sample's SEED-DUP pattern), a NON-unique @table composite index
+-- accepts duplicates, and a distinct key inserts freely beside the taken
+-- one. (Key release after delete joins the corpus with Task 5's delete.)
+@table(name: "events", index: [kind, at])
+class Event {
+  kind: Text
+  at: Int
+}
+
+class Account {
+  email: Text @unique
+  balance: Int
+}
+
+fn main() {
+  let a = insert Account { email: "a@x", balance: 100 }
+  print_int(a)
+  let dup = try insert Account { email: "a@x", balance: 200 } catch (e) nil
+  if dup == nil { print("DUP-REFUSED") }
+  insert Event { kind: "warn", at: 1 }
+  insert Event { kind: "warn", at: 1 }
+  print("EVENTS-OK")
+  let b = insert Account { email: "b@x", balance: 300 }
+  print_int(b)
+}

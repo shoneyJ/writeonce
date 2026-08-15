@@ -2382,7 +2382,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 2 then fail "unsupported version";
+  if u32 4 <> 3 then fail "unsupported version";
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2419,6 +2419,7 @@ let validate_image (img : string) : string list =
     if flags land lnot 0x01 <> 0 then fail (Printf.sprintf "class %d: unknown flags" i);
     if fcnt > 65535 then fail (Printf.sprintf "class %d: too many fields" i);
     class_fields.(i) <- fcnt;
+    let kco = !o in (* the kind bytes' offset: the v3 index walk re-reads them *)
     for j = 0 to fcnt - 1 do
       if u8 (!o + j) > 5 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
     done;
@@ -2435,6 +2436,25 @@ let validate_image (img : string) : string list =
         fail (Printf.sprintf "class %d field %d: field class out of range" i j)
     done;
     o := !o + (fcnt * 12);
+    (* v3: the index tail — flags (bit0 only), col_cnt 1..8, columns in
+       range and scalar/Text-kinded. Mirrors loader.c's checks. *)
+    let icnt_x = u32 !o in
+    o := !o + 4;
+    if icnt_x > 64 then fail (Printf.sprintf "class %d: too many indexes" i);
+    for x = 0 to icnt_x - 1 do
+      let ifl = u32 !o and ccnt = u32 (!o + 4) in
+      o := !o + 8;
+      if ifl land lnot 1 <> 0 then fail (Printf.sprintf "class %d index %d: unknown flags" i x);
+      if ccnt = 0 || ccnt > 8 then fail (Printf.sprintf "class %d index %d: bad column count" i x);
+      for c = 0 to ccnt - 1 do
+        let col = u32 !o in
+        o := !o + 4;
+        if col >= fcnt then fail (Printf.sprintf "class %d index %d: column out of range" i x);
+        let kind = u8 (kco + col) in
+        if kind <> 0 && kind <> 3 then
+          fail (Printf.sprintf "class %d index %d: column %d is not scalar or Text" i x c)
+      done
+    done;
     if !o > len then fail (Printf.sprintf "class %d: truncated" i)
   done;
   (* interfaces + vtable rows *)

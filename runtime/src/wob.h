@@ -12,7 +12,7 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 2u /* v2 adds per-field names/types to the class table */
+#define WOB_VERSION 3u /* v3: v2's field metadata + per-class index metadata */
 #define WOB_HDR_SIZE 44u
 #define WOB_OFF_MAGIC 0u
 #define WOB_OFF_VERSION 4u
@@ -121,6 +121,10 @@ enum {
      * message rides along in the error record, and `try ... catch` is how
      * a program that expects the failure handles it. */
     WO_T_IO = 9,
+    /* iteration 9 Task 4: a unique-index violation on insert/update —
+       raised by the engine at the row choke point, catchable like any
+       trap (the employee sample's SEED-DUP line) */
+    WO_T_UNIQUE = 10,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */
@@ -330,6 +334,11 @@ typedef struct wo_classdesc {
     const uint32_t *field_names; /* constant index of each field's name */
     const uint32_t *field_class; /* referenced class id / JSON_RAW / NONE */
     const uint32_t *field_elem;  /* container element kinds */
+    /* v3 (iteration 9 Task 4): the class's secondary indexes, flat-encoded
+       [flags, col_cnt, col...]* — flags bit0 = unique. idx_cnt entries.
+       Columns are field indices, scalar/Text kinds only (loader-checked). */
+    uint32_t idx_cnt;
+    const uint32_t *idx_meta;
 } wo_classdesc;
 #define WO_CLASSF_GC 0x01u
 

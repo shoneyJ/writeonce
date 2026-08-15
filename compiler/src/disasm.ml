@@ -164,7 +164,7 @@ let dump (img : string) : string =
   let line fmt = Buffer.add_string out (fmt ^ "\n") in
   if u32 img 0 <> magic then raise (Bad "bad magic");
   let ver = u32 img 4 in
-  if ver <> 2 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  if ver <> 3 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
@@ -213,6 +213,14 @@ let dump (img : string) : string =
        renders as keys, so a wrong one is worth seeing. *)
     let names = List.init fcnt (fun j -> u32 img (!o + (j * 4))) in
     o := !o + (fcnt * 12);
+    (* v3 index tail: walk past (the disassembly prints class shape, not
+       indexes — dump goldens stay byte-stable across the version bump) *)
+    let icnt = u32 img !o in
+    o := !o + 4;
+    for _ = 1 to icnt do
+      let ccnt = u32 img (!o + 4) in
+      o := !o + 8 + (ccnt * 4)
+    done;
     let fields =
       List.map2
         (fun nmk k -> if nmk = 0xFFFFFFFF then k else Printf.sprintf "%s:%s" (kname nmk) k)

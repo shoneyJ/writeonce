@@ -403,7 +403,17 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
             return -1;
         }
     }
-    return (size_t)(r.end - r.p) == 0 ? 0 : -1; /* trailing bytes = corrupt */
+    if ((size_t)(r.end - r.p) != 0) { /* trailing bytes = corrupt */
+        wo_row_remove(db, cid, id);
+        return -1;
+    }
+    /* slots are real now: re-index (Task 4). A unique violation during
+     * replay is corruption — the live insert would have refused it. */
+    if (wo_row_raw_commit(db, cid, row) != 0) {
+        wo_row_remove(db, cid, id);
+        return -1;
+    }
+    return 0;
 }
 
 int64_t wo_wal_replay(const char *path, wo_db *db) {

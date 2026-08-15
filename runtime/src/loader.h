@@ -54,6 +54,7 @@ typedef struct wo_module {
     /* pooled per-field metadata (v2): names, referenced class ids, element
        kinds — see wob.h's "class-table field metadata" note */
     uint32_t *metapool;
+    uint32_t *idxpool; /* v3 pooled per-class index metadata (flags/cols) */
     uint32_t slot_cnt; /* total interface slots across all interfaces */
     wo_vtabent *vtabs;
     uint32_t vtab_cnt;

@@ -152,7 +152,7 @@ let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
    ============================================================ *)
 
 let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
-let wob_version = 2 (* v2: per-field class-table metadata *)
+let wob_version = 3 (* v3: v2 + per-class secondary-index metadata *)
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
 let k_int = 0
@@ -349,6 +349,11 @@ type clsrec = {
   cr_gc : bool;
   cr_fields : (string * Ast.field_ty) array;
   cr_methods : string list; (* method names, declaration order *)
+  (* iteration 9 Task 4: (unique, column indices) per secondary index —
+     `@table(index: [a, b])` entries (non-unique, composite) plus one
+     unique single-column entry per `@unique` field. Serialized as the v3
+     class-record tail; the engine builds its runtime indexes from this. *)
+  cr_indexes : (bool * int array) list;
 }
 
 type ifacerec = {
@@ -3923,6 +3928,18 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
     ~(module_syms : (string, Types.symbols) Hashtbl.t) (coll : Diag.Collector.t) (units : input list) :
     string =
   let colliding = compute_colliding_fn_names ~module_of units in
+  (* iteration 9 Task 4: index-declaration problems found while building
+     clsrecs — reported once a file/pos-bearing context exists below *)
+  let index_col_err : (Ast.pos * string) option ref = ref None in
+  let index_err_file = ref "" in
+  let ref_index_of_name (fnames : string list) (n : string) : int =
+    let rec go i = function
+      | [] -> 0 (* unknown column: the caller records the diagnostic *)
+      | x :: tl -> if x = n then i else go (i + 1) tl
+    in
+    go 0 fnames
+  in
+  let p_syms_for_indexes = syms in
   (* ---- pass 1: declarations, in discovery then declaration order ---- *)
   let classes = ref [] and class_id = ref SM.empty and nclasses = ref 0 in
   let ifaces = ref [] and iface_id = ref SM.empty and nifaces = ref 0 and nslots = ref 0 in
@@ -3961,6 +3978,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
         (function
           | Ast.Class (c : Ast.class_decl) ->
             if not (SM.mem c.name !class_id) then begin
+              (if !index_col_err = None then index_err_file := u.file);
               let shape = if c.is_record then Some (record_shape_key c) else None in
               let alias_of =
                 match shape with Some key -> Hashtbl.find_opt record_shape key | None -> None
@@ -3978,10 +3996,58 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                 | Some key -> Hashtbl.replace record_shape key cid
                 | None -> ());
                 classes :=
-                  { cr_name = c.name; cr_gc = c.is_gc;
-                    cr_fields =
-                      Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
-                    cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods }
+                  (let fnames = List.map (fun (fl : Ast.field) -> fl.Ast.name) c.fields in
+                   let col_of n = ref_index_of_name fnames n in
+                   let is_indexable (fl : Ast.field) =
+                     match Types.wob_kind_of_typ p_syms_for_indexes (Types.typ_of_field_ty (unwrap fl.Ast.ty)) with
+                     | Types.WO_K_SCALAR | Types.WO_K_TEXT -> true
+                     | _ -> false
+                   in
+                   let table_indexes =
+                     match c.Ast.table with
+                     | None -> []
+                     | Some cfg ->
+                       List.map
+                         (fun cols -> (false, Array.of_list (List.map col_of cols)))
+                         cfg.Ast.indexes
+                   in
+                   let unique_indexes =
+                     List.concat_map
+                       (fun (fl : Ast.field) ->
+                         if List.mem "unique" fl.Ast.annotations then begin
+                           if not (is_indexable fl) then
+                             index_col_err := Some (c.Ast.pos, Printf.sprintf
+                               "`@unique` on `%s.%s`: only scalar and Text fields can be indexed"
+                               c.Ast.name fl.Ast.name);
+                           [ (true, [| col_of fl.Ast.name |]) ]
+                         end
+                         else [])
+                       c.fields
+                   in
+                   (match c.Ast.table with
+                   | Some cfg ->
+                     List.iter
+                       (fun cols ->
+                         List.iter
+                           (fun cn ->
+                             match List.find_opt (fun (fl : Ast.field) -> fl.Ast.name = cn) c.fields with
+                             | None ->
+                               index_col_err := Some (c.Ast.pos, Printf.sprintf
+                                 "`@table(index: ...)` on `%s` names `%s`, which is not a field"
+                                 c.Ast.name cn)
+                             | Some fl ->
+                               if not (is_indexable fl) then
+                                 index_col_err := Some (c.Ast.pos, Printf.sprintf
+                                   "`@table(index: ...)` on `%s`: `%s` is not a scalar or Text field"
+                                   c.Ast.name cn))
+                           cols)
+                       cfg.Ast.indexes
+                   | None -> ());
+                   { cr_name = c.name; cr_gc = c.is_gc;
+                     cr_fields =
+                       Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
+                     cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods;
+                     cr_indexes = table_indexes @ unique_indexes })
                   :: !classes
             end
           | Ast.Union (ud : Ast.union_decl) ->
@@ -4001,7 +4067,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                     class_id := SM.add key cid !class_id;
                     incr nclasses;
                     classes :=
-                      { cr_name = key; cr_gc = false;
+                      { cr_name = key; cr_gc = false; cr_indexes = [];
                         cr_fields = Array.of_list vd.Ast.v_fields;
                         cr_methods = [] }
                       :: !classes
@@ -4044,11 +4110,18 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
         class_id := SM.add name cid !class_id;
         incr nclasses;
         classes :=
-          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [] }
+          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [];
+            cr_indexes = [] }
           :: !classes
       end)
     Types.predeclared_records;
   let class_id = !class_id in
+  (match !index_col_err with
+  | Some (pos, msg) ->
+    Diag.Collector.add coll
+      (Diag.error ~code:cannot_lower_code ~file:!index_err_file ~line:pos.Ast.line
+         ~col:pos.Ast.col ~message:msg ())
+  | None -> ());
   let p_classes = Array.of_list (List.rev !classes) in
   let p_ifaces = Array.of_list (List.rev !ifaces) in
   List.iter
@@ -4220,7 +4293,16 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
          needs when decode creates one. *)
       Array.iter (fun kidx -> Buf.u32 cls kidx) class_field_names.(cid);
       Array.iter (fun (_, ty) -> Buf.u32 cls (field_class_meta p ty)) c.cr_fields;
-      Array.iter (fun (_, ty) -> Buf.u32 cls (field_elem_meta p ty)) c.cr_fields)
+      Array.iter (fun (_, ty) -> Buf.u32 cls (field_elem_meta p ty)) c.cr_fields;
+      (* v3 tail (iteration 9 Task 4): the class's secondary indexes —
+         index_cnt, then per index: flags (bit0 unique), col_cnt, cols *)
+      Buf.u32 cls (List.length c.cr_indexes);
+      List.iter
+        (fun (uniq, cols) ->
+          Buf.u32 cls (if uniq then 1 else 0);
+          Buf.u32 cls (Array.length cols);
+          Array.iter (fun ci -> Buf.u32 cls ci) cols)
+        c.cr_indexes)
     p_classes;
   let ifs = Buf.create () in
   Array.iteri

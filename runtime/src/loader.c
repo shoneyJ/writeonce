@@ -147,7 +147,7 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         m->classes = calloc(kcnt, sizeof(wo_classdesc));
         if (!m->classes) BAIL("out of memory");
     }
-    size_t pool_len = 0, meta_pool = 0;
+    size_t pool_len = 0, meta_pool = 0, idx_pool = 0;
     for (uint32_t i = 0; i < kcnt; i++) {
         uint32_t name, flags, fcnt;
         if (rd_u32(&k, &name) || rd_u32(&k, &flags) || rd_u32(&k, &fcnt))
@@ -203,6 +203,36 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         m->classes[i].field_elem = (const uint32_t *)(uintptr_t)(meta_pool + 2u * (size_t)fcnt);
         pool_len += fcnt ? fcnt : 1;
         meta_pool += meta_words ? meta_words : 1;
+        /* v3 tail: secondary indexes — flags/col_cnt/cols per index, columns
+           bounded and scalar/Text-kinded (the only indexable kinds) */
+        uint32_t icnt;
+        if (rd_u32(&k, &icnt)) BAIL("class %u: truncated index count", (unsigned)i);
+        if (icnt > 64) BAIL("class %u: too many indexes", (unsigned)i);
+        m->classes[i].idx_cnt = icnt;
+        m->classes[i].idx_meta = (const uint32_t *)(uintptr_t)idx_pool;
+        for (uint32_t x = 0; x < icnt; x++) {
+            uint32_t iflags, ccnt;
+            if (rd_u32(&k, &iflags) || rd_u32(&k, &ccnt))
+                BAIL("class %u index %u: truncated", (unsigned)i, (unsigned)x);
+            if (iflags & ~1u) BAIL("class %u index %u: unknown flags", (unsigned)i, (unsigned)x);
+            if (ccnt == 0 || ccnt > 8)
+                BAIL("class %u index %u: bad column count", (unsigned)i, (unsigned)x);
+            uint32_t *ip = realloc(m->idxpool, (idx_pool + 2 + ccnt) * sizeof(uint32_t));
+            if (!ip) BAIL("out of memory");
+            m->idxpool = ip;
+            m->idxpool[idx_pool++] = iflags;
+            m->idxpool[idx_pool++] = ccnt;
+            for (uint32_t cix = 0; cix < ccnt; cix++) {
+                uint32_t col;
+                if (rd_u32(&k, &col)) BAIL("class %u index %u: truncated column", (unsigned)i, (unsigned)x);
+                if (col >= fcnt) BAIL("class %u index %u: column out of range", (unsigned)i, (unsigned)x);
+                uint8_t kind = m->kindpool[(uintptr_t)m->classes[i].kinds + col];
+                if (kind != WO_K_SCALAR && kind != WO_K_TEXT)
+                    BAIL("class %u index %u: column %u is not scalar or Text", (unsigned)i,
+                         (unsigned)x, (unsigned)col);
+                m->idxpool[idx_pool++] = col;
+            }
+        }
         m->class_cnt = i + 1;
     }
     for (uint32_t i = 0; i < m->class_cnt; i++) {
@@ -210,6 +240,8 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         m->classes[i].field_names = m->metapool + (uintptr_t)m->classes[i].field_names;
         m->classes[i].field_class = m->metapool + (uintptr_t)m->classes[i].field_class;
         m->classes[i].field_elem = m->metapool + (uintptr_t)m->classes[i].field_elem;
+        m->classes[i].idx_meta =
+            m->idxpool ? m->idxpool + (uintptr_t)m->classes[i].idx_meta : NULL;
     }
 
     /* ---- interfaces + vtable rows (expanded to sorted triples) ---- */
@@ -532,6 +564,7 @@ void wo_module_free(wo_module *m) {
     free(m->classes);
     free(m->kindpool);
     free(m->metapool);
+    free(m->idxpool);
     free(m->vtabs);
     for (uint32_t i = 0; i < m->method_cnt; i++) {
         free(m->methods[i].code);

@@ -13,8 +13,12 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     switch (C) {
     case WO_B_DB_INSERT: {
         uint32_t cid = (uint32_t)R[B];
-        uint64_t id = wo_row_insert(db, cid, &R[B + 1], msg);
-        if (!id) return WO_T_DB; /* *msg already set (OOM / bad kind) */
+        int ek = 0;
+        uint64_t id = wo_row_insert(db, cid, &R[B + 1], msg, &ek);
+        if (!id)
+            return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE
+                   : ek == DB_ERR_OOM  ? WO_T_OOM
+                                       : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w) {
             /* RAM applied, record staged, ONE commit before the ack (the

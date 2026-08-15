@@ -43,7 +43,7 @@ static void test_roundtrip_replay(void) {
     for (int i = 0; i < 3; i++) {
         wo_str *s = wo_str_new(&rt, "abcXYZ" + i, 3); /* "abc","bcX","cXY" */
         uint64_t vals[2] = {(uint64_t)(i * 10), (uint64_t)(uintptr_t)s};
-        ids[i] = wo_row_insert(&db, 0, vals, &msg);
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
         T_CHECK(ids[i] != 0);
         T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
         wo_str_free(&rt, s);
@@ -70,7 +70,7 @@ static void test_roundtrip_replay(void) {
     wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
     /* next_id advanced past the replayed ids: a fresh insert never collides */
     uint64_t vals[2] = {99, 0};
-    uint64_t fresh = wo_row_insert(&db2, 0, vals, &msg);
+    uint64_t fresh = wo_row_insert(&db2, 0, vals, &msg, NULL);
     T_CHECK(fresh > ids[2]);
     wo_db_destroy(&db2);
     wo_rt_destroy(&rt);
@@ -92,7 +92,7 @@ static void test_torn_tail(void) {
     const char *msg = "";
     for (int i = 0; i < 5; i++) {
         uint64_t vals[2] = {(uint64_t)i, 0};
-        uint64_t id = wo_row_insert(&db, 0, vals, &msg);
+        uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
         T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
         T_EQ(wo_wal_commit(&w), 0);
     }
@@ -126,7 +126,7 @@ static void test_torn_tail(void) {
     T_EQ(wo_wal_open(&w2, path, 0), 0);
     T_EQ(w2.off, intact_end);
     uint64_t vals[2] = {100, 0};
-    uint64_t id = wo_row_insert(&db3, 0, vals, &msg);
+    uint64_t id = wo_row_insert(&db3, 0, vals, &msg, NULL);
     T_EQ(wo_wal_append_insert(&w2, &db3, 0, id), 0);
     T_EQ(wo_wal_commit(&w2), 0);
     wo_wal_close(&w2);
@@ -151,7 +151,7 @@ static void battery_child(const char *path, int ack_fd) {
         int n = snprintf(label, sizeof label, "row-%llu", (unsigned long long)i);
         wo_str *s = wo_str_new(&rt, label, (uint32_t)n);
         uint64_t vals[2] = {i * 3 + 1, (uint64_t)(uintptr_t)s};
-        uint64_t id = wo_row_insert(&db, 0, vals, &msg);
+        uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
         wo_str_free(&rt, s);
         if (!id) _exit(9);
         if (wo_wal_append_insert(&w, &db, 0, id) != 0) _exit(9);

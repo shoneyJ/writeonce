@@ -1,0 +1,12 @@
+-- iteration 9 Task 4: a duplicate insert into a @unique column traps with
+-- the unique-violation code (WO_T_UNIQUE = 10), raised at the engine's row
+-- choke point. Uncaught here on purpose: the trap code is the assertion.
+class Account {
+  email: Text @unique
+  balance: Int
+}
+
+fn main() {
+  insert Account { email: "a@x", balance: 100 }
+  insert Account { email: "a@x", balance: 200 }
+}

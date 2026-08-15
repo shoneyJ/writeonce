@@ -45,7 +45,7 @@ static void test_roundtrip_all_kinds(void) {
     uint64_t vals[5] = {(uint64_t)(uintptr_t)name, 9200000,
                         (uint64_t)(uintptr_t)addr, (uint64_t)(uintptr_t)tags,
                         (uint64_t)(uintptr_t)meta};
-    uint64_t id = wo_row_insert(&db, 1, vals, &msg);
+    uint64_t id = wo_row_insert(&db, 1, vals, &msg, NULL);
     T_EQ(id, 1); /* shard 0 of 1: first id is 1 */
 
     /* the row stored COPIES: mutate the VM originals, then read back */
@@ -74,7 +74,7 @@ static void test_roundtrip_all_kinds(void) {
 
     /* nil TEXT / nil OWNED / WO_NIL_SCALAR round-trip */
     uint64_t nilvals[5] = {0, WO_NIL_SCALAR, 0, 0, 0};
-    uint64_t id2 = wo_row_insert(&db, 1, nilvals, &msg);
+    uint64_t id2 = wo_row_insert(&db, 1, nilvals, &msg, NULL);
     T_EQ(id2, 2);
     uint64_t out2[5] = {(uint64_t)-1, 0, (uint64_t)-1, (uint64_t)-1, (uint64_t)-1};
     T_EQ(wo_row_read(&db, &rt, 1, id2, out2, &msg), 0);
@@ -103,12 +103,12 @@ static void test_id_interleave_across_shards(void) {
     T_EQ(wo_db_init(&b, CLASSES, 3, 1, 3), 0);
     T_EQ(wo_db_init(&c, CLASSES, 3, 2, 3), 0);
     uint64_t v[1] = {42};
-    T_EQ(wo_row_insert(&a, 2, v, &msg), 1); /* shard 0: 1, 4, 7 */
-    T_EQ(wo_row_insert(&a, 2, v, &msg), 4);
-    T_EQ(wo_row_insert(&b, 2, v, &msg), 2); /* shard 1: 2, 5 */
-    T_EQ(wo_row_insert(&b, 2, v, &msg), 5);
-    T_EQ(wo_row_insert(&c, 2, v, &msg), 3); /* shard 2: 3, 6 */
-    T_EQ(wo_row_insert(&c, 2, v, &msg), 6);
+    T_EQ(wo_row_insert(&a, 2, v, &msg, NULL), 1); /* shard 0: 1, 4, 7 */
+    T_EQ(wo_row_insert(&a, 2, v, &msg, NULL), 4);
+    T_EQ(wo_row_insert(&b, 2, v, &msg, NULL), 2); /* shard 1: 2, 5 */
+    T_EQ(wo_row_insert(&b, 2, v, &msg, NULL), 5);
+    T_EQ(wo_row_insert(&c, 2, v, &msg, NULL), 3); /* shard 2: 3, 6 */
+    T_EQ(wo_row_insert(&c, 2, v, &msg, NULL), 6);
     /* owner-shard discipline: (id-1) % N names the shard */
     T_EQ((4 - 1) % 3, 0);
     T_EQ((5 - 1) % 3, 1);
@@ -133,7 +133,7 @@ static void test_slab_growth_and_reuse(void) {
     uint64_t ids[N];
     for (uint32_t i = 0; i < N; i++) {
         uint64_t v[1] = {i};
-        ids[i] = wo_row_insert(&db, 2, v, &msg);
+        ids[i] = wo_row_insert(&db, 2, v, &msg, NULL);
         T_CHECK(ids[i] == i + 1);
     }
     T_EQ(db.tables[2].slab_cnt, 4);
@@ -152,7 +152,7 @@ static void test_slab_growth_and_reuse(void) {
     T_EQ(wo_row_read(&db, &rt, 2, ids[100], out, &msg), -1); /* gone */
     T_EQ(wo_row_remove(&db, 2, ids[100]), -1);               /* twice = miss */
     uint64_t v[1] = {777};
-    uint64_t fresh = wo_row_insert(&db, 2, v, &msg);
+    uint64_t fresh = wo_row_insert(&db, 2, v, &msg, NULL);
     T_CHECK(fresh > (uint64_t)N); /* ids never reused ... */
     db_row *fresh_row = wo_row_ptr(&db, 2, fresh);
     T_CHECK(fresh_row == victim); /* ... but the SLOT is */
@@ -166,7 +166,7 @@ static void test_misuse(void) {
     wo_db db;
     T_EQ(wo_db_init(&db, CLASSES, 3, 0, 1), 0);
     uint64_t v[1] = {1};
-    T_EQ(wo_row_insert(&db, 99, v, &msg), 0); /* unknown class */
+    T_EQ(wo_row_insert(&db, 99, v, &msg, NULL), 0); /* unknown class */
     T_CHECK(wo_row_ptr(&db, 99, 1) == NULL);
     T_CHECK(wo_row_ptr(&db, 2, 1) == NULL); /* table never touched */
     T_EQ(wo_row_remove(&db, 2, 1), -1);
