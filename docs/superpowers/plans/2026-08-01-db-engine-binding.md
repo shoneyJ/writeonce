@@ -1,6 +1,6 @@
 # DB Engine Binding Implementation Plan
 
-> **Status: 🔄 in progress — Tasks 1–4 done, Task 5 engine half done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+> **Status: 🔄 in progress — Tasks 1–4 done; Task 5 engine half done; Task 6 incremental. The language read surface is the 9b plan's (recorded deviation at Task 5); the engine itself is COMPLETE for single-shard: storage, WAL+replay, insert/update/delete execution, indexes, unique.** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -133,7 +133,18 @@ sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 - [ ] Implement; green.
 - [ ] Record commit draft: `feat: select subset — by-id (cross-shard hop-once), indexed/scan WHERE conjunctions, projection decode to VM objects, point update; scatter-gather and joins explicitly deferred.`
 
-### Task 6: DB corpus + acceptance
+### Task 6 🔄: DB corpus + acceptance — **landing incrementally**
+
+> **State 2026-08-15:** db fixtures live in the EXISTING corpus kinds
+> (`run/db-unique-catch`, `trap/db-unique-violation`, the flipped
+> `run/pricing-set-price-insert`) rather than a new `db/` kind — the
+> runner stays one harness. The crash/replay battery is proven at unit
+> level (`test_wal`'s five-round SIGKILL battery) and lands as a scripted
+> scenario with the employee acceptance (whose script owns the kill -9
+> step). The `wo-db` smoke overlap and select-round-trip fixtures wait on
+> 9b's query surface — reads have no language spelling until then.
+
+
 
 **Concept & reason:** the corpus grows a `db/` kind wired into the standard runner: insert/select round-trip programs with exact stdout; the crash/replay battery as a scripted scenario (run, kill, reboot, assert identical query results); a unique-violation trap fixture; the C++ `wo-db` smoke overlap — where `prototypes/wo-db`'s `.wo` smoke files exercise semantics this subset implements, run both and compare (manifest-scoped like the plan-3 parity harness). `just oop-accept` gains the DB corpus and the crash scenario. The kanban and CLAUDE.md sync: Stage-3-adjacent language ("insert/select execute in the C runtime") replaces the DB_STUB story.
 

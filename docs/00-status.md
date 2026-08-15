@@ -115,7 +115,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | 🔄 **runs; executable in progress** |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ⏸ off the workload's path (no `@gc`) |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
-| 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | ⬜                           |
+| 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | ⬜ spec + plan ready (2026-08-15) |
 | 9c  | [Cross-program tables](stories/language-runtime-database/09c-cross-program-tables.md)        | ⬜ needs a spec first        |
 | 9d  | [Keypair attach auth](stories/language-runtime-database/09d-keypair-attach-auth.md)          | ⬜ needs a spec first        |
