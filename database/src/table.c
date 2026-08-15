@@ -427,6 +427,34 @@ int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
     return 0;
 }
 
+db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id) {
+    db_table *t = table_of(db, class_id);
+    if (!t || !id) return NULL;
+    if (hget(t, id)) return NULL; /* duplicate id: corruption, not a tear */
+    uint32_t g = slot_alloc(t);
+    if (g == UINT32_MAX) return NULL;
+    db_row *r = slot_row(t, g);
+    r->id = id;
+    r->class_id = class_id;
+    r->flags = 0;
+    memset(r->slots, 0, t->row_size - sizeof(db_row));
+    if (hput(t, id, (uint64_t)g + 1) != 0) return NULL;
+    t->bitmap[g >> 6] |= 1ull << (g & 63);
+    t->count++;
+    /* keep the interleave: only ids this shard owns move its counter */
+    if ((id - 1) % db->nshards == db->shard && id >= t->next_id)
+        t->next_id = id + db->nshards;
+    /* INDEX HOOK (Task 4): replayed rows re-index here, same as inserts —
+       the caller fills slots BEFORE indexes exist on them (Task 4 will move
+       the hook to a post-fill call, recorded in the binding doc). */
+    return r;
+}
+
+void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
+    (void)db;
+    db_val_free(kind, v);
+}
+
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id) {
     if (class_id >= db->class_cnt) return -1;
     db_table *t = &db->tables[class_id];

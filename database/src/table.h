@@ -129,4 +129,15 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
  * to the VM. */
 db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id);
 
+/* Engine-internal, for WAL replay only: create a row with a FIXED id,
+ * slots zeroed — the caller (wal.c) fills them with engine-encoded values
+ * it built while decoding. Advances the table's next_id past [id] when the
+ * id belongs to this shard, so post-replay inserts never collide. NULL =
+ * OOM or duplicate id (corruption beyond a torn tail). */
+db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id);
+
+/* Engine-internal: free one engine-encoded slot value of [kind] (wal.c's
+ * decode error paths). */
+void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v);
+
 #endif /* WO_TABLE_H */

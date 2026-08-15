@@ -1,6 +1,6 @@
 # DB Engine Binding Implementation Plan
 
-> **Status: 🔄 in progress — Task 1 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+> **Status: 🔄 in progress — Tasks 1–2 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -67,9 +67,19 @@ sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 
 **Concept & reason:** port phase D/E to typed rows. Records frame `length | crc | payload | commit-mark` (replay-whole-or-not-at-all); payload = record kind (insert/remove/update), class id, row id, encoded fields. Per-shard WAL files, fallocate-preallocated, appended on commit AFTER the RAM apply, one fdatasync covering the tick's batch, ack after the sync completes — the shipped commit order, verbatim. Boot: per-shard parallel replay before listeners open; torn tails detected and dropped whole (phase E behavior). The offline `wal-check` verification mode ports too — it is the crash test's oracle.
 
-- [ ] Failing tests: commit-then-kill crash battery (the phase-D test shape: concurrent writes, SIGKILL mid-stream, offline verification proves every acked write present and CRC-valid, zero acked-but-missing); torn-tail drop; parallel replay rebuilds identical RAM state (deep-compare against pre-crash snapshot dump).
-- [ ] Implement; green.
-- [ ] Record commit draft: `feat(runtime): typed-row WAL + replay — framed CRC records over class rows, group-commit ack-after-fsync, parallel boot replay with torn-tail drop, wal-check oracle; crash battery green.`
+- [x] Tests first: replay round-trip with deep compare (Texts included) and
+      next_id advance; torn-tail drop with the oracle agreeing on the intact
+      prefix byte-for-byte; reopen positions AT the tear so the next commit
+      overwrites it; crash battery — five rounds of fork + insert/commit/
+      ack-over-pipe + SIGKILL mid-stream, zero acked-but-missing, zero
+      acked-but-wrong, contents exact. `test_wal` 90/0 under ASan+UBSan.
+- [x] Implemented in `database/src/wal.{c,h}`: framed CRC records
+      (`len|crc|payload|mark`), typed-row payloads decoded straight into
+      engine values (no VM at boot), group commit as one pwrite + one
+      fdatasync, replay through the choke-point row API (indexes rebuild for
+      free when Task 4 lands), `wo_wal_check` offline oracle. "Parallel"
+      replay is per-shard by construction and runs at N=1 until iteration 8.
+- [x] Committed locally (2026-08-15). Binding doc's WAL section written.
 
 ### Task 3: `insert` executes
 

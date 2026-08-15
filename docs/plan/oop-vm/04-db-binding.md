@@ -68,12 +68,48 @@ table. Task 4's secondary indexes hook exactly these two sites (marked
 beside the same calls. Anything else touching a slab is a defect by
 definition — the doctrine the Rust engine learned and this engine enforces.
 
+## WAL (Task 2) — `database/src/wal.{c,h}`
+
+Record framing, replay-whole-or-not-at-all:
+
+```
+record  := len u32 | crc u32 | payload | mark u32
+len      = payload bytes (never 0: a zero length is the preallocated tail)
+crc      = CRC32 (poly 0xEDB88320) of the payload
+mark     = 0x574F4C31 "WOL1", the last bytes of the record — a record
+           without its mark is torn by definition
+payload := kind u8 | class_id u32 | row_id u64 | body
+kind     = 1 insert (body = fields), 2 remove (no body), 3 update (Task 5)
+```
+
+Body fields walk the class table's kinds: `SCALAR` 8 bytes; `TEXT` u32 len +
+bytes (`0xFFFFFFFF` = nil); `OWNED` presence u8 then class id + fields
+recursively; `MULTI` presence + elem kind + len + elements; `MAP` presence +
+both kinds + len + pairs. Little-endian, same platform note as the loader.
+
+**Commit order (doctrine, verbatim from the shipped phase-D pattern):** RAM
+apply → stage record → `wo_wal_commit` (one pwrite of the batch + one
+fdatasync) → only then acknowledge. Group commit = everything staged since
+the last commit rides one sync.
+
+**Replay** decodes payloads straight into engine-owned values — no VM heap
+involved, boot cannot depend on a VM existing — and rows re-enter through
+the choke-point row API, so Task 4's indexes rebuild for free. A torn tail
+(short record, bad CRC, missing mark, zero length) ends the intact prefix:
+everything from the tear on is dropped whole, and `wo_wal_open` positions
+its write offset AT the tear so the next commit overwrites it. A record that
+CRC-passes but does not decode is corruption, not a tear — replay fails
+loudly. A missing file is a fresh boot, not an error. After replay each
+table's `next_id` sits past every replayed id this shard owns.
+
+**Oracle:** `wo_wal_check(path)` walks a file with no engine and reports the
+intact record count and prefix end — the crash battery's verifier
+(`runtime/test/test_wal.c`: five rounds of insert/commit/ack-over-pipe with
+SIGKILL mid-stream; every acked row present and exact after replay).
+
 ## Still to come in this document
 
-- **Task 2**: WAL record framing (`length | crc | payload | commit-mark`),
-  payload encoding for typed rows, group-commit ordering, replay rules,
-  torn-tail handling, the `wal-check` oracle.
 - **Task 3**: the `insert` statement's builtin ids (appended to
   `00-wob-format.md`'s builtin table) and execution contract.
 - **Task 4**: secondary-index format, `@unique` trap code.
-- **Task 5**: the select subset and its builtins.
+- **Task 5**: the select subset, update record semantics, and its builtins.

@@ -30,6 +30,19 @@ VM values ──copy──▶ row slots (engine-owned malloc) ──copy──�
   has no context parameter). One process, one class table; revisit at
   iteration 8 (shards share the same immutable table).
 
+## wal.c — durability (iteration 9, Task 2)
+
+The commit order IS the module: RAM apply → stage → one pwrite + one
+fdatasync → ack. `wo_wal_commit` returning 0 is the only thing "durable"
+means. Replay never touches the VM heap — payloads decode straight into
+engine-owned values and re-enter through the row API, so whatever hooks the
+choke points (indexes, Task 4) applies to replayed rows identically. Torn
+tails end the intact prefix and get overwritten by the next commit;
+CRC-valid-but-undecodable records fail replay loudly (corruption is not a
+tear). The crash battery in `runtime/test/test_wal.c` is the module's
+meaning proven: acked-over-a-pipe after commit, SIGKILL mid-stream, replay,
+zero acked-but-missing.
+
 ## Verifying a change
 
 - `make -C runtime test` — `test_table` is this directory's suite (round
