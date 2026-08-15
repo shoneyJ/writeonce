@@ -259,7 +259,81 @@ cursor/group/probe set), no new opcodes, no version bump beyond iteration 9's.
 
 ---
 
-## 6. Acceptance workload — `docs/examples/employee`
+## 6. Ownership, borrows, and GC across the engine boundary
+
+The engine and the VM heap are two memory worlds, and the whole safety story
+is that values only ever CROSS between them by copy. Analysis recorded here
+because both iterations' correctness hangs on it (2026-08-15).
+
+### The bulkhead: two one-way gates, both already doctrine
+
+- **Into storage:** a row stores no VM pointer — scalars copy, Texts copy,
+  owned objects flatten by value, containers copy element-wise, `ref` is an
+  id, and a GC-managed value in a `@table` field is a **compile error**
+  (iteration 9's field-encoding rules). So no row ever points at a GC object.
+- **Out of storage:** everything a `select` emits is copied or freshly built
+  at the boundary — Texts via the established copy rule, projections as new
+  records. So no GC root, no local, and no container ever points into a row
+  slab once the query ends.
+
+Consequence: **the collector never traces engine memory and the engine never
+touches reference counts.** Iteration 7b (inferred GC, mark-sweep) does not
+change this — it changes only *when* the "into" gate's error fires: GC-ness
+becomes inferred, so inference must classify every class **before** table-field
+validation runs, and the diagnostic reads "class X is garbage-collected
+(inferred via Y) and cannot be stored in a table field." A class stored in a
+table is thereby constrained to ownership-expressible shapes; that is a
+feature, not a limitation — tables are the language's answer to shared
+long-lived data, which is most of what `@gc` exists for.
+
+### Row views are borrows without a runtime net
+
+A cursor yields a **row view**: a borrow of engine-owned memory, valid until
+the cursor advances or closes. Two things make this different from every
+borrow the language has today:
+
+- VM-heap borrows have a runtime defense (the object header's borrow word,
+  `WO_T_BORROW` traps). Rows share the VM's field *encoding* but not its
+  header — there is no borrow word in a row slab, so **the compile-time rule
+  is load-bearing alone**. The ownership pass enforces: a row view never
+  escapes the query loop that produced it (the container-read-borrow mirror),
+  and anything that leaves does so as a copy through `select`.
+- The program can mutate the table it is iterating — single-writer per shard
+  removes concurrent writers, not the program's own hand.
+
+### Cursor stability: materialize ids, allow row updates, forbid structural
+
+The `raise` mode is the honest case: it updates `salary` — an **indexed**
+column — while iterating an index scan. Naive cursor-over-index breaks here
+(entries move mid-scan). The semantics, chosen for KISS and enforceability:
+
+- **A scan materializes its matching id list before the body runs**, then
+  point-reads each row per iteration. O(matches) ids of memory, recorded as
+  the cost; index-order iteration falls out for free.
+- **Updates through the row view are allowed** — the view is an exclusive
+  borrow of that row for the iteration (the `mut` analog); index maintenance
+  for the changed column happens at the row API as always, and cannot disturb
+  the already-collected id list.
+- **`insert` into or `delete` from a table with an open cursor is a compile
+  error** (new WO-E5xx): a materialized id list cannot defend a point-read
+  against a row deleted mid-loop, and silently skipping a vanished id is the
+  kind of quiet wrongness this language exists to refuse. The ownership pass
+  carries an open-cursor table set through the loop body, statically — insert
+  and delete name their target class at compile time. Read-only nested
+  queries over the same table remain legal (shared borrows).
+
+### Query temporaries and GC pressure
+
+Group hash tables and join build sides are engine-side C allocations scoped
+to the statement — freed when the query ends, invisible to both the drop
+tables and the collector. Query results are ordinary owned VM values, freed
+by the existing drop machinery. Nothing on the query path allocates a GC
+object or an RC operation. One accepted interaction: the budgeted collector
+runs between statements, so a long full-table scan delays GC slices for its
+duration — acceptable at this scale, recorded so nobody rediscovers it as a
+latency mystery.
+
+## 7. Acceptance workload — `docs/examples/employee`
 
 A new sample, structured like `log-watcher` (wo.toml manifest, program mode,
 `just` module, acceptance script), small enough to read in one sitting and
@@ -293,7 +367,7 @@ The sample is 9b's acceptance the way log-watcher was iterations 1–7's: no new
 corpus fixtures beyond the db corpus iteration 9 already plans; the sample is
 the test.
 
-## 7. Out of scope (inherited and new)
+## 8. Out of scope (inherited and new)
 
 - Everything 9b's story already excludes: cross-shard queries and distributed
   joins, `LIVE` subscriptions, migrations, cost-based planning.

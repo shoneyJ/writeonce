@@ -80,6 +80,13 @@
 ## Info
 
 - Governing spec: [`docs/superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md`](../../superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md).
+- **Constraint added by the database track (2026-08-15):** a GC-managed value
+  in a `@table` field is a compile error (the engine/heap bulkhead — 9b
+  design, section 6). Once GC-ness is inferred rather than annotated, the
+  inference pass must classify every class **before** table-field validation,
+  and the diagnostic must name the inference reason ("class X is
+  garbage-collected via Y and cannot be stored in a table field") — otherwise
+  the error becomes unactionable exactly when it stops being self-evident.
 - **Why the annotation was insufficient, not merely inconvenient:** the OOP
   spec's own example, `@gc class PriceCache { entries: map<SKU, Money> }`, is
   acyclic. It needs GC because it is shared, and second-class borrows cannot

@@ -119,6 +119,19 @@ discarded — a check is an index probe, never query text).
 - [ ] Cursor builtins + borrowed-row-view lifetime rules written into the
       binding doc (a row view never escapes the loop that opened the cursor —
       the ownership pass enforces it, mirror of the container-read borrow).
+      **Rows have no borrow word** (they share the VM's field encoding, not
+      its header), so unlike every VM-heap borrow there is no runtime trap
+      behind this rule — the compile-time check is load-bearing alone, which
+      is why it gets its own diagnostic and goldens rather than riding on
+      E30x.
+- [ ] Cursor stability per spec section 6: scans **materialize their id list**
+      before the body runs and point-read per iteration; updates through the
+      row view stay legal (exclusive row borrow, index maintenance at the row
+      API); `insert`/`delete` targeting a table with an open cursor is a new
+      WO-E5xx (the ownership pass carries the open-cursor table set through
+      the loop body); read-only nested queries over the same table stay legal.
+      The `raise` mode — updating an indexed column mid-scan — is the fixture
+      that proves the materialized-id semantics.
 - [ ] FK trap + restrict trap wired through the row API; a debug-build probe
       counter exposed for Task 5's index-selection proof.
 - [ ] The `delete` statement (point delete of a row value) lands here too:
@@ -164,14 +177,18 @@ no new ownership classes, and the ownership pass's existing drop machinery
 covers the query's temporaries because the lowering IS ordinary loops.
 
 - [ ] Desugar + lowering for every clause; disassembly of the sample's report
-      mode shows loops and builtins, no plan tree, no text.
+      mode shows loops and builtins, no plan tree, no text. The select
+      boundary is the ownership bulkhead (spec section 6): everything a query
+      returns is copied or freshly built, so no value anywhere points into a
+      row slab after the query ends — asserted under ASan by mutating rows
+      after a query and re-reading the query's results.
 - [ ] Index selection proven: the acceptance asserts probe-counter deltas for
       the indexed `staff <department>` path versus a full-scan query.
 - [ ] `oop-e2e`, `woc-test`, ASan-corpus gates green; commit locally.
 
 ### Task 6: The employee sample is the acceptance
 
-**Concept & reason:** spec section 6 verbatim — `docs/examples/employee` with
+**Concept & reason:** spec section 7 verbatim — `docs/examples/employee` with
 `Department`/`Employee` (`@table`, `@unique` name, composite `[dept, salary]`
 index, `ref`/`backlink` pair), wo.toml manifest so `woc .` builds it, a `just`
 module beside it (the log-watcher convention), and `scripts/employee-accept.sh`
@@ -198,7 +215,7 @@ and `report` proving replay on this workload.
 
 ## Out of scope — deferred by name
 
-- Everything spec section 7 lists: set operators, outer joins, subqueries,
+- Everything spec section 8 lists: set operators, outer joins, subqueries,
   composite group keys, groups as values, FK cascade/set-nil, deferred
   checks, SQL text in any role, cross-shard queries, `LIVE`, migrations,
   cost-based planning.

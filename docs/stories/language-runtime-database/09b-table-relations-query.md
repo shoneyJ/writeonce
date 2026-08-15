@@ -116,6 +116,16 @@ delegates, and `IQueryable`'s runtime expression trees, the last of which
 depends on reflection that principle 13 forbids outright. Take the vocabulary
 and the semantics; leave the plumbing.
 
+**4. (Settled with the spec, 2026-08-15) How do queries interact with the
+borrow checker and the GC?** Row views are borrows of engine memory with **no
+runtime borrow word behind them** — the compile-time escape rule is
+load-bearing alone. Scans materialize their id list up front, so updating a
+row (even an indexed column) inside the loop is sound, while `insert`/`delete`
+on a table with an open cursor is a compile error. The GC never meets the
+engine at all: both directions across the boundary are copies, and GC-managed
+values cannot be stored — spec section 6 is the full analysis, including the
+iteration-7b ordering constraint (inference before table-field validation).
+
 Also relevant: `@table(name:, index:)` already parses today with known-key
 validation (`WO-E102`), the Rust runtime already ships secondary indexes and
 `find_by` behind that annotation, and `ref T` already classifies as a scalar

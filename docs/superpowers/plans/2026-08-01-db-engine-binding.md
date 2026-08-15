@@ -20,6 +20,7 @@
 - **Id discipline:** ids interleave per shard (`t+1, t+1+N, …`); a row's owner shard is `(id-1) % N`; point ops on a foreign row hop once via the plan-4 mailbox — creates are always local.
 - **Index doctrine:** secondary indexes update only inside the engine's insert/remove path; direct storage mutation is a defect by definition.
 - **RAM is authoritative:** reads never touch a file descriptor (phase-B doctrine); disk exists for durability and boot.
+- **The GC bulkhead (analysis 2026-08-15, spec'd in the 9b design section 6):** values cross between VM heap and row storage only by copy, and a GC-managed value in a stored field is a compile error — so the collector never traces engine memory and the engine never touches reference counts. When iteration 7b makes GC-ness inferred, inference must classify classes **before** table-field validation so this error keeps firing, with the message naming the inference reason.
 - **Format changes go through the format doc:** DB operations extend the builtin table (ids appended to `docs/plan/oop-vm/00-wob-format.md`); no opcode-space or version change.
 
 ---
