@@ -1,0 +1,109 @@
+-- Employee management — iteration 9/9b's acceptance workload.
+-- Four modes, each existing to make one feature load-bearing:
+--   seed              inserts (WAL, @unique trap on the second run)
+--   report            the GroupBy showcase (headcount/avg/min/max, payroll)
+--   staff <dept>      relation navigation both directions + index probe
+--   raise <dept> <p>  update through a query result; empty query => nil path
+--   drop <dept>       delete restrict: a department with staff must trap
+
+fn main(args: multi Text) -> Int {
+  if len(args) >= 1 and args[0] == "seed" { return seed(); }
+  if len(args) >= 1 and args[0] == "report" { return report(); }
+  if len(args) >= 2 and args[0] == "staff" { return staff(args[1]); }
+  if len(args) >= 3 and args[0] == "raise" {
+    let pct = parse_int(args[2]);
+    if pct == nil { print_err("raise: <pct> must be a number"); return 2; }
+    return raise(args[1], pct);
+  }
+  if len(args) >= 2 and args[0] == "drop" { return drop_dept(args[1]); }
+  print_err("usage:");
+  print_err("  employee seed                    seed departments and employees");
+  print_err("  employee report                  aggregates by department");
+  print_err("  employee staff <department>      list a department's staff");
+  print_err("  employee raise <department> <p>  raise a department's salaries p%");
+  print_err("  employee drop <department>       delete a department (restrict demo)");
+  return 1;
+}
+
+-- Inserts are WAL-logged before acknowledgment (iteration 9). A second run
+-- hits the departments.name @unique index and traps; catching it here is the
+-- sample's unique-violation acceptance line.
+fn seed() -> Int {
+  let eng = try insert Department { name: "Engineering" } catch (e) nil;
+  if eng == nil {
+    print("SEED-DUP departments already seeded (unique violation caught)");
+    return 3;
+  }
+  let ops   = insert Department { name: "Operations" };
+  let sales = insert Department { name: "Sales" };
+
+  insert Employee { name: "Asha",  salary: 9200000, hired: 1704067200000, dept: eng };
+  insert Employee { name: "Bram",  salary: 8100000, hired: 1706745600000, dept: eng };
+  insert Employee { name: "Chidi", salary: 7300000, hired: 1709251200000, dept: eng };
+  insert Employee { name: "Dora",  salary: 6400000, hired: 1711929600000, dept: ops };
+  insert Employee { name: "Emil",  salary: 5900000, hired: 1714521600000, dept: ops };
+  insert Employee { name: "Farah", salary: 8800000, hired: 1717200000000, dept: sales };
+
+  print("SEEDED 3 departments, 6 employees");
+  return 0;
+}
+
+-- One GROUP BY after another: group-and-reduce lowers to a single hash pass
+-- (no group objects), avg/min/max are ?Int because an empty group is data.
+fn report() -> Int {
+  let rows = from e in Employee
+             group e by e.dept into g
+             order by avg(g.salary) desc
+             select { dept: g.key.name, headcount: count(g),
+                      avg_salary: avg(g.salary), min_salary: min(g.salary),
+                      max_salary: max(g.salary) };
+  for r in rows {
+    print("DEPT ${r.dept} headcount=${r.headcount} avg=${r.avg_salary} min=${r.min_salary} max=${r.max_salary}");
+  }
+  let payroll = sum(from e in Employee select e.salary);
+  print("PAYROLL ${payroll}");
+  return 0;
+}
+
+-- Both navigation directions on one screen: the department found by its
+-- unique-name index (a probe, not a scan — the acceptance asserts the probe
+-- counter), its `staff` backlink scanned, and each employee's forward
+-- `e.dept.name` printed to prove ref navigation.
+fn staff(name: Text) -> Int {
+  let ds = from d in Department where d.name == name take 1 select d;
+  if len(ds) == 0 { print_err("no such department: ${name}"); return 1; }
+  let d = ds[0];
+  for e in from s in d.staff order by s.salary desc select s {
+    print("STAFF ${e.name} ${e.salary} (${e.dept.name})");
+  }
+  return 0;
+}
+
+-- Update through a query result; a missing department exercises the
+-- empty-query path (the loop body never runs, nothing prints but the DONE).
+fn raise(name: Text, pct: Int) -> Int {
+  let ds = from d in Department where d.name == name take 1 select d;
+  if len(ds) == 0 { print("RAISE ${name}: no such department (0 rows)"); return 0; }
+  let d = ds[0];
+  let n = 0;
+  for e in from s in d.staff select s {
+    e.salary = e.salary + e.salary * pct / 100;
+    n = n + 1;
+  }
+  print("RAISE ${name} ${pct}% applied to ${n} employees");
+  return 0;
+}
+
+-- Restrict is the only FK action: deleting a department that employees still
+-- reference traps, and the trap code is the acceptance's assertion.
+fn drop_dept(name: Text) -> Int {
+  let ds = from d in Department where d.name == name take 1 select d;
+  if len(ds) == 0 { print_err("no such department: ${name}"); return 1; }
+  let ok = try delete ds[0] catch (e) nil;
+  if ok == nil {
+    print("DROP ${name}: restricted (staff still reference it)");
+    return 4;
+  }
+  print("DROP ${name}: deleted");
+  return 0;
+}

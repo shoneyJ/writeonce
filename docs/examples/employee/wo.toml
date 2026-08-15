@@ -1,0 +1,12 @@
+name        = "employee"
+version     = "0.1.0"
+description = "Employee management — iteration 9/9b acceptance workload: @table storage, ref/backlink relations, compiler-checked GroupBy queries"
+
+[runtime]
+wo = ">= 0.1"
+
+# `woc .` builds target/employee once iterations 9 (engine) and 9b (query
+# surface) land; until then this sample is the target the plans compile
+# toward, sample-first like log-watcher was.
+[build]
+runtime = "../../../runtime/wovm"

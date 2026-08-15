@@ -27,7 +27,8 @@
 ## File Structure
 
 ```
-runtime/src/
+database/src/            the engine is its own top-level directory (user decision
+                         2026-08-15), statically linked into wovm — one binary, unchanged
   table.c table.h        class-shaped row storage: slabs, slots, id alloc, indexes (Tasks 1, 4)
   wal.c wal.h            typed-row WAL records, group commit, replay (Task 2)
   db.c db.h              statement executors: insert/select/update-point (Tasks 3, 5)
@@ -35,6 +36,10 @@ compiler/src/            DbStub nodes become typed DB AST + lowering (Task 3)
 tests/corpus/db/         DB fixtures incl. crash/replay (Task 6)
 docs/plan/oop-vm/04-db-binding.md   row format, WAL record layout, query subset (Task 1)
 ```
+
+The engine's headers are included by `runtime/src` (the VM calls the row API);
+`runtime/Makefile` compiles `database/src/*.c` into every `wovm` target,
+sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 
 ---
 

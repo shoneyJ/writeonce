@@ -19,8 +19,10 @@ to bytecode loops over engine cursor builtins, proven by a new
 `docs/examples/employee` sample whose acceptance script is the gate.
 
 **Architecture:** compiler front (`compiler/src/{lexer,parser,ast,types,owner,emit}.ml`)
-for the query surface; runtime (`runtime/src/{table,db,builtin}.c` from
-iteration 9, plus a new `query.c` for cursors and group hashing). The compiler
+for the query surface; the database engine (`database/src/` — its own
+top-level directory per the 2026-08-15 decision, statically linked into wovm;
+`table.c`/`db.c` from iteration 9, plus a new `query.c` for cursors and group
+hashing). The compiler
 is the planner: index selection happens at lowering, the VM never sees a plan
 tree. Reference semantics: System.Linq for operator meaning, PostgreSQL's
 nodeAgg/ri_triggers for execution and integrity vocabulary (both surveyed in
@@ -50,8 +52,8 @@ new builtin ids appended to the format doc.
 compiler/src/lexer.ml parser.ml ast.ml   query-expression grammar, clause AST (Task 1)
 compiler/src/types.ml                    range/group scopes, navigation, projection synthesis (Task 2)
 compiler/src/owner.ml emit.ml            query ownership + lowering to cursor builtins (Task 5)
-runtime/src/query.c query.h              cursors, group hash, transition/finalize aggregates (Tasks 3, 4)
-runtime/src/db.c table.c                 FK restrict checks at the row choke points (Task 3)
+database/src/query.c query.h             cursors, group hash, transition/finalize aggregates (Tasks 3, 4)
+database/src/db.c table.c                FK restrict checks at the row choke points (Task 3)
 docs/examples/employee/                  the acceptance workload (Task 6)
 scripts/employee-accept.sh               the gate (Task 6)
 docs/plan/oop-vm/00-wob-format.md        appended builtin ids (Tasks 3-5)
@@ -119,6 +121,10 @@ discarded — a check is an index probe, never query text).
       the ownership pass enforces it, mirror of the container-read borrow).
 - [ ] FK trap + restrict trap wired through the row API; a debug-build probe
       counter exposed for Task 5's index-selection proof.
+- [ ] The `delete` statement (point delete of a row value) lands here too:
+      iteration 9's subset is insert/select/update-point, and restrict has
+      nothing to restrict without it — same typed-AST-plus-builtin shape as
+      insert, WAL remove record already specified by iteration 9's Task 2.
 - [ ] db-corpus fixtures from iteration 9's plan extended with one FK-violation
       and one restrict fixture (trap-code exact); ASan green; commit locally.
 
@@ -176,8 +182,11 @@ index-probe proof), `raise` (update through a query; missing department ⇒ the
 empty-query nil path), the restrict-trap demo, and a kill -9 between `seed`
 and `report` proving replay on this workload.
 
-- [ ] Sample written; `woc docs/examples/employee` compiles with zero
-      diagnostics; the binary's modes run.
+- [ ] Sample source pre-authored 2026-08-15 (`docs/examples/employee/` —
+      the target workload, sample-first like log-watcher was); this task makes
+      `woc docs/examples/employee` compile it with zero diagnostics and the
+      binary's modes run. The sample is authoritative: divergence between it
+      and the spec is resolved in the spec's favor and committed.
 - [ ] `scripts/employee-accept.sh` + `just employee` module: every mode
       checked with exact expectations, trap codes asserted, crash step
       included; soak-style RSS/fd sampling reused from the log-watcher
