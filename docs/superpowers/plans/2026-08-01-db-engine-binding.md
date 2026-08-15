@@ -1,6 +1,6 @@
 # DB Engine Binding Implementation Plan
 
-> **Status: ⬜ pending** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+> **Status: 🔄 in progress — Task 1 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -48,9 +48,20 @@ sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 
 **Concept & reason:** generalize phase B. Per shard, per class: a slab of fixed-size row slots sized from the class's field count (16-byte row header — id, class, flags — plus the same 8-byte slots the VM object layout uses, so a row and an object share their field encoding; text and container fields store engine-owned copies, not VM pointers). An allocation bitmap per slab; slab growth by arena extension. Id allocation interleaved per shard for coordination-free global uniqueness (shipped phase-A behavior). Row create/read/remove go through one API that Task 4's indexes hook — the doctrine choke point. The binding doc pins the row format, the field-encoding rules (what happens to each of the six kinds when a value crosses from VM heap to row storage — scalars copy, texts copy, owned objects flatten by value, `@gc` references are a compile error in stored fields already, `ref` is an id, containers copy element-wise), and the query subset promised by Task 5.
 
-- [ ] Failing tests: create/read/remove round-trips across kinds; id interleave across shards; slab growth; removal reuses slots.
-- [ ] Implement; ASan green. Write the binding doc.
-- [ ] Record commit draft: `feat(runtime): class-shaped row storage — per-shard per-class slabs from .wob class table, VM-compatible field encoding, interleaved id allocation, single choke-point row API; docs/plan/oop-vm/04-db-binding.md.`
+- [x] Tests first: round-trips across every kind (Text/owned-nested/multi/map
+      copies proven by mutating the originals), nil encodings incl.
+      `WO_NIL_SCALAR`, id interleave at N=3, slab growth past three slabs
+      with stable addresses, removal reuses the slot while never reusing the
+      id, misuse (unknown class, double remove). `test_table` 827/0 under
+      ASan+UBSan.
+- [x] Implemented in `database/src/table.{c,h}` (the 2026-08-15 directory
+      decision), linked into every wovm and test binary via the Makefile's
+      `DBSRC`. Binding doc written (`docs/plan/oop-vm/04-db-binding.md`:
+      row format, encoding table, id discipline, choke points). All prior
+      gates stay green with the engine linked (oop-e2e 71/0, log-watcher
+      7/0) — it is dead code until Task 3 wires the first builtin.
+- [x] Committed locally (2026-08-15). N=1 today: iteration 8 has not landed,
+      so everything is N-parametric and tested at N=3 through the API.
 
 ### Task 2: Typed WAL + boot replay
 
