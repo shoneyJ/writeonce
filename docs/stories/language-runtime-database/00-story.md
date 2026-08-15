@@ -54,6 +54,7 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
 | 9b | [`@table`, relations, query](09b-table-relations-query.md) | `@table` becomes real storage; typed `ref`/`backlink`/`multi` relations; compiler-checked LINQ-shaped queries lowered to engine ops |
 | 9c | [Cross-program tables](09c-cross-program-tables.md) | attach to a running program's database over a local IPC channel: manifest-granted read/write rights, typed statements checked against the owner's shapes, owner stays the single writer |
+| 9d | [Keypair attach auth](09d-keypair-attach-auth.md) | program identity is a keypair: mutual challenge–response at attach, grants name public keys, replay-proof, rotation is a config change |
 | 10 | [HTTP service layer](10-http-service.md) | `service` blocks route to VM methods; REST parity with Stage 2 |
 | 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |

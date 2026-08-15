@@ -118,6 +118,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | ⬜                           |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | ⬜ spec + plan ready (2026-08-15) |
 | 9c  | [Cross-program tables](stories/language-runtime-database/09c-cross-program-tables.md)        | ⬜ needs a spec first        |
+| 9d  | [Keypair attach auth](stories/language-runtime-database/09d-keypair-attach-auth.md)          | ⬜ needs a spec first        |
 | 10  | [HTTP service layer](stories/language-runtime-database/10-http-service.md)                   | ⬜                           | Hold |
 | 11  | [Fibers](stories/language-runtime-database/11-fibers.md)                                     | ⬜                           | Hold |
 | 12  | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md)               | ⬜                           | Hold |
@@ -325,6 +326,7 @@ Ecommerce sample (verified 2026-06-13): `api.rest` 17/17 expected statuses pass.
 | 9   | Database engine binding                                                                                                                                                        | [plan 5](superpowers/plans/2026-08-01-db-engine-binding.md)                                        |
 | 9b  | `@table` + relations + language-integrated query — comprehension queries, `ref`/`backlink` navigation, GroupBy aggregates; acceptance: new `docs/examples/employee` sample     | [spec](superpowers/specs/2026-08-15-table-relations-query-design.md) · [plan](plan/compiler/2026-08-15-employee-relations-query.md) |
 | 9c  | Cross-program tables — attach to a running program's database (IPC string in wo.toml, manifest-granted rights, owner stays the single writer)                                  | **no spec yet** — four open forks recorded in the iteration; brainstorm before planning            |
+| 9d  | Keypair attach auth — mutual challenge–response, grants name public keys, uid superseded                                                                                       | **no spec yet** — four forks recorded; plan folds into 9c's                                        |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md)                   |
 | 12  | Blue-green deploy                                                                                                                                                              | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9–10 |

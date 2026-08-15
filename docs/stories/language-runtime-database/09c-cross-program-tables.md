@@ -134,7 +134,10 @@ must be bound to something a peer cannot fake — unix peer credentials
 the milestone (same-machine, same-trust-domain), rights whole-database
 read or read+write (per-table refinement deferred until a workload needs
 it), and the registration is A's manifest so a grant is a config change +
-restart, not an API.
+restart, not an API. **Superseded as the end state (2026-08-15):**
+identity is a keypair and grants name public keys — iteration
+[9d](09d-keypair-attach-auth.md) owns that; the uid check is only this
+iteration's bootstrap and must be flagged pre-9d wherever it ships.
 
 **4. What does B's statement actually block on?** B's insert crosses the
 channel, executes in A (RAM + WAL + fsync), and acknowledges back — a
