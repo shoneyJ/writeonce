@@ -174,6 +174,11 @@ db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id);
  * decode error paths). */
 void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v);
 
+/* Decode one engine slot value to a FRESH VM value in [rt] (the out-gate:
+ * always a copy). The query builtins' field reads go through this. */
+uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
+                          int *ok, const char **msg);
+
 /* Engine-internal, replay only: after wal.c fills a raw row's slots, this
  * runs the index maintenance the normal insert runs inline — including the
  * unique check, whose violation during replay is corruption, not data

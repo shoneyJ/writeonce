@@ -302,8 +302,23 @@ enum {
     /* DB_DELETE: R[B] = class id, R[B+1] = row id. R[A] = 0. A missing row
      * traps WO_T_DB (deleting what is not there is a fault, not a no-op). */
     WO_B_DB_DELETE = 63,
+    /* the query surface's reads (iteration 9b). A table-class value IS its
+     * row id at runtime (the "objects are rows" model), so these are how the
+     * compiled query loop touches storage:
+     *   DB_SCAN (64):    R[B] = class     -> R[A] = multi<Int> of every id
+     *   DB_GET_FIELD(65): R[B]=class, R[B+1]=id, R[B+2]=field
+     *                     -> R[A] = that field, decoded to a VM value (a
+     *                        Text field decodes to a fresh Text; a ref field
+     *                        decodes to the target id). Missing row traps
+     *                        WO_T_DB.
+     *   DB_PROBE (66):   R[B]=class, R[B+1]=index, R[B+2]=key
+     *                     -> R[A] = multi<Int> of ids whose first indexed
+     *                        column equals key (backlink + indexed where). */
+    WO_B_DB_SCAN = 64,
+    WO_B_DB_GET_FIELD = 65,
+    WO_B_DB_PROBE = 66,
 };
-#define WO_B_MAX 63u
+#define WO_B_MAX 66u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

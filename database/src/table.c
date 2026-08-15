@@ -610,6 +610,12 @@ void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
     db_val_free(kind, v);
 }
 
+uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
+                          int *ok, const char **msg) {
+    (void)db;
+    return db_val_decode(rt, kind, engine_val, ok, msg);
+}
+
 int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                         uint64_t vm_val, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
