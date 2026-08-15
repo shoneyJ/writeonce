@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "gc.h"
 #include "obj.h"
 #include "t.h"
 #include "table.h"
@@ -73,13 +74,47 @@ static void test_roundtrip_replay(void) {
     uint64_t fresh = wo_row_insert(&db2, 0, vals, &msg, NULL);
     T_CHECK(fresh > ids[2]);
     wo_db_destroy(&db2);
-    wo_rt_destroy(&rt);
+
+    /* update record: re-log, replay replaces */
+    {
+        char upath[128];
+        snprintf(upath, sizeof upath, "%s/upd.wal", g_dir);
+        wo_db du;
+        T_EQ(wo_db_init(&du, CLASSES, 1, 0, 1), 0);
+        wo_wal wu;
+        T_EQ(wo_wal_open(&wu, upath, 0), 0);
+        wo_str *s1 = wo_str_new(&rt, "old", 3);
+        uint64_t uv[2] = {7, (uint64_t)(uintptr_t)s1};
+        uint64_t uid = wo_row_insert(&du, 0, uv, &msg, NULL);
+        T_EQ(wo_wal_append_insert(&wu, &du, 0, uid), 0);
+        int ek = 0;
+        wo_str *s2 = wo_str_new(&rt, "new!", 4);
+        T_EQ(wo_row_update_field(&du, 0, uid, 1, (uint64_t)(uintptr_t)s2, &msg, &ek), 0);
+        T_EQ(wo_row_update_field(&du, 0, uid, 0, 8, &msg, &ek), 0);
+        T_EQ(wo_wal_append_update(&wu, &du, 0, uid), 0);
+        T_EQ(wo_wal_commit(&wu), 0);
+        wo_wal_close(&wu);
+        wo_db_destroy(&du);
+        wo_db db4;
+        T_EQ(wo_db_init(&db4, CLASSES, 1, 0, 1), 0);
+        T_EQ(wo_wal_replay(upath, &db4), 2);
+        uint64_t uo[2];
+        T_EQ(wo_row_read(&db4, &rt, 0, uid, uo, &msg), 0);
+        T_EQ(uo[0], 8);
+        wo_str *us = (wo_str *)(uintptr_t)uo[1];
+        T_CHECK(us->len == 4 && memcmp(us->data, "new!", 4) == 0);
+        wo_str_free(&rt, us);
+        wo_drop_obj(&rt, (wo_hdr *)s1);
+        wo_drop_obj(&rt, (wo_hdr *)s2);
+        wo_db_destroy(&db4);
+    }
 
     /* replay of a missing file is a fresh boot, not an error */
     wo_db db3;
     T_EQ(wo_db_init(&db3, CLASSES, 1, 0, 1), 0);
     T_EQ(wo_wal_replay("/nonexistent/nope.wal", &db3), 0);
     wo_db_destroy(&db3);
+    wo_rt_destroy(&rt);
 }
 
 static void test_torn_tail(void) {

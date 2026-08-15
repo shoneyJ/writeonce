@@ -42,6 +42,8 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
        the class table (db.c / wo_row_insert). Same trust level as the
        kind-immediate builtins' B nibble. */
     [WO_B_DB_INSERT] = 1,
+    [WO_B_DB_UPDATE_FIELD] = 4,
+    [WO_B_DB_DELETE] = 2,
     [WO_B_NOW] = 0,       [WO_B_PRINT] = 1,     [WO_B_PRINT_INT] = 1,
     [WO_B_WORDS] = 1,     [WO_B_MULTI_NEW] = 0, [WO_B_MULTI_PUSH] = 2,
     [WO_B_MULTI_GET] = 2, [WO_B_COUNT] = 1,     [WO_B_LATEST] = 1,

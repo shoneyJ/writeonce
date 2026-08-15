@@ -66,6 +66,10 @@ void wo_wal_close(wo_wal *w);
  * 0 ok, -1 OOM / no such row. */
 int wo_wal_append_insert(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
 int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id);
+/* UPDATE re-logs the whole row (KISS: replay replaces — remove + re-create
+ * with the same id; the prefix/suffix delta trick from the survey is a
+ * later optimization, recorded). Call AFTER the RAM update. */
+int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
 
 /* Write the staged batch and fdatasync — the ack line. Empty batch = ok,
  * no syscall. 0 ok, -1 write/sync failure (the batch stays staged). */

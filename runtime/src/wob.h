@@ -295,8 +295,15 @@ enum {
      * failures trap WO_T_DB; a failed WAL commit traps WO_T_IO (the write
      * was applied to RAM but never acknowledged). */
     WO_B_DB_INSERT = 61,
+    /* DB_UPDATE_FIELD: R[B] = class id, R[B+1] = row id, R[B+2] = field
+     * index, R[B+3] = the value. R[A] = 0. Unique violation traps
+     * WO_T_UNIQUE with the row untouched. */
+    WO_B_DB_UPDATE_FIELD = 62,
+    /* DB_DELETE: R[B] = class id, R[B+1] = row id. R[A] = 0. A missing row
+     * traps WO_T_DB (deleting what is not there is a fault, not a no-op). */
+    WO_B_DB_DELETE = 63,
 };
-#define WO_B_MAX 61u
+#define WO_B_MAX 63u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

@@ -150,6 +150,14 @@ int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
  * it. 0 ok, -1 no such row. */
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
 
+/* Update one field in place (iteration 9 Task 5): encode the VM value,
+ * swap it into the slot, keep every index containing that column honest —
+ * remove-old/add-new with the unique re-check running BEFORE anything
+ * mutates, so a violating update leaves the row untouched. 0 ok, -1 no
+ * such row / bad field, DB_ERR_* codes via *err_kind like insert. */
+int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
+                        uint64_t vm_val, const char **msg, int *err_kind);
+
 /* Borrowed row pointer for engine-internal callers (the WAL writes a row's
  * encoded bytes; indexes read key slots). NULL = no such row. NEVER handed
  * to the VM. */

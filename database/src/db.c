@@ -34,6 +34,40 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = id;
         return 0;
     }
+    case WO_B_DB_UPDATE_FIELD: {
+        uint32_t cid = (uint32_t)R[B];
+        uint64_t id = R[B + 1];
+        uint32_t field = (uint32_t)R[B + 2];
+        int ek = 0;
+        if (wo_row_update_field(db, cid, id, field, R[B + 3], msg, &ek) != 0)
+            return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
+        wo_wal *w = (wo_wal *)vm->rt.wal;
+        if (w) {
+            if (wo_wal_append_update(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
+                *msg = "wal commit failed"; /* RAM ahead of disk: trap, do not ack */
+                return WO_T_IO;
+            }
+        }
+        R[A] = 0;
+        return 0;
+    }
+    case WO_B_DB_DELETE: {
+        uint32_t cid = (uint32_t)R[B];
+        uint64_t id = R[B + 1];
+        if (wo_row_remove(db, cid, id) != 0) {
+            *msg = "no such row";
+            return WO_T_DB;
+        }
+        wo_wal *w = (wo_wal *)vm->rt.wal;
+        if (w) {
+            if (wo_wal_append_remove(w, cid, id) != 0 || wo_wal_commit(w) != 0) {
+                *msg = "wal commit failed";
+                return WO_T_IO;
+            }
+        }
+        R[A] = 0;
+        return 0;
+    }
     default:
         *msg = "unknown db builtin";
         return WO_T_DB;

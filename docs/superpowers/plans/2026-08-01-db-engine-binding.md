@@ -1,6 +1,6 @@
 # DB Engine Binding Implementation Plan
 
-> **Status: 🔄 in progress — Tasks 1–3 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+> **Status: 🔄 in progress — Tasks 1–4 done, Task 5 engine half done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -113,7 +113,19 @@ sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 - [ ] Implement; green.
 - [ ] Record commit draft: `feat(runtime): secondary indexes — per-shard hash indexes maintained only inside the row API, @unique constraint trap, replay rebuild; doctrine enforced by construction.`
 
-### Task 5: `select` subset + cross-shard point reads
+### Task 5 🔄: `select` subset + cross-shard point reads — **superseded in part (2026-08-15)**
+
+> **Deviation, recorded:** the 9b design (spec'd after this plan was
+> written) makes compiler-lowered comprehension queries THE select
+> surface — a brace-select subset built here would be a second grammar
+> retired months later. So Task 5's ENGINE half landed now (update-point
+> through the choke point with unique re-check, delete, the WAL UPDATE
+> record with replace-on-replay, builtins 62/63 — `test_table` 839/0,
+> `test_wal` 102/0), and the LANGUAGE half (reads, queries, row views,
+> the delete statement) is the 9b plan's Tasks 1–5, where it belongs.
+> Cross-shard point reads wait for iteration 8's mailboxes, as written.
+
+
 
 **Concept & reason:** the milestone query subset, semantics per the C++ `wo-db` reference where they overlap: select-by-id; select with a WHERE conjunction over indexed fields (index-backed) or a full shard scan (explicitly allowed, explicitly slower); dotted-path field access in the projection; results materialize as VM objects (rows decode back through the field-encoding rules — the Task-1 doc's table read in reverse). Local rows resolve inline; a by-id read of a foreign row hops once via the plan-4 mailbox (point ops hop once; the requesting job pumps its inbox while waiting — never blocks). List queries stay shard-local in this plan; scatter-gather fan-out is future work, stated in the doc. `update` limited to point-by-id field sets (the method-transaction pattern the pricing demo uses); no joins, no aggregations beyond the existing builtins, no RETURNING chaining — all named as out-of-scope in the binding doc.
 

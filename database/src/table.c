@@ -610,6 +610,93 @@ void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
     db_val_free(kind, v);
 }
 
+int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
+                        uint64_t vm_val, const char **msg, int *err_kind) {
+    if (err_kind) *err_kind = DB_ERR_MISC;
+    db_row *r = wo_row_ptr(db, class_id, id);
+    if (!r) {
+        *msg = "no such row";
+        return -1;
+    }
+    const wo_classdesc *c = &db->classes[class_id];
+    if (field >= c->field_cnt) {
+        *msg = "no such field";
+        return -1;
+    }
+    db_table *t = &db->tables[class_id];
+    int ok = 1;
+    uint64_t nv = db_val_encode(db->classes, c->kinds[field], vm_val, &ok, msg);
+    if (!ok) {
+        if (err_kind) *err_kind = DB_ERR_BADKIND;
+        return -1;
+    }
+    /* indexes containing this column: unique checks against the NEW value
+       run first, against a shadow of the row, before anything mutates */
+    uint64_t old = r->slots[field];
+    r->slots[field] = nv;
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        if (!(ix->flags & 1u)) continue;
+        int touches = 0;
+        for (uint32_t i = 0; i < ix->col_cnt; i++)
+            if (ix->cols[i] == field) touches = 1;
+        if (!touches) continue;
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
+        if (!b) continue;
+        for (uint32_t i = 0; i < b->len; i++) {
+            if (b->ids[i] == id) continue;
+            db_row *other = wo_row_ptr(db, class_id, b->ids[i]);
+            if (other && idx_cols_equal(c, ix, r, other)) {
+                r->slots[field] = old; /* untouched, promised */
+                db_val_free(c->kinds[field], nv);
+                if (err_kind) *err_kind = DB_ERR_UNIQUE;
+                *msg = "unique index violation";
+                return -1;
+            }
+        }
+    }
+    /* commit: fix every index containing the column (old entry out under
+       the OLD value's hash, new entry in), then free the old value */
+    r->slots[field] = old;
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        int touches = 0;
+        for (uint32_t i = 0; i < ix->col_cnt; i++)
+            if (ix->cols[i] == field) touches = 1;
+        if (!touches) continue;
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
+        if (b)
+            for (uint32_t i = 0; i < b->len; i++)
+                if (b->ids[i] == id) {
+                    b->ids[i] = b->ids[--b->len];
+                    break;
+                }
+    }
+    r->slots[field] = nv;
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        int touches = 0;
+        for (uint32_t i = 0; i < ix->col_cnt; i++)
+            if (ix->cols[i] == field) touches = 1;
+        if (!touches) continue;
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 1);
+        if (b) {
+            if (b->len == b->cap) {
+                uint32_t ncap = b->cap ? b->cap * 2 : 4;
+                uint64_t *ni = realloc(b->ids, (size_t)ncap * 8u);
+                if (ni) {
+                    b->ids = ni;
+                    b->cap = ncap;
+                }
+            }
+            if (b->len < b->cap) b->ids[b->len++] = id;
+        }
+    }
+    db_val_free(c->kinds[field], old);
+    if (err_kind) *err_kind = DB_ERR_NONE;
+    return 0;
+}
+
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id) {
     if (class_id >= db->class_cnt) return -1;
     db_table *t = &db->tables[class_id];

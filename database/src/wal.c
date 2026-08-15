@@ -356,6 +356,20 @@ int wo_wal_append_insert(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
     return rc;
 }
 
+int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
+    db_row *r = wo_row_ptr(db, class_id, id);
+    if (!r) return -1;
+    wbuf p = {0};
+    wput_u8(&p, WO_WAL_UPDATE);
+    wput_u32(&p, class_id);
+    wput_u64(&p, id);
+    const wo_classdesc *c = &db->classes[class_id];
+    for (uint32_t i = 0; i < c->field_cnt; i++) enc_val(&p, db->classes, c->kinds[i], r->slots[i]);
+    int rc = stage(w, &p);
+    free(p.b);
+    return rc;
+}
+
 int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id) {
     wbuf p = {0};
     wput_u8(&p, WO_WAL_REMOVE);
@@ -390,7 +404,12 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     uint64_t id = rd_u64(&r);
     if (r.bad || cid >= db->class_cnt) return -1;
     if (kind == WO_WAL_REMOVE) return wo_row_remove(db, cid, id);
-    if (kind != WO_WAL_INSERT) return -1; /* UPDATE lands with Task 5 */
+    if (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE) return -1;
+    if (kind == WO_WAL_UPDATE) {
+        /* replace: the row must exist (its insert precedes its update in a
+           correct log); anything else is corruption */
+        if (wo_row_remove(db, cid, id) != 0) return -1;
+    }
     db_row *row = wo_row_create_raw(db, cid, id);
     if (!row) return -1;
     const wo_classdesc *c = &db->classes[cid];

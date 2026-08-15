@@ -161,6 +161,66 @@ static void test_slab_growth_and_reuse(void) {
     wo_rt_destroy(&rt);
 }
 
+/* Task 5: single-field update through the choke point — value swapped,
+ * indexes moved, unique violations leave the row untouched. Class 3 in a
+ * local table: User { email: Text @unique-ish } via idx metadata. */
+static const uint8_t user_kinds[] = {WO_K_TEXT, WO_K_SCALAR};
+static const uint32_t user_idx_meta[] = {1 /*unique*/, 1, 0 /*col: email*/,
+                                         0 /*non-unique*/, 1, 1 /*col: n*/};
+static const wo_classdesc UCLASSES[] = {
+    {.name = 0, .flags = 0, .field_cnt = 2, .kinds = user_kinds, .idx_cnt = 2,
+     .idx_meta = user_idx_meta},
+};
+
+static void test_update_field(void) {
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, UCLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, UCLASSES, 1, 0, 1), 0);
+    const char *msg = "";
+    int ek = 0;
+    wo_str *e1 = wo_str_new(&rt, "a@x", 3);
+    wo_str *e2 = wo_str_new(&rt, "b@x", 3);
+    uint64_t v1[2] = {(uint64_t)(uintptr_t)e1, 10};
+    uint64_t v2[2] = {(uint64_t)(uintptr_t)e2, 20};
+    uint64_t a = wo_row_insert(&db, 0, v1, &msg, NULL);
+    uint64_t b = wo_row_insert(&db, 0, v2, &msg, NULL);
+    T_CHECK(a && b);
+
+    /* scalar update: value moves, non-unique index follows */
+    T_EQ(wo_row_update_field(&db, 0, a, 1, 99, &msg, &ek), 0);
+    uint64_t out[2];
+    T_EQ(wo_row_read(&db, &rt, 0, a, out, &msg), 0);
+    T_EQ(out[1], 99);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[0]);
+
+    /* unique violation: updating a's email to b's must refuse, row untouched */
+    wo_str *dupe = wo_str_new(&rt, "b@x", 3);
+    T_EQ(wo_row_update_field(&db, 0, a, 0, (uint64_t)(uintptr_t)dupe, &msg, &ek), -1);
+    T_EQ(ek, DB_ERR_UNIQUE);
+    T_EQ(wo_row_read(&db, &rt, 0, a, out, &msg), 0);
+    wo_str *still = (wo_str *)(uintptr_t)out[0];
+    T_CHECK(still->len == 3 && memcmp(still->data, "a@x", 3) == 0);
+    wo_str_free(&rt, still);
+
+    /* legal text update: old engine value freed (ASan), index moved — the
+       old email becomes free for someone else */
+    wo_str *fresh = wo_str_new(&rt, "c@x", 3);
+    T_EQ(wo_row_update_field(&db, 0, a, 0, (uint64_t)(uintptr_t)fresh, &msg, &ek), 0);
+    wo_str *take_a = wo_str_new(&rt, "a@x", 3);
+    uint64_t v3[2] = {(uint64_t)(uintptr_t)take_a, 30};
+    uint64_t cid = wo_row_insert(&db, 0, v3, &msg, &ek);
+    T_CHECK(cid != 0); /* "a@x" released by the update */
+
+    wo_drop_obj(&rt, (wo_hdr *)e1);
+    wo_drop_obj(&rt, (wo_hdr *)e2);
+    wo_drop_obj(&rt, (wo_hdr *)dupe);
+    wo_drop_obj(&rt, (wo_hdr *)fresh);
+    wo_drop_obj(&rt, (wo_hdr *)take_a);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_misuse(void) {
     const char *msg = "";
     wo_db db;
@@ -177,6 +237,7 @@ int main(void) {
     test_roundtrip_all_kinds();
     test_id_interleave_across_shards();
     test_slab_growth_and_reuse();
+    test_update_field();
     test_misuse();
     return t_report("test_table");
 }

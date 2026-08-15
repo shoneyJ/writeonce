@@ -2604,7 +2604,7 @@ let validate_image (img : string) : string list =
              golden lowering suite actually emits; 61 = DB_INSERT (arity 1:
              the class-id slot — field slots are runtime-validated, same as
              the C loader) *)
-          if c > 12 && c <> 61 then
+          if c > 12 && (c < 61 || c > 63) then
             fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
           else if c = 4 then begin
             if b > 5 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
@@ -2621,6 +2621,8 @@ let validate_image (img : string) : string list =
               | 5 | 6 | 11 | 12 -> 2
               | 10 -> 3
               | 61 -> 1
+              | 62 -> 4
+              | 63 -> 2
               | _ -> 0
             in
             if arity > 0 then begin
