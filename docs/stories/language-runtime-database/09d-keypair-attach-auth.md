@@ -132,10 +132,13 @@ authorization input.
   9c without 9d ships a placeholder identity and 9d without 9c has nothing
   to authenticate. The 9c milestone may still land first with the uid
   bootstrap, flagged loudly as pre-9d.
-- **Acceptance extends the 9c workload**: the employee-A / report-B pair
-  gains the key exchange in both manifests; the acceptance script adds the
-  wrong-key, no-key, same-uid-wrong-key, replay, impostor-socket, and
-  rotation checks above, each asserting the exact trap/refusal.
+- **Acceptance extends the 9c workload**: the employee-A /
+  employee-list-B pair (`docs/examples/employee-list`, pre-authored
+  2026-08-15) carries the key exchange in both manifests — A's
+  `[[share.clients]]` names B's fingerprint, B's `[connect.employee]` pins
+  A's; the acceptance script adds the wrong-key, no-key,
+  same-uid-wrong-key, replay, impostor-socket, and rotation checks above,
+  each asserting the exact trap/refusal.
 - Expected shape: handshake module beside the channel code (both ends),
   `[share]`/`[connect]` manifest keys for fingerprints, first-boot keygen
   in the runtime's data-directory setup, vendored signature primitive with

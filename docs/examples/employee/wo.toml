@@ -10,3 +10,19 @@ wo = ">= 0.1"
 # toward, sample-first like log-watcher was.
 [build]
 runtime = "../../../runtime/wovm"
+
+# Iteration 9c/9d surface (target): this program OWNS its database and
+# shares it. The runtime listens on `listen` beside WO_DATA; every client
+# below is a grant — no registration, no attach, same uid included.
+[share]
+listen = "unix:target/data/employee.sock"
+
+# Program B (docs/examples/employee-list), granted read-only. Identity is
+# B's public-key fingerprint (9d): printed by `employee-list --identity`
+# after B's first boot; paste it here. Rights: "read" or "rw" — B's
+# probe-write mode exists to prove "read" refuses. Rotation and revocation
+# are edits to this table plus a restart, never an API.
+[[share.clients]]
+name       = "employee-list"
+public_key = "ed25519:PASTE-EMPLOYEE-LIST-FINGERPRINT-HERE"
+rights     = "read"

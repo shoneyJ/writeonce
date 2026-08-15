@@ -161,10 +161,10 @@ SIGTERM'd B parked on a channel read exits cleanly).
   doc's wire protocol, profiled for unix sockets, values in the WAL's
   encoding.
 - **The acceptance workload extends the employee sample**: A = the employee
-  program with `[share]`; B = a new thin `docs/examples/employee-report`
-  client attaching read-only for the GroupBy report, plus a read+write
-  audit-log writer path exercising the rights matrix and the refusal
-  traps. The sample stays the test.
+  program with `[share]`; B = `docs/examples/employee-list` (pre-authored
+  2026-08-15, sample-first — both manifests designed as a pair), attaching
+  read-only for the list/report/staff modes and proving the rights matrix
+  with its `probe-write` mode. The sample stays the test.
 - Depends on iterations 9 (engine, WAL — done through Task 3 as of
   2026-08-15) and 9b (typed statements and queries worth sharing); wants
   iteration 8's event loop for A's serving side but can prototype on a
