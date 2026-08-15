@@ -1004,10 +1004,55 @@ type Order { status: Pending | Paid | Shipped }
 
     #[test]
     fn article_debug() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"), "/../../docs/examples/blog/types/article.wo"
-        )).unwrap();
-        let sch = parse(&src).unwrap();
+        // formerly read docs/examples/blog/types/article.wo; the blog sample
+        // moved to the cleanup branch, so the fixture lives inline now —
+        // same shape: scalars, embedded doc, edges, backlink, computed,
+        // policies, triggers, service
+        let src = r#"
+type Article {
+  id:            Id
+  slug:          Slug @unique
+  title:         Text
+  author:        ref Author
+  published:     Bool = false
+  published_at:  Timestamp?
+  created_at:    Timestamp = now()
+  updated_at:    Timestamp = now()
+
+  meta: {
+    excerpt:     Text
+    body_md:     Markdown
+    hero_image:  Url?
+    reading_min: Int?
+  }
+
+  tags:          multi Tag @edge(:TAGGED_AS)
+  related:       multi Article @edge(:RELATED_TO)
+  prerequisites: multi Article @edge(:PREREQUISITE)
+  comments:      backlink Comment.article
+  word_count:    Int = words(meta.body_md)
+
+  policy read  anyone                          when published == true
+  policy read  for role Admin
+  policy read  for role Author                 when author == $session.user
+  policy write for role Admin
+  policy write for role Author                 when author == $session.user
+  policy delete for role Admin
+
+  on update
+    when old.published == false and new.published == true
+    do set self.published_at = now()
+    do emit "article.published"(self)
+    do enqueue "send-subscriber-emails" with { article_id: self.id }
+
+  on update
+    do set self.updated_at = now()
+
+  service rest "/api/articles"
+    expose list, get, create, update, delete, subscribe
+}
+"#;
+        let sch = parse(src).unwrap();
         eprintln!("types: {}", sch.types.len());
         for t in &sch.types {
             eprintln!("  type {} — {} fields, {} services", t.name, t.fields.len(), t.services.len());
