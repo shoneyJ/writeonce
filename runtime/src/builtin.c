@@ -2,6 +2,8 @@
 
 #include "builtin.h"
 
+#include "db.h" /* database/src — the engine's statement executors */
+
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -68,6 +70,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
     if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
+    if (C == WO_B_DB_INSERT) return wo_builtin_db(vm, R, ins, msg);
     switch (C) {
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;

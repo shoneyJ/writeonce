@@ -36,6 +36,12 @@ static int rd_u64(cur_t *c, uint64_t *v) { return rd(c, v, 8); }
 /* per-builtin fixed arity (args at B..B+arity-1); kind-immediate builtins
  * (multi_new/map_new) carry kinds in B and take no register args */
 static const uint8_t b_arity[WO_B_MAX + 1] = {
+    /* WO_B_DB_INSERT's window is class-id + one slot per DECLARED field —
+       variable, so the static table validates only the class-id slot (arity
+       1); the field slots are validated at runtime by the engine against
+       the class table (db.c / wo_row_insert). Same trust level as the
+       kind-immediate builtins' B nibble. */
+    [WO_B_DB_INSERT] = 1,
     [WO_B_NOW] = 0,       [WO_B_PRINT] = 1,     [WO_B_PRINT_INT] = 1,
     [WO_B_WORDS] = 1,     [WO_B_MULTI_NEW] = 0, [WO_B_MULTI_PUSH] = 2,
     [WO_B_MULTI_GET] = 2, [WO_B_COUNT] = 1,     [WO_B_LATEST] = 1,

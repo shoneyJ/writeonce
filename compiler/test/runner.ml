@@ -531,35 +531,35 @@ let () =
   | _ -> check "ctor literal: exactly one free fn" false
 
 let () =
-  (* The brief's stated asymmetry: `insert` is a statement-only trigger
-     (parser.ml's is_insert_trigger, checked only in parse_stmt) — a
-     bare `insert` reached from parse_primary is just an ordinary
-     identifier reference, exactly like self/me/on/service/policy's own
-     "recognized positionally, not a reserved word" rule (this task's
-     own keyword-discipline note). `select` (is_select_trigger) is
-     checked unconditionally *inside* parse_primary, so the same
-     position always builds a DbStub instead. Neither is an error on
-     its own — the difference shows up in which Ast.expr_kind comes
-     back. *)
+  (* Iteration 9 Task 3 retired the old asymmetry: `insert` is grammar-owned
+     in BOTH positions now — a typed Insert node validated like a ctor,
+     returning the id — while `select` stays the opaque DbStub until
+     Task 5. The old contract ("bare insert is a plain Ident") is gone
+     with the stub that motivated it. *)
   let prog, collector =
-    parse_str ~file:"insert-vs-select.wo" "fn f() {\n  let a = insert\n  let b = select\n}\n"
+    parse_str ~file:"insert-vs-select.wo"
+      "fn f() {\n  let a = insert Product { sku: \"A1\" }\n  let b = select\n}\n"
   in
-  check_eq "insert vs. select as bare expressions: no diagnostics" ~expected:0
+  check_eq "typed insert + stub select: no diagnostics" ~expected:0
     ~actual:(List.length (Diag.Collector.diagnostics collector))
     string_of_int;
-  match prog.Ast.decls with
+  (match prog.Ast.decls with
   | [ Ast.Fn m ] -> (
     match m.body with
     | [
      { Ast.s_kind = Ast.Let { name = "a"; value = a_val; _ }; _ };
      { Ast.s_kind = Ast.Let { name = "b"; value = b_val; _ }; _ };
     ] ->
-      check "bare `insert` in expression position is a plain Ident"
-        (match a_val.Ast.kind with Ast.Ident "insert" -> true | _ -> false);
+      check "`insert` in expression position is a typed Insert node"
+        (match a_val.Ast.kind with Ast.Insert ("Product", [ ("sku", _) ]) -> true | _ -> false);
       check "bare `select` in expression position always becomes a DbStub"
         (match b_val.Ast.kind with Ast.DbStub _ -> true | _ -> false)
     | _ -> check "insert vs. select: exactly two `let` statements" false)
-  | _ -> check "insert vs. select: exactly one free fn" false
+  | _ -> check "insert vs. select: exactly one free fn" false);
+  (* and a bare `insert` with no literal is a parse error now, not an Ident *)
+  let _, c2 = parse_str ~file:"bare-insert.wo" "fn f() {\n  let a = insert\n}\n" in
+  check "bare `insert` with no constructor literal is a diagnostic"
+    (List.length (Diag.Collector.diagnostics c2) > 0)
 
 let () =
   (* The no_brace guard (parser.ml's state.no_brace / looks_like_ctor):
@@ -2580,7 +2580,12 @@ let validate_image (img : string) : string list =
         | 22 | 23 | 24 | 25 | 26 | 27 | 28 -> rchk pc a
         | 29 ->
           rchk pc a;
-          if c > 12 then fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
+          (* the mirror's ceiling tracks wob.h's WO_B_MAX only for ids the
+             golden lowering suite actually emits; 61 = DB_INSERT (arity 1:
+             the class-id slot — field slots are runtime-validated, same as
+             the C loader) *)
+          if c > 12 && c <> 61 then
+            fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
           else if c = 4 then begin
             if b > 5 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
           end
@@ -2595,6 +2600,7 @@ let validate_image (img : string) : string list =
               | 1 | 2 | 3 | 7 | 8 -> 1
               | 5 | 6 | 11 | 12 -> 2
               | 10 -> 3
+              | 61 -> 1
               | _ -> 0
             in
             if arity > 0 then begin
@@ -2951,7 +2957,8 @@ let () =
       ( "text: concat, equality, words",
         "fn f(a: Text, b: Text) -> Int {\n  let joined = a .. b\n\
          \  if joined == a {\n    return 1\n  }\n  return words(joined)\n}\n" );
-      ("db stub statement", "fn f() -> Int {\n  insert into rows values (1)\n  return 0\n}\n");
+      ( "db insert statement",
+        "class Row {\n  n: Int\n}\n\nfn f() -> Int {\n  insert Row { n: 1 }\n  return 0\n}\n" );
       ( "nested calls in arguments",
         "fn one() -> Int {\n  return 1\n}\n\nfn add(a: Int, b: Int) -> Int {\n\
          \  return a + b\n}\n\nfn f() -> Int {\n  return add(add(one(), one()), one())\n}\n" );

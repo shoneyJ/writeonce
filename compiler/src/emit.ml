@@ -257,6 +257,7 @@ let b_map_val_at = 38
 let b_multi_set = 39
 let b_map_get_opt = 59
 let b_text_copy = 60
+let b_db_insert = 61
 
 (* json (runtime/src/json.c): encode takes the value's static kind as its
    second argument, decode the class id to build as its second. *)
@@ -1054,6 +1055,7 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
     | Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Some (Scalar "Bool")
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
+  | Insert _ -> Some (Scalar "Int")
   | Interp _ -> Some (Scalar "Text")
   | DbStub _ -> None
   | Switch (subject, arms) -> (
@@ -1654,6 +1656,7 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     put f (ins_abc op_neg dst b 0)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
+  | Insert (cn, fields) -> emit_insert p f v ~dst e cn fields
   | Interp inner -> (
     (* haxe-parity Task 2: the type-directed half of the interpolation
        desugar (parser.ml's own doc comment on Ast.Interp) — a Text
@@ -2346,6 +2349,74 @@ and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (c
           | _ -> ())
         ci.Types.fields);
     f.f_temp <- outer
+
+(* iteration 9 Task 3: `insert Class { ... }` lowers to one DB_INSERT
+   builtin whose window is [class-id const, then one slot per DECLARED
+   field in declaration order] — the executor walks the class table's
+   kinds, so slot order must be the table's, not the literal's. A field
+   the literal omits gets its default (same emit_default_value the ctor
+   uses) or, for a `?` field, its kind's own nil (WO_NIL_SCALAR for a
+   nullable scalar, the zero word otherwise). The engine COPIES every
+   value at the row API, so after the builtin every freshly built
+   argument is still this frame's to drop — same reap as push/set. *)
+and emit_insert (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (cn : string)
+    (fields : (string * Ast.expr) list) : unit =
+  match class_of_name p cn with
+  | None ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+      ~message:(Printf.sprintf "insert into `%s`, which is not a declared class" cn);
+    put f (ins_abx op_loadk dst (const_int p 0))
+  | Some cid ->
+    let fcnt = Array.length p.p_classes.(cid).cr_fields in
+    let base = alloc_temps p f e.pos (fcnt + 1) in
+    put f (ins_abx op_loadk base (check_bx p f e.pos "constant" (const_int p cid)));
+    (* every field the literal names lands in ITS declared slot *)
+    List.iter
+      (fun ((fname : string), (fe : Ast.expr)) ->
+        match field_of p cid fname with
+        | None ->
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:(Printf.sprintf "`%s` has no field `%s`" cn fname)
+        | Some (idx, fty) ->
+          let save = f.f_temp in
+          emit_expr p f v ~dst:(base + 1 + idx) ~expected:fty fe;
+          f.f_temp <- save)
+      fields;
+    (* omitted fields: declared default, else the kind's own nil *)
+    let provided = List.map fst fields in
+    (match Types.StringMap.find_opt cn p.p_syms.Types.classes with
+    | None -> ()
+    | Some (ci : Types.class_info) ->
+      List.iter
+        (fun (fname, fty, fdefault, _) ->
+          if not (List.mem fname provided) then
+            match field_of p cid fname with
+            | None -> ()
+            | Some (idx, dfty) -> (
+              match fdefault with
+              | Some d ->
+                let save = f.f_temp in
+                emit_default_value p f ~dst:(base + 1 + idx) ~fty:dfty ~pos:e.pos d;
+                f.f_temp <- save
+              | None ->
+                let nil_word =
+                  if is_nullable_scalar p fty then const_int p nil_scalar_word
+                  else const_int p 0
+                in
+                put f (ins_abx op_loadk (base + 1 + idx) (check_bx p f e.pos "constant" nil_word))))
+        ci.Types.fields);
+    sync_mask p f v e.id;
+    f.f_cur_line <- e.pos.line;
+    put f (ins_abc op_builtin dst base b_db_insert);
+    (* the engine copied: fresh argument values die here *)
+    List.iter
+      (fun ((fname : string), (fe : Ast.expr)) ->
+        match field_of p cid fname with
+        | None -> ()
+        | Some (idx, _) ->
+          drop_fresh_owned ~keep:dst p f (base + 1 + idx) fe;
+          drop_fresh_text ~keep:dst p f (base + 1 + idx) fe)
+      fields
 
 (* The default expressions the emitter can lower (haxe-parity Task 4):
    the literal shapes the sample's own typedefs use — Int (optionally

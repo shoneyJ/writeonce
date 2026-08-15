@@ -107,9 +107,31 @@ intact record count and prefix end — the crash battery's verifier
 (`runtime/test/test_wal.c`: five rounds of insert/commit/ack-over-pipe with
 SIGKILL mid-stream; every acked row present and exact after replay).
 
+## Insert (Task 3) — builtin 61, `database/src/db.c`
+
+`insert Class { field: expr, … }` is a typed expression (statement position
+included): fields validate like a constructor literal (defaults and `?`
+fields omittable — an omitted `?scalar` gets `WO_NIL_SCALAR`, other omitted
+optionals the zero word, declared defaults their value), and the result is
+the new row's id. Lowering emits builtin **61**: R[B] = class-id constant,
+R[B+1..] = one slot per declared field in declaration order (the literal's
+order is irrelevant — slots are the class table's).
+
+Execution: `wo_row_insert` (RAM, engine copies every value), then — when
+durability is on — stage + **commit before the builtin returns**: the
+builtin's return IS the acknowledgment, so ack-after-fsync holds at
+statement granularity until iteration 8 brings tick-scoped group commit. A
+failed commit un-applies the row and traps `WO_T_IO`; engine failures trap
+`WO_T_DB`. Durability is opt-in: `WO_DATA=<dir>` makes the CLI replay
+`<dir>/shard-0.wal` before the entry runs and commit every insert; without
+it the engine is RAM-only (every corpus fixture runs that way).
+
+Ownership: the engine copies at the row API, so an insert **borrows** its
+field values — no transfer, no E304; freshly built values are dropped at the
+site (emit.ml mirrors the push/set reap). The insert node is trap-capable
+(unique violations arrive with Task 4) and carries a live-mask drop entry.
+
 ## Still to come in this document
 
-- **Task 3**: the `insert` statement's builtin ids (appended to
-  `00-wob-format.md`'s builtin table) and execution contract.
 - **Task 4**: secondary-index format, `@unique` trap code.
 - **Task 5**: the select subset, update record semantics, and its builtins.

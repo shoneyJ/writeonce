@@ -38,7 +38,7 @@ fn pick(take a: Item, take b: Item, flag: Bool) -> Int {
 }
 
 fn store(take r: Item) -> Int {
-  insert into rows values (1)
+  insert Row { n: 1 }
   return 0
 }
 
@@ -62,4 +62,8 @@ fn reinit_after_move(take a: Item) -> Int {
   let gone = eat(a)
   a = Item { n: 7 }
   return 0
+}
+
+class Row {
+  n: Int
 }

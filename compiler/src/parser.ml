@@ -1009,9 +1009,23 @@ and parse_switch_expr (st : state) : Ast.expr =
   done;
   { Ast.id; pos; kind = Ast.Switch (subject, List.rev !arms) }
 
+and parse_insert_expr (st : state) : Ast.expr =
+  (* `insert` + a constructor literal, sharing parse_ctor_literal so the
+     field-list grammar (trailing commas, newlines) can never drift from the
+     ctor's. The literal's node is unwrapped into Insert — its id is reused,
+     which is safe because the Ctor node itself is discarded whole. *)
+  let pos = peek_pos st in
+  ignore (advance st) (* the `insert` trigger token *);
+  skip_newlines st;
+  let lit = parse_ctor_literal st in
+  (match lit.Ast.kind with
+  | Ast.Ctor (cn, fields) -> { lit with Ast.pos; kind = Ast.Insert (cn, fields) }
+  | _ -> lit (* unreachable: parse_ctor_literal only builds Ctor *))
+
 and parse_primary (st : state) : Ast.expr =
   match peek st with
   | k when is_select_trigger k -> parse_dbstub_expr st
+  | k when is_insert_trigger k -> parse_insert_expr st
   | Token.KwSwitch -> parse_switch_expr st
   | Token.Int n ->
     let pos = peek_pos st in
@@ -1286,7 +1300,7 @@ and parse_stmt (st : state) : Ast.stmt =
   | k when is_insert_trigger k ->
     let pos = peek_pos st in
     let id = fresh_id st in
-    let e = parse_dbstub_expr st in
+    let e = parse_insert_expr st in
     end_of_stmt st;
     { Ast.s_id = id; s_pos = pos; s_kind = Ast.ExprStmt e }
   | Token.KwLet -> parse_let_stmt st
@@ -1785,6 +1799,8 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
     { e with Ast.kind = Ast.Binary (op, subst_expr consts bound l, subst_expr consts bound r) }
   | Ast.Ctor (cn, fields) ->
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
+  | Ast.Insert (cn, fields) ->
+    { e with Ast.kind = Ast.Insert (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
   | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
   | Ast.MapLit | Ast.NilLit -> e

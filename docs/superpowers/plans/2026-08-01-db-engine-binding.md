@@ -1,6 +1,6 @@
 # DB Engine Binding Implementation Plan
 
-> **Status: 🔄 in progress — Tasks 1–2 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
+> **Status: 🔄 in progress — Tasks 1–3 done 2026-08-15** (story iteration 9) — class-shaped tables, typed WAL + recovery, `insert`/`select` execution. Story iteration 9b (`@table` relations + language-integrated query) follows it and needs a spec brainstormed first. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -85,9 +85,25 @@ sanitizers included. `database/` gets its own CODE-LOGIC.md as code lands.
 
 **Concept & reason:** the compiler's DbStub node for `insert` becomes a typed AST: target class, field initializer list (defaults applied for omitted fields with defaults — the explicit now() form computes at execution), returning the new id. Typechecking validates fields against the class exactly like constructor literals. Lowering emits DB builtins (ids appended to the format doc's builtin table): the executor allocates the id, encodes fields from registers, applies to RAM through the Task-1 API, stages the WAL record; the VM sees the id as the result. Inserts targeting the local shard complete inline; there is no remote insert — creates are always local by the id discipline. The pricing corpus's `set_price` fixture flips from expecting the DB trap to expecting success — the milestone's most satisfying diff.
 
-- [ ] Failing tests: compiler goldens (typed insert AST, emitted builtins); runtime fixtures (insert then read back through select-by-id once Task 5 lands — interim: through a test hook on the row API); default-value application; the flipped pricing fixture.
-- [ ] Implement both halves; green.
-- [ ] Record commit draft: `feat: insert executes — DbStub becomes typed insert AST with constructor-grade field checking, DB builtins apply RAM-then-WAL through the row API; pricing set_price fixture flips from trap to green.`
+- [x] Compiler half: `insert Class { … }` is a typed `Ast.Insert` in BOTH
+      positions (the old "bare insert is an Ident" contract retired, its
+      unit test rewritten to the new one; `select` stays a DbStub for
+      Task 5). Typechecked like a ctor (same omittable rule), owner pass
+      treats field values as borrows (the engine copies — no transfer),
+      emitter lowers to builtin 61 with declaration-order slots, defaults
+      and `?`-nils filled, fresh values reaped after. Goldens re-blessed
+      (`ast/db-stub` shows the INSERT node), 566/0.
+- [x] Runtime half: `database/src/db.c` executes through the choke-point
+      row API; `WO_DATA=<dir>` turns on replay-at-boot + commit-before-ack
+      per statement (the builtin's return IS the ack until iteration 8's
+      ticks); failed commit un-applies the row and traps WO_T_IO. The
+      loader validates the class-id slot (variable window documented).
+- [x] **The pricing fixture flipped**: `trap/pricing-set-price-db-stub`
+      (expected trap 5) is now `run/pricing-set-price-insert` printing the
+      ids the engine allocated — the milestone's promised diff. Durability
+      smoke: two consecutive `WO_DATA` runs print 1,2 then 3,4 (replay +
+      next_id advance). oop-e2e 71/0, all runtime suites green,
+      log-watcher 7/0. Committed locally (2026-08-15).
 
 ### Task 4: Secondary indexes
 

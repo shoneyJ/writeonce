@@ -285,8 +285,14 @@ enum {
      * out of a function (`return` of a borrowed place, which is what this id
      * exists for: the callee's borrow must not become the caller's owner). */
     WO_B_TEXT_COPY = 60,
+    /* ---- database engine (iteration 9; database/src/db.c) ----
+     * DB_INSERT window: R[B] = class id, R[B+1..] = one slot per declared
+     * field in declaration order. Result R[A] = the new row's id. Engine
+     * failures trap WO_T_DB; a failed WAL commit traps WO_T_IO (the write
+     * was applied to RAM but never acknowledged). */
+    WO_B_DB_INSERT = 61,
 };
-#define WO_B_MAX 60u
+#define WO_B_MAX 61u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

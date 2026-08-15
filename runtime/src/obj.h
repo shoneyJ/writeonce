@@ -38,6 +38,12 @@ typedef struct wo_rt {
         size_t len, cap;
     } cycbuf;
     void *out; /* FILE*; kept void* so obj.h needn't pull in stdio */
+    /* the database engine's handles (database/src), opaque here so the VM
+       core needn't include engine headers: db = wo_db*, wal = wo_wal*.
+       NULL = engine absent (test binaries) / durability off (no WO_DATA).
+       Set by main.c at boot; db.c casts. */
+    void *db;
+    void *wal;
 } wo_rt;
 
 int wo_rt_init(wo_rt *rt, size_t heap_cap, const wo_classdesc *classes,

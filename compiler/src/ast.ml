@@ -211,6 +211,11 @@ and expr_kind =
   | Binary of binop * expr * expr
   | Ctor of string * (string * expr) list
   | DbStub of Token.t list
+  (* `insert Class { field: expr, ... }` — the FIRST DB statement to leave
+     the stub behind (iteration 9, Task 3). Typed like a constructor
+     literal, returns the new row's id (Int), legal in statement and
+     expression position both. `select` stays a DbStub until Task 5. *)
+  | Insert of string * (string * expr) list
   (* haxe-parity Task 2: one `${expr}` interpolation site, produced only
      by the string-interpolation desugar (parser.ml) — never written
      directly by a parse rule the way every other expr_kind is. Its

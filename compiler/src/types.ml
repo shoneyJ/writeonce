@@ -1165,6 +1165,9 @@ let typecheck_program ~file ~(module_of : string -> string)
            needs `int_to_text` first) -- unlike the placeholders below,
            this is a fact, not a guess. *)
         Some (TScalar "Text")
+    | Insert _ ->
+        (* the new row's id — the one thing an insert produces *)
+        Some (TScalar "Int")
     | Unary _ | Binary _ | DbStub _ ->
         (* Not chased: the arithmetic-ladder `Binary` ops have no reliable
            per-node type in this pass at all (see above); `Unary`/`DbStub`
@@ -1404,6 +1407,30 @@ let typecheck_program ~file ~(module_of : string -> string)
            Diag.Collector.add collector
              (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
                 ~message:(Printf.sprintf "unknown type `%s` in constructor" class_name) ());
+           { typ = TScalar "Int"; is_nil = false })
+    | Insert (class_name, fields) ->
+        (* iteration 9 Task 3: typed exactly like a constructor literal —
+           same missing-field rule (defaults and `?` fields omittable),
+           same unknown-class diagnostic — but the VALUE is the new row's
+           id. The engine copies every field at the choke point, so field
+           values keep their owners (owner.ml's stores_by_copy). *)
+        (try
+           let cls = StringMap.find class_name syms.classes in
+           let provided = List.map (fun (n, _) -> n) fields in
+           let omittable (default : default_expr option) (fty : field_ty) : bool =
+             Option.is_some default || (match fty with Nullable _ -> true | _ -> false)
+           in
+           List.iter (fun (fname, fty, fdefault, _) ->
+             if not (List.mem fname provided) && not (omittable fdefault fty) then
+               Diag.Collector.add collector
+                 (Diag.error ~code:incomplete_ctor_code ~file ~line:e.pos.line ~col:e.pos.col
+                    ~message:(Printf.sprintf "missing field `%s` in insert of `%s`" fname class_name) ())
+           ) cls.fields;
+           { typ = TScalar "Int"; is_nil = false }
+         with Not_found ->
+           Diag.Collector.add collector
+             (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
+                ~message:(Printf.sprintf "unknown type `%s` in insert" class_name) ());
            { typ = TScalar "Int"; is_nil = false })
     | DbStub _ -> { typ = TVoid; is_nil = false }
     | Switch (subject, arms) -> typecheck_switch ~want_value:true env cenv subject arms
@@ -2102,7 +2129,8 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
   | Binary (_, l, r) ->
     walk_expr bound visit l;
     walk_expr bound visit r
-  | Ctor (_, fields) -> List.iter (fun (_, v) -> walk_expr bound visit v) fields
+  | Ctor (_, fields) | Insert (_, fields) ->
+    List.iter (fun (_, v) -> walk_expr bound visit v) fields
   | Interp inner -> walk_expr bound visit inner
   | ListLit items -> List.iter (walk_expr bound visit) items
   | MapLit | NilLit -> ()

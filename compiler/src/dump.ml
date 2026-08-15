@@ -222,6 +222,10 @@ let rec expr_str (e : Ast.expr) : string =
     Printf.sprintf "%s { %s }" name
       (String.concat ", "
          (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
+  | Ast.Insert (name, fields) ->
+    Printf.sprintf "INSERT %s { %s }" name
+      (String.concat ", "
+         (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))

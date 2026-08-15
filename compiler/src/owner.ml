@@ -560,6 +560,7 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   | Binary (Concat, _, _) -> Some (Scalar "Text")
   | Binary _ -> None (* arithmetic/comparison: Copy either way *)
   | Ctor (cn, _) -> Some (Scalar cn)
+  | Insert _ -> Some (Scalar "Int") (* the new row's id — Copy, nothing to drop *)
   | Interp _ -> Some (Scalar "Text") (* an interpolation always produces Text *)
   | DbStub _ -> None
   | Switch (subject, arms) ->
@@ -1148,6 +1149,14 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
     read_place_parts ctx e
   | Call (callee, args) -> analyze_call ctx e callee args
   | Ctor (cn, fields) -> analyze_ctor ctx cn fields
+  | Insert (_, fields) ->
+    (* iteration 9 Task 3: the engine copies every field value at the row
+       API (the two-worlds bulkhead), so an insert BORROWS its values —
+       no transfer, no E304, the source keeps what it had. Trap-capable
+       (unique violations arrive with Task 4), so the drop map is
+       recorded exactly like DbStub's. *)
+    List.iter (fun (_, fe) -> read_expr ctx fe) fields;
+    record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
   | Unary (_, o) -> read_expr ctx o
   | Binary (_, a, b) ->
     read_expr ctx a;

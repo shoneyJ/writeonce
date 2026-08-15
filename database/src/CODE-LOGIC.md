@@ -43,6 +43,16 @@ tear). The crash battery in `runtime/test/test_wal.c` is the module's
 meaning proven: acked-over-a-pipe after commit, SIGKILL mid-stream, replay,
 zero acked-but-missing.
 
+## db.c — statement executors (iteration 9, Task 3)
+
+One dispatcher, the builtin contract (0 ok, else WO_T_* + msg). The engine
+handles ride `wo_rt.db` / `wo_rt.wal` as opaque pointers set by main.c —
+NULL db traps WO_T_DB, NULL wal means RAM-only (the corpus's mode; WO_DATA
+opts into durability). Insert's contract: RAM apply through the row API,
+then stage + commit BEFORE returning — the builtin's return is the
+acknowledgment, so a failed commit un-applies the row and traps WO_T_IO
+rather than acknowledging what disk never got.
+
 ## Verifying a change
 
 - `make -C runtime test` — `test_table` is this directory's suite (round
