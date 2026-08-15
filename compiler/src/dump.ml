@@ -226,6 +226,14 @@ let rec expr_str (e : Ast.expr) : string =
     Printf.sprintf "INSERT %s { %s }" name
       (String.concat ", "
          (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
+  | Ast.Query q ->
+    let src = match q.Ast.q_src with Ast.QTable cn -> cn | Ast.QNav e -> expr_str e in
+    Printf.sprintf "QUERY from %s in %s%s%s select %s" q.Ast.q_var src
+      (String.concat "" (List.map (fun w -> " where " ^ expr_str w) q.Ast.q_wheres))
+      (match q.Ast.q_group with
+       | Some (g, k) -> Printf.sprintf " group by %s into %s" (expr_str k) g
+       | None -> "")
+      (expr_str q.Ast.q_select)
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))

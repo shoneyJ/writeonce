@@ -412,6 +412,7 @@ let unknown_fn_code = Diag.types_prefix ^ "04"
 let unsatisfied_interface_code = Diag.types_prefix ^ "05"
 let incomplete_ctor_code = Diag.types_prefix ^ "06"
 let unknown_type_code = Diag.types_prefix ^ "07"
+let query_code = Diag.types_prefix ^ "50" (* WO-E250: query surface (iteration 9b) *)
 let non_exhaustive_switch_code = Diag.types_prefix ^ "08"
 let invalid_builtin_code = Diag.types_prefix ^ "09"
 let module_not_imported_code = Diag.types_prefix ^ "10"
@@ -1168,6 +1169,7 @@ let typecheck_program ~file ~(module_of : string -> string)
     | Insert _ ->
         (* the new row's id — the one thing an insert produces *)
         Some (TScalar "Int")
+    | Query _ -> None (* a query's type is chased only by typecheck_expr *)
     | Unary _ | Binary _ | DbStub _ ->
         (* Not chased: the arithmetic-ladder `Binary` ops have no reliable
            per-node type in this pass at all (see above); `Unary`/`DbStub`
@@ -1432,6 +1434,49 @@ let typecheck_program ~file ~(module_of : string -> string)
              (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
                 ~message:(Printf.sprintf "unknown type `%s` in insert" class_name) ());
            { typ = TScalar "Int"; is_nil = false })
+    | Query q ->
+        (* iteration 9b slice: from/where/select over a table class. The
+           range variable is bound to the class type; a table-class value is
+           its row id at runtime but types AS the class, so `e.field` checks
+           against the class's fields exactly like a heap instance. group /
+           order / take / navigation sources are diagnosed as not-yet so the
+           surface is honest about its edge. *)
+        let elem_err () =
+          { typ = TMulti (TScalar "Int"); is_nil = false }
+        in
+        (match q.q_src with
+        | Ast.QNav _ ->
+            Diag.Collector.add collector
+              (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                 ~message:"query over a navigation source is not supported yet (table scans only)" ());
+            elem_err ()
+        | Ast.QTable cn ->
+            if not (StringMap.mem cn syms.classes) then begin
+              Diag.Collector.add collector
+                (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                   ~message:(Printf.sprintf "`from %s in %s`: `%s` is not a declared table class"
+                               q.q_var cn cn) ());
+              elem_err ()
+            end
+            else begin
+              (if q.q_group <> None then
+                 Diag.Collector.add collector
+                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                      ~message:"group-by aggregation is not supported yet" ()));
+              (if q.q_order <> None then
+                 Diag.Collector.add collector
+                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                      ~message:"`order by` is not supported yet" ()));
+              (if q.q_take <> None then
+                 Diag.Collector.add collector
+                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                      ~message:"`take` is not supported yet" ()));
+              let env' = StringMap.add q.q_var (TScalar cn) env in
+              let cenv' = StringMap.add q.q_var (TScalar cn) cenv in
+              List.iter (fun w -> ignore (typecheck_expr env' cenv' w)) q.q_wheres;
+              let sel = typecheck_expr env' cenv' q.q_select in
+              { typ = TMulti sel.typ; is_nil = false }
+            end)
     | DbStub _ -> { typ = TVoid; is_nil = false }
     | Switch (subject, arms) -> typecheck_switch ~want_value:true env cenv subject arms
     | ListLit items ->
@@ -2139,6 +2184,15 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
     walk_expr bound visit body;
     walk_block (StringSet.add ename bound) visit handler
   | DbStub _ -> ()
+  | Query q ->
+    (match q.q_src with QNav e -> walk_expr bound visit e | QTable _ -> ());
+    let b = StringSet.add q.q_var bound in
+    let b = match q.q_group with Some (g, _) -> StringSet.add g b | None -> b in
+    List.iter (walk_expr b visit) q.q_wheres;
+    (match q.q_group with Some (_, k) -> walk_expr b visit k | None -> ());
+    (match q.q_order with Some (k, _) -> walk_expr b visit k | None -> ());
+    (match q.q_take with Some t -> walk_expr b visit t | None -> ());
+    walk_expr b visit q.q_select
   | Switch (subject, arms) ->
       walk_expr bound visit subject;
       List.iter

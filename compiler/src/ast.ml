@@ -279,6 +279,31 @@ and expr_kind =
       ename : string;
       handler : stmt list;
     }
+  (* iteration 9b: a language-integrated query. `from <var> in <source>
+     where <e>* [group <e> by <k> into <g>] [order by <e> [desc]] [take <e>]
+     select <e>` — lowered to a bytecode loop over engine cursor builtins,
+     never SQL text. A table-class value is its row id at runtime, so field
+     access on a range variable reads through the engine. Slice scope today:
+     from/where/order/take/select and group-by aggregation; join is later. *)
+  | Query of query
+
+and query_source =
+  | QTable of string (* a table class by name: `from e in Employee` *)
+  | QNav of expr (* a backlink/multi navigation: `from s in d.staff` *)
+
+and query = {
+  q_var : string;
+  q_src : query_source;
+  q_wheres : expr list;
+  (* group <key_expr> by ... into <gvar>: present iff this is an aggregating
+     query. q_group_key is the whole grouped element (`e`), q_group_by the
+     key, q_gvar the group binding whose `.f` columns feed aggregates. *)
+  q_group : (string * expr) option; (* (gvar, key_expr) *)
+  q_order : (expr * bool) option;    (* (key, desc?) *)
+  q_take : expr option;
+  q_select : expr;
+  q_pos : pos;
+}
 
 (* ---- statements (Task 5) ---------------------------------------------
 
