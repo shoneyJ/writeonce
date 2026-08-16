@@ -3,6 +3,7 @@
 
 # `woc .` manifest builds (wo.toml [build] target)
 /docs/examples/log-watcher/target
+/docs/examples/employee/target
 
 # Rust runtime (crates/rt/): compiled binary + build artifacts
 /crates/rt/target
