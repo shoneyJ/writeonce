@@ -1173,6 +1173,7 @@ let typecheck_program ~file ~(module_of : string -> string)
         (* the new row's id — the one thing an insert produces *)
         Some (TScalar "Int")
     | Query _ -> None (* a query's type is chased only by typecheck_expr *)
+    | Delete _ -> Some (TScalar "Int")
     | Unary _ | Binary _ | DbStub _ ->
         (* Not chased: the arithmetic-ladder `Binary` ops have no reliable
            per-node type in this pass at all (see above); `Unary`/`DbStub`
@@ -1444,6 +1445,15 @@ let typecheck_program ~file ~(module_of : string -> string)
              (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
                 ~message:(Printf.sprintf "unknown type `%s` in insert" class_name) ());
            { typ = TScalar "Int"; is_nil = false })
+    | Delete target ->
+        let tr = typecheck_expr env cenv target in
+        (match (match tr.typ with TRef c -> TScalar c | o -> o) with
+         | TScalar cn when StringMap.mem cn syms.classes -> ()
+         | _ ->
+             Diag.Collector.add collector
+               (Diag.error ~code:query_code ~file ~line:e.pos.line ~col:e.pos.col
+                  ~message:"`delete` takes a table-row value" ()));
+        { typ = TScalar "Int"; is_nil = false }
     | Query q ->
         (* iteration 9b slice: from/where/select over a table class. The
            range variable is bound to the class type; a table-class value is
@@ -2211,6 +2221,7 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
     walk_expr bound visit body;
     walk_block (StringSet.add ename bound) visit handler
   | DbStub _ -> ()
+  | Delete t -> walk_expr bound visit t
   | Query q ->
     (match q.q_src with QNav e -> walk_expr bound visit e | QTable _ -> ());
     let b = StringSet.add q.q_var bound in

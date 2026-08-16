@@ -1121,6 +1121,13 @@ and parse_query_expr (st : state) : Ast.expr =
 and parse_primary (st : state) : Ast.expr =
   match peek st with
   | _ when is_query_trigger st -> parse_query_expr st
+  | Token.Ident "delete" when (match (tok_at st (st.pos + 1)).kind with
+                              | Token.Newline | Token.Semicolon | Token.Eof -> false | _ -> true) ->
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    let target = parse_expr st in
+    { Ast.id; pos; kind = Ast.Delete target }
   | k when is_select_trigger k -> parse_dbstub_expr st
   | k when is_insert_trigger k -> parse_insert_expr st
   | Token.KwSwitch -> parse_switch_expr st
@@ -1898,6 +1905,7 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Insert (cn, fields) ->
     { e with Ast.kind = Ast.Insert (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
+  | Ast.Delete t -> { e with Ast.kind = Ast.Delete (subst_expr consts bound t) }
   | Ast.Query q ->
     (* the range/group vars shadow consts inside the query body *)
     let bound' = StringSet.add q.Ast.q_var bound in

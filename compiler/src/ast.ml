@@ -219,6 +219,10 @@ and expr_kind =
      literal, returns the new row's id (Int), legal in statement and
      expression position both. `select` stays a DbStub until Task 5. *)
   | Insert of string * (string * expr) list
+  (* `delete <row>` (iteration 9b): removes the row a table-class value
+     names; an expression yielding the deleted id (restrict/trap surfaces
+     through the engine like any DB fault, catchable). *)
+  | Delete of expr
   (* haxe-parity Task 2: one `${expr}` interpolation site, produced only
      by the string-interpolation desugar (parser.ml) — never written
      directly by a parse rule the way every other expr_kind is. Its

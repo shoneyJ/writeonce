@@ -789,6 +789,8 @@ let is_table_class (p : pctx) (cid : int) : bool =
   cid >= 0 && cid < Array.length p.p_classes && p.p_classes.(cid).cr_is_table
 
 let b_str_lt = 67
+let b_db_update_field = 62
+let b_db_delete = 63
 let b_db_scan = 64
 let b_db_get_field = 65
 let b_db_probe = 66
@@ -1125,6 +1127,7 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
   | Insert _ -> Some (Scalar "Int")
+  | Delete _ -> Some (Scalar "Int")
   | Query q ->
     let src =
       match q.Ast.q_src with
@@ -1757,6 +1760,41 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
   | Insert (cn, fields) -> emit_insert p f v ~dst e cn fields
+  | Delete target -> (
+    match ty_of_expr p f target with
+    | Some bt -> (
+      match (match unwrap bt with Ref c -> Scalar c | o -> o) with
+      | Scalar cn -> (
+        match class_of_name p cn with
+        | Some cid when is_table_class p cid ->
+          (* reserve dst past the window: in tail position dst == the first
+             window reg, and moving the id into dst would clobber the class
+             id — the disassembly-caught bug *)
+          let outer = f.f_temp in
+          if f.f_temp <= dst then f.f_temp <- dst + 1;
+          let w = alloc_temps p f e.pos 2 in
+          put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p cid)));
+          let save = f.f_temp in
+          emit_expr p f v ~dst:(w + 1) target;
+          f.f_temp <- save;
+          (* keep the id so `delete x` can be used as an expression *)
+          put f (ins_abc op_move dst (w + 1) 0);
+          sync_mask p f v e.id;
+          f.f_cur_line <- e.pos.line;
+          put f (ins_abc op_builtin w w b_db_delete);
+          f.f_temp <- outer
+        | _ ->
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:"`delete` target is not a table row";
+          put f (ins_abx op_loadk dst (const_int p 0)))
+      | _ ->
+        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+          ~message:"`delete` target is not a table row";
+        put f (ins_abx op_loadk dst (const_int p 0)))
+    | None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:"cannot resolve the `delete` target's type";
+      put f (ins_abx op_loadk dst (const_int p 0)))
   | Query q -> emit_query p f v ~dst e q
   | Interp inner -> (
     (* haxe-parity Task 2: the type-directed half of the interpolation
@@ -3646,6 +3684,27 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         | None ->
           err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
             ~message:(Printf.sprintf "assignment into `%s`, which is not a declared class" cn)
+        | Some cid when is_table_class p cid -> (
+          (* iteration 9b: `e.salary = v` where e is a table row updates the
+             engine (DB_UPDATE_FIELD: class, id, field, value) — the row's
+             own indexes are maintained at the choke point *)
+          match field_of p cid fname with
+          | None ->
+            err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
+              ~message:(Printf.sprintf "`%s` has no field `%s`" cn fname)
+          | Some (idx, fty) ->
+            let w = alloc_temps p f target.pos 4 in
+            put f (ins_abx op_loadk w (check_bx p f target.pos "constant" (const_int p cid)));
+            let save = f.f_temp in
+            emit_expr p f v ~dst:(w + 1) base;
+            f.f_temp <- save;
+            put f (ins_abx op_loadk (w + 2) (check_bx p f target.pos "constant" (const_int p idx)));
+            let save = f.f_temp in
+            emit_expr p f v ~dst:(w + 3) ~expected:fty value;
+            f.f_temp <- save;
+            sync_mask p f v s.s_id;
+            f.f_cur_line <- s.s_pos.line;
+            put f (ins_abc op_builtin w w b_db_update_field))
         | Some cid -> (
           match field_of p cid fname with
           | None ->

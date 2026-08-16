@@ -235,6 +235,7 @@ let rec expr_str (e : Ast.expr) : string =
        | Some (g, k) -> Printf.sprintf " group by %s into %s" (expr_str k) g
        | None -> "")
       (expr_str q.Ast.q_select)
+  | Ast.Delete t -> Printf.sprintf "DELETE %s" (expr_str t)
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))

@@ -563,6 +563,7 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   | Ctor (cn, _) -> Some (Scalar cn)
   | Insert _ -> Some (Scalar "Int") (* the new row's id — Copy, nothing to drop *)
   | Query _ -> Some (Multi "Int") (* a query yields a fresh multi of ids — owned *)
+  | Delete _ -> Some (Scalar "Int") (* the deleted id — Copy *)
   | Interp _ -> Some (Scalar "Text") (* an interpolation always produces Text *)
   | DbStub _ -> None
   | Switch (subject, arms) ->
@@ -1180,6 +1181,9 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
   | Try t -> analyze_try ctx e t.body t.ename t.handler
   | DbStub _ ->
     (* trap-capable: the frame needs its drop map here *)
+    record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
+  | Delete t ->
+    read_expr ctx t;
     record_drop ctx ~node:e.id ~pos:e.pos ~kind:DLiveMask ~items:(mask_items (live_holders ctx))
   | Query q ->
     (* iteration 9b: the sub-expressions only READ (engine field-reads copy
