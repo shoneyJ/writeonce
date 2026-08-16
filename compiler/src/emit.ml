@@ -788,6 +788,7 @@ let class_of_name (p : pctx) (n : string) : int option = SM.find_opt n p.p_class
 let is_table_class (p : pctx) (cid : int) : bool =
   cid >= 0 && cid < Array.length p.p_classes && p.p_classes.(cid).cr_is_table
 
+let b_str_lt = 67
 let b_db_scan = 64
 let b_db_get_field = 65
 let b_db_probe = 66
@@ -2567,6 +2568,146 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
     f.f_env <- saved_env;
     (* the scan's id list was this query's own, dropped now *)
     put f (ins_abc op_drop scan 0 0);
+    (* ---- order by (whole-row selection sort) ----------------------------
+       Elements of dst are row ids; the key re-reads a field through the
+       range var. Selection sort is O(n^2) but the result sets here are
+       small and this is KISS by design (no cost planner). Only the
+       whole-row + field-key shape is supported; grouped/projection ordering
+       lands with group-by. *)
+    (match q.Ast.q_order with
+    | Some (key, desc) ->
+      f.f_temp <- body_base;
+      let n = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin n dst b_count);
+      let i = alloc_temp p f e.pos in
+      let j = alloc_temp p f e.pos in
+      let best = alloc_temp p f e.pos in
+      let elem_j = alloc_temp p f e.pos in
+      let elem_b = alloc_temp p f e.pos in
+      let sort_scratch = f.f_temp in
+      put f (ins_abx op_loadk i (check_bx p f e.pos "constant" (const_int p 0)));
+      let oi = here f in (* outer: while i < n *)
+      let oc = alloc_temp p f e.pos in
+      put f (ins_abc op_lt oc i n);
+      let ojz = here f in
+      put f (ins_asbx op_jz oc 0);
+      put f (ins_abc op_move best i 0);
+      let oneA = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneA (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add j i oneA);
+      let ij = here f in (* inner: while j < n *)
+      let ic = alloc_temp p f e.pos in
+      put f (ins_abc op_lt ic j n);
+      let ijz = here f in
+      put f (ins_asbx op_jz ic 0);
+      (* elem_j = multi_get(dst,j); elem_b = multi_get(dst,best) *)
+      let gw = alloc_temps p f e.pos 2 in
+      put f (ins_abc op_move gw dst 0);
+      put f (ins_abc op_move (gw + 1) j 0);
+      put f (ins_abc op_builtin elem_j gw b_multi_get);
+      put f (ins_abc op_move (gw + 1) best 0);
+      put f (ins_abc op_builtin elem_b gw b_multi_get);
+      (* keys: bind range var to elem_j / elem_b, eval key expr *)
+      let saved_env2 = f.f_env in
+      f.f_temp <- sort_scratch;
+      f.f_env <- (q.Ast.q_var, (elem_j, Scalar cn)) :: saved_env2;
+      (* key kind must be read with the range var BOUND — else ty_of_expr of
+         `x.name` sees x unbound, returns None, and a Text key silently falls
+         to the pointer-comparing op_lt (the wrong-order bug) *)
+      let key_is_text =
+        match ty_of_expr p f key with Some t -> field_kind p t = 3 | None -> false
+      in
+      let kj = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:kj key;
+      f.f_env <- (q.Ast.q_var, (elem_b, Scalar cn)) :: saved_env2;
+      let kb = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:kb key;
+      f.f_env <- saved_env2;
+      (* cmp: for asc, kj < kb -> best=j; for desc, kj > kb (== kb < kj). *)
+      let cmp = alloc_temp p f e.pos in
+      let lt a b =
+        if key_is_text then begin
+          let save = f.f_temp in
+          let w = alloc_temps p f e.pos 2 in
+          put f (ins_abc op_move w a 0);
+          put f (ins_abc op_move (w + 1) b 0);
+          put f (ins_abc op_builtin cmp w b_str_lt);
+          f.f_temp <- save
+        end
+        else put f (ins_abc op_lt cmp a b)
+      in
+      if desc then lt kb kj else lt kj kb;
+      let cjz = here f in
+      put f (ins_asbx op_jz cmp 0);
+      put f (ins_abc op_move best j 0);
+      let after = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos cjz after;
+      f.f_temp <- sort_scratch;
+      let oneB = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneB (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add j j oneB);
+      let iback = here f in
+      put f (ins_asbx op_jmp 0 0);
+      patch_jump p f ~file:f.f_file ~pos:e.pos iback ij;
+      let iexit = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos ijz iexit;
+      (* swap dst[i], dst[best]: read both, multi_set both *)
+      f.f_temp <- sort_scratch;
+      let vi = alloc_temp p f e.pos in
+      let vb = alloc_temp p f e.pos in
+      let sw = alloc_temps p f e.pos 3 in
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) i 0);
+      put f (ins_abc op_builtin vi sw b_multi_get);
+      put f (ins_abc op_move (sw + 1) best 0);
+      put f (ins_abc op_builtin vb sw b_multi_get);
+      (* dst[i] = vb *)
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) i 0);
+      put f (ins_abc op_move (sw + 2) vb 0);
+      put f (ins_abc op_builtin sw sw b_multi_set);
+      (* dst[best] = vi *)
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) best 0);
+      put f (ins_abc op_move (sw + 2) vi 0);
+      put f (ins_abc op_builtin sw sw b_multi_set);
+      f.f_temp <- sort_scratch;
+      let oneC = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneC (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add i i oneC);
+      let oback = here f in
+      put f (ins_asbx op_jmp 0 0);
+      patch_jump p f ~file:f.f_file ~pos:e.pos oback oi;
+      let oexit = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos ojz oexit
+    | None -> ());
+    (* ---- take N: slice dst to [0, N) --------------------------------- *)
+    (match q.Ast.q_take with
+    | Some tk ->
+      f.f_temp <- body_base;
+      let nreg = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:nreg tk;
+      (* clamp N to count(dst) so slice never runs past the end *)
+      let cnt = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin cnt dst b_count);
+      let over = alloc_temp p f e.pos in
+      put f (ins_abc op_lt over cnt nreg); (* count < N ? use count *)
+      let jz2 = here f in
+      put f (ins_asbx op_jz over 0);
+      put f (ins_abc op_move nreg cnt 0);
+      let aft = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos jz2 aft;
+      let sw = alloc_temps p f e.pos 3 in
+      let zero = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk zero (check_bx p f e.pos "constant" (const_int p 0)));
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) zero 0);
+      put f (ins_abc op_move (sw + 2) nreg 0);
+      let sliced = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin sliced sw b_slice);
+      put f (ins_abc op_drop dst 0 0); (* the pre-slice multi is discarded *)
+      put f (ins_abc op_move dst sliced 0)
+    | None -> ());
     f.f_temp <- outer
 
 and emit_insert (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (cn : string)

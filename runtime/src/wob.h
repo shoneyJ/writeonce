@@ -317,8 +317,10 @@ enum {
     WO_B_DB_SCAN = 64,
     WO_B_DB_GET_FIELD = 65,
     WO_B_DB_PROBE = 66,
+    WO_B_STR_LT = 67,  /* (a, b) text -> 1 if a < b by content, else 0 (query
+                        * order-by on a Text key; scalars use the LT opcode) */
 };
-#define WO_B_MAX 66u
+#define WO_B_MAX 67u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

@@ -1,0 +1,16 @@
+-- iteration 9b: order by (whole-row selection sort, Text-aware) + take.
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  salary: Int
+  dept: Int
+}
+fn main() {
+  insert Emp { name: "asha", salary: 100, dept: 1 }
+  insert Emp { name: "bram", salary: 300, dept: 1 }
+  insert Emp { name: "dora", salary: 200, dept: 1 }
+  print("salary desc:")
+  for e in from x in Emp order by x.salary desc select x { print(e.name) }
+  print("name asc take 2:")
+  for e in from x in Emp order by x.name take 2 select x { print(e.name) }
+}

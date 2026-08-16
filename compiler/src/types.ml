@@ -1230,9 +1230,14 @@ let typecheck_program ~file ~(module_of : string -> string)
                      { typ = TScalar "Int"; is_nil = false }))
          | _ -> { typ = TScalar "Int"; is_nil = false })
     | Index (base, idx) ->
-        let _ = typecheck_expr env cenv base in
+        let base_res = typecheck_expr env cenv base in
         let _ = typecheck_expr env cenv idx in
-        { typ = TScalar "Int"; is_nil = false }
+        (* `xs[i]` yields the container's element type — a `multi C` indexed
+           is a C (iteration 9b: query results are indexed to pick a row) *)
+        (match base_res.typ with
+         | TMulti et -> { typ = et; is_nil = false }
+         | TMap (_, vt) -> { typ = vt; is_nil = false }
+         | _ -> { typ = TScalar "Int"; is_nil = false })
     | Call (callee, args) ->
         List.iter (fun arg -> ignore (typecheck_expr env cenv arg)) args;
         (match callee.kind with
@@ -1466,13 +1471,15 @@ let typecheck_program ~file ~(module_of : string -> string)
               elem_err ()
             end
             else begin
-              (if q.q_group <> None || q.q_order <> None || q.q_take <> None then
+              (if q.q_group <> None then
                  Diag.Collector.add collector
                    (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
-                      ~message:"group/order/take on a navigation query are not supported yet" ()));
+                      ~message:"group-by on a navigation query is not supported yet" ()));
               let env' = StringMap.add q.q_var (TScalar cn) env in
               let cenv' = StringMap.add q.q_var (TScalar cn) cenv in
               List.iter (fun w -> ignore (typecheck_expr env' cenv' w)) q.q_wheres;
+              (match q.q_order with Some (k, _) -> ignore (typecheck_expr env' cenv' k) | None -> ());
+              (match q.q_take with Some t -> ignore (typecheck_expr env cenv t) | None -> ());
               let sel = typecheck_expr env' cenv' q.q_select in
               { typ = TMulti sel.typ; is_nil = false }
             end
@@ -1489,17 +1496,11 @@ let typecheck_program ~file ~(module_of : string -> string)
                  Diag.Collector.add collector
                    (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
                       ~message:"group-by aggregation is not supported yet" ()));
-              (if q.q_order <> None then
-                 Diag.Collector.add collector
-                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
-                      ~message:"`order by` is not supported yet" ()));
-              (if q.q_take <> None then
-                 Diag.Collector.add collector
-                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
-                      ~message:"`take` is not supported yet" ()));
               let env' = StringMap.add q.q_var (TScalar cn) env in
               let cenv' = StringMap.add q.q_var (TScalar cn) cenv in
               List.iter (fun w -> ignore (typecheck_expr env' cenv' w)) q.q_wheres;
+              (match q.q_order with Some (k, _) -> ignore (typecheck_expr env' cenv' k) | None -> ());
+              (match q.q_take with Some t -> ignore (typecheck_expr env cenv t) | None -> ());
               let sel = typecheck_expr env' cenv' q.q_select in
               { typ = TMulti sel.typ; is_nil = false }
             end)

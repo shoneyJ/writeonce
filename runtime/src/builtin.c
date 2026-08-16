@@ -252,6 +252,10 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         return 0;
     }
+    case WO_B_STR_LT: {
+        R[A] = elem_cmp(WO_K_TEXT, R[B], R[B + 1]) < 0 ? 1 : 0;
+        return 0;
+    }
     case WO_B_TEXT_COPY: { /* nil copies to nil: a `?Text` crosses this boundary
                             * exactly like a Text does */
         if (!R[B]) {

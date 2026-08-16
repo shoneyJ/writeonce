@@ -1054,7 +1054,12 @@ and parse_query_expr (st : state) : Ast.expr =
       Ast.QTable cn
     | _ -> Ast.QNav (parse_expr_no_brace st)
   in
-  let clause name = match peek st with Token.Ident n when n = name -> true | _ -> false in
+  (* clauses may sit on their own lines; skip the separating newlines when
+     looking for the next clause keyword (the query is one expression) *)
+  let clause name =
+    skip_newlines st;
+    match peek st with Token.Ident n when n = name -> true | _ -> false
+  in
   let wheres = ref [] in
   while clause "where" do
     ignore (advance st);
@@ -1087,7 +1092,12 @@ and parse_query_expr (st : state) : Ast.expr =
     end
     else None
   in
-  let take = if clause "take" then (ignore (advance st); Some (parse_expr_no_brace st)) else None in
+  (* `take` is a reserved keyword (KwTake, the param convention), not an
+     Ident — so match the token, not the name *)
+  skip_newlines st;
+  let take =
+    if peek st = Token.KwTake then (ignore (advance st); Some (parse_expr_no_brace st)) else None
+  in
   if not (clause "select") then fail st (peek_pos st) syntax_code "a query must end in `select`";
   ignore (advance st);
   let sel = parse_expr st in
