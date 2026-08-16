@@ -69,6 +69,9 @@ type field_ty =
   | Ref of string
   | Multi of string
   | Map of string * string (* key type, value type: map<K, V> *)
+  | Backlink of string * string (* backlink C.f: the computed inverse of a
+                                    `ref` — NOT a stored column; reading it
+                                    scans C's index on f. Types as multi C. *)
   | Nullable of field_ty   (* ?T wrapper *)
 
 (* Parameter passing convention (spec section 3, rule 2): default is an

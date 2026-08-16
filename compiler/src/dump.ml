@@ -150,6 +150,7 @@ let rec field_ty_str : Ast.field_ty -> string = function
   | Ast.Ref s -> Printf.sprintf "ref %s" s
   | Ast.Multi s -> Printf.sprintf "multi %s" s
   | Ast.Map (k, v) -> Printf.sprintf "map<%s, %s>" k v
+  | Ast.Backlink (c, f) -> Printf.sprintf "backlink %s.%s" c f
   | Ast.Nullable t -> "?" ^ field_ty_str t
 
 let param_str (p : Ast.param) : string = Printf.sprintf "%s%s: %s" (conv_str p.conv) p.name (field_ty_str p.ty)

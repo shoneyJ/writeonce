@@ -355,6 +355,10 @@ type clsrec = {
      class-record tail; the engine builds its runtime indexes from this. *)
   cr_indexes : (bool * int array) list;
   cr_is_table : bool; (* has @table — its instances are row ids (iteration 9b) *)
+  (* backlink fields (iteration 9b): name -> (source class, source field).
+     Virtual — not in cr_fields, no stored column; `d.staff` reads them by
+     probing the source class's index on the source field. *)
+  cr_backlinks : (string * (string * string)) list;
 }
 
 type ifacerec = {
@@ -788,6 +792,32 @@ let b_db_scan = 64
 let b_db_get_field = 65
 let b_db_probe = 66
 
+(* iteration 9b: `d.staff` where staff is `backlink Employee.dept` reads by
+   probing Employee's index on its `dept` column. Resolve to (source cid,
+   index number) — None if the source field is not a declared index (a
+   backlink without a backing index has no efficient read and is rejected). *)
+let backlink_target (p : pctx) (base_cid : int) (fname : string) : (int * int) option =
+  match List.assoc_opt fname p.p_classes.(base_cid).cr_backlinks with
+  | None -> None
+  | Some (src_class, src_field) -> (
+    match class_of_name p src_class with
+    | None -> None
+    | Some scid ->
+      let sc = p.p_classes.(scid) in
+      (* stored column index of the source field *)
+      let col = ref (-1) in
+      Array.iteri (fun i (n, _) -> if n = src_field then col := i) sc.cr_fields;
+      if !col < 0 then None
+      else
+        (* the index whose single column is that field *)
+        let rec find n = function
+          | [] -> None
+          | (_, cols) :: tl ->
+            if Array.length cols = 1 && cols.(0) = !col then Some (scid, n)
+            else find (n + 1) tl
+        in
+        find 0 sc.cr_indexes)
+
 let field_of (p : pctx) (cid : int) (fname : string) : (int * Ast.field_ty) option =
   let fs = p.p_classes.(cid).cr_fields in
   let rec go i = if i >= Array.length fs then None else
@@ -961,12 +991,11 @@ let variant_tag_value (p : pctx) (u : Types.union_info) (vi : Types.variant_info
    `select x` yields the source class (a row id typed as the class);
    `select x.field` yields that field's type; anything else falls back to
    Int (the slice's shapes are these two). *)
-let query_elem_scalar (p : pctx) (_f : fstate) (q : Ast.query) : string =
-  let src_class = match q.Ast.q_src with Ast.QTable cn -> Some cn | Ast.QNav _ -> None in
-  match (q.Ast.q_select.Ast.kind, src_class) with
-  | Ast.Ident v, Some cn when v = q.Ast.q_var -> cn
-  | Ast.Field ({ Ast.kind = Ast.Ident v; _ }, fname), Some cn when v = q.Ast.q_var -> (
-    match class_of_name p cn with
+let query_elem_scalar (p : pctx) (q : Ast.query) ~(src : string) : string =
+  match q.Ast.q_select.Ast.kind with
+  | Ast.Ident v when v = q.Ast.q_var -> src (* select the whole row: element = source class *)
+  | Ast.Field ({ Ast.kind = Ast.Ident v; _ }, fname) when v = q.Ast.q_var -> (
+    match class_of_name p src with
     | Some cid -> (
       match field_of p cid fname with
       | Some (_, ty) -> ( match unwrap ty with Scalar n -> n | _ -> "Int")
@@ -1003,10 +1032,17 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
-      match unwrap bt with
+      (* a `ref C` navigates into C: the target is a table row id *)
+      match (match unwrap bt with Ref c -> Scalar c | other -> other) with
       | Scalar cn -> (
         match class_of_name p cn with
-        | Some cid -> ( match field_of p cid fname with Some (_, t) -> Some t | None -> None)
+        | Some cid -> (
+          match field_of p cid fname with
+          | Some (_, t) -> Some t
+          | None -> (
+            match List.assoc_opt fname p.p_classes.(cid).cr_backlinks with
+            | Some (sc, _) -> Some (Multi sc)
+            | None -> None))
         | None -> None)
       | _ -> None)
     | None -> None)
@@ -1088,7 +1124,14 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
   | Insert _ -> Some (Scalar "Int")
-  | Query q -> Some (Multi (query_elem_scalar p f q))
+  | Query q ->
+    let src =
+      match q.Ast.q_src with
+      | Ast.QTable cn -> cn
+      | Ast.QNav nav -> (
+        match ty_of_expr p f nav with Some t -> (match unwrap t with Multi c -> c | Scalar c -> c | _ -> "") | None -> "")
+    in
+    Some (Multi (query_elem_scalar p q ~src))
   | Interp _ -> Some (Scalar "Text")
   | DbStub _ -> None
   | Switch (subject, arms) -> (
@@ -1379,7 +1422,7 @@ let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
     match name_of (Ast.Scalar e) with
     | Some n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
     | None -> wob_none)
-  | Ast.Ref _ | Ast.Nullable _ -> wob_none
+  | Ast.Ref _ | Ast.Backlink _ | Ast.Nullable _ -> wob_none
 
 let field_elem_meta (p : pctx) (ty : Ast.field_ty) : int =
   match unwrap ty with
@@ -1618,9 +1661,22 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
-      match unwrap bt with
+      match (match unwrap bt with Ref c -> Scalar c | other -> other) with
       | Scalar cn -> (
         match class_of_name p cn with
+        | Some cid when is_table_class p cid && backlink_target p cid fname <> None -> (
+          (* `d.staff`: probe the source class's index for rows referencing
+             this row's id. Window: [class, index, key(=base id)]. *)
+          match backlink_target p cid fname with
+          | Some (scid, ino) ->
+            let b = emit_operand p f v base in
+            let w = alloc_temps p f e.pos 3 in
+            put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p scid)));
+            put f (ins_abx op_loadk (w + 1) (check_bx p f e.pos "constant" (const_int p ino)));
+            put f (ins_abc op_move (w + 2) b 0);
+            sync_mask p f v e.id;
+            put f (ins_abc op_builtin dst w b_db_probe)
+          | None -> ())
         | Some cid -> (
           match field_of p cid fname with
           | Some (idx, _) ->
@@ -2409,14 +2465,22 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
      take/navigation are diagnosed in types.ml, so a written image never
      reaches this with them set. Lowered to an ordinary bytecode loop over
      DB_SCAN's materialized id list — no plan tree, no text. *)
-  let cn = match q.Ast.q_src with Ast.QTable cn -> cn | Ast.QNav _ -> "" in
+  let cn =
+    match q.Ast.q_src with
+    | Ast.QTable cn -> cn
+    | Ast.QNav nav -> (
+      (* the source's element type is the range var's class *)
+      match ty_of_expr p f nav with
+      | Some t -> ( match unwrap t with Multi c -> c | Scalar c -> c | _ -> "")
+      | None -> "")
+  in
   match class_of_name p cn with
   | None ->
     err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
       ~message:(Printf.sprintf "query over `%s`, which is not a declared table class" cn);
     put f (ins_abx op_loadk dst (const_int p 0))
   | Some cid ->
-    let elem_name = query_elem_scalar p f q in
+    let elem_name = query_elem_scalar p q ~src:cn in
     let elem = Scalar elem_name in
     (* a table-class element is a row ID (a scalar), not a heap pointer — so
        the result container is SCALAR-kinded even though the element TYPES as
@@ -2439,8 +2503,16 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
     (* scan -> multi of ids; result multi -> dst *)
     sync_mask p f v e.id;
     f.f_cur_line <- e.pos.line;
-    put f (ins_abx op_loadk scan (check_bx p f e.pos "constant" (const_int p cid)));
-    put f (ins_abc op_builtin scan scan b_db_scan);
+    (match q.Ast.q_src with
+    | Ast.QTable _ ->
+      put f (ins_abx op_loadk scan (check_bx p f e.pos "constant" (const_int p cid)));
+      put f (ins_abc op_builtin scan scan b_db_scan)
+    | Ast.QNav nav ->
+      (* the navigation (a backlink) already yields a multi of source ids *)
+      let save = f.f_temp in
+      f.f_temp <- scan + 1;
+      emit_expr p f v ~dst:scan nav;
+      f.f_temp <- save);
     put f (ins_abc op_builtin dst elem_kind b_multi_new);
     put f (ins_abc op_builtin len scan b_len);
     put f (ins_abx op_loadk idx (check_bx p f e.pos "constant" (const_int p 0)));
@@ -4129,7 +4201,12 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                 | Some key -> Hashtbl.replace record_shape key cid
                 | None -> ());
                 classes :=
-                  (let fnames = List.map (fun (fl : Ast.field) -> fl.Ast.name) c.fields in
+                  (let fnames =
+                     List.filter_map
+                       (fun (fl : Ast.field) ->
+                         match fl.Ast.ty with Ast.Backlink _ -> None | _ -> Some fl.Ast.name)
+                       c.fields
+                   in
                    let col_of n = ref_index_of_name fnames n in
                    let is_indexable (fl : Ast.field) =
                      match Types.wob_kind_of_typ p_syms_for_indexes (Types.typ_of_field_ty (unwrap fl.Ast.ty)) with
@@ -4178,10 +4255,23 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                    | None -> ());
                    { cr_name = c.name; cr_gc = c.is_gc;
                      cr_fields =
-                       Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
+                       Array.of_list
+                         (List.filter_map
+                            (fun (fl : Ast.field) ->
+                              match fl.Ast.ty with
+                              | Ast.Backlink _ -> None (* virtual: no stored column *)
+                              | _ -> Some (fl.Ast.name, fl.Ast.ty))
+                            c.fields);
                      cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods;
                      cr_indexes = table_indexes @ unique_indexes;
-                     cr_is_table = (c.Ast.table <> None) })
+                     cr_is_table = (c.Ast.table <> None);
+                     cr_backlinks =
+                       List.filter_map
+                         (fun (fl : Ast.field) ->
+                           match fl.Ast.ty with
+                           | Ast.Backlink (sc, sf) -> Some (fl.Ast.name, (sc, sf))
+                           | _ -> None)
+                         c.fields })
                   :: !classes
             end
           | Ast.Union (ud : Ast.union_decl) ->
@@ -4202,6 +4292,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                     incr nclasses;
                     classes :=
                       { cr_name = key; cr_gc = false; cr_indexes = []; cr_is_table = false;
+                        cr_backlinks = [];
                         cr_fields = Array.of_list vd.Ast.v_fields;
                         cr_methods = [] }
                       :: !classes
@@ -4245,7 +4336,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
         incr nclasses;
         classes :=
           { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [];
-            cr_indexes = []; cr_is_table = false }
+            cr_indexes = []; cr_is_table = false; cr_backlinks = [] }
           :: !classes
       end)
     Types.predeclared_records;

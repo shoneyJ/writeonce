@@ -356,6 +356,12 @@ let parse_field_ty (st : state) : Ast.field_ty =
     | Token.Ident "multi" ->
         ignore (advance st);
         Ast.Multi (expect_ident st "multi target type")
+    | Token.Ident "backlink" ->
+        ignore (advance st);
+        let cls = expect_ident st "backlink source class" in
+        expect st Token.Dot "'.'";
+        let fld = expect_ident st "backlink source field" in
+        Ast.Backlink (cls, fld)
     | Token.Ident "map" ->
         ignore (advance st);
         expect st Token.Lt "'<'";

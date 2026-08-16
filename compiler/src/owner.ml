@@ -439,6 +439,7 @@ let oclass_of (ctx : ctx) (ft : Ast.field_ty) : oclass =
       | Some u -> if u.Types.u_has_payload then Owned else Copy
       | None -> Copy (* unknown type: WO-E225 already reported by types.ml *))
   | Ref _ -> Copy
+  | Backlink _ -> Copy (* a virtual collection of row ids read on demand *)
   | Multi _ | Map _ -> Owned
   | Nullable _ -> Copy (* unreachable: unwrapped above *)
 
