@@ -62,6 +62,7 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
 | 13 | [Compile-time metaprogramming](13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` — the compiler generates per-type code from the class-table metadata; generic capabilities within principle 13, no reflection |
+| 14 | [skillhost host workload](14-skillhost-host-workload.md) | a host-shaped driving workload (writeonce port of skillhost) that names the runtime gaps it exposes: bounded/killable subprocess, stdin/stdout transport, fs metadata, and FFI-vs-out-of-process model driver — each a candidate iteration |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable
