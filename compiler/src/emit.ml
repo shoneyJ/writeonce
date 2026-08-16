@@ -1426,7 +1426,8 @@ let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
     match name_of (Ast.Scalar e) with
     | Some n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
     | None -> wob_none)
-  | Ast.Ref _ | Ast.Backlink _ | Ast.Nullable _ -> wob_none
+  | Ast.Ref n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
+  | Ast.Backlink _ | Ast.Nullable _ -> wob_none
 
 let field_elem_meta (p : pctx) (ty : Ast.field_ty) : int =
   match unwrap ty with

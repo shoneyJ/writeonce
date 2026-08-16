@@ -125,6 +125,9 @@ enum {
        raised by the engine at the row choke point, catchable like any
        trap (the employee sample's SEED-DUP line) */
     WO_T_UNIQUE = 10,
+    /* iteration 9b: deleting a row still referenced by a `ref` traps here
+       (restrict) — the employee sample's DROP-of-a-department-with-staff */
+    WO_T_FK = 11,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */

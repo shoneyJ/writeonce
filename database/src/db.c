@@ -57,6 +57,12 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_DB_DELETE: {
         uint32_t cid = (uint32_t)R[B];
         uint64_t id = R[B + 1];
+        /* FK restrict: refuse if another row still references this one
+           (iteration 9b) — nothing is removed, the statement traps */
+        if (wo_row_has_referrers(db, cid, id)) {
+            *msg = "row is still referenced (restrict)";
+            return WO_T_FK;
+        }
         if (wo_row_remove(db, cid, id) != 0) {
             *msg = "no such row";
             return WO_T_DB;

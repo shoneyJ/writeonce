@@ -150,6 +150,14 @@ int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
  * it. 0 ok, -1 no such row. */
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
 
+/* iteration 9b FK restrict: 1 if some row in some class holds a non-nullable
+ * `ref` to [class_id] equal to [id] — i.e. deleting this row would dangle a
+ * reference. The compiler records a ref field's target class in the class
+ * table's field_class metadata; this scans those columns. Correctness-first
+ * (a full scan of referencing tables); the backlink index is the later
+ * optimization the spec records. */
+int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id);
+
 /* Update one field in place (iteration 9 Task 5): encode the VM value,
  * swap it into the slot, keep every index containing that column honest —
  * remove-old/add-new with the unique re-check running BEFORE anything

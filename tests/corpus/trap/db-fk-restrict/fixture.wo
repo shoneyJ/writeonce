@@ -1,0 +1,18 @@
+-- iteration 9b: deleting a row a `ref` still points at traps WO_T_FK
+-- (restrict). Uncaught here: the trap code (11) is the assertion.
+@table(name: "dept", index: [name])
+class Dept {
+  name: Text
+  staff: backlink Emp.dept
+}
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  dept: ref Dept
+}
+fn main() {
+  let d = insert Dept { name: "eng" }
+  insert Emp { name: "asha", dept: d }
+  let ds = from x in Dept where x.name == "eng" take 1 select x
+  delete ds[0]
+}
