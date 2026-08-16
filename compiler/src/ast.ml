@@ -69,6 +69,9 @@ type field_ty =
   | Ref of string
   | Multi of string
   | Map of string * string (* key type, value type: map<K, V> *)
+  | Backlink of string * string (* backlink C.f: the computed inverse of a
+                                    `ref` — NOT a stored column; reading it
+                                    scans C's index on f. Types as multi C. *)
   | Nullable of field_ty   (* ?T wrapper *)
 
 (* Parameter passing convention (spec section 3, rule 2): default is an
@@ -216,6 +219,10 @@ and expr_kind =
      literal, returns the new row's id (Int), legal in statement and
      expression position both. `select` stays a DbStub until Task 5. *)
   | Insert of string * (string * expr) list
+  (* `delete <row>` (iteration 9b): removes the row a table-class value
+     names; an expression yielding the deleted id (restrict/trap surfaces
+     through the engine like any DB fault, catchable). *)
+  | Delete of expr
   (* haxe-parity Task 2: one `${expr}` interpolation site, produced only
      by the string-interpolation desugar (parser.ml) — never written
      directly by a parse rule the way every other expr_kind is. Its
@@ -279,6 +286,31 @@ and expr_kind =
       ename : string;
       handler : stmt list;
     }
+  (* iteration 9b: a language-integrated query. `from <var> in <source>
+     where <e>* [group <e> by <k> into <g>] [order by <e> [desc]] [take <e>]
+     select <e>` — lowered to a bytecode loop over engine cursor builtins,
+     never SQL text. A table-class value is its row id at runtime, so field
+     access on a range variable reads through the engine. Slice scope today:
+     from/where/order/take/select and group-by aggregation; join is later. *)
+  | Query of query
+
+and query_source =
+  | QTable of string (* a table class by name: `from e in Employee` *)
+  | QNav of expr (* a backlink/multi navigation: `from s in d.staff` *)
+
+and query = {
+  q_var : string;
+  q_src : query_source;
+  q_wheres : expr list;
+  (* group <key_expr> by ... into <gvar>: present iff this is an aggregating
+     query. q_group_key is the whole grouped element (`e`), q_group_by the
+     key, q_gvar the group binding whose `.f` columns feed aggregates. *)
+  q_group : (string * expr) option; (* (gvar, key_expr) *)
+  q_order : (expr * bool) option;    (* (key, desc?) *)
+  q_take : expr option;
+  q_select : expr;
+  q_pos : pos;
+}
 
 (* ---- statements (Task 5) ---------------------------------------------
 

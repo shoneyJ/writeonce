@@ -50,6 +50,11 @@ wovm-test:
 # pass; the corpus below gates the individual behaviors underneath it.
 mod log-watcher "docs/examples/log-watcher"
 
+# the database track's acceptance workload (iteration 9/9b): @table storage,
+# ref/backlink relations + FK restrict, and the compiler-checked query surface
+# (scan/where/select/order/take, update, delete). `just employee` runs it.
+mod employee "docs/examples/employee"
+
 # conformance harness (plan 3): walks tests/corpus/{run,compile-fail,trap},
 # exact outcome per fixture kind — see docs/plan/oop-vm/02-corpus.md.
 # Fails loudly (and names the recipe to run) if woc or wovm isn't built.

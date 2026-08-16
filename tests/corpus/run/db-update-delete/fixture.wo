@@ -1,0 +1,19 @@
+-- iteration 9b: update-through-row (e.f = v -> DB_UPDATE_FIELD) and the
+-- delete statement (delete <row> -> DB_DELETE), both via the choke point.
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  salary: Int
+  dept: Int
+}
+fn main() {
+  insert Emp { name: "asha", salary: 100, dept: 1 }
+  insert Emp { name: "bram", salary: 200, dept: 1 }
+  for e in from x in Emp select x { e.salary = e.salary + 50 }
+  print("after raise:")
+  for e in from x in Emp order by x.name select x { print("${e.name} ${e.salary}") }
+  let gone = from x in Emp where x.name == "asha" take 1 select x
+  delete gone[0]
+  print("after delete:")
+  for e in from x in Emp select x { print(e.name) }
+}

@@ -48,19 +48,34 @@ fn seed() -> Int {
   return 0;
 }
 
--- One GROUP BY after another: group-and-reduce lowers to a single hash pass
--- (no group objects), avg/min/max are ?Int because an empty group is data.
+-- Per-department aggregates. The group-by SYNTAX
+--   from e in Employee group e by e.dept into g order by avg(g.salary) desc
+--   select { dept: g.key.name, headcount: count(g), avg_salary: avg(g.salary), ... }
+-- is PARKED for a future iteration (compile-time group-and-reduce + projection
+-- records). Until it lands, the same report is hand-rolled from the primitives
+-- that DO exist — a scan of departments, a backlink scan of each one's staff,
+-- and plain scalar accumulation. Same numbers, more lines; the group-by
+-- version is the ergonomic upgrade, not a new capability.
 fn report() -> Int {
-  let rows = from e in Employee
-             group e by e.dept into g
-             order by avg(g.salary) desc
-             select { dept: g.key.name, headcount: count(g),
-                      avg_salary: avg(g.salary), min_salary: min(g.salary),
-                      max_salary: max(g.salary) };
-  for r in rows {
-    print("DEPT ${r.dept} headcount=${r.headcount} avg=${r.avg_salary} min=${r.min_salary} max=${r.max_salary}");
+  let payroll = 0;
+  for d in from x in Department order by x.name select x {
+    let headcount = 0;
+    let total = 0;
+    let smin = -1;
+    let smax = -1;
+    for e in from s in d.staff select s {
+      headcount = headcount + 1;
+      total = total + e.salary;
+      payroll = payroll + e.salary;
+      if smin == -1 or e.salary < smin { smin = e.salary; }
+      if smax == -1 or e.salary > smax { smax = e.salary; }
+    }
+    if headcount == 0 {
+      print("DEPT ${d.name} headcount=0 avg=nil min=nil max=nil");
+    } else {
+      print("DEPT ${d.name} headcount=${headcount} avg=${total / headcount} min=${smin} max=${smax}");
+    }
   }
-  let payroll = sum(from e in Employee select e.salary);
   print("PAYROLL ${payroll}");
   return 0;
 }

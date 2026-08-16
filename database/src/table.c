@@ -610,6 +610,12 @@ void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
     db_val_free(kind, v);
 }
 
+uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
+                          int *ok, const char **msg) {
+    (void)db;
+    return db_val_decode(rt, kind, engine_val, ok, msg);
+}
+
 int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                         uint64_t vm_val, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
@@ -694,6 +700,28 @@ int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t fiel
     }
     db_val_free(c->kinds[field], old);
     if (err_kind) *err_kind = DB_ERR_NONE;
+    return 0;
+}
+
+int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id) {
+    if (!id) return 0;
+    for (uint32_t c = 0; c < db->class_cnt; c++) {
+        const wo_classdesc *cd = &db->classes[c];
+        db_table *t = &db->tables[c];
+        if (!t->row_size || !cd->field_class) continue;
+        for (uint32_t fld = 0; fld < cd->field_cnt; fld++) {
+            /* a scalar column whose recorded field_class is our target is a
+               `ref` to it (WOB_NONE / JSON_RAW / NIL_SCALAR are not class ids) */
+            if (cd->kinds[fld] != WO_K_SCALAR || cd->field_class[fld] != class_id) continue;
+            uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
+            for (uint32_t g = 0; g < total; g++) {
+                if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
+                db_row *r = (db_row *)(t->slabs[g / DB_SLAB_ROWS] +
+                                       (size_t)(g % DB_SLAB_ROWS) * t->row_size);
+                if (r->slots[fld] == id) return 1;
+            }
+        }
+    }
     return 0;
 }
 

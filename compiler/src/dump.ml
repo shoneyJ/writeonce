@@ -150,6 +150,7 @@ let rec field_ty_str : Ast.field_ty -> string = function
   | Ast.Ref s -> Printf.sprintf "ref %s" s
   | Ast.Multi s -> Printf.sprintf "multi %s" s
   | Ast.Map (k, v) -> Printf.sprintf "map<%s, %s>" k v
+  | Ast.Backlink (c, f) -> Printf.sprintf "backlink %s.%s" c f
   | Ast.Nullable t -> "?" ^ field_ty_str t
 
 let param_str (p : Ast.param) : string = Printf.sprintf "%s%s: %s" (conv_str p.conv) p.name (field_ty_str p.ty)
@@ -226,6 +227,15 @@ let rec expr_str (e : Ast.expr) : string =
     Printf.sprintf "INSERT %s { %s }" name
       (String.concat ", "
          (List.map (fun (fname, fval) -> Printf.sprintf "%s: %s" fname (expr_str fval)) fields))
+  | Ast.Query q ->
+    let src = match q.Ast.q_src with Ast.QTable cn -> cn | Ast.QNav e -> expr_str e in
+    Printf.sprintf "QUERY from %s in %s%s%s select %s" q.Ast.q_var src
+      (String.concat "" (List.map (fun w -> " where " ^ expr_str w) q.Ast.q_wheres))
+      (match q.Ast.q_group with
+       | Some (g, k) -> Printf.sprintf " group by %s into %s" (expr_str k) g
+       | None -> "")
+      (expr_str q.Ast.q_select)
+  | Ast.Delete t -> Printf.sprintf "DELETE %s" (expr_str t)
   | Ast.DbStub toks -> Printf.sprintf "DB_STUB(%s)" (dbstub_tokens_str toks)
   | Ast.Interp inner -> Printf.sprintf "INTERP(%s)" (expr_str inner)
   | Ast.ListLit items -> Printf.sprintf "[%s]" (String.concat ", " (List.map expr_str items))

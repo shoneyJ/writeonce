@@ -306,6 +306,7 @@ let rec has_recursive_structure (cls : class_info) : bool =
     | Ast.Ref name -> name = cls.name
     | Ast.Multi name -> name = cls.name  (* multi Self *)
     | Ast.Map (k, v) -> k = cls.name || v = cls.name  (* map<_, Self> / map<Self, _> *)
+    | Ast.Backlink _ -> false
     | Ast.Nullable inner -> has_recursive_structure_type inner cls.name
   ) cls.fields
 
@@ -315,6 +316,7 @@ and has_recursive_structure_type (ty : Ast.field_ty) (cls_name : string) : bool 
   | Ast.Ref name -> name = cls_name
   | Ast.Multi name -> name = cls_name
   | Ast.Map (k, v) -> k = cls_name || v = cls_name
+  | Ast.Backlink _ -> false (* a computed inverse holds no owned structure *)
   | Ast.Nullable inner -> has_recursive_structure_type inner cls_name
 
 (* @unique field -> persistent identity (plan's "When NOT to emit": a
@@ -363,6 +365,7 @@ let rec typ_of_field_ty (ft : field_ty) : typ =
   | Ref name -> TRef name
   | Multi inner_name -> TMulti (TScalar inner_name)
   | Map (k_name, v_name) -> TMap (TScalar k_name, TScalar v_name)
+  | Backlink (c, _) -> TMulti (TScalar c) (* reads as a collection of C *)
   | Nullable inner -> TNullable (typ_of_field_ty inner)
 
 (* wob_kind_of_typ: maps internal typ to .wob field kind *)
@@ -412,6 +415,7 @@ let unknown_fn_code = Diag.types_prefix ^ "04"
 let unsatisfied_interface_code = Diag.types_prefix ^ "05"
 let incomplete_ctor_code = Diag.types_prefix ^ "06"
 let unknown_type_code = Diag.types_prefix ^ "07"
+let query_code = Diag.types_prefix ^ "50" (* WO-E250: query surface (iteration 9b) *)
 let non_exhaustive_switch_code = Diag.types_prefix ^ "08"
 let invalid_builtin_code = Diag.types_prefix ^ "09"
 let module_not_imported_code = Diag.types_prefix ^ "10"
@@ -632,7 +636,7 @@ let rec scalar_name_of (ft : field_ty) : string option =
   match ft with
   | Scalar name -> Some name
   | Nullable inner -> scalar_name_of inner
-  | Ref _ | Multi _ | Map _ -> None
+  | Ref _ | Multi _ | Map _ | Backlink _ -> None
 
 (* Checked once per field declaration (not at every access/use site), so
    the diagnostic lands at the field's own declaration position and
@@ -1168,6 +1172,8 @@ let typecheck_program ~file ~(module_of : string -> string)
     | Insert _ ->
         (* the new row's id — the one thing an insert produces *)
         Some (TScalar "Int")
+    | Query _ -> None (* a query's type is chased only by typecheck_expr *)
+    | Delete _ -> Some (TScalar "Int")
     | Unary _ | Binary _ | DbStub _ ->
         (* Not chased: the arithmetic-ladder `Binary` ops have no reliable
            per-node type in this pass at all (see above); `Unary`/`DbStub`
@@ -1201,7 +1207,7 @@ let typecheck_program ~file ~(module_of : string -> string)
          with Not_found -> { typ = TScalar "Int"; is_nil = false })
     | Field (base, field_name) ->
         let base_res = typecheck_expr env cenv base in
-        (match base_res.typ with
+        (match (match base_res.typ with TRef c -> TScalar c | other -> other) with
          | TScalar class_name ->
              (* Only a *declared* class can be checked for a missing field.
                 typecheck_expr falls back to `TScalar "Int"` for everything
@@ -1225,9 +1231,14 @@ let typecheck_program ~file ~(module_of : string -> string)
                      { typ = TScalar "Int"; is_nil = false }))
          | _ -> { typ = TScalar "Int"; is_nil = false })
     | Index (base, idx) ->
-        let _ = typecheck_expr env cenv base in
+        let base_res = typecheck_expr env cenv base in
         let _ = typecheck_expr env cenv idx in
-        { typ = TScalar "Int"; is_nil = false }
+        (* `xs[i]` yields the container's element type — a `multi C` indexed
+           is a C (iteration 9b: query results are indexed to pick a row) *)
+        (match base_res.typ with
+         | TMulti et -> { typ = et; is_nil = false }
+         | TMap (_, vt) -> { typ = vt; is_nil = false }
+         | _ -> { typ = TScalar "Int"; is_nil = false })
     | Call (callee, args) ->
         List.iter (fun arg -> ignore (typecheck_expr env cenv arg)) args;
         (match callee.kind with
@@ -1394,7 +1405,8 @@ let typecheck_program ~file ~(module_of : string -> string)
               the zero word NEW already leaves there). Everything else
               stays WO-E206, classes and records alike. *)
            let omittable (default : default_expr option) (fty : field_ty) : bool =
-             Option.is_some default || (match fty with Nullable _ -> true | _ -> false)
+             Option.is_some default
+             || (match fty with Nullable _ | Backlink _ -> true | _ -> false)
            in
            List.iter (fun (fname, fty, fdefault, _) ->
              if not (List.mem fname provided) && not (omittable fdefault fty) then
@@ -1418,7 +1430,8 @@ let typecheck_program ~file ~(module_of : string -> string)
            let cls = StringMap.find class_name syms.classes in
            let provided = List.map (fun (n, _) -> n) fields in
            let omittable (default : default_expr option) (fty : field_ty) : bool =
-             Option.is_some default || (match fty with Nullable _ -> true | _ -> false)
+             Option.is_some default
+             || (match fty with Nullable _ | Backlink _ -> true | _ -> false)
            in
            List.iter (fun (fname, fty, fdefault, _) ->
              if not (List.mem fname provided) && not (omittable fdefault fty) then
@@ -1432,6 +1445,75 @@ let typecheck_program ~file ~(module_of : string -> string)
              (Diag.error ~code:unknown_type_code ~file ~line:e.pos.line ~col:e.pos.col
                 ~message:(Printf.sprintf "unknown type `%s` in insert" class_name) ());
            { typ = TScalar "Int"; is_nil = false })
+    | Delete target ->
+        let tr = typecheck_expr env cenv target in
+        (match (match tr.typ with TRef c -> TScalar c | o -> o) with
+         | TScalar cn when StringMap.mem cn syms.classes -> ()
+         | _ ->
+             Diag.Collector.add collector
+               (Diag.error ~code:query_code ~file ~line:e.pos.line ~col:e.pos.col
+                  ~message:"`delete` takes a table-row value" ()));
+        { typ = TScalar "Int"; is_nil = false }
+    | Query q ->
+        (* iteration 9b slice: from/where/select over a table class. The
+           range variable is bound to the class type; a table-class value is
+           its row id at runtime but types AS the class, so `e.field` checks
+           against the class's fields exactly like a heap instance. group /
+           order / take / navigation sources are diagnosed as not-yet so the
+           surface is honest about its edge. *)
+        let elem_err () =
+          { typ = TMulti (TScalar "Int"); is_nil = false }
+        in
+        (match q.q_src with
+        | Ast.QNav nav ->
+            (* `from s in d.staff`: the navigation yields `multi C`, so the
+               range var is a C. Reuse the QTable body by resolving C. *)
+            let nav_res = typecheck_expr env cenv nav in
+            let cn =
+              match nav_res.typ with
+              | TMulti (TScalar c) -> c
+              | _ -> ""
+            in
+            if not (StringMap.mem cn syms.classes) then begin
+              Diag.Collector.add collector
+                (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                   ~message:"query navigation source must be a `backlink`/`multi` of a table class" ());
+              elem_err ()
+            end
+            else begin
+              (if q.q_group <> None then
+                 Diag.Collector.add collector
+                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                      ~message:"group-by on a navigation query is not supported yet" ()));
+              let env' = StringMap.add q.q_var (TScalar cn) env in
+              let cenv' = StringMap.add q.q_var (TScalar cn) cenv in
+              List.iter (fun w -> ignore (typecheck_expr env' cenv' w)) q.q_wheres;
+              (match q.q_order with Some (k, _) -> ignore (typecheck_expr env' cenv' k) | None -> ());
+              (match q.q_take with Some t -> ignore (typecheck_expr env cenv t) | None -> ());
+              let sel = typecheck_expr env' cenv' q.q_select in
+              { typ = TMulti sel.typ; is_nil = false }
+            end
+        | Ast.QTable cn ->
+            if not (StringMap.mem cn syms.classes) then begin
+              Diag.Collector.add collector
+                (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                   ~message:(Printf.sprintf "`from %s in %s`: `%s` is not a declared table class"
+                               q.q_var cn cn) ());
+              elem_err ()
+            end
+            else begin
+              (if q.q_group <> None then
+                 Diag.Collector.add collector
+                   (Diag.error ~code:query_code ~file ~line:q.q_pos.line ~col:q.q_pos.col
+                      ~message:"group-by aggregation is not supported yet" ()));
+              let env' = StringMap.add q.q_var (TScalar cn) env in
+              let cenv' = StringMap.add q.q_var (TScalar cn) cenv in
+              List.iter (fun w -> ignore (typecheck_expr env' cenv' w)) q.q_wheres;
+              (match q.q_order with Some (k, _) -> ignore (typecheck_expr env' cenv' k) | None -> ());
+              (match q.q_take with Some t -> ignore (typecheck_expr env cenv t) | None -> ());
+              let sel = typecheck_expr env' cenv' q.q_select in
+              { typ = TMulti sel.typ; is_nil = false }
+            end)
     | DbStub _ -> { typ = TVoid; is_nil = false }
     | Switch (subject, arms) -> typecheck_switch ~want_value:true env cenv subject arms
     | ListLit items ->
@@ -2139,6 +2221,16 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
     walk_expr bound visit body;
     walk_block (StringSet.add ename bound) visit handler
   | DbStub _ -> ()
+  | Delete t -> walk_expr bound visit t
+  | Query q ->
+    (match q.q_src with QNav e -> walk_expr bound visit e | QTable _ -> ());
+    let b = StringSet.add q.q_var bound in
+    let b = match q.q_group with Some (g, _) -> StringSet.add g b | None -> b in
+    List.iter (walk_expr b visit) q.q_wheres;
+    (match q.q_group with Some (_, k) -> walk_expr b visit k | None -> ());
+    (match q.q_order with Some (k, _) -> walk_expr b visit k | None -> ());
+    (match q.q_take with Some t -> walk_expr b visit t | None -> ());
+    walk_expr b visit q.q_select
   | Switch (subject, arms) ->
       walk_expr bound visit subject;
       List.iter
@@ -2398,6 +2490,7 @@ let rec field_ty_str (ft : field_ty) : string =
   | Ref s -> "ref " ^ s
   | Multi s -> "multi " ^ s
   | Map (k, v) -> "map<" ^ k ^ ", " ^ v ^ ">"
+  | Backlink (c, f) -> "backlink " ^ c ^ "." ^ f
   | Nullable t -> "?" ^ field_ty_str t
 
 let dump_symbols (syms : symbols) : string =

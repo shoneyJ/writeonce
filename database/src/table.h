@@ -150,6 +150,14 @@ int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
  * it. 0 ok, -1 no such row. */
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
 
+/* iteration 9b FK restrict: 1 if some row in some class holds a non-nullable
+ * `ref` to [class_id] equal to [id] — i.e. deleting this row would dangle a
+ * reference. The compiler records a ref field's target class in the class
+ * table's field_class metadata; this scans those columns. Correctness-first
+ * (a full scan of referencing tables); the backlink index is the later
+ * optimization the spec records. */
+int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id);
+
 /* Update one field in place (iteration 9 Task 5): encode the VM value,
  * swap it into the slot, keep every index containing that column honest —
  * remove-old/add-new with the unique re-check running BEFORE anything
@@ -173,6 +181,11 @@ db_row *wo_row_create_raw(wo_db *db, uint32_t class_id, uint64_t id);
 /* Engine-internal: free one engine-encoded slot value of [kind] (wal.c's
  * decode error paths). */
 void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v);
+
+/* Decode one engine slot value to a FRESH VM value in [rt] (the out-gate:
+ * always a copy). The query builtins' field reads go through this. */
+uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
+                          int *ok, const char **msg);
 
 /* Engine-internal, replay only: after wal.c fills a raw row's slots, this
  * runs the index maintenance the normal insert runs inline — including the

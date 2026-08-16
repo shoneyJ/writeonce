@@ -356,6 +356,12 @@ let parse_field_ty (st : state) : Ast.field_ty =
     | Token.Ident "multi" ->
         ignore (advance st);
         Ast.Multi (expect_ident st "multi target type")
+    | Token.Ident "backlink" ->
+        ignore (advance st);
+        let cls = expect_ident st "backlink source class" in
+        expect st Token.Dot "'.'";
+        let fld = expect_ident st "backlink source field" in
+        Ast.Backlink (cls, fld)
     | Token.Ident "map" ->
         ignore (advance st);
         expect st Token.Lt "'<'";
@@ -1022,8 +1028,106 @@ and parse_insert_expr (st : state) : Ast.expr =
   | Ast.Ctor (cn, fields) -> { lit with Ast.pos; kind = Ast.Insert (cn, fields) }
   | _ -> lit (* unreachable: parse_ctor_literal only builds Ctor *))
 
+and is_query_trigger (st : state) : bool =
+  (* `from <ident> in` — positional, so `from` stays a usable identifier
+     everywhere else (same discipline as insert/select) *)
+  (match peek st with Token.Ident "from" -> true | _ -> false)
+  && (match (tok_at st (st.pos + 1)).kind with Token.Ident _ -> true | _ -> false)
+  && (tok_at st (st.pos + 2)).kind = Token.KwIn
+
+and parse_query_expr (st : state) : Ast.expr =
+  let pos = peek_pos st in
+  let id = fresh_id st in
+  ignore (advance st) (* from *);
+  let var = expect_ident st "query range variable" in
+  expect st Token.KwIn "`in`";
+  (* source: a bare class name is a table scan; any other expression is a
+     navigation (`d.staff`). One token of lookahead: Ident not followed by a
+     `.`/`(`/`[` and sitting where a clause keyword follows is a table name. *)
+  let src =
+    match peek st with
+    | Token.Ident cn
+      when (match (tok_at st (st.pos + 1)).kind with
+           | Token.Dot | Token.LParen | Token.LBracket -> false
+           | _ -> true) ->
+      ignore (advance st);
+      Ast.QTable cn
+    | _ -> Ast.QNav (parse_expr_no_brace st)
+  in
+  (* clauses may sit on their own lines; skip the separating newlines when
+     looking for the next clause keyword (the query is one expression) *)
+  let clause name =
+    skip_newlines st;
+    match peek st with Token.Ident n when n = name -> true | _ -> false
+  in
+  let wheres = ref [] in
+  while clause "where" do
+    ignore (advance st);
+    wheres := parse_expr_no_brace st :: !wheres
+  done;
+  let group =
+    if clause "group" then begin
+      ignore (advance st);
+      let key_elem = parse_expr_no_brace st in
+      ignore key_elem (* the grouped element is the range var; `group e by k` *);
+      if not (clause "by") then fail st (peek_pos st) syntax_code "expected `by` in a group clause";
+      ignore (advance st);
+      let key = parse_expr_no_brace st in
+      if not (clause "into") then fail st (peek_pos st) syntax_code "expected `into` in a group clause";
+      ignore (advance st);
+      let gvar = expect_ident st "group variable" in
+      Some (gvar, key)
+    end
+    else None
+  in
+  let order =
+    if clause "order" then begin
+      ignore (advance st);
+      if not (clause "by") then fail st (peek_pos st) syntax_code "expected `by` after `order`";
+      ignore (advance st);
+      let key = parse_expr_no_brace st in
+      let desc = clause "desc" in
+      if desc then ignore (advance st);
+      Some (key, desc)
+    end
+    else None
+  in
+  (* `take` is a reserved keyword (KwTake, the param convention), not an
+     Ident — so match the token, not the name *)
+  skip_newlines st;
+  let take =
+    if peek st = Token.KwTake then (ignore (advance st); Some (parse_expr_no_brace st)) else None
+  in
+  if not (clause "select") then fail st (peek_pos st) syntax_code "a query must end in `select`";
+  ignore (advance st);
+  let sel = parse_expr st in
+  {
+    Ast.id;
+    pos;
+    kind =
+      Ast.Query
+        {
+          Ast.q_var = var;
+          q_src = src;
+          q_wheres = List.rev !wheres;
+          q_group = group;
+          q_order = order;
+          q_take = take;
+          q_select = sel;
+          q_pos = pos;
+        };
+  }
+
 and parse_primary (st : state) : Ast.expr =
   match peek st with
+  | _ when is_query_trigger st -> parse_query_expr st
+  | Token.Ident "delete" when (match (tok_at st (st.pos + 1)).kind with
+                              | Token.Newline | Token.Semicolon | Token.Eof -> false | _ -> true) ->
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    let target = parse_expr st in
+    { Ast.id; pos; kind = Ast.Delete target }
   | k when is_select_trigger k -> parse_dbstub_expr st
   | k when is_insert_trigger k -> parse_insert_expr st
   | Token.KwSwitch -> parse_switch_expr st
@@ -1801,6 +1905,21 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Insert (cn, fields) ->
     { e with Ast.kind = Ast.Insert (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
+  | Ast.Delete t -> { e with Ast.kind = Ast.Delete (subst_expr consts bound t) }
+  | Ast.Query q ->
+    (* the range/group vars shadow consts inside the query body *)
+    let bound' = StringSet.add q.Ast.q_var bound in
+    let bound' = match q.Ast.q_group with Some (g, _) -> StringSet.add g bound' | None -> bound' in
+    let sub = subst_expr consts bound' in
+    { e with Ast.kind = Ast.Query {
+        q with Ast.q_src = (match q.Ast.q_src with
+                            | Ast.QTable cn -> Ast.QTable cn
+                            | Ast.QNav e2 -> Ast.QNav (subst_expr consts bound e2));
+               q_wheres = List.map sub q.Ast.q_wheres;
+               q_group = (match q.Ast.q_group with Some (g, k) -> Some (g, sub k) | None -> None);
+               q_order = (match q.Ast.q_order with Some (k, d) -> Some (sub k, d) | None -> None);
+               q_take = (match q.Ast.q_take with Some t -> Some (sub t) | None -> None);
+               q_select = sub q.Ast.q_select } }
   | Ast.Interp inner -> { e with Ast.kind = Ast.Interp (subst_expr consts bound inner) }
   | Ast.ListLit items -> { e with Ast.kind = Ast.ListLit (List.map (subst_expr consts bound) items) }
   | Ast.MapLit | Ast.NilLit -> e
