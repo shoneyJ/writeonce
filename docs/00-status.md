@@ -374,13 +374,14 @@ log-watcher proof.
 | ⬜     | 15a–15e MCP over streamable HTTP                          | [15](plan/15-mcp-streamable-http.md)                                                                          | 15e needs 13c + 09d                                    |
 | ⬜     | 16c–16f typed columns, lossless resync, restore, SCRAM    | [16](plan/16-postgres-mirror.md)                                                                              |                                                        |
 
-### Frontend — parked
+### Frontend — removed as stale (2026-08-17)
 
-| Status | Phase                            | Doc                                                                 |
-| ------ | -------------------------------- | ------------------------------------------------------------------- |
-| ⏸      | 13d pricing UI                   | [13](plan/13-class-model-live-pricing.md)                           |
-| ⏸      | 14 MVC UI implementation (14a–f) | [14](plan/14-mvc-ui-implementation.md)                              |
-| ⏸      | UI exploration track             | [exploration/ui/00-overview.md](plan/exploration/ui/00-overview.md) |
+The `##ui` / `.htmlx` LiveView frontend track — 13d pricing UI, the 14-MVC-UI
+implementation plan, the 7-of-7 `ui-htmlx-live` plan, and the 9-doc
+`plan/exploration/ui/` design set — was **removed**. It was built entirely on
+the non-advancing Rust runtime (`.dev/reference/crates/wo-htmlx`, `cargo run`,
+WebSocket live-patches) and contradicts the current woc/wovm direction. Recorded
+in [`discarded.md`](plan/discarded.md).
 
 ---
 

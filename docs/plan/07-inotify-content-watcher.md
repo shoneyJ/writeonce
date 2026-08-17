@@ -2,7 +2,7 @@
 
 > **Status: ⬜ not started** — Track 1 (runtime foundations). Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./02-event-loop-epoll.md`](./done/02-event-loop-epoll.md), [`./linux/00-linux.md`](./exploration/linux/00-linux.md) § File Watching, [`../02-recovery.md`](../02-recovery.md) § No AWS Infrastructure.
+**Context sources:** [`./02-event-loop-epoll.md`](./done/02-event-loop-epoll.md), [`./linux/00-linux.md`](./exploration/linux/00-linux.md) § File Watching, `../02-recovery.md` § No AWS Infrastructure.
 
 ## Goal
 

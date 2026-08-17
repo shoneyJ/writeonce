@@ -15,9 +15,9 @@ Reference repositories:
 
 ## The Question
 
-writeonce articles have two shapes at once: they are **documents** (per-article JSON metadata + markdown body, per [06-markdown-render.md](../../06-markdown-render.md)) and they form a **graph** (the `mappings` field — `related`, `prerequisite`, `series`, `supersedes`, `references` — per [ai-agents-content-management.md](../../future-scope/ai-agents-content-management.md)).
+writeonce articles have two shapes at once: they are **documents** (per-article JSON metadata + markdown body, per 06-markdown-render.md) and they form a **graph** (the `mappings` field — `related`, `prerequisite`, `series`, `supersedes`, `references` — per ai-agents-content-management.md).
 
-Should writeonce adopt an off-the-shelf document or graph database to back these two shapes, or keep the flat-file `.seg` + `.idx` storage already implemented in [05-datalayer.md](../../05-datalayer.md)?
+Should writeonce adopt an off-the-shelf document or graph database to back these two shapes, or keep the flat-file `.seg` + `.idx` storage already implemented in 05-datalayer.md?
 
 **Short answer: no external DB.** The dataset is small (hundreds of articles, not millions of rows), single-writer (author commits), and read-heavy. A full rebuild on change is cheap. The `mappings` graph fits entirely in RAM. External databases would add a process, a protocol, a driver, and a failure mode — none of which writeonce needs.
 
@@ -45,7 +45,7 @@ Every article is a pair of files in `content/{sys_title}/`:
 
 Plus `{sys_title}.md` with the full article body.
 
-The access patterns, per [05-datalayer.md](../../05-datalayer.md):
+The access patterns, per 05-datalayer.md:
 
 | Pattern | Frequency | Current Implementation |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ What it buys:
 
 What it costs:
 
-- A Postgres process, a driver (tokio-postgres or raw libpq), connection pooling — writeonce's [05-datalayer.md](../../05-datalayer.md) explicitly removed all of this
+- A Postgres process, a driver (tokio-postgres or raw libpq), connection pooling — writeonce's 05-datalayer.md explicitly removed all of this
 - JSONB query planning is excellent but still pays per-query cost that an in-process hash does not
 - Recursive CTEs on deep mapping chains are slower than a RAM graph walk
 
@@ -161,7 +161,7 @@ What it costs:
 
 ## Option 4: In-Memory Graph — NetworkX / petgraph
 
-NetworkX (Python) and petgraph (Rust) are _libraries_, not databases. You load the graph into process memory and traverse it directly. This is the model gestured at in [ai-agents-content-management.md line 181](../../future-scope/ai-agents-content-management.md) — "traversable knowledge graphs available on RAM."
+NetworkX (Python) and petgraph (Rust) are _libraries_, not databases. You load the graph into process memory and traverse it directly. This is the model gestured at in ai-agents-content-management.md line 181 — "traversable knowledge graphs available on RAM."
 
 For writeonce, petgraph is the right shape:
 
@@ -208,7 +208,7 @@ For writeonce's hundreds of articles, petgraph is the correct answer. It fits th
 
 ## Proposed Addition: `mappings.idx` Backed by petgraph
 
-Per [05-datalayer.md](../../05-datalayer.md), indexes live alongside `.seg`. Add a fourth index:
+Per 05-datalayer.md, indexes live alongside `.seg`. Add a fourth index:
 
 ```
 data/
@@ -268,5 +268,3 @@ Key files to study:
 See also:
 
 - [surreal-case-study.md](../surreal-case-study.md) — why writeonce does not use a multi-model DB for live queries
-- [05-datalayer.md](../../05-datalayer.md) — current `.seg` + `.idx` implementation
-- [ai-agents-content-management.md](../../future-scope/ai-agents-content-management.md) — the `mappings` feature this index supports

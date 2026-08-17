@@ -73,7 +73,7 @@ That three-paradigm sketch is **the execution substrate** — the thing the engi
 
 Both layers are `.wo` files — same extension, same tooling, same parser front-end. They differ in role:
 
-- The **schema layer** names the data model once. One `type` declaration per entity covers what the three paradigm blocks cover today (relational columns, embedded documents, graph edges) plus constraints, computed fields, policies, and triggers. It is the source of truth for codegen ([Phase 5](./05-go-sdk.md)) and for the full-stack blocks ([Phase 6](./06-lowcode-fullstack.md)).
+- The **schema layer** names the data model once. One `type` declaration per entity covers what the three paradigm blocks cover today (relational columns, embedded documents, graph edges) plus constraints, computed fields, policies, and triggers. It is the source of truth for codegen (Phase 5) and for the full-stack blocks ([Phase 6](./06-lowcode-fullstack.md)).
 - The **query layer** is the operational surface. SQL and Cypher stay as-is — they are universally legible, every backend developer already reads them — but five things are tightened so the three grammars share semantics (parameters, `RETURNING`, dotted paths, transactions, `LIVE`).
 
 The two layers ship on different timelines. The query layer is Phase 2 (already prototyped at [`prototypes/wo-db/`](../../../prototypes/wo-db/)). The schema layer enters when Phase 5 codegen needs a single authoritative input.

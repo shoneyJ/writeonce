@@ -146,4 +146,4 @@ Work stealing (breaks single-writer ACID), shared-heap locking (the doctrine exi
 - [`../../docs/plan/09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) — the thread-per-core doctrine.
 - [`../../docs/plan/exploration/linux/07-io_uring.md`](../linux/07-io_uring.md), [`08-mmap.md`](../linux/08-mmap.md) — the two shared-page mechanisms.
 - [`../../docs/plan/13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) — 13e's read-replica alternative, contrasted in improvement 1.
-- [`../../docs/writeonce-pl.md`](../../../writeonce-pl.md) — the C/assembly "one address" pedagogy this doc extends to a full runtime.
+- [`README.md`](../../../../README.md) — the C/assembly "one address" pedagogy the single-binary story extends to a full runtime.

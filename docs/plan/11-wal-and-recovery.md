@@ -2,7 +2,7 @@
 
 > **Status: ⬜ not started (scope reduced)** — replay + ack-after-fsync + group commit landed via 09c and its follow-ups; remaining here: snapshots (`.data`), compaction, WAL rotation. Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./10-storage-foundations.md`](./10-storage-foundations.md), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`./exploration/postgresql/wal.md`](./exploration/postgresql/wal.md), [`./exploration/postgresql/buffer-and-checkpoint.md`](./exploration/postgresql/buffer-and-checkpoint.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), [`../02-recovery.md`](../02-recovery.md).
+**Context sources:** [`./10-storage-foundations.md`](./10-storage-foundations.md), [`../runtime/database/02-wo-language.md#concurrency-model`](../runtime/database/02-wo-language.md#concurrency-model), [`../runtime/database/03-inmemory-engine.md`](../runtime/database/03-inmemory-engine.md), [`./exploration/postgresql/wal.md`](./exploration/postgresql/wal.md), [`./exploration/postgresql/buffer-and-checkpoint.md`](./exploration/postgresql/buffer-and-checkpoint.md), [`./exploration/linux/12-pwrite-fsync.md`](./exploration/linux/12-pwrite-fsync.md), `../02-recovery.md`.
 
 ## Goal
 

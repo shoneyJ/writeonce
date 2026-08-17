@@ -2,7 +2,7 @@
 
 > **Status: ⬜ not started** — Track 1 (runtime foundations); also a prerequisite of the parked UI track. Board: [00-status.md](../00-status.md)
 
-**Context sources:** [`./03-hand-rolled-http.md`](./done/03-hand-rolled-http.md), [`./linux/00-linux.md`](./exploration/linux/00-linux.md) § Efficient File Serving, [`../02-recovery.md`](../02-recovery.md).
+**Context sources:** [`./03-hand-rolled-http.md`](./done/03-hand-rolled-http.md), [`./linux/00-linux.md`](./exploration/linux/00-linux.md) § Efficient File Serving, `../02-recovery.md`.
 
 ## Goal
 
