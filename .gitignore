@@ -100,3 +100,4 @@ prototypes/wo-db/
 # un-ignoring their directories above exposed these.
 __pycache__/
 *.pyc
+dist/

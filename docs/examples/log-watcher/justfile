@@ -12,9 +12,11 @@ default: accept
 
 # build the self-contained executable from wo.toml: `woc <dir>` reads the
 # manifest and produces target/log-watcher (needs the compiler and runtime
-# built once: `just woc-build` and `just wovm-build` at the root)
+# built once: `just woc-build` and `just wovm-build` at the root). WO_RUNTIME
+# points woc at the repo's freshly built VM — the manifest pins no path, so an
+# installed woc self-locates its own wovm instead.
 build:
-    {{ROOT}}/compiler/_build/default/bin/woc .
+    WO_RUNTIME={{ROOT}}/runtime/wovm {{ROOT}}/compiler/_build/default/bin/woc .
     @ls -la target/log-watcher
 
 # the language track's acceptance test: this sample must compile with zero
