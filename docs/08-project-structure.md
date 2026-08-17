@@ -15,7 +15,6 @@ writeonce-all/
 ├── prototypes/          ✅ wo-db C++ query-engine reference; ⚠ wo-rt-c = stale duplicate of runtime/
 ├── .dev/reference/           ✅ v1 crates workspace, colibri, llama-cpp; linux/ + go/ symlinks (per-dev)
 ├── docs/                ✅ ALL documentation: numbered design docs, plan/, runtime/, examples/, superpowers/
-├── content/ data/ wo-data/ static/ templates/ infra/   ✅ v1 blog operating assets (migration-plan governed)
 ├── justfile             recipes: rt-c-demo/bench today; woc-/wovm-/oop-accept as plans land
 ├── Cargo.toml           the Rust workspace root (crates/*; .dev/reference/crates excluded)
 └── .dev/                gitignored per-developer links + commit.md draft (see .dev/README.md)
@@ -105,10 +104,6 @@ docs/
 ```
 
 Repo rule restated: documentation belongs here; code directories keep one orientation README each.
-
-### v1 blog operating assets — `content/`, `data/`, `wo-data/`, `static/`, `templates/`, `infra/`
-
-The original writeonce blog's articles (`content/`), its data directories, `.htmlx` templates (`templates/` — cited by the UI track as concrete v1 usage), static files, and deploy config. Governed by the wo-seg migration plan; untouched by the OOP/systems tracks except as reference. `target/` is cargo build output (ignored).
 
 ### `.dev/` — developer-local state
 

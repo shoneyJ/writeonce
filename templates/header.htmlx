@@ -1,9 +1,0 @@
-<header>
-  <nav>
-    <a href="/" class="site-name"><img src="/static/logo.svg" alt="writeonce" class="site-logo"></a>
-    <div class="nav-links">
-      <a href="/">blog</a>
-      <a href="/about">about</a>
-    </div>
-  </nav>
-</header>
