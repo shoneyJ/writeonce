@@ -1,0 +1,24 @@
+-- The two tables the whole sample exists to relate. Every class IS a table;
+-- @table only configures storage (name, indexes) — the language's oldest
+-- doctrine. The [dept] index serves the `staff` backlink and the restrict
+-- check; [dept, salary] serves the per-department salary queries and the
+-- report's ordering inside a department.
+
+@table(name: "departments", index: [name])
+class Department {
+  name: Text @unique
+
+  -- Not a stored column: the declared inverse of Employee.dept. Reading
+  -- `d.staff` is a secondary-index scan of employees.dept and yields
+  -- `multi Employee`.
+  staff: backlink Employee.dept
+}
+
+@table(name: "employees", index: [dept], index: [dept, salary])
+class Employee {
+  name:   Text
+  salary: Int              -- cents; sum wraps like all language arithmetic
+  hired:  Int              -- epoch ms
+  dept:   ref Department   -- FK: stored as the department's row id, checked
+                           -- by a primary-index probe on insert/update
+}

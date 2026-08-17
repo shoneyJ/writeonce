@@ -2,7 +2,7 @@
 
 > How remote clients connect, query, and subscribe to live changes — no polling anywhere in the chain.
 
-**Previous**: [Phase 3 — In-Memory Engine](./03-inmemory-engine.md) | **Next**: [Phase 5 — Go Client SDK](./05-go-sdk.md) | **Index**: [database.md](../database.md)
+**Previous**: [Phase 3 — In-Memory Engine](./03-inmemory-engine.md) | **Next**: Phase 5 — Go Client SDK | **Index**: [database.md](../database.md)
 
 ---
 
@@ -27,7 +27,7 @@ Every naive realtime system reaches for polling first. For an e-commerce platfor
 | Inventory display lies for up to N ms | Inventory display reflects the commit |
 | "Order shipped" email triggered by cron | Fired by a committed status-change |
 
-Every subscription-based design in this section follows the same rule already set by writeonce in [05-datalayer.md](../../05-datalayer.md) and [03-data.md](../../03-data.md): **the client registers a query once, the server pushes deltas on commit, the client never asks again.**
+Every subscription-based design in this section follows the same rule already set by writeonce in 05-datalayer.md and 03-data.md: **the client registers a query once, the server pushes deltas on commit, the client never asks again.**
 
 ## Protocol Layer — Pick One or Both
 
@@ -193,7 +193,7 @@ Each connected client has server-side state:
 | Role / RBAC context | Session | Feeds row-level policies into the planner |
 | Back-pressure credits | Per-subscription | Client advertises how many outstanding `DELTA` frames it can buffer |
 
-On disconnect (TCP close, keepalive failure, `EPOLLHUP`-equivalent from io_uring completion): all sessions state is freed, all subscriptions unregistered. Same philosophy as `wo-sub`'s `EPOLLHUP` → automatic `unsubscribe(fd)` from [05-datalayer.md](../../05-datalayer.md), scaled up to a real server.
+On disconnect (TCP close, keepalive failure, `EPOLLHUP`-equivalent from io_uring completion): all sessions state is freed, all subscriptions unregistered. Same philosophy as `wo-sub`'s `EPOLLHUP` → automatic `unsubscribe(fd)` from 05-datalayer.md, scaled up to a real server.
 
 ## Back-Pressure
 

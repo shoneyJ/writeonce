@@ -2,7 +2,7 @@
 
 > **Status: ✅ done** (Rust Stage 2 — shipped, maintained, not advancing) — hand-rolled HTTP/1.1, plus keep-alive and pipelining. Board: [00-status.md](../../00-status.md)
 
-**Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./linux/00-linux.md`](../exploration/linux/00-linux.md), [`../02-recovery.md`](../../02-recovery.md).
+**Context sources:** [`./02-event-loop-epoll.md`](./02-event-loop-epoll.md), [`./linux/00-linux.md`](../exploration/linux/00-linux.md), `../02-recovery.md`.
 
 ## Goal
 

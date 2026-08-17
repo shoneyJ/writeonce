@@ -12,7 +12,7 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 2u /* v2 adds per-field names/types to the class table */
+#define WOB_VERSION 3u /* v3: v2's field metadata + per-class index metadata */
 #define WOB_HDR_SIZE 44u
 #define WOB_OFF_MAGIC 0u
 #define WOB_OFF_VERSION 4u
@@ -121,6 +121,13 @@ enum {
      * message rides along in the error record, and `try ... catch` is how
      * a program that expects the failure handles it. */
     WO_T_IO = 9,
+    /* iteration 9 Task 4: a unique-index violation on insert/update —
+       raised by the engine at the row choke point, catchable like any
+       trap (the employee sample's SEED-DUP line) */
+    WO_T_UNIQUE = 10,
+    /* iteration 9b: deleting a row still referenced by a `ref` traps here
+       (restrict) — the employee sample's DROP-of-a-department-with-staff */
+    WO_T_FK = 11,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */
@@ -285,8 +292,38 @@ enum {
      * out of a function (`return` of a borrowed place, which is what this id
      * exists for: the callee's borrow must not become the caller's owner). */
     WO_B_TEXT_COPY = 60,
+    /* ---- database engine (iteration 9; database/src/db.c) ----
+     * DB_INSERT window: R[B] = class id, R[B+1..] = one slot per declared
+     * field in declaration order. Result R[A] = the new row's id. Engine
+     * failures trap WO_T_DB; a failed WAL commit traps WO_T_IO (the write
+     * was applied to RAM but never acknowledged). */
+    WO_B_DB_INSERT = 61,
+    /* DB_UPDATE_FIELD: R[B] = class id, R[B+1] = row id, R[B+2] = field
+     * index, R[B+3] = the value. R[A] = 0. Unique violation traps
+     * WO_T_UNIQUE with the row untouched. */
+    WO_B_DB_UPDATE_FIELD = 62,
+    /* DB_DELETE: R[B] = class id, R[B+1] = row id. R[A] = 0. A missing row
+     * traps WO_T_DB (deleting what is not there is a fault, not a no-op). */
+    WO_B_DB_DELETE = 63,
+    /* the query surface's reads (iteration 9b). A table-class value IS its
+     * row id at runtime (the "objects are rows" model), so these are how the
+     * compiled query loop touches storage:
+     *   DB_SCAN (64):    R[B] = class     -> R[A] = multi<Int> of every id
+     *   DB_GET_FIELD(65): R[B]=class, R[B+1]=id, R[B+2]=field
+     *                     -> R[A] = that field, decoded to a VM value (a
+     *                        Text field decodes to a fresh Text; a ref field
+     *                        decodes to the target id). Missing row traps
+     *                        WO_T_DB.
+     *   DB_PROBE (66):   R[B]=class, R[B+1]=index, R[B+2]=key
+     *                     -> R[A] = multi<Int> of ids whose first indexed
+     *                        column equals key (backlink + indexed where). */
+    WO_B_DB_SCAN = 64,
+    WO_B_DB_GET_FIELD = 65,
+    WO_B_DB_PROBE = 66,
+    WO_B_STR_LT = 67,  /* (a, b) text -> 1 if a < b by content, else 0 (query
+                        * order-by on a Text key; scalars use the LT opcode) */
 };
-#define WO_B_MAX 60u
+#define WO_B_MAX 67u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 
@@ -324,6 +361,11 @@ typedef struct wo_classdesc {
     const uint32_t *field_names; /* constant index of each field's name */
     const uint32_t *field_class; /* referenced class id / JSON_RAW / NONE */
     const uint32_t *field_elem;  /* container element kinds */
+    /* v3 (iteration 9 Task 4): the class's secondary indexes, flat-encoded
+       [flags, col_cnt, col...]* — flags bit0 = unique. idx_cnt entries.
+       Columns are field indices, scalar/Text kinds only (loader-checked). */
+    uint32_t idx_cnt;
+    const uint32_t *idx_meta;
 } wo_classdesc;
 #define WO_CLASSF_GC 0x01u
 

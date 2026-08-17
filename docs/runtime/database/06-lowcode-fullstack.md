@@ -2,7 +2,7 @@
 
 > Expand `.wo` from a query language into a declarative application DSL — schema, services, UI, business logic, and authorization in one language, compiled into a single binary.
 
-**Previous**: [Phase 5 — Go Client SDK](./05-go-sdk.md) | **Index**: [database.md](../database.md)
+**Previous**: Phase 5 — Go Client SDK | **Index**: [database.md](../database.md)
 
 ---
 
@@ -282,7 +282,7 @@ For the writeonce schema above, `sa build` produces:
 | SSR HTML | `app/ui/*.wo` + routes in `app.wo` | Per-route renderers compiled into the server binary |
 | Client runtime | `app/ui/*.wo` | Small JS bundle: subscription client + DOM patcher + form binding |
 | Admin UI | All of the above | Auto-generated CRUD screens for every `##sql`/`##doc` entity (override any with a `##ui` block) |
-| Typed SDKs | `app/database/*.wo` | Go/TypeScript/Rust clients per [Phase 5](./05-go-sdk.md) |
+| Typed SDKs | `app/database/*.wo` | Go/TypeScript/Rust clients per Phase 5 |
 | Migrations | Schema diff vs. current database | Versioned forward/backward migrations in `migrations/` |
 | Observability | Everything | Structured logs, query metrics, subscription lag dashboards |
 
@@ -359,7 +359,7 @@ Rough effort on top of Phases 2–4: **12–24 months** with a small team, most 
 This section is the endgame, not the next step. The sensible build order:
 
 1. Ship the engine ([Phase 2](./02-wo-language.md), in-memory + io_uring durability via [Phase 3](./03-inmemory-engine.md)) — query layer (`##sql`/`##doc`/`##graph`) only.
-2. Ship the wire protocol + Go SDK ([Phase 4](./04-client-api.md) + [Phase 5](./05-go-sdk.md)).
+2. Ship the wire protocol + Go SDK ([Phase 4](./04-client-api.md) + Phase 5).
 3. Ship the **schema-layer `type` DSL** that compiles to the three paradigm blocks. From this point forward, authoring happens against types; the paradigm blocks become an artifact the compiler emits.
 4. Add type-attached `service` (and standalone `##service` for bundles) — declarative endpoints.
 5. Add type-attached `policy` (and standalone `##policy` for cross-entity rules) — declarative authorization.

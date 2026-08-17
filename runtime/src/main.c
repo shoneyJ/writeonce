@@ -13,9 +13,13 @@
 
 #include "cont.h"
 #include "gc.h"
+#include "table.h"
 #include "vm.h"
+#include "wal.h"
 
 static wo_vm VM; /* 32K value stack: keep it off the C stack */
+static wo_db DB;  /* the per-shard engine (one shard until iteration 8) */
+static wo_wal WAL;
 
 /* ---- self-exec detection (Task 6, plan 3) -------------------------------
  * `woc build` makes a single executable by copying wovm and appending the
@@ -157,6 +161,39 @@ int main(int argc, char **argv) {
         wo_module_free(&mod);
         return 2;
     }
+    /* The database engine boots with the VM: every class IS a table.
+     * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
+     * replays it before the entry runs (boot-before-listeners doctrine),
+     * and every insert commits before it acknowledges. Without WO_DATA
+     * the engine runs RAM-only, which is what the corpus expects. */
+    if (wo_db_init(&DB, mod.classes, mod.class_cnt, 0, 1) != 0) {
+        fprintf(stderr, "wovm: cannot initialize the database engine\n");
+        wo_vm_destroy(&VM);
+        wo_module_free(&mod);
+        return 2;
+    }
+    VM.rt.db = &DB;
+    const char *data_dir = getenv("WO_DATA");
+    if (data_dir && data_dir[0]) {
+        char wal_path[512];
+        snprintf(wal_path, sizeof wal_path, "%s/shard-0.wal", data_dir);
+        if (wo_wal_replay(wal_path, &DB) < 0) {
+            fprintf(stderr, "wovm: %s: replay found corruption beyond a torn tail\n", wal_path);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        if (wo_wal_open(&WAL, wal_path, 1u << 20) != 0) {
+            fprintf(stderr, "wovm: cannot open %s\n", wal_path);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        VM.rt.wal = &WAL;
+    }
+
     /* Program mode: an entry that declares one parameter gets the program's
      * OWN arguments as a `multi Text` — not the program name, and not the
      * image path a plain `wovm image.wob args...` invocation carries. So
@@ -207,6 +244,8 @@ int main(int argc, char **argv) {
      * heap is torn down, and after a trap too: the container outlives the
      * unwind. */
     if (argv_val) wo_drop_kind(&VM.rt, WO_K_MULTI, argv_val);
+    if (VM.rt.wal) wo_wal_close(&WAL);
+    wo_db_destroy(&DB);
     gc_pump(&VM);
     wo_vm_destroy(&VM);
     wo_module_free(&mod);

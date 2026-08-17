@@ -1,0 +1,22 @@
+-- iteration 9b: language-integrated query, from/where/select over a table
+-- scan, lowered to a bytecode loop over engine cursors (no SQL text). A
+-- table-class value is its row id; `e.name` reads the column via the engine.
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  salary: Int
+  dept: Int
+}
+
+fn main() {
+  insert Emp { name: "asha", salary: 100, dept: 1 }
+  insert Emp { name: "bram", salary: 200, dept: 1 }
+  insert Emp { name: "chidi", salary: 50, dept: 2 }
+  for e in from x in Emp where x.salary >= 100 select x {
+    print(e.name)
+  }
+  print("--")
+  for n in from x in Emp select x.name {
+    print(n)
+  }
+}

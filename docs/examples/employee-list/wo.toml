@@ -1,0 +1,29 @@
+name        = "employee-list"
+version     = "0.1.0"
+description = "Program B of the cross-program story: attaches read-only to the running employee program (A) over its IPC channel after keypair authentication, and lists/aggregates A's tables over the wire"
+
+[runtime]
+wo = ">= 0.1"
+
+[build]
+runtime = "../../../runtime/wovm"
+
+# Iteration 9c/9d surface (target — compiles once those land).
+# The section NAME is the namespace this program's code uses: [connect.employee]
+# makes A's tables reachable as `employee.Department` / `employee.Employee`.
+[connect.employee]
+# A's IPC string (9c fork 1: unix socket, listening beside A's WO_DATA;
+# A declares the same path in its [share] section).
+ipc = "unix:../employee/target/data/employee.sock"
+
+# A's PINNED public-key fingerprint (9d): B refuses to speak to anything on
+# that socket path that cannot sign A's challenge with this key — the
+# impostor-socket acceptance line. Printed by `employee --identity` after
+# A's first boot; paste it here. Never a private key, never a secret.
+public_key = "ed25519:PASTE-EMPLOYEE-FINGERPRINT-HERE"
+
+# Where B's compiler reads A's table shapes at compile time (9c fork 2's
+# milestone lean: project-directory reference). The runtime handshake
+# re-verifies the shapes against A's live class table at attach — a stale
+# checkout refuses the attachment with both shapes named.
+project = "../employee"

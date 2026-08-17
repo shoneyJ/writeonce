@@ -50,6 +50,11 @@ wovm-test:
 # pass; the corpus below gates the individual behaviors underneath it.
 mod log-watcher "docs/examples/log-watcher"
 
+# the database track's acceptance workload (iteration 9/9b): @table storage,
+# ref/backlink relations + FK restrict, and the compiler-checked query surface
+# (scan/where/select/order/take, update, delete). `just employee` runs it.
+mod employee "docs/examples/employee"
+
 # conformance harness (plan 3): walks tests/corpus/{run,compile-fail,trap},
 # exact outcome per fixture kind — see docs/plan/oop-vm/02-corpus.md.
 # Fails loudly (and names the recipe to run) if woc or wovm isn't built.
@@ -72,7 +77,7 @@ oop-accept:
     echo "=== criterion 1: woc compile time, pricing subset (budget: under 100ms) ==="
     dune build --root compiler || fail "criterion 1: dune build --root compiler"
     WOC="$ROOT/compiler/_build/default/bin/woc"
-    PRICING="tests/corpus/run/pricing-containers/fixture.wo tests/corpus/run/pricing-current-price/fixture.wo tests/corpus/run/pricing-discounted/fixture.wo tests/corpus/run/pricing-text/fixture.wo tests/corpus/trap/pricing-set-price-db-stub/fixture.wo"
+    PRICING="tests/corpus/run/pricing-containers/fixture.wo tests/corpus/run/pricing-current-price/fixture.wo tests/corpus/run/pricing-discounted/fixture.wo tests/corpus/run/pricing-text/fixture.wo tests/corpus/run/pricing-set-price-insert/fixture.wo"
     N=20
     total_ns=0; max_ns=0; min_ns=""
     for i in $(seq 1 "$N"); do

@@ -53,9 +53,16 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 8 | [Shard-actor runtime](08-shard-actor-runtime.md) | thread-per-core shards, per-shard heaps, ownership-move messaging |
 | 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
 | 9b | [`@table`, relations, query](09b-table-relations-query.md) | `@table` becomes real storage; typed `ref`/`backlink`/`multi` relations; compiler-checked LINQ-shaped queries lowered to engine ops |
+| 9c | [Cross-program tables](09c-cross-program-tables.md) | attach to a running program's database over a local IPC channel: manifest-granted read/write rights, typed statements checked against the owner's shapes, owner stays the single writer |
+| 9d | [Keypair attach auth](09d-keypair-attach-auth.md) | program identity is a keypair: mutual challenge–response at attach, grants name public keys, replay-proof, rotation is a config change |
+| 9e | [Durability, throughput, scale](09e-durability-throughput-scale.md) | restart-persistence proof, read/write benchmark, ~1M-row load; the measurement gate every optimization signs |
+| 9f | [io_uring group-commit](09f-io-uring-commit.md) | replace fsync-per-commit with io_uring batched durability, overlapped on the shard threads; fsync fallback kept |
+| 9g | [Query grammar corpus](09g-query-grammar-corpus.md) | grow the query grammar from real embedded-DB apps: `count`/existence subqueries from the skillhost corpus; add only what a corpus uses |
 | 10 | [HTTP service layer](10-http-service.md) | `service` blocks route to VM methods; REST parity with Stage 2 |
 | 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
+| 13 | [Compile-time metaprogramming](13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` — the compiler generates per-type code from the class-table metadata; generic capabilities within principle 13, no reflection |
+| 14 | [skillhost host workload](14-skillhost-host-workload.md) | a host-shaped driving workload (writeonce port of skillhost) that names the runtime gaps it exposes: bounded/killable subprocess, stdin/stdout transport, fs metadata, and FFI-vs-out-of-process model driver — each a candidate iteration |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable

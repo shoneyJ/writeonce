@@ -115,11 +115,18 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | 🔄 **runs; executable in progress** |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ⏸ off the workload's path (no `@gc`) |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
-| 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | ⬜                           |
-| 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | ⬜ needs a spec first        |
+| 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
+| 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
+| 9c  | [Cross-program tables](stories/language-runtime-database/09c-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
+| 9d  | [Keypair attach auth](stories/language-runtime-database/09d-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
+| 9e  | [Durability, throughput, scale](stories/language-runtime-database/09e-durability-throughput-scale.md) | ⬜ needs a spec first        |
+| 9f  | [io_uring group-commit](stories/language-runtime-database/09f-io-uring-commit.md)            | ⬜ after 8 + 9e              |
+| 9g  | [Query grammar corpus](stories/language-runtime-database/09g-query-grammar-corpus.md) | ⬜ needs a spec first        |
 | 10  | [HTTP service layer](stories/language-runtime-database/10-http-service.md)                   | ⬜                           | Hold |
 | 11  | [Fibers](stories/language-runtime-database/11-fibers.md)                                     | ⬜                           | Hold |
 | 12  | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md)               | ⬜                           | Hold |
+| 13  | [Compile-time metaprogramming](stories/language-runtime-database/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
+| 14  | [skillhost host workload](stories/language-runtime-database/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
 
 ---
 
@@ -322,7 +329,13 @@ Ecommerce sample (verified 2026-06-13): `api.rest` 17/17 expected statuses pass.
 | 7b  | Inferred GC + incremental mark-sweep — `@gc` removed, GC-ness inferred, RC retired                                                                                             | [spec](superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md) — plan to be written         |
 | 8   | Shard-actor runtime                                                                                                                                                            | [plan 4](superpowers/plans/2026-08-01-shard-actor-vm-runtime.md)                                   |
 | 9   | Database engine binding                                                                                                                                                        | [plan 5](superpowers/plans/2026-08-01-db-engine-binding.md)                                        |
-| 9b  | `@table` + relations + language-integrated query                                                                                                                               | **no spec yet** — three open forks recorded in the iteration; brainstorm before planning           |
+| 9b  | `@table` + relations + language-integrated query — comprehension queries, `ref`/`backlink` navigation, GroupBy aggregates; acceptance: new `docs/examples/employee` sample     | [spec](superpowers/specs/2026-08-15-table-relations-query-design.md) · [plan](plan/compiler/2026-08-15-employee-relations-query.md) |
+| 9c  | Cross-program tables — attach to a running program's database (IPC string in wo.toml, manifest-granted rights, owner stays the single writer)                                  | **no spec yet** — four open forks recorded in the iteration; brainstorm before planning            |
+| 9d  | Keypair attach auth — mutual challenge–response, grants name public keys, uid superseded                                                                                       | **no spec yet** — four forks recorded; plan folds into 9c's                                        |
+| 9e  | Durability + throughput + scale — restart-persistence, read/write benchmark, ~1M rows; the gate every later optimization re-runs                                              | **no spec yet** — four forks recorded; the measurement backbone                                    |
+| 9f  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 9e                                               |
+| 9g  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
+| 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md)                   |
 | 12  | Blue-green deploy                                                                                                                                                              | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9–10 |
@@ -361,13 +374,14 @@ log-watcher proof.
 | ⬜     | 15a–15e MCP over streamable HTTP                          | [15](plan/15-mcp-streamable-http.md)                                                                          | 15e needs 13c + 09d                                    |
 | ⬜     | 16c–16f typed columns, lossless resync, restore, SCRAM    | [16](plan/16-postgres-mirror.md)                                                                              |                                                        |
 
-### Frontend — parked
+### Frontend — removed as stale (2026-08-17)
 
-| Status | Phase                            | Doc                                                                 |
-| ------ | -------------------------------- | ------------------------------------------------------------------- |
-| ⏸      | 13d pricing UI                   | [13](plan/13-class-model-live-pricing.md)                           |
-| ⏸      | 14 MVC UI implementation (14a–f) | [14](plan/14-mvc-ui-implementation.md)                              |
-| ⏸      | UI exploration track             | [exploration/ui/00-overview.md](plan/exploration/ui/00-overview.md) |
+The `##ui` / `.htmlx` LiveView frontend track — 13d pricing UI, the 14-MVC-UI
+implementation plan, the 7-of-7 `ui-htmlx-live` plan, and the 9-doc
+`plan/exploration/ui/` design set — was **removed**. It was built entirely on
+the non-advancing Rust runtime (`.dev/reference/crates/wo-htmlx`, `cargo run`,
+WebSocket live-patches) and contradicts the current woc/wovm direction. Recorded
+in [`discarded.md`](plan/discarded.md).
 
 ---
 

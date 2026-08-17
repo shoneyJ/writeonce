@@ -1,0 +1,30 @@
+-- iteration 9b: ref + backlink navigation. `e.dept.name` chains a ref to
+-- its target row (a point read); `d.staff` reads a backlink by probing the
+-- source class's index — both execute in the engine, no join written.
+@table(name: "dept", index: [name])
+class Dept {
+  name: Text
+  staff: backlink Emp.dept
+}
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  dept: ref Dept
+}
+fn main() {
+  let eng = insert Dept { name: "eng" }
+  let ops = insert Dept { name: "ops" }
+  insert Emp { name: "asha", dept: eng }
+  insert Emp { name: "bram", dept: eng }
+  insert Emp { name: "dora", dept: ops }
+  print("-- forward (e.dept.name):")
+  for e in from x in Emp select x {
+    print(e.dept.name)
+  }
+  print("-- backward (d.staff):")
+  for d in from x in Dept where x.name == "eng" select x {
+    for s in from y in d.staff select y {
+      print(s.name)
+    }
+  }
+}

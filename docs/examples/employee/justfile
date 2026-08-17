@@ -1,0 +1,14 @@
+# docs/examples/employee — the database track's acceptance workload.
+# `just employee::<recipe>` from the repo root, or plain `just <recipe>` here.
+ROOT := source_directory() / "../../.."
+
+default: accept
+
+# build the standalone binary from wo.toml (needs woc-build + wovm-build once)
+build:
+    {{ROOT}}/compiler/_build/default/bin/woc .
+    @ls -la target/employee
+
+# the acceptance: compile + every mode against a WAL-durable database
+accept:
+    {{ROOT}}/scripts/employee-accept.sh

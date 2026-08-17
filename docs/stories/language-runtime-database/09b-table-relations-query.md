@@ -8,9 +8,14 @@
 > precedes iteration 10 because `service` blocks will want to return query
 > results.
 >
-> **No spec exists yet.** This iteration frames the outcome and records the
-> open questions; the design must be brainstormed before a plan is written.
-> The three questions in *Info* are genuine forks, not details.
+> **Spec exists (2026-08-15):**
+> [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md)
+> settles the three forks recorded in *Info* below (kept as the decision
+> record): the SQL/Cypher layer is superseded as the program surface,
+> the syntax is a compiler-desugared comprehension, and the references
+> contribute vocabulary + semantics (System.Linq) and execution + integrity
+> vocabulary (PostgreSQL, surveyed with the spec). Plan:
+> [`2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md).
 
 ## Goals
 
@@ -111,18 +116,65 @@ delegates, and `IQueryable`'s runtime expression trees, the last of which
 depends on reflection that principle 13 forbids outright. Take the vocabulary
 and the semantics; leave the plumbing.
 
+**4. (Settled with the spec, 2026-08-15) How do queries interact with the
+borrow checker and the GC?** Row views are borrows of engine memory with **no
+runtime borrow word behind them** — the compile-time escape rule is
+load-bearing alone. Scans materialize their id list up front, so updating a
+row (even an indexed column) inside the loop is sound, while `insert`/`delete`
+on a table with an open cursor is a compile error. The GC never meets the
+engine at all: both directions across the boundary are copies, and GC-managed
+values cannot be stored — spec section 6 is the full analysis, including the
+iteration-7b ordering constraint (inference before table-field validation).
+
 Also relevant: `@table(name:, index:)` already parses today with known-key
 validation (`WO-E102`), the Rust runtime already ships secondary indexes and
 `find_by` behind that annotation, and `ref T` already classifies as a scalar
 id rather than a pointer — so the relational vocabulary partly exists and this
 iteration makes it mean something in the C stack.
 
+## Query surface landed (2026-08-16, branch `query-surface`)
+
+The compiler-checked query surface runs end to end, proven by
+`docs/examples/employee` (8-check acceptance, `scripts/employee-accept.sh`):
+
+- **Queries**: `from <v> in <table|nav> where* [order by <k> [desc]] [take n]
+  select <v|v.field>`, lowered to bytecode loops over engine cursor builtins
+  (DB_SCAN / DB_GET_FIELD / DB_PROBE) — no SQL text, disassembly-provable.
+- **Relations**: `ref C` forward navigation (`e.dept.name`, a point read),
+  `backlink C.f` reverse navigation (`d.staff`, an index probe); backlink
+  fields are virtual (no stored column).
+- **Mutation**: update-through-row (`e.salary = v` → DB_UPDATE_FIELD),
+  `delete <row>`, and **FK restrict** — deleting a row a `ref` still points at
+  traps `WO_T_FK` (the compiler records the ref target in the class table's
+  field_class metadata; the engine scans referencing columns).
+- **`@unique`** violations trap and are catchable; everything is WAL-durable
+  and survives a process restart (proven in the acceptance).
+
+**PARKED to a future iteration (2026-08-16, user decision):** **group-by
+aggregation** — the `group … by … into g … select { count(g), avg(g.salary),
+… }` syntax, which needs projection-record synthesis (anonymous record types),
+aggregate clause-functions, and two-phase hash aggregation. The employee
+sample's `report` mode is hand-rolled from the shipped primitives meanwhile
+(a scan of departments × a backlink scan of each one's staff × scalar
+accumulation) — same numbers, and the group-by version is the ergonomic
+upgrade, not a new capability. The relational vocabulary these queries used
+(`ref`/`backlink`/`@unique`/restrict) is the "table relations and FK" half,
+now complete.
+
 ## Proposed Solution
 
-- **Brainstorm a spec first**, settling the three forks above; only then write
-  the plan. This iteration deliberately ships no plan pointer, because
-  choosing between "replace the SQL layer" and "sit beside it" changes what
-  the plan contains.
+- ~~Brainstorm a spec first~~ — **done 2026-08-15**; the spec settles all
+  three forks and the plan exists (pointers in the header note). The fork-1
+  outcome for the record: language-integrated query is the only program
+  surface; `docs/runtime/database/02-wo-language.md`'s SQL/Cypher layer stays
+  as design history and as the `wo-db` prototype's engine-semantics
+  reference, never as syntax.
+- **The acceptance workload is a new sample**: `docs/examples/employee` —
+  `Department`/`Employee` with `@unique`, a composite index, a `ref`/
+  `backlink` pair, and a report mode that is one `GROUP BY` after another
+  (headcount, avg/min/max salary by department). It is 9b's acceptance the
+  way log-watcher was iterations 1–7's; the ecommerce query rewrite (the
+  fifth criterion below) follows as its own step once employee is green.
 - Study `.dev/reference/dotnet-runtime`'s `System.Linq` operator set for the
   vocabulary, and `docs/runtime/database/02-wo-language.md` plus
   `prototypes/wo-db/` for the semantics already committed to.

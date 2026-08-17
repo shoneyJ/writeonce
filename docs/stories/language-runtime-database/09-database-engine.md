@@ -47,6 +47,14 @@
   lesson, the C engine enforces it.
 - The wo-db overlap manifest keeps the C++ prototype and this engine
   answer-compatible where features overlap.
+- **Ownership/GC analysis (2026-08-15):** the engine and the VM heap are two
+  memory worlds crossed only by copy — rows store no VM pointers, GC-managed
+  values in stored fields are a compile error, and everything a query returns
+  is copied out — so the collector never traces rows and the engine never
+  counts references. The full analysis (row views as borrows without a
+  runtime net, cursor stability, GC-pause interaction) lives in the 9b
+  design's section 6:
+  [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md).
 
 ## Proposed Solution
 

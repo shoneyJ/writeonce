@@ -104,7 +104,7 @@ SurrealDB's live query system pushes changes to connected clients in real-time:
 | Runtime | Tokio multi-threaded executor | Single-threaded epoll event loop |
 | Protocol framing | WebSocket frames | Length-prefixed payloads (no protocol) |
 
-SurrealDB's live queries are the architectural inspiration for writeonce's subscription model (as noted in [03-data.md](../03-data.md)), but the implementation is fundamentally different — SurrealDB uses a full async runtime with WebSocket transport, while writeonce uses kernel fd notifications with no protocol layer.
+SurrealDB's live queries are the architectural inspiration for writeonce's subscription model (as noted in 03-data.md), but the implementation is fundamentally different — SurrealDB uses a full async runtime with WebSocket transport, while writeonce uses kernel fd notifications with no protocol layer.
 
 ## Storage Engine Architecture
 

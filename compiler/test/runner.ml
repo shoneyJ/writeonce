@@ -531,35 +531,35 @@ let () =
   | _ -> check "ctor literal: exactly one free fn" false
 
 let () =
-  (* The brief's stated asymmetry: `insert` is a statement-only trigger
-     (parser.ml's is_insert_trigger, checked only in parse_stmt) — a
-     bare `insert` reached from parse_primary is just an ordinary
-     identifier reference, exactly like self/me/on/service/policy's own
-     "recognized positionally, not a reserved word" rule (this task's
-     own keyword-discipline note). `select` (is_select_trigger) is
-     checked unconditionally *inside* parse_primary, so the same
-     position always builds a DbStub instead. Neither is an error on
-     its own — the difference shows up in which Ast.expr_kind comes
-     back. *)
+  (* Iteration 9 Task 3 retired the old asymmetry: `insert` is grammar-owned
+     in BOTH positions now — a typed Insert node validated like a ctor,
+     returning the id — while `select` stays the opaque DbStub until
+     Task 5. The old contract ("bare insert is a plain Ident") is gone
+     with the stub that motivated it. *)
   let prog, collector =
-    parse_str ~file:"insert-vs-select.wo" "fn f() {\n  let a = insert\n  let b = select\n}\n"
+    parse_str ~file:"insert-vs-select.wo"
+      "fn f() {\n  let a = insert Product { sku: \"A1\" }\n  let b = select\n}\n"
   in
-  check_eq "insert vs. select as bare expressions: no diagnostics" ~expected:0
+  check_eq "typed insert + stub select: no diagnostics" ~expected:0
     ~actual:(List.length (Diag.Collector.diagnostics collector))
     string_of_int;
-  match prog.Ast.decls with
+  (match prog.Ast.decls with
   | [ Ast.Fn m ] -> (
     match m.body with
     | [
      { Ast.s_kind = Ast.Let { name = "a"; value = a_val; _ }; _ };
      { Ast.s_kind = Ast.Let { name = "b"; value = b_val; _ }; _ };
     ] ->
-      check "bare `insert` in expression position is a plain Ident"
-        (match a_val.Ast.kind with Ast.Ident "insert" -> true | _ -> false);
+      check "`insert` in expression position is a typed Insert node"
+        (match a_val.Ast.kind with Ast.Insert ("Product", [ ("sku", _) ]) -> true | _ -> false);
       check "bare `select` in expression position always becomes a DbStub"
         (match b_val.Ast.kind with Ast.DbStub _ -> true | _ -> false)
     | _ -> check "insert vs. select: exactly two `let` statements" false)
-  | _ -> check "insert vs. select: exactly one free fn" false
+  | _ -> check "insert vs. select: exactly one free fn" false);
+  (* and a bare `insert` with no literal is a parse error now, not an Ident *)
+  let _, c2 = parse_str ~file:"bare-insert.wo" "fn f() {\n  let a = insert\n}\n" in
+  check "bare `insert` with no constructor literal is a diagnostic"
+    (List.length (Diag.Collector.diagnostics c2) > 0)
 
 let () =
   (* The no_brace guard (parser.ml's state.no_brace / looks_like_ctor):
@@ -2382,7 +2382,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 2 then fail "unsupported version";
+  if u32 4 <> 3 then fail "unsupported version";
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2419,6 +2419,7 @@ let validate_image (img : string) : string list =
     if flags land lnot 0x01 <> 0 then fail (Printf.sprintf "class %d: unknown flags" i);
     if fcnt > 65535 then fail (Printf.sprintf "class %d: too many fields" i);
     class_fields.(i) <- fcnt;
+    let kco = !o in (* the kind bytes' offset: the v3 index walk re-reads them *)
     for j = 0 to fcnt - 1 do
       if u8 (!o + j) > 5 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
     done;
@@ -2435,6 +2436,25 @@ let validate_image (img : string) : string list =
         fail (Printf.sprintf "class %d field %d: field class out of range" i j)
     done;
     o := !o + (fcnt * 12);
+    (* v3: the index tail — flags (bit0 only), col_cnt 1..8, columns in
+       range and scalar/Text-kinded. Mirrors loader.c's checks. *)
+    let icnt_x = u32 !o in
+    o := !o + 4;
+    if icnt_x > 64 then fail (Printf.sprintf "class %d: too many indexes" i);
+    for x = 0 to icnt_x - 1 do
+      let ifl = u32 !o and ccnt = u32 (!o + 4) in
+      o := !o + 8;
+      if ifl land lnot 1 <> 0 then fail (Printf.sprintf "class %d index %d: unknown flags" i x);
+      if ccnt = 0 || ccnt > 8 then fail (Printf.sprintf "class %d index %d: bad column count" i x);
+      for c = 0 to ccnt - 1 do
+        let col = u32 !o in
+        o := !o + 4;
+        if col >= fcnt then fail (Printf.sprintf "class %d index %d: column out of range" i x);
+        let kind = u8 (kco + col) in
+        if kind <> 0 && kind <> 3 then
+          fail (Printf.sprintf "class %d index %d: column %d is not scalar or Text" i x c)
+      done
+    done;
     if !o > len then fail (Printf.sprintf "class %d: truncated" i)
   done;
   (* interfaces + vtable rows *)
@@ -2580,7 +2600,12 @@ let validate_image (img : string) : string list =
         | 22 | 23 | 24 | 25 | 26 | 27 | 28 -> rchk pc a
         | 29 ->
           rchk pc a;
-          if c > 12 then fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
+          (* the mirror's ceiling tracks wob.h's WO_B_MAX only for ids the
+             golden lowering suite actually emits; 61 = DB_INSERT (arity 1:
+             the class-id slot — field slots are runtime-validated, same as
+             the C loader) *)
+          if c > 12 && (c < 61 || c > 67) then
+            fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
           else if c = 4 then begin
             if b > 5 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
           end
@@ -2595,6 +2620,13 @@ let validate_image (img : string) : string list =
               | 1 | 2 | 3 | 7 | 8 -> 1
               | 5 | 6 | 11 | 12 -> 2
               | 10 -> 3
+              | 61 -> 1
+              | 62 -> 4
+              | 63 -> 2
+              | 64 -> 1
+              | 65 -> 3
+              | 66 -> 3
+              | 67 -> 2
               | _ -> 0
             in
             if arity > 0 then begin
@@ -2951,7 +2983,8 @@ let () =
       ( "text: concat, equality, words",
         "fn f(a: Text, b: Text) -> Int {\n  let joined = a .. b\n\
          \  if joined == a {\n    return 1\n  }\n  return words(joined)\n}\n" );
-      ("db stub statement", "fn f() -> Int {\n  insert into rows values (1)\n  return 0\n}\n");
+      ( "db insert statement",
+        "class Row {\n  n: Int\n}\n\nfn f() -> Int {\n  insert Row { n: 1 }\n  return 0\n}\n" );
       ( "nested calls in arguments",
         "fn one() -> Int {\n  return 1\n}\n\nfn add(a: Int, b: Int) -> Int {\n\
          \  return a + b\n}\n\nfn f() -> Int {\n  return add(add(one(), one()), one())\n}\n" );

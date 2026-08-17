@@ -56,7 +56,7 @@ Port the C++ prototype (`prototypes/wo-db/src/*`) to Rust, split along the natur
 | `sub`     | live subscriptions — delta frames on commit | new ([Phase 4](./04-client-api.md)) | 4 |
 | `http`    | wire protocol — REST / GraphQL-over-WS / native codec | new ([Phase 4](./04-client-api.md)) | 4 |
 | `db`      | top-level facade: `open()`, `Tx`, `Query`, `Subscribe` — the Rust SDK | integrates the above | 2–4 |
-| `gen`     | codegen: `.wo type` → Rust structs, Go structs, TypeScript | `sa-gen`/`wo-gen` in [Phase 5](./05-go-sdk.md) | 5 |
+| `gen`     | codegen: `.wo type` → Rust structs, Go structs, TypeScript | `sa-gen`/`wo-gen` in Phase 5 | 5 |
 
 All 15 crates (these 14 plus the existing `rt` binary crate) now exist as empty skeletons in `crates/`. See [`crates/README.md`](../../../crates/README.md) and [`docs/plan/done/01-scafolding-crates.md`](../../plan/done/01-scafolding-crates.md) for the scaffolding plan that landed them.
 
@@ -203,7 +203,5 @@ Each phase has its own exit criteria above. End-to-end verification for the whol
 - [02-wo-language.md](./02-wo-language.md) — the two-layer `.wo` language the engine speaks
 - [03-inmemory-engine.md](./03-inmemory-engine.md) — the storage engine behind `wo-db`
 - [04-client-api.md](./04-client-api.md) — wire protocol and `LIVE` subscriptions
-- [05-go-sdk.md](./05-go-sdk.md) — the Go SDK built from `.wo` types via `wo-gen`
 - [01-evaluation.md](./01-evaluation.md) — why writeonce built `wo-seg` in the first place, and why that choice still looks right for the blog even as the platform grows past it
-- [../05-datalayer.md](../../05-datalayer.md) — current `.seg` + `.idx` implementation details
 - `prototypes/wo-db/` — the C++ prototype of the `.wo` engine, the reference implementation the Rust port follows

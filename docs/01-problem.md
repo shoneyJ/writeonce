@@ -1,6 +1,6 @@
 # Problem Statement
 
-The current writeonce architecture works, but it carries weight that the project doesn't need. This document identifies the structural problems that motivate the redesign described in [02-recovery.md](./02-recovery.md).
+The current writeonce architecture works, but it carries weight that the project doesn't need. This document identifies the structural problems that motivate the redesign described in 02-recovery.md.
 
 ## Too Many Moving Parts
 

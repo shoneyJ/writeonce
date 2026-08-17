@@ -1,0 +1,23 @@
+-- the restrict trap is catchable; a free (unreferenced) row deletes.
+@table(name: "dept", index: [name])
+class Dept {
+  name: Text
+  staff: backlink Emp.dept
+}
+@table(name: "emp", index: [dept])
+class Emp {
+  name: Text
+  dept: ref Dept
+}
+fn main() {
+  let eng = insert Dept { name: "eng" }
+  let ops = insert Dept { name: "ops" }
+  insert Emp { name: "asha", dept: eng }
+  let de = from x in Dept where x.name == "eng" take 1 select x
+  let r1 = try delete de[0] catch (e) nil
+  if r1 == nil { print("eng restricted") }
+  let dop = from x in Dept where x.name == "ops" take 1 select x
+  let r2 = try delete dop[0] catch (e) nil
+  if r2 == nil { print("ops restricted (WRONG)") }
+  print("ops deleted")
+}

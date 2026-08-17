@@ -600,10 +600,23 @@ let manifest_parse (path : string) : (string * string) list =
        if line = "" || (String.length line >= 1 && line.[0] = '#') then ()
        else if line.[0] = '[' then begin
          if line.[String.length line - 1] <> ']' then fail !lineno "malformed section header";
-         section := String.sub line 1 (String.length line - 2);
-         if !section <> "runtime" && !section <> "build" then
-           fail !lineno (Printf.sprintf "unknown section [%s] (runtime and build exist)" !section)
+         (* accept `[[table.array]]` headers too (iteration 9c's
+            [[share.clients]]) by trimming the doubled brackets *)
+         let inner = String.sub line 1 (String.length line - 2) in
+         let inner =
+           if String.length inner >= 2 && inner.[0] = '[' && inner.[String.length inner - 1] = ']'
+           then String.sub inner 1 (String.length inner - 2)
+           else inner
+         in
+         section := inner;
+         if !section <> "runtime" && !section <> "build" && !section <> "share"
+            && !section <> "share.clients"
+         then
+           fail !lineno
+             (Printf.sprintf "unknown section [%s] (runtime and build exist)" !section)
        end
+       else if !section = "share" || !section = "share.clients" then
+         () (* iteration 9c manifest keys — parsed by the attach feature, ignored here *)
        else
          match String.index_opt line '=' with
          | None -> fail !lineno "expected `key = \"value\"`"

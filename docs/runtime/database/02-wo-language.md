@@ -2,6 +2,14 @@
 
 > A two-layer multi-paradigm language for an e-commerce platform with ACID transactions across relational, document, and graph storage.
 
+> **Query layer superseded (2026-08-15):** the SQL + Cypher query layer below
+> is design history — on the C stack, programs query their tables through the
+> language-integrated surface specified in
+> [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md)
+> (fork 1's decision record). This document remains the reference for the
+> schema layer's vocabulary and for the `wo-db` prototype's engine semantics;
+> SQL text is at most a future export format, never a program surface.
+
 **Previous**: [Phase 1 — Database Evaluation](./01-evaluation.md) | **Next**: [Phase 3 — In-Memory Engine](./03-inmemory-engine.md) | **Index**: [database.md](../database.md)
 
 ---
@@ -65,7 +73,7 @@ That three-paradigm sketch is **the execution substrate** — the thing the engi
 
 Both layers are `.wo` files — same extension, same tooling, same parser front-end. They differ in role:
 
-- The **schema layer** names the data model once. One `type` declaration per entity covers what the three paradigm blocks cover today (relational columns, embedded documents, graph edges) plus constraints, computed fields, policies, and triggers. It is the source of truth for codegen ([Phase 5](./05-go-sdk.md)) and for the full-stack blocks ([Phase 6](./06-lowcode-fullstack.md)).
+- The **schema layer** names the data model once. One `type` declaration per entity covers what the three paradigm blocks cover today (relational columns, embedded documents, graph edges) plus constraints, computed fields, policies, and triggers. It is the source of truth for codegen (Phase 5) and for the full-stack blocks ([Phase 6](./06-lowcode-fullstack.md)).
 - The **query layer** is the operational surface. SQL and Cypher stay as-is — they are universally legible, every backend developer already reads them — but five things are tightened so the three grammars share semantics (parameters, `RETURNING`, dotted paths, transactions, `LIVE`).
 
 The two layers ship on different timelines. The query layer is Phase 2 (already prototyped at [`prototypes/wo-db/`](../../../prototypes/wo-db/)). The schema layer enters when Phase 5 codegen needs a single authoritative input.

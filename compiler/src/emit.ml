@@ -152,7 +152,7 @@ let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
    ============================================================ *)
 
 let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
-let wob_version = 2 (* v2: per-field class-table metadata *)
+let wob_version = 3 (* v3: v2 + per-class secondary-index metadata *)
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
 let k_int = 0
@@ -257,6 +257,7 @@ let b_map_val_at = 38
 let b_multi_set = 39
 let b_map_get_opt = 59
 let b_text_copy = 60
+let b_db_insert = 61
 
 (* json (runtime/src/json.c): encode takes the value's static kind as its
    second argument, decode the class id to build as its second. *)
@@ -348,6 +349,16 @@ type clsrec = {
   cr_gc : bool;
   cr_fields : (string * Ast.field_ty) array;
   cr_methods : string list; (* method names, declaration order *)
+  (* iteration 9 Task 4: (unique, column indices) per secondary index —
+     `@table(index: [a, b])` entries (non-unique, composite) plus one
+     unique single-column entry per `@unique` field. Serialized as the v3
+     class-record tail; the engine builds its runtime indexes from this. *)
+  cr_indexes : (bool * int array) list;
+  cr_is_table : bool; (* has @table — its instances are row ids (iteration 9b) *)
+  (* backlink fields (iteration 9b): name -> (source class, source field).
+     Virtual — not in cr_fields, no stored column; `d.staff` reads them by
+     probing the source class's index on the source field. *)
+  cr_backlinks : (string * (string * string)) list;
 }
 
 type ifacerec = {
@@ -772,6 +783,44 @@ let field_kind (p : pctx) (ft : Ast.field_ty) : int =
 
 let class_of_name (p : pctx) (n : string) : int option = SM.find_opt n p.p_class_id
 
+(* iteration 9b: a @table class's instances are row ids, so field access on
+   one reads through the engine (DB_GET_FIELD) rather than GETF. *)
+let is_table_class (p : pctx) (cid : int) : bool =
+  cid >= 0 && cid < Array.length p.p_classes && p.p_classes.(cid).cr_is_table
+
+let b_str_lt = 67
+let b_db_update_field = 62
+let b_db_delete = 63
+let b_db_scan = 64
+let b_db_get_field = 65
+let b_db_probe = 66
+
+(* iteration 9b: `d.staff` where staff is `backlink Employee.dept` reads by
+   probing Employee's index on its `dept` column. Resolve to (source cid,
+   index number) — None if the source field is not a declared index (a
+   backlink without a backing index has no efficient read and is rejected). *)
+let backlink_target (p : pctx) (base_cid : int) (fname : string) : (int * int) option =
+  match List.assoc_opt fname p.p_classes.(base_cid).cr_backlinks with
+  | None -> None
+  | Some (src_class, src_field) -> (
+    match class_of_name p src_class with
+    | None -> None
+    | Some scid ->
+      let sc = p.p_classes.(scid) in
+      (* stored column index of the source field *)
+      let col = ref (-1) in
+      Array.iteri (fun i (n, _) -> if n = src_field then col := i) sc.cr_fields;
+      if !col < 0 then None
+      else
+        (* the index whose single column is that field *)
+        let rec find n = function
+          | [] -> None
+          | (_, cols) :: tl ->
+            if Array.length cols = 1 && cols.(0) = !col then Some (scid, n)
+            else find (n + 1) tl
+        in
+        find 0 sc.cr_indexes)
+
 let field_of (p : pctx) (cid : int) (fname : string) : (int * Ast.field_ty) option =
   let fs = p.p_classes.(cid).cr_fields in
   let rec go i = if i >= Array.length fs then None else
@@ -941,6 +990,22 @@ let variant_tag_value (p : pctx) (u : Types.union_info) (vi : Types.variant_info
     | None -> 0 (* unreachable: pass 1 registers every payload-union variant *)
   else vi.Types.vi_tag
 
+(* iteration 9b: a query's element type, as the name a `Multi` carries.
+   `select x` yields the source class (a row id typed as the class);
+   `select x.field` yields that field's type; anything else falls back to
+   Int (the slice's shapes are these two). *)
+let query_elem_scalar (p : pctx) (q : Ast.query) ~(src : string) : string =
+  match q.Ast.q_select.Ast.kind with
+  | Ast.Ident v when v = q.Ast.q_var -> src (* select the whole row: element = source class *)
+  | Ast.Field ({ Ast.kind = Ast.Ident v; _ }, fname) when v = q.Ast.q_var -> (
+    match class_of_name p src with
+    | Some cid -> (
+      match field_of p cid fname with
+      | Some (_, ty) -> ( match unwrap ty with Scalar n -> n | _ -> "Int")
+      | None -> "Int")
+    | None -> "Int")
+  | _ -> "Int"
+
 let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
@@ -970,10 +1035,17 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
-      match unwrap bt with
+      (* a `ref C` navigates into C: the target is a table row id *)
+      match (match unwrap bt with Ref c -> Scalar c | other -> other) with
       | Scalar cn -> (
         match class_of_name p cn with
-        | Some cid -> ( match field_of p cid fname with Some (_, t) -> Some t | None -> None)
+        | Some cid -> (
+          match field_of p cid fname with
+          | Some (_, t) -> Some t
+          | None -> (
+            match List.assoc_opt fname p.p_classes.(cid).cr_backlinks with
+            | Some (sc, _) -> Some (Multi sc)
+            | None -> None))
         | None -> None)
       | _ -> None)
     | None -> None)
@@ -1054,6 +1126,16 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
     | Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Some (Scalar "Bool")
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
+  | Insert _ -> Some (Scalar "Int")
+  | Delete _ -> Some (Scalar "Int")
+  | Query q ->
+    let src =
+      match q.Ast.q_src with
+      | Ast.QTable cn -> cn
+      | Ast.QNav nav -> (
+        match ty_of_expr p f nav with Some t -> (match unwrap t with Multi c -> c | Scalar c -> c | _ -> "") | None -> "")
+    in
+    Some (Multi (query_elem_scalar p q ~src))
   | Interp _ -> Some (Scalar "Text")
   | DbStub _ -> None
   | Switch (subject, arms) -> (
@@ -1344,7 +1426,8 @@ let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
     match name_of (Ast.Scalar e) with
     | Some n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
     | None -> wob_none)
-  | Ast.Ref _ | Ast.Nullable _ -> wob_none
+  | Ast.Ref n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
+  | Ast.Backlink _ | Ast.Nullable _ -> wob_none
 
 let field_elem_meta (p : pctx) (ty : Ast.field_ty) : int =
   match unwrap ty with
@@ -1583,9 +1666,22 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   | Field (base, fname) -> (
     match ty_of_expr p f base with
     | Some bt -> (
-      match unwrap bt with
+      match (match unwrap bt with Ref c -> Scalar c | other -> other) with
       | Scalar cn -> (
         match class_of_name p cn with
+        | Some cid when is_table_class p cid && backlink_target p cid fname <> None -> (
+          (* `d.staff`: probe the source class's index for rows referencing
+             this row's id. Window: [class, index, key(=base id)]. *)
+          match backlink_target p cid fname with
+          | Some (scid, ino) ->
+            let b = emit_operand p f v base in
+            let w = alloc_temps p f e.pos 3 in
+            put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p scid)));
+            put f (ins_abx op_loadk (w + 1) (check_bx p f e.pos "constant" (const_int p ino)));
+            put f (ins_abc op_move (w + 2) b 0);
+            sync_mask p f v e.id;
+            put f (ins_abc op_builtin dst w b_db_probe)
+          | None -> ())
         | Some cid -> (
           match field_of p cid fname with
           | Some (idx, _) ->
@@ -1603,7 +1699,17 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
               f.f_stmt_drops <- g :: f.f_stmt_drops;
               f.f_esc_drops <- g :: f.f_esc_drops
             end;
-            put f (ins_abc op_getf dst b (check_field_idx p f e.pos idx))
+            if is_table_class p cid then begin
+              (* a table-class value is its row id; read the column from the
+                 engine. Window: [class-id, id, field-idx]. *)
+              let w = alloc_temps p f e.pos 3 in
+              put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p cid)));
+              put f (ins_abc op_move (w + 1) b 0);
+              put f (ins_abx op_loadk (w + 2) (check_bx p f e.pos "constant" (const_int p idx)));
+              sync_mask p f v e.id;
+              put f (ins_abc op_builtin dst w b_db_get_field)
+            end
+            else put f (ins_abc op_getf dst b (check_field_idx p f e.pos idx))
           | None ->
             err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
               ~message:(Printf.sprintf "`%s` has no field `%s`" cn fname);
@@ -1654,6 +1760,43 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     put f (ins_abc op_neg dst b 0)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
+  | Insert (cn, fields) -> emit_insert p f v ~dst e cn fields
+  | Delete target -> (
+    match ty_of_expr p f target with
+    | Some bt -> (
+      match (match unwrap bt with Ref c -> Scalar c | o -> o) with
+      | Scalar cn -> (
+        match class_of_name p cn with
+        | Some cid when is_table_class p cid ->
+          (* reserve dst past the window: in tail position dst == the first
+             window reg, and moving the id into dst would clobber the class
+             id — the disassembly-caught bug *)
+          let outer = f.f_temp in
+          if f.f_temp <= dst then f.f_temp <- dst + 1;
+          let w = alloc_temps p f e.pos 2 in
+          put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p cid)));
+          let save = f.f_temp in
+          emit_expr p f v ~dst:(w + 1) target;
+          f.f_temp <- save;
+          (* keep the id so `delete x` can be used as an expression *)
+          put f (ins_abc op_move dst (w + 1) 0);
+          sync_mask p f v e.id;
+          f.f_cur_line <- e.pos.line;
+          put f (ins_abc op_builtin w w b_db_delete);
+          f.f_temp <- outer
+        | _ ->
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:"`delete` target is not a table row";
+          put f (ins_abx op_loadk dst (const_int p 0)))
+      | _ ->
+        err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+          ~message:"`delete` target is not a table row";
+        put f (ins_abx op_loadk dst (const_int p 0)))
+    | None ->
+      err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+        ~message:"cannot resolve the `delete` target's type";
+      put f (ins_abx op_loadk dst (const_int p 0)))
+  | Query q -> emit_query p f v ~dst e q
   | Interp inner -> (
     (* haxe-parity Task 2: the type-directed half of the interpolation
        desugar (parser.ml's own doc comment on Ast.Interp) — a Text
@@ -2346,6 +2489,324 @@ and emit_ctor (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (c
           | _ -> ())
         ci.Types.fields);
     f.f_temp <- outer
+
+(* iteration 9 Task 3: `insert Class { ... }` lowers to one DB_INSERT
+   builtin whose window is [class-id const, then one slot per DECLARED
+   field in declaration order] — the executor walks the class table's
+   kinds, so slot order must be the table's, not the literal's. A field
+   the literal omits gets its default (same emit_default_value the ctor
+   uses) or, for a `?` field, its kind's own nil (WO_NIL_SCALAR for a
+   nullable scalar, the zero word otherwise). The engine COPIES every
+   value at the row API, so after the builtin every freshly built
+   argument is still this frame's to drop — same reap as push/set. *)
+and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
+    (q : Ast.query) : unit =
+  (* iteration 9b slice: from/where/select over a table scan. group/order/
+     take/navigation are diagnosed in types.ml, so a written image never
+     reaches this with them set. Lowered to an ordinary bytecode loop over
+     DB_SCAN's materialized id list — no plan tree, no text. *)
+  let cn =
+    match q.Ast.q_src with
+    | Ast.QTable cn -> cn
+    | Ast.QNav nav -> (
+      (* the source's element type is the range var's class *)
+      match ty_of_expr p f nav with
+      | Some t -> ( match unwrap t with Multi c -> c | Scalar c -> c | _ -> "")
+      | None -> "")
+  in
+  match class_of_name p cn with
+  | None ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+      ~message:(Printf.sprintf "query over `%s`, which is not a declared table class" cn);
+    put f (ins_abx op_loadk dst (const_int p 0))
+  | Some cid ->
+    let elem_name = query_elem_scalar p q ~src:cn in
+    let elem = Scalar elem_name in
+    (* a table-class element is a row ID (a scalar), not a heap pointer — so
+       the result container is SCALAR-kinded even though the element TYPES as
+       the class; getting this wrong drops an id as a pointer (ASan SEGV) *)
+    let elem_kind =
+      match class_of_name p elem_name with
+      | Some ecid when is_table_class p ecid -> 0 (* WO_K_SCALAR *)
+      | _ -> field_kind p elem
+    in
+    (* reserve dst past the loop's working registers (same guard emit_ctor
+       uses): dst holds the result multi every push writes into *)
+    let outer = f.f_temp in
+    if f.f_temp <= dst then f.f_temp <- dst + 1;
+    (* loop-carried registers, allocated once above dst, never reset *)
+    let scan = alloc_temp p f e.pos in
+    let idx = alloc_temp p f e.pos in
+    let len = alloc_temp p f e.pos in
+    let idreg = alloc_temp p f e.pos in
+    let body_base = f.f_temp in
+    (* scan -> multi of ids; result multi -> dst *)
+    sync_mask p f v e.id;
+    f.f_cur_line <- e.pos.line;
+    (match q.Ast.q_src with
+    | Ast.QTable _ ->
+      put f (ins_abx op_loadk scan (check_bx p f e.pos "constant" (const_int p cid)));
+      put f (ins_abc op_builtin scan scan b_db_scan)
+    | Ast.QNav nav ->
+      (* the navigation (a backlink) already yields a multi of source ids *)
+      let save = f.f_temp in
+      f.f_temp <- scan + 1;
+      emit_expr p f v ~dst:scan nav;
+      f.f_temp <- save);
+    put f (ins_abc op_builtin dst elem_kind b_multi_new);
+    put f (ins_abc op_builtin len scan b_len);
+    put f (ins_abx op_loadk idx (check_bx p f e.pos "constant" (const_int p 0)));
+    (* bind the range var to the current id (typed as the class), so field
+       access inside where/select routes through DB_GET_FIELD *)
+    let saved_env = f.f_env in
+    f.f_env <- (q.Ast.q_var, (idreg, Scalar cn)) :: f.f_env;
+    ignore body_base;
+    let top = here f in
+    f.f_temp <- body_base;
+    let tc = alloc_temp p f e.pos in
+    put f (ins_abc op_lt tc idx len);
+    let jz_exit = here f in
+    put f (ins_asbx op_jz tc 0);
+    (* id = multi_get(scan, idx) *)
+    let w = alloc_temps p f e.pos 2 in
+    put f (ins_abc op_move w scan 0);
+    put f (ins_abc op_move (w + 1) idx 0);
+    put f (ins_abc op_builtin idreg w b_multi_get);
+    (* where guards: any false skips the push *)
+    let skips = ref [] in
+    List.iter
+      (fun w_expr ->
+        let save = f.f_temp in
+        let wr = emit_operand p f v w_expr in
+        skips := here f :: !skips;
+        put f (ins_asbx op_jz wr 0);
+        f.f_temp <- save)
+      q.Ast.q_wheres;
+    (* select -> push into dst (copying a Text element the container owns) *)
+    let save = f.f_temp in
+    let sel = alloc_temp p f e.pos in
+    emit_expr p f v ~dst:sel q.Ast.q_select;
+    if elem_kind = 3 then put f (ins_abc op_builtin sel sel b_text_copy);
+    let pw = alloc_temps p f e.pos 2 in
+    put f (ins_abc op_move pw dst 0);
+    put f (ins_abc op_move (pw + 1) sel 0);
+    put f (ins_abc op_builtin pw pw b_multi_push);
+    f.f_temp <- save;
+    (* skip target: increment and loop *)
+    let cont = here f in
+    List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:e.pos pc cont) !skips;
+    f.f_temp <- body_base;
+    let one = alloc_temp p f e.pos in
+    put f (ins_abx op_loadk one (check_bx p f e.pos "constant" (const_int p 1)));
+    put f (ins_abc op_add idx idx one);
+    let back = here f in
+    put f (ins_asbx op_jmp 0 0);
+    patch_jump p f ~file:f.f_file ~pos:e.pos back top;
+    let exit_pc = here f in
+    patch_jump p f ~file:f.f_file ~pos:e.pos jz_exit exit_pc;
+    f.f_env <- saved_env;
+    (* the scan's id list was this query's own, dropped now *)
+    put f (ins_abc op_drop scan 0 0);
+    (* ---- order by (whole-row selection sort) ----------------------------
+       Elements of dst are row ids; the key re-reads a field through the
+       range var. Selection sort is O(n^2) but the result sets here are
+       small and this is KISS by design (no cost planner). Only the
+       whole-row + field-key shape is supported; grouped/projection ordering
+       lands with group-by. *)
+    (match q.Ast.q_order with
+    | Some (key, desc) ->
+      f.f_temp <- body_base;
+      let n = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin n dst b_count);
+      let i = alloc_temp p f e.pos in
+      let j = alloc_temp p f e.pos in
+      let best = alloc_temp p f e.pos in
+      let elem_j = alloc_temp p f e.pos in
+      let elem_b = alloc_temp p f e.pos in
+      let sort_scratch = f.f_temp in
+      put f (ins_abx op_loadk i (check_bx p f e.pos "constant" (const_int p 0)));
+      let oi = here f in (* outer: while i < n *)
+      let oc = alloc_temp p f e.pos in
+      put f (ins_abc op_lt oc i n);
+      let ojz = here f in
+      put f (ins_asbx op_jz oc 0);
+      put f (ins_abc op_move best i 0);
+      let oneA = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneA (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add j i oneA);
+      let ij = here f in (* inner: while j < n *)
+      let ic = alloc_temp p f e.pos in
+      put f (ins_abc op_lt ic j n);
+      let ijz = here f in
+      put f (ins_asbx op_jz ic 0);
+      (* elem_j = multi_get(dst,j); elem_b = multi_get(dst,best) *)
+      let gw = alloc_temps p f e.pos 2 in
+      put f (ins_abc op_move gw dst 0);
+      put f (ins_abc op_move (gw + 1) j 0);
+      put f (ins_abc op_builtin elem_j gw b_multi_get);
+      put f (ins_abc op_move (gw + 1) best 0);
+      put f (ins_abc op_builtin elem_b gw b_multi_get);
+      (* keys: bind range var to elem_j / elem_b, eval key expr *)
+      let saved_env2 = f.f_env in
+      f.f_temp <- sort_scratch;
+      f.f_env <- (q.Ast.q_var, (elem_j, Scalar cn)) :: saved_env2;
+      (* key kind must be read with the range var BOUND — else ty_of_expr of
+         `x.name` sees x unbound, returns None, and a Text key silently falls
+         to the pointer-comparing op_lt (the wrong-order bug) *)
+      let key_is_text =
+        match ty_of_expr p f key with Some t -> field_kind p t = 3 | None -> false
+      in
+      let kj = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:kj key;
+      f.f_env <- (q.Ast.q_var, (elem_b, Scalar cn)) :: saved_env2;
+      let kb = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:kb key;
+      f.f_env <- saved_env2;
+      (* cmp: for asc, kj < kb -> best=j; for desc, kj > kb (== kb < kj). *)
+      let cmp = alloc_temp p f e.pos in
+      let lt a b =
+        if key_is_text then begin
+          let save = f.f_temp in
+          let w = alloc_temps p f e.pos 2 in
+          put f (ins_abc op_move w a 0);
+          put f (ins_abc op_move (w + 1) b 0);
+          put f (ins_abc op_builtin cmp w b_str_lt);
+          f.f_temp <- save
+        end
+        else put f (ins_abc op_lt cmp a b)
+      in
+      if desc then lt kb kj else lt kj kb;
+      let cjz = here f in
+      put f (ins_asbx op_jz cmp 0);
+      put f (ins_abc op_move best j 0);
+      let after = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos cjz after;
+      f.f_temp <- sort_scratch;
+      let oneB = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneB (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add j j oneB);
+      let iback = here f in
+      put f (ins_asbx op_jmp 0 0);
+      patch_jump p f ~file:f.f_file ~pos:e.pos iback ij;
+      let iexit = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos ijz iexit;
+      (* swap dst[i], dst[best]: read both, multi_set both *)
+      f.f_temp <- sort_scratch;
+      let vi = alloc_temp p f e.pos in
+      let vb = alloc_temp p f e.pos in
+      let sw = alloc_temps p f e.pos 3 in
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) i 0);
+      put f (ins_abc op_builtin vi sw b_multi_get);
+      put f (ins_abc op_move (sw + 1) best 0);
+      put f (ins_abc op_builtin vb sw b_multi_get);
+      (* dst[i] = vb *)
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) i 0);
+      put f (ins_abc op_move (sw + 2) vb 0);
+      put f (ins_abc op_builtin sw sw b_multi_set);
+      (* dst[best] = vi *)
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) best 0);
+      put f (ins_abc op_move (sw + 2) vi 0);
+      put f (ins_abc op_builtin sw sw b_multi_set);
+      f.f_temp <- sort_scratch;
+      let oneC = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk oneC (check_bx p f e.pos "constant" (const_int p 1)));
+      put f (ins_abc op_add i i oneC);
+      let oback = here f in
+      put f (ins_asbx op_jmp 0 0);
+      patch_jump p f ~file:f.f_file ~pos:e.pos oback oi;
+      let oexit = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos ojz oexit
+    | None -> ());
+    (* ---- take N: slice dst to [0, N) --------------------------------- *)
+    (match q.Ast.q_take with
+    | Some tk ->
+      f.f_temp <- body_base;
+      let nreg = alloc_temp p f e.pos in
+      emit_expr p f v ~dst:nreg tk;
+      (* clamp N to count(dst) so slice never runs past the end *)
+      let cnt = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin cnt dst b_count);
+      let over = alloc_temp p f e.pos in
+      put f (ins_abc op_lt over cnt nreg); (* count < N ? use count *)
+      let jz2 = here f in
+      put f (ins_asbx op_jz over 0);
+      put f (ins_abc op_move nreg cnt 0);
+      let aft = here f in
+      patch_jump p f ~file:f.f_file ~pos:e.pos jz2 aft;
+      let sw = alloc_temps p f e.pos 3 in
+      let zero = alloc_temp p f e.pos in
+      put f (ins_abx op_loadk zero (check_bx p f e.pos "constant" (const_int p 0)));
+      put f (ins_abc op_move sw dst 0);
+      put f (ins_abc op_move (sw + 1) zero 0);
+      put f (ins_abc op_move (sw + 2) nreg 0);
+      let sliced = alloc_temp p f e.pos in
+      put f (ins_abc op_builtin sliced sw b_slice);
+      put f (ins_abc op_drop dst 0 0); (* the pre-slice multi is discarded *)
+      put f (ins_abc op_move dst sliced 0)
+    | None -> ());
+    f.f_temp <- outer
+
+and emit_insert (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) (cn : string)
+    (fields : (string * Ast.expr) list) : unit =
+  match class_of_name p cn with
+  | None ->
+    err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+      ~message:(Printf.sprintf "insert into `%s`, which is not a declared class" cn);
+    put f (ins_abx op_loadk dst (const_int p 0))
+  | Some cid ->
+    let fcnt = Array.length p.p_classes.(cid).cr_fields in
+    let base = alloc_temps p f e.pos (fcnt + 1) in
+    put f (ins_abx op_loadk base (check_bx p f e.pos "constant" (const_int p cid)));
+    (* every field the literal names lands in ITS declared slot *)
+    List.iter
+      (fun ((fname : string), (fe : Ast.expr)) ->
+        match field_of p cid fname with
+        | None ->
+          err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+            ~message:(Printf.sprintf "`%s` has no field `%s`" cn fname)
+        | Some (idx, fty) ->
+          let save = f.f_temp in
+          emit_expr p f v ~dst:(base + 1 + idx) ~expected:fty fe;
+          f.f_temp <- save)
+      fields;
+    (* omitted fields: declared default, else the kind's own nil *)
+    let provided = List.map fst fields in
+    (match Types.StringMap.find_opt cn p.p_syms.Types.classes with
+    | None -> ()
+    | Some (ci : Types.class_info) ->
+      List.iter
+        (fun (fname, fty, fdefault, _) ->
+          if not (List.mem fname provided) then
+            match field_of p cid fname with
+            | None -> ()
+            | Some (idx, dfty) -> (
+              match fdefault with
+              | Some d ->
+                let save = f.f_temp in
+                emit_default_value p f ~dst:(base + 1 + idx) ~fty:dfty ~pos:e.pos d;
+                f.f_temp <- save
+              | None ->
+                let nil_word =
+                  if is_nullable_scalar p fty then const_int p nil_scalar_word
+                  else const_int p 0
+                in
+                put f (ins_abx op_loadk (base + 1 + idx) (check_bx p f e.pos "constant" nil_word))))
+        ci.Types.fields);
+    sync_mask p f v e.id;
+    f.f_cur_line <- e.pos.line;
+    put f (ins_abc op_builtin dst base b_db_insert);
+    (* the engine copied: fresh argument values die here *)
+    List.iter
+      (fun ((fname : string), (fe : Ast.expr)) ->
+        match field_of p cid fname with
+        | None -> ()
+        | Some (idx, _) ->
+          drop_fresh_owned ~keep:dst p f (base + 1 + idx) fe;
+          drop_fresh_text ~keep:dst p f (base + 1 + idx) fe)
+      fields
 
 (* The default expressions the emitter can lower (haxe-parity Task 4):
    the literal shapes the sample's own typedefs use — Int (optionally
@@ -3224,6 +3685,27 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         | None ->
           err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
             ~message:(Printf.sprintf "assignment into `%s`, which is not a declared class" cn)
+        | Some cid when is_table_class p cid -> (
+          (* iteration 9b: `e.salary = v` where e is a table row updates the
+             engine (DB_UPDATE_FIELD: class, id, field, value) — the row's
+             own indexes are maintained at the choke point *)
+          match field_of p cid fname with
+          | None ->
+            err p ~code:cannot_lower_code ~file:f.f_file ~pos:target.pos
+              ~message:(Printf.sprintf "`%s` has no field `%s`" cn fname)
+          | Some (idx, fty) ->
+            let w = alloc_temps p f target.pos 4 in
+            put f (ins_abx op_loadk w (check_bx p f target.pos "constant" (const_int p cid)));
+            let save = f.f_temp in
+            emit_expr p f v ~dst:(w + 1) base;
+            f.f_temp <- save;
+            put f (ins_abx op_loadk (w + 2) (check_bx p f target.pos "constant" (const_int p idx)));
+            let save = f.f_temp in
+            emit_expr p f v ~dst:(w + 3) ~expected:fty value;
+            f.f_temp <- save;
+            sync_mask p f v s.s_id;
+            f.f_cur_line <- s.s_pos.line;
+            put f (ins_abc op_builtin w w b_db_update_field))
         | Some cid -> (
           match field_of p cid fname with
           | None ->
@@ -3852,6 +4334,18 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
     ~(module_syms : (string, Types.symbols) Hashtbl.t) (coll : Diag.Collector.t) (units : input list) :
     string =
   let colliding = compute_colliding_fn_names ~module_of units in
+  (* iteration 9 Task 4: index-declaration problems found while building
+     clsrecs — reported once a file/pos-bearing context exists below *)
+  let index_col_err : (Ast.pos * string) option ref = ref None in
+  let index_err_file = ref "" in
+  let ref_index_of_name (fnames : string list) (n : string) : int =
+    let rec go i = function
+      | [] -> 0 (* unknown column: the caller records the diagnostic *)
+      | x :: tl -> if x = n then i else go (i + 1) tl
+    in
+    go 0 fnames
+  in
+  let p_syms_for_indexes = syms in
   (* ---- pass 1: declarations, in discovery then declaration order ---- *)
   let classes = ref [] and class_id = ref SM.empty and nclasses = ref 0 in
   let ifaces = ref [] and iface_id = ref SM.empty and nifaces = ref 0 and nslots = ref 0 in
@@ -3890,6 +4384,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
         (function
           | Ast.Class (c : Ast.class_decl) ->
             if not (SM.mem c.name !class_id) then begin
+              (if !index_col_err = None then index_err_file := u.file);
               let shape = if c.is_record then Some (record_shape_key c) else None in
               let alias_of =
                 match shape with Some key -> Hashtbl.find_opt record_shape key | None -> None
@@ -3907,10 +4402,77 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                 | Some key -> Hashtbl.replace record_shape key cid
                 | None -> ());
                 classes :=
-                  { cr_name = c.name; cr_gc = c.is_gc;
-                    cr_fields =
-                      Array.of_list (List.map (fun (fl : Ast.field) -> (fl.name, fl.ty)) c.fields);
-                    cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods }
+                  (let fnames =
+                     List.filter_map
+                       (fun (fl : Ast.field) ->
+                         match fl.Ast.ty with Ast.Backlink _ -> None | _ -> Some fl.Ast.name)
+                       c.fields
+                   in
+                   let col_of n = ref_index_of_name fnames n in
+                   let is_indexable (fl : Ast.field) =
+                     match Types.wob_kind_of_typ p_syms_for_indexes (Types.typ_of_field_ty (unwrap fl.Ast.ty)) with
+                     | Types.WO_K_SCALAR | Types.WO_K_TEXT -> true
+                     | _ -> false
+                   in
+                   let table_indexes =
+                     match c.Ast.table with
+                     | None -> []
+                     | Some cfg ->
+                       List.map
+                         (fun cols -> (false, Array.of_list (List.map col_of cols)))
+                         cfg.Ast.indexes
+                   in
+                   let unique_indexes =
+                     List.concat_map
+                       (fun (fl : Ast.field) ->
+                         if List.mem "unique" fl.Ast.annotations then begin
+                           if not (is_indexable fl) then
+                             index_col_err := Some (c.Ast.pos, Printf.sprintf
+                               "`@unique` on `%s.%s`: only scalar and Text fields can be indexed"
+                               c.Ast.name fl.Ast.name);
+                           [ (true, [| col_of fl.Ast.name |]) ]
+                         end
+                         else [])
+                       c.fields
+                   in
+                   (match c.Ast.table with
+                   | Some cfg ->
+                     List.iter
+                       (fun cols ->
+                         List.iter
+                           (fun cn ->
+                             match List.find_opt (fun (fl : Ast.field) -> fl.Ast.name = cn) c.fields with
+                             | None ->
+                               index_col_err := Some (c.Ast.pos, Printf.sprintf
+                                 "`@table(index: ...)` on `%s` names `%s`, which is not a field"
+                                 c.Ast.name cn)
+                             | Some fl ->
+                               if not (is_indexable fl) then
+                                 index_col_err := Some (c.Ast.pos, Printf.sprintf
+                                   "`@table(index: ...)` on `%s`: `%s` is not a scalar or Text field"
+                                   c.Ast.name cn))
+                           cols)
+                       cfg.Ast.indexes
+                   | None -> ());
+                   { cr_name = c.name; cr_gc = c.is_gc;
+                     cr_fields =
+                       Array.of_list
+                         (List.filter_map
+                            (fun (fl : Ast.field) ->
+                              match fl.Ast.ty with
+                              | Ast.Backlink _ -> None (* virtual: no stored column *)
+                              | _ -> Some (fl.Ast.name, fl.Ast.ty))
+                            c.fields);
+                     cr_methods = List.map (fun (m : Ast.method_decl) -> m.name) c.methods;
+                     cr_indexes = table_indexes @ unique_indexes;
+                     cr_is_table = (c.Ast.table <> None);
+                     cr_backlinks =
+                       List.filter_map
+                         (fun (fl : Ast.field) ->
+                           match fl.Ast.ty with
+                           | Ast.Backlink (sc, sf) -> Some (fl.Ast.name, (sc, sf))
+                           | _ -> None)
+                         c.fields })
                   :: !classes
             end
           | Ast.Union (ud : Ast.union_decl) ->
@@ -3930,7 +4492,8 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                     class_id := SM.add key cid !class_id;
                     incr nclasses;
                     classes :=
-                      { cr_name = key; cr_gc = false;
+                      { cr_name = key; cr_gc = false; cr_indexes = []; cr_is_table = false;
+                        cr_backlinks = [];
                         cr_fields = Array.of_list vd.Ast.v_fields;
                         cr_methods = [] }
                       :: !classes
@@ -3973,11 +4536,18 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
         class_id := SM.add name cid !class_id;
         incr nclasses;
         classes :=
-          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [] }
+          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [];
+            cr_indexes = []; cr_is_table = false; cr_backlinks = [] }
           :: !classes
       end)
     Types.predeclared_records;
   let class_id = !class_id in
+  (match !index_col_err with
+  | Some (pos, msg) ->
+    Diag.Collector.add coll
+      (Diag.error ~code:cannot_lower_code ~file:!index_err_file ~line:pos.Ast.line
+         ~col:pos.Ast.col ~message:msg ())
+  | None -> ());
   let p_classes = Array.of_list (List.rev !classes) in
   let p_ifaces = Array.of_list (List.rev !ifaces) in
   List.iter
@@ -4149,7 +4719,16 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
          needs when decode creates one. *)
       Array.iter (fun kidx -> Buf.u32 cls kidx) class_field_names.(cid);
       Array.iter (fun (_, ty) -> Buf.u32 cls (field_class_meta p ty)) c.cr_fields;
-      Array.iter (fun (_, ty) -> Buf.u32 cls (field_elem_meta p ty)) c.cr_fields)
+      Array.iter (fun (_, ty) -> Buf.u32 cls (field_elem_meta p ty)) c.cr_fields;
+      (* v3 tail (iteration 9 Task 4): the class's secondary indexes —
+         index_cnt, then per index: flags (bit0 unique), col_cnt, cols *)
+      Buf.u32 cls (List.length c.cr_indexes);
+      List.iter
+        (fun (uniq, cols) ->
+          Buf.u32 cls (if uniq then 1 else 0);
+          Buf.u32 cls (Array.length cols);
+          Array.iter (fun ci -> Buf.u32 cls ci) cols)
+        c.cr_indexes)
     p_classes;
   let ifs = Buf.create () in
   Array.iteri

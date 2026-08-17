@@ -65,6 +65,7 @@ uint32_t wb_class(wb_t *b, uint32_t name_const, uint32_t flags,
     for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, WOB_NONE);
     for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, WOB_NONE);
     for (uint32_t j = 0; j < field_cnt; j++) put_u32(&b->classes, 0);
+    put_u32(&b->classes, 0); /* v3: no secondary indexes in hand-built images */
     return b->class_cnt++;
 }
 

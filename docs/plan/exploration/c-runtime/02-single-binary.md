@@ -1,6 +1,6 @@
 # 02 — The end goal: the writeonce single binary on this runtime environment
 
-**Context sources:** [`00-plan.md`](./00-plan.md) (the runtime-environment phases, A–B ✅), [`01-architecture.md`](./01-architecture.md) (the one-address trace), [`../../../runtime/wo-language.md`](../../../runtime/wo-language.md) ("one binary per project; no runtime to install on the target host"; `.wo` has "its own lexer, parser, analyzer, and bytecode"), [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md)–[`12`](../../12-engine-disk-cutover.md) (the Rust product track this proves out), [`../../../runtime/database/02-wo-language.md`](../../../runtime/database/02-wo-language.md) (catalog + transaction semantics the payload carries).
+**Context sources:** [`00-plan.md`](./00-plan.md) (the runtime-environment phases, A–B ✅), [`01-architecture.md`](./01-architecture.md) (the one-address trace), `../../../runtime/wo-language.md` ("one binary per project; no runtime to install on the target host"; `.wo` has "its own lexer, parser, analyzer, and bytecode"), [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md)–[`12`](../../12-engine-disk-cutover.md) (the Rust product track this proves out), [`../../../runtime/database/02-wo-language.md`](../../../runtime/database/02-wo-language.md) (catalog + transaction semantics the payload carries).
 
 ## The end goal, stated once
 
@@ -85,6 +85,6 @@ Steps 1–2 and 4–6 exist in `wo-rt-c` today with the notes store standing in 
 ## Cross-references
 
 - [`00-plan.md`](./00-plan.md) — the kernel phases; [`01-architecture.md`](./01-architecture.md) — the one-address trace through the same stack.
-- [`../../../runtime/wo-language.md`](../../../runtime/wo-language.md) — the user-facing single-binary promise this document implements.
-- [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (13b methods), [`../../14-mvc-ui-implementation.md`](../../14-mvc-ui-implementation.md) (UI assets) — the payload-side tracks.
+- [`README.md`](../../../../README.md) — the user-facing single-binary promise this document implements.
+- [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (13b methods) — the payload-side track.
 - [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) — shard-key routing and 2PC the contract defers to.

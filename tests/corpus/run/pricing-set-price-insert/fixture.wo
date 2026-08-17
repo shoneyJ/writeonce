@@ -1,0 +1,23 @@
+-- Pricing-demo corpus, iteration 9 Task 3: the fixture that used to prove
+-- `insert` PARSES BUT TRAPS (DB_STUB, "engine not linked") now proves it
+-- EXECUTES -- the plan's promised diff. `insert` is a typed statement AND
+-- expression: it validates fields like a constructor literal and returns
+-- the new row's id, allocated by the engine (shard 0 of 1: 1, 2, ...).
+-- RAM-only here (no WO_DATA): the corpus never touches disk.
+class Price {
+  amount: Int
+}
+
+class Product {
+  prices: multi Price
+
+  fn set_price(amount: Int) -> Int {
+    return insert Price { amount: amount }
+  }
+}
+
+fn main() {
+  let prod = Product { prices: multi_new() }
+  print_int(prod.set_price(4999))
+  print_int(prod.set_price(5999))
+}

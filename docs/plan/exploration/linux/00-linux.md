@@ -1,6 +1,6 @@
 ## Linux Kernel Features
 
-Kernel primitives that the writeonce binary can leverage, mapped to the architectural needs identified in [docs/01-problem.md](../../../01-problem.md) and [docs/02-recovery.md](../../../02-recovery.md).
+Kernel primitives that the writeonce binary can leverage, mapped to the architectural needs identified in [docs/01-problem.md](../../../01-problem.md) and docs/02-recovery.md.
 
 ### Per-primitive reference cards
 

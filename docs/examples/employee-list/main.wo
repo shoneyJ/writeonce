@@ -1,0 +1,73 @@
+-- employee-list — program B of the cross-program story (iterations 9c/9d).
+-- Attaches to the RUNNING employee program (A) named by [connect.employee]
+-- in wo.toml: keypair handshake first (9d), then typed statements over the
+-- wire (9c). A registered this program read-only, so every mode here reads —
+-- except probe-write, which exists to prove the rights matrix refuses.
+--
+-- The `employee.` prefix is the manifest's connect-section name: these are
+-- A's tables, checked against A's shapes at compile time and re-verified by
+-- the schema handshake at attach. A stays the single writer; every statement
+-- below executes inside A.
+
+fn main(args: multi Text) -> Int {
+  if len(args) >= 1 and args[0] == "list" { return list(); }
+  if len(args) >= 1 and args[0] == "report" { return report(); }
+  if len(args) >= 2 and args[0] == "staff" { return staff(args[1]); }
+  if len(args) >= 1 and args[0] == "probe-write" { return probe_write(); }
+  print_err("usage:");
+  print_err("  employee-list list             every employee, with department");
+  print_err("  employee-list report           aggregates by department (A's own report, over the wire)");
+  print_err("  employee-list staff <dept>     one department's staff");
+  print_err("  employee-list probe-write      prove read-only: the insert must be DENIED");
+  return 1;
+}
+
+-- Every employee with forward ref navigation — each `e.dept.name` is a
+-- point read executing inside A.
+fn list() -> Int {
+  for e in from x in employee.Employee order by x.name select x {
+    print("EMP ${e.name} ${e.salary} ${e.dept.name}");
+  }
+  return 0;
+}
+
+-- Byte-identical output to A's own `employee report` — the 9c acceptance
+-- line: attach + query compose, and the wire changes nothing.
+fn report() -> Int {
+  let rows = from e in employee.Employee
+             group e by e.dept into g
+             order by avg(g.salary) desc
+             select { dept: g.key.name, headcount: count(g),
+                      avg_salary: avg(g.salary), min_salary: min(g.salary),
+                      max_salary: max(g.salary) };
+  for r in rows {
+    print("DEPT ${r.dept} headcount=${r.headcount} avg=${r.avg_salary} min=${r.min_salary} max=${r.max_salary}");
+  }
+  let payroll = sum(from e in employee.Employee select e.salary);
+  print("PAYROLL ${payroll}");
+  return 0;
+}
+
+-- Unique-name index probe + backlink scan, both executing in A.
+fn staff(name: Text) -> Int {
+  let ds = from d in employee.Department where d.name == name take 1 select d;
+  if len(ds) == 0 { print_err("no such department: ${name}"); return 1; }
+  for e in from s in ds[0].staff order by s.salary desc select s {
+    print("STAFF ${e.name} ${e.salary}");
+  }
+  return 0;
+}
+
+-- The rights matrix, exercised: this program is registered READ-ONLY, so
+-- the insert must trap with the access-denied code — caught here, printed,
+-- and nothing was applied or WAL-logged in A (the acceptance asserts A's
+-- row count is unchanged).
+fn probe_write() -> Int {
+  let id = try insert employee.Department { name: "Intruders" } catch (e) nil;
+  if id == nil {
+    print("DENIED write to employee.Department (registered read-only)");
+    return 4;
+  }
+  print_err("UNEXPECTED: write succeeded with id ${id} — rights not enforced");
+  return 1;
+}

@@ -90,19 +90,18 @@ Unchanged from CLAUDE.md's description: `rt` is the monolithic Stage-2 runtime p
 
 ```
 docs/
-├── 01…08-*.md           numbered design docs (this file is 08)
-├── writeonce-pl.md      language positioning
-├── runtime/             user-facing language overview + the 7-phase database series
-├── examples/            blog/, ecommerce/, pricing/ samples; ⏳ log-watcher/ (plan 10)
+├── 00-*,01,08-*.md      status / principles / problem / structure docs
+├── runtime/             the 7-phase database design series + runtime concept refs
+├── examples/            log-watcher/, employee/, employee-list/ samples
 ├── plan/                numbered engineering plans 00–16, linux/ cards, assembly/,
-│   ├── exploration/     c-runtime/ (A–F, done), ui/ (htmlx track), colibri/
+│   ├── exploration/     c-runtime/ (A–F, done), linux/, postgresql/, assembly/
 │   └── oop-vm/          ⏳ the OOP-track contracts: 00-wob-format, 01-error-catalog,
 │                        02-corpus, 03-shard-actor, 04-db-binding, 05-http-service,
 │                        06-ui-live, 07-systems-stdlib
 ├── superpowers/
 │   ├── specs/           the two approved track specs (2026-08-01)
 │   └── plans/           implementation plans 1–10 (2026-08-01, prose-only)
-└── future-scope/, cm.md legacy notes
+└── cm.md               legacy notes
 ```
 
 Repo rule restated: documentation belongs here; code directories keep one orientation README each.

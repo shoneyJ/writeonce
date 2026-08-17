@@ -42,6 +42,13 @@
   loops, eventfd mail, the machinery this iteration lifts into `wovm`.
 - The VM's object header has carried a shard id since iteration 2 — no
   relayout.
+- **Gated by the benchmark (2026-08-15):** this is the "optimize
+  multithreading" lever of the performance arc — thread-per-core is a
+  throughput/scale claim, so landing it means re-running iteration
+  [9e](09e-durability-throughput-scale.md) at the connection/concurrency
+  scale it unlocks and recording the before/after delta. It is also where
+  the io_uring write path ([9f](09f-io-uring-commit.md)) gets a thread to
+  overlap durability against.
 
 ## Proposed Solution
 

@@ -2,6 +2,8 @@
 
 #include "builtin.h"
 
+#include "db.h" /* database/src — the engine's statement executors */
+
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -68,6 +70,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
     if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
+    if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) return wo_builtin_db(vm, R, ins, msg);
     switch (C) {
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;
@@ -247,6 +250,10 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "missing map key";
             return WO_T_KEY;
         }
+        return 0;
+    }
+    case WO_B_STR_LT: {
+        R[A] = elem_cmp(WO_K_TEXT, R[B], R[B + 1]) < 0 ? 1 : 0;
         return 0;
     }
     case WO_B_TEXT_COPY: { /* nil copies to nil: a `?Text` crosses this boundary
