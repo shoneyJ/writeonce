@@ -10,8 +10,7 @@ description = "The Haxe log-watcher ported file-for-file: the systems-track samp
 [runtime]
 wo = ">= 0.1"
 
-# `woc .` in this directory (or `woc docs/examples/log-watcher` from the
-# repo root) builds target/log-watcher from this manifest. Paths resolve
-# against this file's directory.
-[build]
-runtime = "../../../runtime/wovm"
+# `woc <dir>` builds target/log-watcher from this manifest. No runtime path is
+# pinned here so the project is portable: an installed `woc` finds `wovm` beside
+# its own binary. For an in-repo build, point woc at the freshly built VM with
+# WO_RUNTIME=<repo>/runtime/wovm — the module justfile's `build` recipe does.
