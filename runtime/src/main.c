@@ -17,6 +17,12 @@
 #include "vm.h"
 #include "wal.h"
 
+/* stamped by the Makefile from the repo-root VERSION file; the fallback keeps
+ * a hand-compiled main.c building. `just dist` asserts it matches `woc`. */
+#ifndef WO_VERSION
+#define WO_VERSION "0.0.0-dev"
+#endif
+
 static wo_vm VM; /* 32K value stack: keep it off the C stack */
 static wo_db DB;  /* the per-shard engine (one shard until iteration 8) */
 static wo_wal WAL;
@@ -134,7 +140,13 @@ int main(int argc, char **argv) {
     }
     if (self_rc == 0) {
         /* no embedded image: the image path is argv[1], and program mode
-           passes everything after it to the program itself */
+           passes everything after it to the program itself. `--version` is
+           handled ONLY here (plain wovm) so a built app never shadows its
+           own `version` argument. */
+        if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "version") == 0)) {
+            printf("wovm %s\n", WO_VERSION);
+            return 0;
+        }
         if (argc < 2) {
             fprintf(stderr, "usage: wovm <file.wob> [args...]\n");
             return 2;

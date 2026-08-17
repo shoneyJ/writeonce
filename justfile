@@ -43,6 +43,19 @@ wovm-test:
     make -C runtime test-iso
     bash runtime/test/cli_smoke.sh
 
+# dist: package the toolchain as an installable, Go-style tarball —
+# writeonce-<ver>-linux-amd64.tar.gz whose `writeonce/bin/` holds woc + wovm.
+# The version is single-sourced from ./VERSION and asserted against both
+# binaries (drift guard). See scripts/mkdist.sh.
+dist:
+    ./scripts/mkdist.sh
+
+# install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
+# `woc version` + a from-scratch project build+run (self-located wovm) + the
+# wo-constraint refusal all work — the "tarball install actually works" gate.
+install-accept:
+    ./scripts/install-accept.sh
+
 # the sample workload's own recipes live beside it (build from wo.toml,
 # the acceptance test, the soak): `just log-watcher` runs the acceptance,
 # `just log-watcher::build` / `::soak 60` the rest — see the module's

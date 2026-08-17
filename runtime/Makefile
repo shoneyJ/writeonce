@@ -2,6 +2,11 @@ CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11
 LDFLAGS ?= -pthread
 
+# toolchain version, single-sourced from the repo-root VERSION file; stamped
+# into wovm's `--version`. `just dist` asserts woc and wovm agree with it.
+WO_VERSION := $(shell cat ../VERSION 2>/dev/null || echo 0.0.0-dev)
+VERFLAG    := -DWO_VERSION='"$(WO_VERSION)"'
+
 wo-rt: wo-rt.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
@@ -43,7 +48,7 @@ test-iso: $(ISOBIN)
 
 # the wovm binary (plain optimized build; the test suite is the ASan gate)
 wovm: src/main.c $(VMSRC) $(VMHDR)
-	$(CC) $(CFLAGS) -Isrc -I../database/src -o $@ src/main.c $(VMSRC)
+	$(CC) $(CFLAGS) $(VERFLAG) -Isrc -I../database/src -o $@ src/main.c $(VMSRC)
 
 # ASan+UBSan wovm, same flags as the unit tests, for corpus fixtures that
 # need a sanitizer to prove a free actually happened (gc/ cycle fixtures) —

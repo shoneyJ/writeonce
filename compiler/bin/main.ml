@@ -43,6 +43,7 @@ let usage_msg =
    usage: woc <dir>              (builds when <dir>/wo.toml exists)\n\
    usage: woc --emit <path> -o <out.wob>\n\
    usage: woc build <dir> -o <app> [--runtime <path>]\n\
+   usage: woc version\n\
    usage: woc --dump-tokens <path>\n\
    usage: woc --dump-ast <path>\n\
    usage: woc --dump-owner <path>\n\
@@ -91,8 +92,9 @@ let usage_msg =
    to compile would be describing bytecode nobody may run.\n\
    \n\
    build compiles <dir> like --emit, then produces one self-contained\n\
-   executable at -o: the wovm runtime binary (--runtime <path>, or\n\
-   runtime/wovm relative to the current directory when omitted) with the\n\
+   executable at -o: the wovm runtime binary (--runtime <path>; else\n\
+   $WO_RUNTIME, a `wovm` beside this `woc`, or runtime/wovm relative to\n\
+   the current directory) with the\n\
    compiled .wob image and a fixed-size trailer appended, so the result\n\
    runs standalone with no separate .wob file or argument (wovm finds the\n\
    embedded image via /proc/self/exe -- see docs/plan/oop-vm/00-wob-format.md's\n\
@@ -515,7 +517,23 @@ let strip_existing_trailer (rt : string) : string =
     then String.sub rt 0 payload_off
     else rt
 
-let default_runtime_path = "runtime/wovm"
+(* keep in sync with the repo-root VERSION file; `just dist` asserts that
+   `woc version`, `wovm --version`, and VERSION all agree before packaging. *)
+let toolchain_version = "0.1.0"
+
+(* the wovm the standalone build embeds into. When neither --runtime nor the
+   manifest's [build] runtime is given, resolve the default in order:
+     1. $WO_RUNTIME                    -- explicit override
+     2. a `wovm` beside this `woc`     -- the tarball layout <prefix>/bin/{woc,wovm},
+                                          located via Sys.executable_name
+     3. `runtime/wovm` relative to CWD -- the repo/dev fallback *)
+let default_runtime_path () : string =
+  match Sys.getenv_opt "WO_RUNTIME" with
+  | Some p when p <> "" -> p
+  | _ ->
+    let sibling = Filename.concat (Filename.dirname Sys.executable_name) "wovm" in
+    if Sys.file_exists sibling && not (Sys.is_directory sibling) then sibling
+    else "runtime/wovm"
 
 let build_mode ~(runtime : string option) (path : string) (out : string) : unit =
   let collector, lookup, image = compile_image path in
@@ -528,7 +546,7 @@ let build_mode ~(runtime : string option) (path : string) (out : string) : unit 
         path;
       exit 2
     end;
-    let rt_path = match runtime with Some p -> p | None -> default_runtime_path in
+    let rt_path = match runtime with Some p -> p | None -> default_runtime_path () in
     if (not (Sys.file_exists rt_path)) || Sys.is_directory rt_path then begin
       Printf.eprintf "woc: runtime binary not found at '%s' -- build it with: make -C runtime wovm\n"
         rt_path;
@@ -569,8 +587,9 @@ let build_mode ~(runtime : string option) (path : string) (out : string) : unit 
    manifest names the application, so pointing woc at the project is enough
    (`woc .` inside it). The schema is the one the sample already carried —
    top-level `name` (the executable's basename), `version`, `description`,
-   a `[runtime]` section whose `wo` constraint is accepted and not yet
-   enforced — plus one new section this feature adds:
+   a `[runtime]` section whose `wo` constraint is a minimum toolchain
+   version, enforced against `woc`'s own version — plus one new section
+   this feature adds:
 
      [build]
      runtime = "../runtime/wovm" # optional: wovm to prepend, relative to
@@ -629,7 +648,7 @@ let manifest_parse (path : string) : (string * string) list =
            let known =
              match (!section, key) with
              | "", ("name" | "version" | "description") -> true
-             | "runtime", "wo" -> true (* accepted, not yet enforced *)
+             | "runtime", "wo" -> true (* minimum toolchain version; enforced in manifest_build *)
              | "build", ("runtime" | "target") -> true
              | _ -> false
            in
@@ -644,10 +663,38 @@ let manifest_parse (path : string) : (string * string) list =
    with End_of_file -> close_in ic);
   !kvs
 
+(* [runtime] wo = ">= X.Y" — a minimum-toolchain-version constraint. Only `>=`
+   and a bare version are interpreted; any other operator is accepted untouched
+   (forward-compatible — don't hard-fail on a constraint syntax not grokked
+   yet). Compared as a (major, minor, patch) triple. *)
+let ver_triple (s : string) : int * int * int =
+  match String.split_on_char '.' s |> List.filter_map int_of_string_opt with
+  | [ a ] -> (a, 0, 0)
+  | [ a; b ] -> (a, b, 0)
+  | a :: b :: c :: _ -> (a, b, c)
+  | [] -> (0, 0, 0)
+
+let check_runtime_constraint (mf : string) (c : string) : unit =
+  let c = String.trim c in
+  let min_req =
+    if String.length c >= 2 && String.sub c 0 2 = ">=" then
+      Some (String.trim (String.sub c 2 (String.length c - 2)))
+    else if String.length c > 0 && c.[0] >= '0' && c.[0] <= '9' then Some c
+    else None
+  in
+  match min_req with
+  | Some req when compare (ver_triple toolchain_version) (ver_triple req) < 0 ->
+    Printf.eprintf
+      "woc: %s: project requires writeonce %s, but this toolchain is %s -- upgrade the toolchain\n"
+      mf c toolchain_version;
+    exit 2
+  | _ -> ()
+
 let manifest_build (dir : string) : unit =
   let mf = Filename.concat dir "wo.toml" in
   let kvs = manifest_parse mf in
   let get k = List.assoc_opt k kvs in
+  (match get "runtime.wo" with Some c -> check_runtime_constraint mf c | None -> ());
   let name =
     match get "name" with
     | Some n when n <> "" && not (String.contains n '/') -> n
@@ -681,6 +728,9 @@ let () =
   | [| _; "build"; path; "-o"; out |] -> build_mode ~runtime:None path out
   | [| _; "build"; path; "-o"; out; "--runtime"; rt |] -> build_mode ~runtime:(Some rt) path out
   | [| _; "build"; path; "--runtime"; rt; "-o"; out |] -> build_mode ~runtime:(Some rt) path out
+  | [| _; ("version" | "--version") |] ->
+    (* Go-style: `writeonce <ver> <os>/<arch>`. linux/amd64 is the only target. *)
+    Printf.printf "writeonce %s linux/amd64\n" toolchain_version
   | [| _; path |] ->
     if Sys.file_exists path && Sys.is_directory path
        && Sys.file_exists (Filename.concat path "wo.toml")
