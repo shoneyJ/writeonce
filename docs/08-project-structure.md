@@ -55,7 +55,6 @@ runtime/
 │                        ⏳ sched, mailbox, shard                                     (plan 4)
 │                        ⏳ table, wal, db                                            (plan 5)
 │                        ⏳ http, json, router, handlers                              (plan 6)
-│                        ⏳ ws, sub, htmlx, assets                                    (plan 7)
 │                        ⏳ sys_env, sys_fs, sys_proc, sys_net, sys_time              (plan 9)
 └── test/                ⏳ t.h harness, wob_build assembler, test_*.c, cli_smoke.sh
 ```
@@ -94,7 +93,7 @@ docs/
 │   ├── exploration/     c-runtime/ (A–F, done), linux/, postgresql/, assembly/
 │   └── oop-vm/          ⏳ the OOP-track contracts: 00-wob-format, 01-error-catalog,
 │                        02-corpus, 03-shard-actor, 04-db-binding, 05-http-service,
-│                        06-ui-live, 07-systems-stdlib
+│                        07-systems-stdlib
 ├── superpowers/
 │   ├── specs/           the two approved track specs (2026-08-01)
 │   └── plans/           implementation plans 1–10 (2026-08-01, prose-only)
@@ -125,11 +124,11 @@ The order the project completes, with the two parallel windows made explicit:
 2. **`compiler/` front** — plan 2 (`woc`: lexer→parser→types→owner). Independent of plan 1 — *may run in parallel with it*; needs `apt install ocaml dune`.
 3. **Emit + end-to-end** — plan 3 (bytecode emitter, conformance corpus, `woc build` single binary, acceptance gate). Needs 1 + 2. **Milestone 1 done here.**
 4. Two tracks fork and *can proceed in parallel*:
-   - **Server track (sequential within):** plan 4 shard-actor runtime → plan 5 DB engine binding → plan 6 HTTP service layer → plan 7 UI/.htmlx/LIVE.
+   - **Server track (sequential within):** plan 4 shard-actor runtime → plan 5 DB engine binding → plan 6 HTTP service layer.
    - **Systems track (sequential within):** plan 8 Haxe-parity language → plan 9 program mode + stdlib → plan 10 log-watcher sample. Only seam with the server track: the JSON codec shared between plans 6 and 9 (either lands it, noted in both).
 5. **Parity + retirement** — parity harnesses green (plans 3/6), then `crates/` (Rust) retires to `.dev/reference/` and the `wo` name transfers to the C toolchain.
 
-Rule of thumb: `runtime → compiler → emit → {shard → db → http → ui} ∥ {language → stdlib → sample} → parity`.
+Rule of thumb: `runtime → compiler → emit → {shard → db → http} ∥ {language → stdlib → sample} → parity`.
 
 ## Naming conventions (recap)
 
