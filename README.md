@@ -1,77 +1,323 @@
 # writeonce
 
-A declarative full-stack programming language. You write `.wo` files; the runtime compiles them into a binary that owns the database, serves REST, and pushes live subscriptions — no external database, no external web server, no frontend framework.
+**A small compiled language with a database built in.** You write `.wo`
+files; one command turns them into a single native binary that carries its
+own storage engine — a typed, WAL-durable, crash-recoverable database — with
+no server to install, no ORM, and no query strings. Tables are just classes,
+queries are written in the language and checked by the compiler, and the whole
+program ships as one file that depends only on the system C library.
 
-Think **Go + Postgres + `net/http` + Phoenix LiveView, folded into one language and one binary.**
+> **Status: early, honest.** Everything documented on this page compiles and
+> runs today and is exercised by the acceptance tests in this repository.
+> Features that are planned but **not yet available** are listed separately
+> under [Roadmap](#roadmap) — they are not described as if they work. Nothing
+> here is API-stable yet.
 
-# persistant database
+---
 
-- reads and writes database to RAM, persist data to postgres SQL.
-- The entire database lives in RAM; every committed write is mirrored to PostgreSQL **as a backup** — asynchronously, behind the runtime's own WAL, never in the read or ack path. Set `WO_PG=postgres://user@host:5432/db` and every type's rows appear as a Postgres table (named by its `@table(name: ...)` annotation) that you can query with plain `psql`. Plan and phases: [`docs/plan/16-postgres-mirror.md`](docs/plan/16-postgres-mirror.md); try it: `just pricing-pg-demo`.
+## Why writeonce
 
-## Quickstart
+- **The database is part of the language.** A `class` marked `@table` *is* a
+  table. Its rows persist through a write-ahead log, survive a restart, and are
+  reached by navigating typed relations — not by assembling SQL text.
+- **Queries are compiled, not interpreted.** `from e in Employee where
+  e.salary > 90000 select e` lowers to bytecode loops over the engine. A
+  mistyped field name is a **compile error**, not a runtime surprise. There is
+  no SQL string anywhere in the shipped binary.
+- **One binary, no runtime dependencies.** `woc .` produces a self-contained
+  executable (~100 KB for the sample programs) that links only libc. Copy it to
+  a server and run it.
+- **Small on purpose.** No FFI, no package manager, no framework. The standard
+  library is a handful of OS modules. The language is designed to be read.
+
+writeonce is **not** a web framework and does not (yet) serve HTTP, WebSockets,
+or a UI. It is a systems language whose distinguishing feature is the embedded
+database. If you have seen an older "writeonce" that served REST from `cargo
+run`, that was a separate, earlier runtime; this page documents the current
+`woc`/`wovm` toolchain.
+
+---
+
+## System requirements
+
+**To run a compiled writeonce program:**
+
+- Linux on x86-64. The produced binary is a native executable that links only
+  the system C library (`libc`); nothing else is required at runtime.
+
+**To build programs from source (the toolchain), you need:**
+
+| Tool | Version tested | Purpose |
+| --- | --- | --- |
+| OCaml | 4.14+ | builds `woc`, the compiler front end |
+| dune | 3.14+ | OCaml build driver |
+| A C11 compiler | gcc 13 / clang | builds `wovm`, the runtime VM |
+| just | 1.x | task runner for the build/test recipes |
+| make | any | drives the runtime build |
+
+Other POSIX platforms (macOS, BSD) are untested. The toolchain itself has no
+network or package-download step — it builds entirely from the checked-in
+source.
+
+---
+
+## Getting the toolchain
+
+Two artifacts make up the toolchain:
+
+- **`woc`** — the compiler (OCaml). Reads `.wo` source, type-checks it, runs
+  the ownership pass, and emits a `.wob` image or a standalone binary.
+- **`wovm`** — the runtime (C11). Loads a `.wob` image and executes it. When
+  `woc` builds a standalone binary, it embeds the image into a copy of `wovm`.
+
+Build both from the repository root:
 
 ```bash
-git clone https://github.com/shoneyJ/writeonce
-cd writeonce
-cargo run --bin wo -- run docs/examples/blog     # serve the sample blog on :8080
-curl http://127.0.0.1:8080/api/articles          # it's a real REST API now
+just woc-build      # builds compiler/_build/default/bin/woc
+just wovm-build     # builds runtime/wovm
+
+# gate them (optional but recommended)
+just woc-test       # compiler unit + golden suites
+just wovm-test      # runtime unit suites, both dispatch flavors, ASan-clean
 ```
 
-See [`.dev/reference/rest/blog.rest`](.dev/reference/rest/blog.rest) for a preconfigured HTTP-request file that drives the whole sample — open it in VS Code (with the REST Client extension) or JetBrains and click "Send Request" on each block.
+---
 
-## What this repository contains
+## Your first program
 
-| Path                                                                                       | What it is                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`crates/rt/`](crates/rt/)                                                                 | The new `.wo` language runtime — lexer, type-DSL parser, in-memory engine, axum REST server. Produces the `wo` binary.                                                                                             |
-| [`crates/{ql,value,engine,txn,db,wal,sub,http,gen,policy,logic,service,ui,app}/`](crates/) | 14 empty placeholder crates scaffolded for Phases 2–6. Real code extracts from `rt/` as each phase activates.                                                                                                      |
-| [`docs/runtime/wo-language.md`](docs/runtime/wo-language.md)                               | **Start here.** The language overview: toolchain, hello-world, stdlib, client model.                                                                                                                               |
-| [`docs/runtime/database.md`](docs/runtime/database.md)                                     | The 7-phase engineering series that drives the runtime's design.                                                                                                                                                   |
-| [`docs/examples/blog/`](docs/examples/blog/)                                               | Sample `.wo` project: blog with articles, authors, tags, comments. ~200 lines.                                                                                                                                     |
-| [`docs/examples/ecommerce/`](docs/examples/ecommerce/)                                     | Sample `.wo` project: storefront + live order-ops table + cross-paradigm checkout. ~300 lines.                                                                                                                     |
-| [`prototypes/wo-db/`](prototypes/wo-db/)                                                   | C++ prototype of the query-layer engine (SQL + Cypher + document paths, `RETURNING` aliases, `LIVE` stub). ~2k lines, smoke tests pass. Reference implementation the Rust port follows.                            |
-| [`.dev/reference/rest/`](.dev/reference/rest/)                                                       | `.rest` files (VS Code REST Client / JetBrains HTTP format) for manually testing the running prototype.                                                                                                            |
-| [`.dev/reference/crates/`](.dev/reference/crates/)                                                   | The v1 writeonce blog — 13 Rust crates implementing the original `.seg` + sidecar-index storage engine and `.htmlx` templating. Preserved as a nested workspace; see [`.dev/reference/README.md`](.dev/reference/README.md). |
+A writeonce project is a directory with a `wo.toml` manifest and one or more
+`.wo` files. Every program has an entry point:
 
-## Current stage
+```
+-- hello/main.wo
+fn main(args: multi Text) -> Int {
+  print("hello, writeonce");
+  return 0;
+}
+```
 
-The runtime is under active development. Each stage lands as an independently shippable cut:
+```toml
+# hello/wo.toml
+name    = "hello"
+version = "0.1.0"
 
-| Stage  | What works                                                                                                                                                                                                 | Status                                                   |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **1**  | `wo run <dir>` discovers every `.wo` file under a directory                                                                                                                                                | ✅ shipped                                               |
-| **2**  | Type-DSL parser, in-memory engine, REST CRUD (`list` / `get` / `create` / `update` / `delete`) generated from `service rest` blocks, JSON bodies with auto-id, default-value seeding, partial-update PATCH | ✅ shipped — `cargo run -- run docs/examples/blog`       |
-| **3**  | LIVE subscriptions over WebSocket, delta frames on commit, `me` / session layer                                                                                                                            | pending                                                  |
-| **4+** | Transactional fns (`fn checkout in txn snapshot`), row-level policies, type-attached triggers, `##ui` SSR, WAL durability, codegen                                                                         | see [docs/runtime/database.md](docs/runtime/database.md) |
+[runtime]
+wo = ">= 0.1"
+```
 
-`cargo test --lib` at the root runs 14 unit tests covering the lexer, parser, compiler, and engine. Stage-3 endpoints respond `501 Not Implemented` until they land.
-
-## Build & test
+Compile the directory into a single binary and run it:
 
 ```bash
-cargo build                                         # builds all 15 crates (only `rt` has real code)
-cargo test --lib                                    # 14 unit tests
-
-cargo run --bin wo -- run docs/examples/blog       # serve the blog sample
-cargo run --bin wo -- run docs/examples/ecommerce  # serve the ecommerce sample
-
-# Override the listen address
-WO_LISTEN=127.0.0.1:9000 cargo run --bin wo -- run docs/examples/blog
+woc hello/           # produces hello/target/hello
+./hello/target/hello
+# hello, writeonce
 ```
 
-## The v1 codebase (reference)
+`main` returns an `Int` — that value is the process **exit code**. `args` is
+the command-line arguments (the program name is not included).
 
-The original writeonce blog engine — 13 crates, flat-file `.seg` storage, sidecar indexes, `.htmlx` templates, hand-rolled `epoll` event loop — moved to [`.dev/reference/crates/`](.dev/reference/crates/) when the new runtime was scaffolded. It's a nested Cargo workspace:
+### The two build paths
 
 ```bash
-cd .dev/reference/crates
-cargo build                   # all 13 v1 crates still compile
-cargo test                    # 12 unit tests, 1 ignored integration test
+# 1. standalone binary (what you ship): woc reads wo.toml, emits target/<name>
+woc myproject/
+
+# 2. image + VM (handy while developing): emit a .wob, run it with wovm
+woc --emit myproject/ -o app.wob
+wovm app.wob arg1 arg2
 ```
 
-V1 crates keep the `wo-` prefix (`wo-seg`, `wo-store`, …). The new runtime crates dropped it (`ql`, `value`, `engine`, …). [`docs/runtime/database/07-wo-seg-migration.md`](docs/runtime/database/07-wo-seg-migration.md) is the phased coexistence plan for replacing v1 with the new runtime — abstract behind a trait, dual-write, cut over, decommission.
+Both paths run the same program. The standalone binary is the release artifact;
+the image path lets you inspect or move the image around.
 
-## License & status
+---
 
-Work in progress. Nothing here is stable. Read the language overview in [`docs/runtime/wo-language.md`](docs/runtime/wo-language.md) if you want to know the shape; read the phase docs if you want to see the engineering plan; look in [`docs/examples/`](docs/examples/) if you want to see what the end product feels like.
+## Language at a glance
+
+writeonce is statically typed with a compile-time ownership model — every value
+has a known owner, memory is freed deterministically, and values that form
+cycles are collected by an inferred garbage collector (you never annotate GC-
+ness; the compiler infers it). The surface will look familiar:
+
+- **Types:** `Int`, `Text`, `Bool`, and user `class` types. `?T` marks an
+  optional (nullable) value; `nil` is the empty case.
+- **Containers:** `multi T` (a growable list) and `map<K, V>`. Literals:
+  `[]`, `[a, b]`, `{}`.
+- **Classes & records:** classes with fields and methods, `static const` /
+  `static fn` members, module-scoped across files.
+- **Control flow:** `if`/`else`, `for x in xs`, `for k, v in m`, `switch`
+  expressions, and `try { … } catch (e) { … }` (also an expression form).
+- **Strings:** interpolation with `${expr}` inside a `"…"` literal.
+- **Functions:** free functions and methods; arguments and returns are typed.
+
+```
+fn classify(n: Int) -> Text {
+  if n < 0 { return "negative"; }
+  return switch n {
+    case 0: "zero";
+    default: "positive";
+  };
+}
+```
+
+### Standard library
+
+A compact set of OS modules, reached by their reserved names — no imports:
+
+| Module | What it does |
+| --- | --- |
+| `fs` | `exists`, `list`, `stat`, `read_all`, `read_at`, `append` |
+| `time` | `sleep`, `now`, `local`, `iso` |
+| `env` | `get`, `stopping` (a cooperative shutdown flag) |
+| `net` | TCP `listen` / `accept` / `read` / `write` / `close` (host + port) |
+| `proc` | `run` a child process, capture stdout/stderr/exit |
+| `json` | `encode` / `decode` (`json.decode(t) as T` yields `?T`) |
+
+These are deliberately minimal — the surface a real program needs, and no more.
+
+---
+
+## The database
+
+This is the point of the language. Declaring storage is declaring a class:
+
+```
+@table(name: "departments", index: [name])
+class Department {
+  name:  Text @unique
+  staff: backlink Employee.dept    -- reverse relation, not a stored column
+}
+
+@table(name: "employees", index: [dept], index: [dept, salary])
+class Employee {
+  name:   Text
+  salary: Int
+  hired:  Int
+  dept:   ref Department           -- foreign key: stored as the row id
+}
+```
+
+- **`@table`** makes a class persistent — named storage plus declared secondary
+  indexes. Every instance you `insert` is written to a write-ahead log **before**
+  it is acknowledged, so an acked write survives a crash; on the next start the
+  log is replayed.
+- **`ref T`** is a typed foreign key (a forward relation). **`backlink T.f`** is
+  its inverse — a virtual field, no stored column, resolved by an index scan.
+- **`@unique`** enforces uniqueness at insert/update; a violation is a
+  **catchable** trap.
+- **Foreign keys restrict deletes**: deleting a row that another row still
+  references traps rather than orphaning it.
+
+### Writing and reading data
+
+Mutation is direct; queries are a comprehension the compiler lowers to engine
+operations:
+
+```
+-- insert (WAL-durable); @unique makes a re-insert trap, and try/catch it:
+let eng = try insert Department { name: "Engineering" } catch (e) nil;
+insert Employee { name: "Asha", salary: 9200000, hired: 1704067200000, dept: eng };
+
+-- query: filter, order, limit, project — checked at compile time
+for e in from s in Employee where s.salary > 8000000 order by s.salary desc select s {
+  print("${e.name} ${e.salary} (${e.dept.name})");   -- ref navigation
+}
+
+-- navigate a backlink (the department's staff), update through the result
+for e in from s in dept.staff select s {
+  e.salary = e.salary + e.salary * 5 / 100;           -- update-through-row
+}
+
+-- delete (restricted if still referenced)
+let ok = try delete row catch (e) nil;
+```
+
+The query surface available today is **`from v in <table | relation> where …
+[order by k [desc]] [take n] select v | v.field`**, plus `insert`, delete, and
+update-through-a-row. It is proven end to end by the `employee` sample, whose
+data survives a process restart via log replay.
+
+---
+
+## Project layout & the manifest
+
+```
+myproject/
+├── wo.toml         # manifest: name, version, [runtime], [build]
+├── main.wo         # entry point (fn main)
+├── types.wo        # your @table classes, other types
+└── target/         # build output (the standalone binary lands here)
+```
+
+```toml
+name    = "myproject"
+version = "0.1.0"
+
+[runtime]
+wo = ">= 0.1"
+
+[build]
+runtime = "../../../runtime/wovm"   # path to the wovm the binary is built from
+```
+
+`woc myproject/` compiles every `.wo` file under the directory as one program.
+
+Programs that create tables read their data directory from the `WO_DATA`
+environment variable at run time:
+
+```bash
+WO_DATA=./data ./target/myproject seed
+WO_DATA=./data ./target/myproject report     # a fresh process still sees the data
+```
+
+---
+
+## Worked examples
+
+Two complete sample programs live in the repository and double as the language's
+acceptance tests:
+
+- **`docs/examples/employee/`** — departments and employees related by
+  `ref`/`backlink`, `@unique`, foreign-key restrict on delete, per-department
+  reports, and persistence across a restart. Run it:
+
+  ```bash
+  just employee            # compile + run every mode against a durable database
+  ```
+
+- **`docs/examples/log-watcher/`** — a long-running daemon that watches log
+  files for silent death, using the `fs`/`time`/`net`/`proc` stdlib. Run it:
+
+  ```bash
+  just log-watcher
+  ```
+
+Read either program's `main.wo` for idiomatic, working writeonce.
+
+---
+
+## Roadmap
+
+Planned, **not yet available** — listed so the shipped surface above stays
+honest. These exist as design iterations and/or work-in-progress branches, not
+as features you can use today:
+
+- **Query aggregates** — `group … by … into g` with `count`/`avg`/`min`/`max`
+  and projection records. (Today the same result is written by hand from the
+  shipped primitives.)
+- **HTTP service layer** — `service` blocks that route requests to methods.
+- **Concurrency** — a shard-actor runtime and green-threaded fibers.
+- **Cross-program database access** — one program attaching to another's
+  database over a local channel, with keypair authentication and per-client
+  rights.
+- **Blue-green deployment** — in-process recompile and atomic version switch.
+- **Compile-time metaprogramming** — `@derive(Json/Csv/Eq/…)` generated from a
+  class's own metadata, no reflection.
+
+Known current limits worth naming: `net` is TCP host+port only; `proc.run` has
+no timeout or signal control; there is no stdin/stdout byte I/O and no FFI.
+
+---
+
+*writeonce is a work in progress. Interfaces will change. If you build
+something with it, pin to a commit.*
