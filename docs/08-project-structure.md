@@ -10,7 +10,6 @@ writeonce-all/
 ├── runtime/             ✅ C runtime — wo-rt.c event-loop reference + ⏳ src/ wovm VM (plans 1, 4–7, 9)
 ├── crates/              ✅ Rust runtime `rt` + 14 phase-scaffold crates — active until C-stack parity
 ├── tests/               ⏳ corpus/ — conformance fixtures: run / compile-fail / trap / gc / sys / actor / db
-├── client/              ⏳ wo-live.js — the ~20 KB live-patch browser runtime (plan 7)
 ├── scripts/             ⏳ oop-e2e.sh, oop-parity.sh — corpus + parity harnesses (plan 3)
 ├── prototypes/          ✅ wo-db C++ query-engine reference; ⚠ wo-rt-c = stale duplicate of runtime/
 ├── .dev/reference/           ✅ v1 crates workspace, colibri, llama-cpp; linux/ + go/ symlinks (per-dev)
@@ -67,11 +66,10 @@ Doctrine: C11, libc only, direct syscalls; computed-goto dispatch with `-DWO_ISO
 
 Unchanged from CLAUDE.md's description: `rt` is the monolithic Stage-2 runtime producing the `wo` binary; the 14 unprefixed siblings (`ql`, `value`, `engine`, `txn`, `db`, `wal`, `sub`, `http`, `gen`, `policy`, `logic`, `service`, `ui`, `app`) are phase scaffolds. **Retirement path:** stays authoritative until the C stack passes the parity harness (plan 3 task 7, plan 6 blog smoke); then moves under `.dev/reference/` the way v1 did. Until that day, nothing here is refactored to accommodate the C track.
 
-### `tests/`, `scripts/`, `client/` — the proof layer (target)
+### `tests/`, `scripts/` — the proof layer (target)
 
 - `tests/corpus/` — the conformance spine (plan 3): `run/`, `compile-fail/`, `trap/`, then `gc/` (plan 3), `db/` (plan 5), `actor/` (plan 4), `sys/` (plan 9), `sample-logwatcher/` (plan 10), `lang/` (plan 8). Exact-outcome matching: byte-equal stdout, exact `WO-E###`, exact trap code.
 - `scripts/` — `oop-e2e.sh` (corpus runner), `oop-parity.sh` (Rust-overlap manifest runner).
-- `client/` — `wo-live.js`, the hand-written no-framework live-patch runtime (plan 7).
 
 ### `prototypes/` — reference implementations (frozen)
 
@@ -115,7 +113,7 @@ Gitignored symlinks into per-machine AI-tooling state plus `commit.md`, the runn
 | --- | --- |
 | Today | `runtime/` holds wo-rt.c; `crates/rt` serves Stage 2; plans are paper. |
 | After plans 1–3 (milestone 1) | `compiler/` + `runtime/src/` + `tests/corpus/` + `scripts/` exist; `woc build` emits single binaries; `prototypes/wo-rt-c` deleted. |
-| After plans 4–7 | `runtime/src/` carries shard/db/http/ui modules; `client/` exists; the C stack serves the blog sample end to end. |
+| After plans 4–6 | `runtime/src/` carries shard/db/http modules; the C stack serves a sample end to end. |
 | After plans 8–10 | systems stdlib in `runtime/src/sys_*`; `docs/examples/log-watcher/` proves program mode. |
 | Parity | `crates/` moves to `.dev/reference/crates-v2/` (naming decided then); the `wo` toolchain name transfers to the C stack; Cargo.toml shrinks accordingly. |
 
