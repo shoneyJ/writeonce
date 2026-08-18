@@ -205,9 +205,17 @@ unimplemented — even a one-hop `a.next = b; print(a.next.label)` traps
 `null receiver` (the existing gc corpus only exercises `multi` gcref fields,
 which do work). Running the ring, and reclaiming it, is **Phase 3**: the
 incremental mark-sweep collector + full gcref field paths, the `.wob`
-opcode-27/28 retirement, and the sweep list. Remaining front-end work
-(**Phase 2b**): demand-promotion for the acyclic-but-aliased case, then
-`@gc`-in-source becomes an error and the annotation bridge is removed.
+opcode-27/28 retirement, and the sweep list.
+
+**Phase 2b (landed).** Demand promotion: the ownership pass, run in collect
+mode, promotes any class whose value *must escape* (returned, stored where it
+outlives its scope) — the acyclic-but-aliased case (`PriceCache`) inference by
+structure cannot see. So GC-ness is now fully inferred (cycles by structure +
+aliasing by demand), and `@gc` is redundant everywhere. What remains is
+*removing the `@gc` keyword itself* — the parser rejecting it, and the RC/`@gc`
+golden + `test_diag` assertions being rewritten — which is coupled to Phase 3
+(the RC machinery those tests cover is deleted there), so the keyword removal
+lands with Phase 3.
 
 When 7b lands, the acceptance is:
 - `woc --dump-gc docs/examples/gc-cycle` classifies `Node gc (cycle …)` /

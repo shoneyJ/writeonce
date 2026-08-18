@@ -109,7 +109,31 @@ let classify (syms : Types.symbols) : result =
   { traced; order = nodes }
 
 (* The `--dump-gc` artifact (spec §1): one line per class in sorted order,
-   `gc`/`owned`, with the reason in parens for traced classes. *)
+   reading the AUTHORITATIVE traced set on `syms` (structural SCC + demand
+   promotions injected by the pipeline). Reason = the structural cycle path
+   when there is one, else a demand-promotion note. *)
+let render_final (syms : Types.symbols) : string =
+  let struct_reasons = (classify syms).traced in
+  let names =
+    SMap.fold (fun k _ acc -> k :: acc) syms.Types.classes [] |> List.sort compare
+  in
+  let buf = Buffer.create 256 in
+  List.iter
+    (fun name ->
+      if Types.is_gc_class syms name then
+        let reason =
+          match SMap.find_opt name struct_reasons with
+          | Some r -> r
+          | None ->
+            if Types.StringSet.mem name syms.Types.traced then "alias escape (demand)"
+            else "@gc annotation (redundant — inference covers it)"
+        in
+        Buffer.add_string buf (Printf.sprintf "%-10s gc     (%s)\n" name reason)
+      else Buffer.add_string buf (Printf.sprintf "%-10s owned\n" name))
+    names;
+  Buffer.contents buf
+
+(* Structural-only render (pre-injection); kept for unit tests of the SCC half. *)
 let render (r : result) : string =
   let buf = Buffer.create 256 in
   List.iter

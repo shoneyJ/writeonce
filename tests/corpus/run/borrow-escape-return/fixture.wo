@@ -1,0 +1,22 @@
+-- Iteration 7b demand promotion: `leak` returns `h.box`, a `Box` borrowed from
+-- the parameter. Under strict ownership that is a borrow escape (WO-E304), but a
+-- class that MUST escape is demand-promoted to traced (gc) by the inference
+-- pass — traced classes alias freely — so this program is valid and prints
+-- `b.n` = 1. (Was compile-fail/borrow-escape-return before 7b.)
+class Box {
+  n: Int
+}
+
+class Holder {
+  box: Box
+}
+
+fn leak(h: Holder) -> Box {
+  return h.box
+}
+
+fn main() {
+  let h = Holder { box: Box { n: 1 } }
+  let b = leak(h)
+  print_int(b.n)
+}

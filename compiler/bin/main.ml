@@ -379,6 +379,38 @@ let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
     (fun (f, prog) (_, file_syms) ->
       Woc_lib.Types.typecheck_program ~file:f ~module_of ~module_syms ~file_syms prog syms collector)
     parsed per_file_syms;
+  (* iteration 7b Phase 2b — demand promotion. Run ownership in collect mode
+     over every file (structural traced already in place); any owned class value
+     that would fail the escape rule (a shape that only a traced class can hold)
+     records its class. Fixpoint: promotions only grow (bounded by class count),
+     so this terminates — one or two passes in practice. The throwaway collector
+     is discarded; this pass reports nothing. *)
+  let traced_full = ref syms.Woc_lib.Types.traced in
+  let throwaway = Woc_lib.Diag.Collector.create () in
+  let changed = ref true in
+  while !changed do
+    let promoted = Hashtbl.create 16 in
+    let syms_c = { syms with Woc_lib.Types.traced = !traced_full } in
+    List.iter
+      (fun (f, prog) ->
+        ignore
+          (Woc_lib.Owner.analyze ~file:f
+             ~promote:(Some (fun c -> Hashtbl.replace promoted c ()))
+             prog syms_c throwaway))
+      parsed;
+    let next =
+      Hashtbl.fold
+        (fun c () acc -> Woc_lib.Types.StringSet.add c acc)
+        promoted !traced_full
+    in
+    changed := not (Woc_lib.Types.StringSet.equal next !traced_full);
+    traced_full := next
+  done;
+  let syms = { syms with Woc_lib.Types.traced = !traced_full } in
+  Hashtbl.fold
+    (fun k v acc -> (k, { v with Woc_lib.Types.traced = !traced_full }) :: acc)
+    module_syms []
+  |> List.iter (fun (k, v) -> Hashtbl.replace module_syms k v);
   (syms, module_syms)
 
 let dump_tokens path =
@@ -427,7 +459,7 @@ let dump_gc path =
   let collector = Woc_lib.Diag.Collector.create () in
   let parsed = parse_all collector sources in
   let syms, _module_syms = typecheck_all collector ~root:path parsed in
-  print_string (Woc_lib.Gcinfer.render (Woc_lib.Gcinfer.classify syms));
+  print_string (Woc_lib.Gcinfer.render_final syms);
   finish collector (build_lookup sources)
 
 (* The bare `woc <path>` form (Task 8): runs the full pipeline with no

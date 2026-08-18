@@ -401,6 +401,11 @@ type ctx = {
      this function — an rc pair whose source root is clobbered cannot be
      elided, because the original reference may die inside the scope *)
   clobbered : (string, unit) Hashtbl.t;
+  (* iteration 7b demand-promotion (Gcinfer): when Some, the pass runs in
+     collect mode — a class value that would fail the escape rule records its
+     class here instead of raising WO-E304, so inference can promote it to
+     traced. None = normal report mode. *)
+  promote : (string -> unit) option;
 }
 
 (* ============================================================
@@ -1060,8 +1065,27 @@ let use_place (ctx : ctx) (p : place) : unit =
          else Printf.sprintf "`%s` moved here" l_name)
   | _ -> ()
 
+(* The user class an escaping value's type resolves to, if any (unwrapping `?`).
+   A class value that escapes is the demand-promotion signal: second-class
+   borrows cannot be stored or returned, so a class that must escape has to be
+   traced. Scalars, builtins, and non-class names are genuine escape errors. *)
+let class_of_ty (syms : Types.symbols) (t : Ast.field_ty) : string option =
+  let rec base = function Ast.Nullable ft -> base ft | ft -> ft in
+  match base t with
+  | Ast.Scalar n when Types.StringMap.mem n syms.Types.classes -> Some n
+  | _ -> None
+
 let escape (ctx : ctx) (l : local) ~(pos : Ast.pos) ~message : unit =
-  report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos ~label:(borrow_label l)
+  match ctx.promote with
+  | Some record -> (
+    match class_of_ty ctx.syms l.l_ty with
+    | Some c -> record c (* demand promotion instead of WO-E304 *)
+    | None ->
+      report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos
+        ~label:(borrow_label l))
+  | None ->
+    report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos
+      ~label:(borrow_label l)
 
 (* A @gc value reaching a location that outlives this scope: one
    increment at the escape site, never elidable. If the escaping value is
@@ -2008,12 +2032,13 @@ let resolve_rc (ctx : ctx) : unit =
     ctx.fn_rcs;
   ctx.sink.s_rcs <- ctx.fn_rcs @ ctx.sink.s_rcs
 
-let analyze_fn ~(file : string) (syms : Types.symbols) (coll : Diag.Collector.t) (sink : sink)
+let analyze_fn ~(file : string) ?(promote : (string -> unit) option = None)
+    (syms : Types.symbols) (coll : Diag.Collector.t) (sink : sink)
     ~(self_class : string option) (m : Ast.method_decl) : unit =
   let ctx =
     { file; syms; coll; sink; fn_name = m.name; scopes = []; loop_stack = []; recording = true;
       diverged = false; fn_rcs = []; rc_groups = Hashtbl.create 8; rc_escaped = Hashtbl.create 8;
-      clobbered = Hashtbl.create 8 }
+      clobbered = Hashtbl.create 8; promote }
   in
   push_scope ctx ~node:m.id ~pos:m.pos ~label:"BODY";
   (* `self` is always a borrow (spec rule 6) *)
@@ -2037,15 +2062,17 @@ let analyze_fn ~(file : string) (syms : Types.symbols) (coll : Diag.Collector.t)
 
 let pos_key (p : Ast.pos) = (p.line, p.col)
 
-let analyze ~(file : string) (prog : Ast.program) (syms : Types.symbols)
-    (coll : Diag.Collector.t) : tables =
+let analyze ~(file : string) ?(promote : (string -> unit) option = None)
+    (prog : Ast.program) (syms : Types.symbols) (coll : Diag.Collector.t) : tables =
   let sink = { s_moves = []; s_drops = []; s_rcs = []; s_res = [] } in
   List.iter
     (function
       | Ast.Class c ->
-        List.iter (fun m -> analyze_fn ~file syms coll sink ~self_class:(Some c.name) m) c.methods
+        List.iter
+          (fun m -> analyze_fn ~file ~promote syms coll sink ~self_class:(Some c.name) m)
+          c.methods
       | Ast.Interface _ -> ()
-      | Ast.Fn f -> analyze_fn ~file syms coll sink ~self_class:None f
+      | Ast.Fn f -> analyze_fn ~file ~promote syms coll sink ~self_class:None f
       | Ast.Use _ -> ()
       | Ast.Const _ -> ()
       | Ast.Union _ -> () (* haxe-parity Task 4: no bodies to analyze *))
