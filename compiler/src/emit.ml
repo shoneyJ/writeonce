@@ -3255,7 +3255,7 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
            | Some u -> u.Types.u_has_payload
            | None -> (
              match Types.StringMap.find_opt n p.p_syms.Types.classes with
-             | Some (ci : Types.class_info) -> not ci.Types.is_gc
+             | Some (ci : Types.class_info) -> not (Types.is_gc_class p.p_syms ci.Types.name)
              | None -> false))
          | _ -> false)
        | None -> false)
@@ -4454,7 +4454,7 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                            cols)
                        cfg.Ast.indexes
                    | None -> ());
-                   { cr_name = c.name; cr_gc = c.is_gc;
+                   { cr_name = c.name; cr_gc = Types.is_gc_class syms c.name;
                      cr_fields =
                        Array.of_list
                          (List.filter_map

@@ -183,23 +183,31 @@ inferred). The developer writes no memory annotations for either.
 
 ## Run status
 
-**This is a target sample for iteration 7b, which is not yet implemented.** It
-does **not** build on today's toolchain — and the compile error is precisely
-the motivation. `woc --emit docs/examples/gc-cycle` today reports:
+Iteration 7b is landing in phases (plan:
+[`../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md`](../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md)).
+
+**Phase 1 (landed).** The inference pass classifies each class; `woc --dump-gc
+docs/examples/gc-cycle` prints:
 
 ```
-main.wo: error WO-E301: use of `a` after it was moved
-  c.next = a;   <- `a` moved here
+Node       gc     (cycle Node -> Node)
+Segment    owned
 ```
 
-Under the current model a class instance is `owned` and single-owner, so storing
-`b` into `a.next` **moves** it and closing the ring with `c.next = a` re-uses a
-moved value. Iteration 7b classifies `Node` as **traced** — and *traced classes
-alias freely* (spec §3 rule 5), so the ring becomes legal and the collector,
-not ownership, reclaims it. The pieces still to build: the inference pass
-(`gcinfer.ml`), `--dump-gc`, the `.wob` opcode-27/28 retirement, the sweep list,
-and the incremental collector. Today's runtime still uses RC + a Bacon–Rajan
-cycle collector behind an explicit `@gc` annotation (`runtime/src/gc.c`).
+**Phase 2a (landed).** `Types.is_gc_class` is now inference-first, so `Node` is
+traced with **no annotation** and *traced classes alias freely* — the ring
+**compiles** (the old `WO-E301: use of \`a\` after it was moved` at `c.next = a`
+is gone), and its bytecode is byte-identical to writing `@gc class Node`.
+
+**Not yet: the ring runs.** On today's runtime (RC + Bacon–Rajan, `gc.c`) a
+**nullable single-reference gc field** (`next: ?Node`) store/read is
+unimplemented — even a one-hop `a.next = b; print(a.next.label)` traps
+`null receiver` (the existing gc corpus only exercises `multi` gcref fields,
+which do work). Running the ring, and reclaiming it, is **Phase 3**: the
+incremental mark-sweep collector + full gcref field paths, the `.wob`
+opcode-27/28 retirement, and the sweep list. Remaining front-end work
+(**Phase 2b**): demand-promotion for the acyclic-but-aliased case, then
+`@gc`-in-source becomes an error and the annotation bridge is removed.
 
 When 7b lands, the acceptance is:
 - `woc --dump-gc docs/examples/gc-cycle` classifies `Node gc (cycle …)` /

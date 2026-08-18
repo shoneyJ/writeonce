@@ -244,10 +244,12 @@ let merge_symbols (syms_list : Woc_lib.Types.symbols list) : Woc_lib.Types.symbo
         typedefs = SM.union keep_first acc.typedefs s.typedefs;
         unions = SM.union keep_first acc.unions s.unions;
         modules = acc.modules @ s.modules;
+        traced = Woc_lib.Types.StringSet.union acc.traced s.traced;
       })
     Woc_lib.Types.{
       classes = SM.empty; interfaces = SM.empty; free_fns = SM.empty;
       typedefs = SM.empty; unions = SM.empty; modules = [];
+      traced = Woc_lib.Types.StringSet.empty;
     }
     syms_list
 
@@ -358,6 +360,14 @@ let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
   (* haxe-parity Task 5: the predeclared `Error` record joins the merged
      table only — see Types.with_builtin_records for why not per-file. *)
   let syms = Woc_lib.Types.with_builtin_records (merge_symbols (List.map snd per_file_syms)) in
+  (* iteration 7b Phase 2: classify GC-ness once (structural SCC over the class
+     graph, union'd with surviving @gc annotations) and inject the traced set
+     into the merged table AND every module table, so Types.is_gc_class answers
+     from inference everywhere (field kinds, owner exemptions, the class flag). *)
+  let traced = Woc_lib.Gcinfer.traced_names (Woc_lib.Gcinfer.classify syms) in
+  let syms = { syms with Woc_lib.Types.traced } in
+  Hashtbl.fold (fun k v acc -> (k, { v with Woc_lib.Types.traced }) :: acc) module_syms []
+  |> List.iter (fun (k, v) -> Hashtbl.replace module_syms k v);
   (* `~file_syms` (hotfix, multi-file double-report): `per_file_syms` and
      `parsed` are both `List.map`s over the same original file list, in
      the same order, so pairing them positionally is exact -- each

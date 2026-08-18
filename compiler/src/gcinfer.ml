@@ -75,6 +75,11 @@ type result = {
   order : string list; (* all class names, sorted — deterministic dump order *)
 }
 
+(* the traced class names as a set, for injection into `Types.symbols.traced`
+   (what `Types.is_gc_class` consults). *)
+let traced_names (r : result) : Types.StringSet.t =
+  SMap.fold (fun k _ acc -> Types.StringSet.add k acc) r.traced Types.StringSet.empty
+
 let classify (syms : Types.symbols) : result =
   let classes = syms.Types.classes in
   let nodes =

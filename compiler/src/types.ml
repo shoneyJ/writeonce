@@ -125,6 +125,9 @@ and symbols = {
   typedefs : typedef_info StringMap.t;
   unions : union_info StringMap.t; (* haxe-parity Task 4 *)
   modules : string list;
+  traced : StringSet.t;
+      (* iteration 7b: classes inferred `gc` (Gcinfer). Injected after
+         declaration collection; is_gc_class reads it. Empty until then. *)
 }
 
 (* Variant lookup by bare name, across every union in scope — how a
@@ -327,11 +330,13 @@ and has_recursive_structure_type (ty : Ast.field_ty) (cls_name : string) : bool 
 let has_unique_field (cls : class_info) : bool =
   List.exists (fun (_, _, _, anns) -> List.mem "unique" anns) cls.fields
 
+(* iteration 7b: GC-ness is inference-first. A class is traced if the inference
+   pass put it in `syms.traced` (structural cycle, or a Phase-2 demand
+   promotion), OR — as a temporary bridge until demand promotion lands — it
+   still carries the `@gc` annotation for the acyclic-but-aliased case. *)
 let is_gc_class (syms : symbols) name =
-  try
-    let cls = StringMap.find name syms.classes in
-    cls.is_gc
-  with Not_found -> false
+  StringSet.mem name syms.traced
+  || (try (StringMap.find name syms.classes).is_gc with Not_found -> false)
 
 let gc_suggestion_code = Diag.warning_prefix ^ "201"    (* WO-W201 *)
 
@@ -604,7 +609,8 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
   ) prog.decls;
 
   { classes = !classes; interfaces = !interfaces; free_fns = !free_fns;
-    typedefs = !typedefs; unions = !unions; modules = !modules }
+    typedefs = !typedefs; unions = !unions; modules = !modules;
+    traced = StringSet.empty }
 
 (* ============================================================
    Pass 2: Body Typechecking
@@ -2126,9 +2132,11 @@ let merge_syms_for_module (syms_list : symbols list) : symbols =
         typedefs = StringMap.union keep_first acc.typedefs s.typedefs;
         unions = StringMap.union keep_first acc.unions s.unions;
         modules = acc.modules @ s.modules;
+        traced = StringSet.union acc.traced s.traced;
       })
     { classes = StringMap.empty; interfaces = StringMap.empty; free_fns = StringMap.empty;
-      typedefs = StringMap.empty; unions = StringMap.empty; modules = [] }
+      typedefs = StringMap.empty; unions = StringMap.empty; modules = [];
+      traced = StringSet.empty }
     syms_list
 
 (* Generic structural walk over every Ctor/Call site in a program's
