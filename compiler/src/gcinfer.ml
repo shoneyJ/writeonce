@@ -1,15 +1,22 @@
-(* gcinfer.ml — inferred GC classification (spec 2026-08-11; plan Phase 1,
-   structural half).
+(* gcinfer.ml — inferred GC classification (spec 2026-08-11).
 
-   Build the class-reference graph and mark every class in a non-trivial SCC,
-   or with a self-loop, as traced (`gc`); everything else is `owned`. `ref B`
-   is a row id (Copy) and `backlink` is a virtual inverse (recomputed by index
-   scan) — neither stores a pointer, so neither contributes a graph edge, and
-   neither can force a cycle.
+   `infer` is the pass: it returns `syms` with `traced` populated from two
+   halves —
+     - STRUCTURAL: the class-reference graph + Tarjan SCC. A class in a
+       non-trivial SCC or with a self-loop is traced. `ref B` is a row id (Copy)
+       and `backlink` is a virtual inverse — neither stores a pointer, so
+       neither contributes an edge nor can force a cycle.
+     - DEMAND: ownership run in collect mode; a class whose value must escape
+       (a shape only a traced class can hold) is promoted.
 
-   Additive: this pass does not yet feed field-kind derivation (that is plan
-   Phase 2, at the `Types.is_gc_class` seam), so nothing it decides changes
-   emitted bytecode. It only backs the `woc --dump-gc` artifact today. *)
+   Every consumer (the driver's typecheck_all, the unit-test helpers) calls
+   `infer`, so `Types.is_gc_class` — which field-kind derivation, owner
+   exemptions, and the class flag all key off — answers identically everywhere.
+
+   KNOWN LIMITATION (to refine with the Phase-3 landing): the demand hook
+   promotes the escaping *root local's* class, so `return h.box` over-promotes
+   `Holder` as well as `Box`. It should promote the escaping projection's type
+   only. Sound (never under-promotes) but imprecise. *)
 
 module SMap = Types.StringMap
 
@@ -144,3 +151,33 @@ let render (r : result) : string =
       | None -> Buffer.add_string buf (Printf.sprintf "%-10s owned\n" name))
     r.order;
   Buffer.contents buf
+
+(* The full inference pass: structural SCC (cycles) unioned with demand
+   promotion (a class value that must escape). Returns `syms` with `traced`
+   populated — the single entry point every consumer (the driver AND the unit
+   tests) calls, so `is_gc_class` answers identically everywhere. The demand
+   half runs ownership in collect mode over every program to a fixpoint;
+   promotions only grow (bounded by class count), so it terminates. *)
+let infer (parsed : (string * Ast.program) list) (syms : Types.symbols) :
+    Types.symbols =
+  let structural = traced_names (classify syms) in
+  let throwaway = Diag.Collector.create () in
+  let traced = ref structural in
+  let changed = ref true in
+  while !changed do
+    let promoted = Hashtbl.create 16 in
+    let syms_c = { syms with Types.traced = !traced } in
+    List.iter
+      (fun (f, prog) ->
+        ignore
+          (Owner.analyze ~file:f
+             ~promote:(Some (fun c -> Hashtbl.replace promoted c ()))
+             prog syms_c throwaway))
+      parsed;
+    let next =
+      Hashtbl.fold (fun c () acc -> Types.StringSet.add c acc) promoted !traced
+    in
+    changed := not (Types.StringSet.equal next !traced);
+    traced := next
+  done;
+  { syms with Types.traced = !traced }

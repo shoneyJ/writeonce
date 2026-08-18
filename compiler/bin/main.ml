@@ -360,13 +360,15 @@ let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
   (* haxe-parity Task 5: the predeclared `Error` record joins the merged
      table only — see Types.with_builtin_records for why not per-file. *)
   let syms = Woc_lib.Types.with_builtin_records (merge_symbols (List.map snd per_file_syms)) in
-  (* iteration 7b Phase 2: classify GC-ness once (structural SCC over the class
-     graph, union'd with surviving @gc annotations) and inject the traced set
-     into the merged table AND every module table, so Types.is_gc_class answers
-     from inference everywhere (field kinds, owner exemptions, the class flag). *)
-  let traced = Woc_lib.Gcinfer.traced_names (Woc_lib.Gcinfer.classify syms) in
-  let syms = { syms with Woc_lib.Types.traced } in
-  Hashtbl.fold (fun k v acc -> (k, { v with Woc_lib.Types.traced }) :: acc) module_syms []
+  (* iteration 7b: infer GC-ness once (structural SCC + demand promotion) and
+     inject the traced set into the merged table AND every module table, so
+     Types.is_gc_class answers from inference everywhere (field kinds, owner
+     exemptions, the class flag). One library call — the unit tests call the
+     same Gcinfer.infer, so classification is identical in both. *)
+  let syms = Woc_lib.Gcinfer.infer parsed syms in
+  Hashtbl.fold
+    (fun k v acc -> (k, { v with Woc_lib.Types.traced = syms.Woc_lib.Types.traced }) :: acc)
+    module_syms []
   |> List.iter (fun (k, v) -> Hashtbl.replace module_syms k v);
   (* `~file_syms` (hotfix, multi-file double-report): `per_file_syms` and
      `parsed` are both `List.map`s over the same original file list, in
@@ -379,38 +381,6 @@ let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
     (fun (f, prog) (_, file_syms) ->
       Woc_lib.Types.typecheck_program ~file:f ~module_of ~module_syms ~file_syms prog syms collector)
     parsed per_file_syms;
-  (* iteration 7b Phase 2b — demand promotion. Run ownership in collect mode
-     over every file (structural traced already in place); any owned class value
-     that would fail the escape rule (a shape that only a traced class can hold)
-     records its class. Fixpoint: promotions only grow (bounded by class count),
-     so this terminates — one or two passes in practice. The throwaway collector
-     is discarded; this pass reports nothing. *)
-  let traced_full = ref syms.Woc_lib.Types.traced in
-  let throwaway = Woc_lib.Diag.Collector.create () in
-  let changed = ref true in
-  while !changed do
-    let promoted = Hashtbl.create 16 in
-    let syms_c = { syms with Woc_lib.Types.traced = !traced_full } in
-    List.iter
-      (fun (f, prog) ->
-        ignore
-          (Woc_lib.Owner.analyze ~file:f
-             ~promote:(Some (fun c -> Hashtbl.replace promoted c ()))
-             prog syms_c throwaway))
-      parsed;
-    let next =
-      Hashtbl.fold
-        (fun c () acc -> Woc_lib.Types.StringSet.add c acc)
-        promoted !traced_full
-    in
-    changed := not (Woc_lib.Types.StringSet.equal next !traced_full);
-    traced_full := next
-  done;
-  let syms = { syms with Woc_lib.Types.traced = !traced_full } in
-  Hashtbl.fold
-    (fun k v acc -> (k, { v with Woc_lib.Types.traced = !traced_full }) :: acc)
-    module_syms []
-  |> List.iter (fun (k, v) -> Hashtbl.replace module_syms k v);
   (syms, module_syms)
 
 let dump_tokens path =

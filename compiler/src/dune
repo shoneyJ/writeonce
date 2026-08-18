@@ -2,4 +2,4 @@
 ; OCaml stdlib only: no Menhir, no ppx, no opam libraries.
 (library
   (name woc_lib)
-  (modules diag token ast lexer parser types gcinfer owner emit disasm dump))
+  (modules diag token ast lexer parser types owner gcinfer emit disasm dump))
