@@ -39,6 +39,7 @@ module Parser = Woc_lib.Parser
 module Dump = Woc_lib.Dump
 module Types = Woc_lib.Types
 module Owner = Woc_lib.Owner
+module Gcinfer = Woc_lib.Gcinfer
 module Emit = Woc_lib.Emit
 module Disasm = Woc_lib.Disasm
 
@@ -1807,6 +1808,7 @@ let owner_str ~file src =
   let toks = Lexer.tokenize collector ~file src in
   let prog = Parser.parse collector ~file toks in
   let syms, () = Types.typecheck ~file prog collector in
+  let syms = Gcinfer.infer [ (file, prog) ] syms in
   let tables = Owner.analyze ~file prog syms collector in
   (tables, collector)
 
@@ -1819,6 +1821,7 @@ let emit_str ~file src =
   let toks = Lexer.tokenize collector ~file src in
   let prog = Parser.parse collector ~file toks in
   let syms, () = Types.typecheck ~file prog collector in
+  let syms = Gcinfer.infer [ (file, prog) ] syms in
   let tables = Owner.analyze ~file prog syms collector in
   (* Single-file helper (every golden fixture is one file): its own
      module is "." and that module's own symbols are exactly `syms` —
@@ -1929,7 +1932,7 @@ let () =
      field, returned, moved out to a `take` parameter. *)
   match owner_err_fixture "borrow-escape" with
   | [ store; ret; take ] ->
-    check_site "borrow-escape (stored in a field)" ~code:"WO-E304" ~line:9 ~col:16 ~rel_line:8
+    check_site "borrow-escape (stored in a field)" ~code:"WO-E304" ~line:9 ~col:18 ~rel_line:8
       ~rel_col:12 store;
     check_site "borrow-escape (returned)" ~code:"WO-E304" ~line:18 ~col:10 ~rel_line:17 ~rel_col:9
       ret;
@@ -1937,7 +1940,7 @@ let () =
       ~rel_line:21 ~rel_col:10 take;
     (* spec section 6's own wording for this diagnostic *)
     check "borrow-escape: names the place and the function it escapes"
-      (Option.is_some (find_substring ~needle:"borrow of `h.box` escapes `leak`" ret.Diag.message))
+      (Option.is_some (find_substring ~needle:"borrow of `h.items` escapes `leak`" ret.Diag.message))
   | ds ->
     check_eq "borrow-escape: exactly three ownership errors" ~expected:3 ~actual:(List.length ds)
       string_of_int

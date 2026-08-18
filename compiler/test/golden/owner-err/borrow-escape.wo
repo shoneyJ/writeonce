@@ -1,23 +1,23 @@
-class Box {
-  n: Int
-}
-
+-- Iteration 7b: WO-E304 borrow escapes, using CONTAINER values (`multi Text`).
+-- A class value that escapes is demand-promoted to traced, so the illustrative
+-- escapes must be containers, which are owned and never promoted. Mirrors the
+-- run/borrow-escape-return corpus case (a class escape, now legal).
 class Holder {
-  box: Box
+  items: multi Text
 
-  fn adopt(other: Box) {
-    self.box = other
+  fn adopt(other: multi Text) {
+    self.items = other
   }
 }
 
-fn keep(take b: Box) -> Int {
+fn keep(take b: multi Text) -> Int {
   return 0
 }
 
-fn leak(h: Holder) -> Box {
-  return h.box
+fn leak(h: Holder) -> multi Text {
+  return h.items
 }
 
 fn stash(h: Holder) -> Int {
-  return keep(h.box)
+  return keep(h.items)
 }
