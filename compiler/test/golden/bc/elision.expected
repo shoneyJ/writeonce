@@ -2,14 +2,15 @@
 k0   TEXT "Cache"
 k1   TEXT "Holder"
 k2   TEXT "hits"
-k3   TEXT "cache"
-k4   TEXT "read"
-k5   TEXT "proven"
-k6   TEXT "main"
-k7   INT  41
-k8   INT  1
+k3   TEXT "peer"
+k4   TEXT "cache"
+k5   TEXT "read"
+k6   TEXT "proven"
+k7   TEXT "main"
+k8   INT  41
+k9   INT  1
 == CLASSES ==
-c0   Cache flags=gc fields=[hits:SCALAR]
+c0   Cache flags=gc fields=[hits:SCALAR, peer:GCREF]
 c1   Holder flags=- fields=[cache:GCREF]
 == INTERFACES ==
 == VTABLES ==
@@ -33,7 +34,7 @@ m2   main args=0 regs=6 [free fn] [ENTRY]
   drops: pc 14 owned={} gc={r0}
   drops: pc 15 owned={} gc={}
   0000  NEW       r0, c0
-  0001  LOADK     r1, k7
+  0001  LOADK     r1, k8
   0002  SETF      r0, f0, r1
   0003  NEW       r1, c1
   0004  MOVE      r2, r0
@@ -42,7 +43,7 @@ m2   main args=0 regs=6 [free fn] [ENTRY]
   0007  MOVE      r4, r1
   0008  CALL      r4, m1
   0009  MOVE      r3, r4
-  0010  LOADK     r5, k8
+  0010  LOADK     r5, k9
   0011  ADD       r2, r3, r5
   0012  BUILTIN   r2, r2, print_int
   0013  DROP      r1

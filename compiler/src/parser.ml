@@ -126,6 +126,7 @@ let fail (st : state) (site : Ast.pos) (code : string) (message : string) : 'a =
 
 let syntax_code = Diag.parsing_prefix ^ "01" (* WO-E101: generic syntax error *)
 let table_code = Diag.parsing_prefix ^ "02" (* WO-E102: invalid @table(...) configuration *)
+let gc_removed_code = Diag.parsing_prefix ^ "04" (* WO-E104: `@gc` — GC-ness is inferred *)
 
 (* haxe-parity Task 2: the haxe keyword verdict table's `inline` row —
    "adopt (values): const compile-time values; inline *functions*
@@ -332,10 +333,19 @@ let parse_type_annotations (st : state) : type_annotations =
   let table = ref None in
   while peek st = Token.At do
     ignore (advance st);
+    let at_pos = peek_pos st in
     let name = expect_ident st "annotation name" in
     (match name with
      | "gc" ->
-       is_gc := true;
+       (* iteration 7b: `@gc` is not part of the language — GC-ness is inferred
+          (structural cycles + demand promotion; see `woc --dump-gc`). Reject it
+          rather than accept a meaningless annotation. `is_gc` stays false. *)
+       Diag.Collector.add st.collector
+         (Diag.error ~code:gc_removed_code ~file:st.file ~line:at_pos.Ast.line
+            ~col:at_pos.Ast.col
+            ~message:
+              "`@gc` is not a valid annotation: GC-ness is inferred by the \
+               compiler (run `woc --dump-gc`). Remove it." ());
        skip_paren_args st
      | "table" -> table := Some (parse_table_cfg st)
      | _ -> skip_paren_args st);

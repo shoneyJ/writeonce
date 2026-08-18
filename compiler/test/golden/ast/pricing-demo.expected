@@ -14,11 +14,11 @@
     22:5 ASSIGN self.prices = amount
   25:3 METHOD adopt(take other: Product) -> Product
     26:5 RETURN other
-31:1 CLASS PriceCache @gc
-  32:3 FIELD entries: map<Text, Int>
-35:1 TYPE Note
-  36:3 FIELD id: Id
-  37:3 FIELD body: Text
-  38:3 FIELD created: Timestamp = now()
-41:1 METHOD discount(mut amount: Int, take pct: Int) -> Int
-  42:3 RETURN amount
+30:1 CLASS PriceCache
+  31:3 FIELD entries: map<Text, Int>
+34:1 TYPE Note
+  35:3 FIELD id: Id
+  36:3 FIELD body: Text
+  37:3 FIELD created: Timestamp = now()
+40:1 METHOD discount(mut amount: Int, take pct: Int) -> Int
+  41:3 RETURN amount

@@ -101,3 +101,4 @@ prototypes/wo-db/
 __pycache__/
 *.pyc
 dist/
+docs/examples/*/target/

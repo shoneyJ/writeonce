@@ -1,4 +1,4 @@
-@gc
+-- Cache is inferred `gc`: it escapes (returned out of `escaping`), so demand promotion traces it.
 class Cache {
   n: Int
 }

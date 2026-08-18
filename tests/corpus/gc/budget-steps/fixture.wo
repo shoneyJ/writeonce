@@ -4,7 +4,6 @@
 -- same trick runtime/test/test_cycle.c uses (BIG=130) so ASan can prove
 -- a Node is actually freed, not just recycled inside the arena's own
 -- freelist where a sanitizer can never see it.
-@gc
 class Node {
   peers: multi Node
   p1: Int

@@ -302,34 +302,6 @@ let with_builtin_records (syms : symbols) : symbols =
         { acc with classes = StringMap.add name info acc.classes })
     syms predeclared_records
 
-let rec has_recursive_structure (cls : class_info) : bool =
-  List.exists (fun (_, ty, _, _) ->
-    match ty with
-    | Ast.Scalar name -> name = cls.name  (* direct self-reference *)
-    | Ast.Ref name -> name = cls.name
-    | Ast.Multi name -> name = cls.name  (* multi Self *)
-    | Ast.Map (k, v) -> k = cls.name || v = cls.name  (* map<_, Self> / map<Self, _> *)
-    | Ast.Backlink _ -> false
-    | Ast.Nullable inner -> has_recursive_structure_type inner cls.name
-  ) cls.fields
-
-and has_recursive_structure_type (ty : Ast.field_ty) (cls_name : string) : bool =
-  match ty with
-  | Ast.Scalar name -> name = cls_name
-  | Ast.Ref name -> name = cls_name
-  | Ast.Multi name -> name = cls_name
-  | Ast.Map (k, v) -> k = cls_name || v = cls_name
-  | Ast.Backlink _ -> false (* a computed inverse holds no owned structure *)
-  | Ast.Nullable inner -> has_recursive_structure_type inner cls_name
-
-(* @unique field -> persistent identity (plan's "When NOT to emit": a
-   class with a @unique field should not get the @gc suggestion even if
-   it also has recursive/shared structure). Annotation *names* only, per
-   Ast.field's own doc comment -- "unique" is what parse_field stores for
-   a bare `@unique`. *)
-let has_unique_field (cls : class_info) : bool =
-  List.exists (fun (_, _, _, anns) -> List.mem "unique" anns) cls.fields
-
 (* iteration 7b: GC-ness is inference-first. A class is traced if the inference
    pass put it in `syms.traced` (structural cycle, or a Phase-2 demand
    promotion), OR — as a temporary bridge until demand promotion lands — it
@@ -337,15 +309,6 @@ let has_unique_field (cls : class_info) : bool =
 let is_gc_class (syms : symbols) name =
   StringSet.mem name syms.traced
   || (try (StringMap.find name syms.classes).is_gc with Not_found -> false)
-
-let gc_suggestion_code = Diag.warning_prefix ^ "201"    (* WO-W201 *)
-
-let suggest_gc_annotation ~file (cls : class_info) (collector : Diag.Collector.t) : unit =
-  if not cls.is_gc && Option.is_none cls.table && not (has_unique_field cls)
-     && has_recursive_structure cls then
-    Diag.Collector.add collector
-      (Diag.warning ~code:gc_suggestion_code ~file ~line:cls.pos.line ~col:cls.pos.col
-         ~message:(Printf.sprintf "%s has recursive/shared structure that borrow checker cannot prove. Consider adding @gc if this is an ephemeral in-memory cache. If this maps to a database table, keep owned (default)." cls.name) ())
 
 (* Ast.field_ty -> the internal resolved typ. Hoisted out of
    typecheck_program (where it was a local closure) so the .wob emitter
@@ -515,9 +478,7 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
          | Some (existing : class_info) ->
              report_duplicate_decl collector ~file ~kind:"class" ~name:c.name ~pos:c.pos
                ~first_pos:existing.pos
-         | None ->
-             classes := StringMap.add c.name info !classes;
-             suggest_gc_annotation ~file info collector)
+         | None -> classes := StringMap.add c.name info !classes)
     | Ast.Interface i ->
         let methods = List.map (fun (m : Ast.method_sig) ->
           { name = m.name;

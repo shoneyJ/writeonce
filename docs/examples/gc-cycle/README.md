@@ -209,13 +209,14 @@ opcode-27/28 retirement, and the sweep list.
 
 **Phase 2b (landed).** Demand promotion: the ownership pass, run in collect
 mode, promotes any class whose value *must escape* (returned, stored where it
-outlives its scope) — the acyclic-but-aliased case (`PriceCache`) inference by
-structure cannot see. So GC-ness is now fully inferred (cycles by structure +
-aliasing by demand), and `@gc` is redundant everywhere. What remains is
-*removing the `@gc` keyword itself* — the parser rejecting it, and the RC/`@gc`
-golden + `test_diag` assertions being rewritten — which is coupled to Phase 3
-(the RC machinery those tests cover is deleted there), so the keyword removal
-lands with Phase 3.
+outlives its scope) — the acyclic-but-aliased case inference by structure cannot
+see, targeting the escaping projection's type precisely. So GC-ness is fully
+inferred: cycles by structure + aliasing by demand.
+
+**`@gc` removed from the language (landed).** The keyword is now a hard error
+(`WO-E104`): a developer never writes or mentions it; `woc --dump-gc` shows what
+inference decided. WO-W201 (which suggested `@gc`) is retired. No `.wo` in the
+repo carries `@gc`. This is the front-end half of iteration 7b, complete.
 
 When 7b lands, the acceptance is:
 - `woc --dump-gc docs/examples/gc-cycle` classifies `Node gc (cycle …)` /

@@ -1232,98 +1232,6 @@ let () =
   check "Timestamp is a builtin scalar" (Types.is_builtin_scalar "Timestamp")
 
 let () =
-  (* class Node { next: Node } -- direct self-reference, no @gc, no
-     @table, no @unique field: WO-W201 must fire, at the class's own
-     (real) file/line/col, and a warning-only run must still exit 0
-     (Diag.Collector's severity-keyed exit-code contract). *)
-  let path = "node.wo" in
-  let _, collector = typecheck_str ~file:path "class Node {\n  next: Node\n}\n" in
-  let diags = Diag.Collector.diagnostics collector in
-  check_eq "gc-suggestion: exactly one diagnostic (WO-W201)" ~expected:1
-    ~actual:(List.length diags) string_of_int;
-  (match diags with
-  | [ d ] ->
-    check "gc-suggestion: code is WO-W201" (d.Diag.code = "WO-W201");
-    check "gc-suggestion: severity is Warning" (d.Diag.severity = Diag.Warning);
-    check "gc-suggestion: real file/line/col (node.wo:1:1, the `class` token)"
-      (d.Diag.site.Diag.file = path && d.Diag.site.Diag.line = 1 && d.Diag.site.Diag.col = 1)
-  | _ -> check "gc-suggestion: exactly one diagnostic" false);
-  check_eq "gc-suggestion: a warning-only run exits 0, not 1" ~expected:0
-    ~actual:(Diag.Collector.exit_code collector) string_of_int
-
-let () =
-  (* @gc class Cache { next: Cache } -- same recursive shape as above,
-     but already @gc: WO-W201 must NOT fire. *)
-  let _, collector = typecheck_str ~file:"cache.wo" "@gc\nclass Cache {\n  next: Cache\n}\n" in
-  check_eq "gc-suggestion: @gc class reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* @table(...) class Node2 { next: Node2 } -- recursive, but DB-backed
-     via @table: WO-W201 must NOT fire (plan: "@table -> must be owned"). *)
-  let _, collector =
-    typecheck_str ~file:"node2.wo"
-      "@table(name: \"nodes\")\nclass Node2 {\n  next: Node2\n}\n"
-  in
-  check_eq "gc-suggestion: @table class reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* class Node3 { id: Id @unique; next: Node3 } -- recursive, but has a
-     @unique field (persistent identity): WO-W201 must NOT fire (plan's
-     "When NOT to emit" list, second bullet). *)
-  let _, collector =
-    typecheck_str ~file:"node3.wo"
-      "class Node3 {\n  id: Id @unique\n  next: Node3\n}\n"
-  in
-  check_eq "gc-suggestion: class with a @unique field reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* class Point { x: Int; y: Int } -- a plain data struct, no
-     recursive/shared fields: WO-W201 must NOT fire either. *)
-  let _, collector =
-    typecheck_str ~file:"point.wo" "class Point {\n  x: Int\n  y: Int\n}\n"
-  in
-  check_eq "gc-suggestion: simple data struct reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* class Calc { items: multi Item } (golden/ast/body-statements.wo's own
-     shape) -- a `multi` field of an UNRELATED type, not `multi Self`.
-     has_recursive_structure must key off self-reference, not "any multi
-     field": a bare `Ast.Multi _ -> true` would spuriously fire WO-W201
-     on every plain data class that merely holds a collection. *)
-  let _, collector =
-    typecheck_str ~file:"calc.wo" "class Calc {\n  items: multi Item\n}\n"
-  in
-  check_eq "gc-suggestion: unrelated `multi Item` field reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* class Bucket { entries: map<Text, Item> } -- same over-trigger risk
-     for `map`, neither side self-referential. *)
-  let _, collector =
-    typecheck_str ~file:"bucket.wo" "class Bucket {\n  entries: map<Text, Item>\n}\n"
-  in
-  check_eq "gc-suggestion: unrelated `map<Text, Item>` field reports nothing" ~expected:0
-    ~actual:(List.length (Diag.Collector.diagnostics collector)) string_of_int
-
-let () =
-  (* class Tree { children: multi Tree } -- `multi Self` must still fire
-     (the plan's own literal example of the heuristic). *)
-  let path = "tree.wo" in
-  let _, collector =
-    typecheck_str ~file:path "class Tree {\n  children: multi Tree\n}\n"
-  in
-  let diags = Diag.Collector.diagnostics collector in
-  check_eq "gc-suggestion: `multi Self` still fires WO-W201" ~expected:1
-    ~actual:(List.length diags) string_of_int;
-  match diags with
-  | [ d ] -> check "gc-suggestion: `multi Self` diagnostic is WO-W201" (d.Diag.code = "WO-W201")
-  | _ -> check "gc-suggestion: `multi Self` exactly one diagnostic" false
-
-let () =
   (* class BadExample { code: INVALID_TYPE } -- INVALID_TYPE is not a
      builtin, class, or interface: WO-E225 must fire, at
      the field's own real file/line/col, and this (an actual Error) must
@@ -1955,13 +1863,15 @@ let () =
         (Option.is_some (find_substring ~needle:"previous loop iteration" d.Diag.message)))
 
 let () =
-  (* @gc is exempt from all of it (spec rule 5): the exact shape that is
-     WO-E301 above is silent here, and produces no move-table entries
-     either — a @gc transfer is an rc site, not a move. *)
+  (* A traced (gc) class is exempt from all of it (spec rule 5): the exact
+     shape that is WO-E301 above is silent here, and produces no move-table
+     entries either — a gc transfer is an rc site, not a move. `Cache` is
+     self-referential (`peer: ?Cache`), so inference classifies it gc without
+     any annotation (iteration 7b). *)
   let src =
-    "@gc\n\
-     class Cache {\n\
+    "class Cache {\n\
     \  n: Int\n\
+    \  peer: ?Cache\n\
      }\n\
      \n\
      fn keep(take c: Cache) -> Int {\n\

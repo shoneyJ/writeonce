@@ -7,9 +7,9 @@
 -- the emitted body must contain NO borrow op and NO rc op at all — the
 -- disassembly below is the evidence. `main` is the contrast: an escape
 -- into a field is a KEPT acquire, so RC_INC does appear there.
-@gc
 class Cache {
   hits: Int
+  peer: ?Cache
 }
 
 class Holder {
