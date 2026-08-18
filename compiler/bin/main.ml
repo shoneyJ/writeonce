@@ -47,6 +47,7 @@ let usage_msg =
    usage: woc --dump-tokens <path>\n\
    usage: woc --dump-ast <path>\n\
    usage: woc --dump-owner <path>\n\
+   usage: woc --dump-gc <path>\n\
    usage: woc --dump-bc <path>\n\
    \n\
    Compiles writeonce (.wo) source. <path> is a single .wo file or a\n\
@@ -408,6 +409,17 @@ let dump_owner path =
     parsed;
   finish collector (build_lookup sources)
 
+(* --dump-gc (iteration 7b, plan Phase 1): runs lex/parse/typecheck, then prints
+   the inferred GC classification (one line per class). Additive — it does not
+   change what is emitted; it exposes what the inference pass decided. *)
+let dump_gc path =
+  let sources = discover_and_read path in
+  let collector = Woc_lib.Diag.Collector.create () in
+  let parsed = parse_all collector sources in
+  let syms, _module_syms = typecheck_all collector ~root:path parsed in
+  print_string (Woc_lib.Gcinfer.render (Woc_lib.Gcinfer.classify syms));
+  finish collector (build_lookup sources)
+
 (* The bare `woc <path>` form (Task 8): runs the full pipeline with no
    dump — check-only. Nothing is printed to stdout on success, matching
    the exit-code contract's "0 = clean compile". *)
@@ -723,6 +735,7 @@ let () =
   | [| _; "--dump-tokens"; path |] -> dump_tokens path
   | [| _; "--dump-ast"; path |] -> dump_ast path
   | [| _; "--dump-owner"; path |] -> dump_owner path
+  | [| _; "--dump-gc"; path |] -> dump_gc path
   | [| _; "--dump-bc"; path |] -> dump_bc path
   | [| _; "--emit"; path; "-o"; out |] -> emit_mode path out
   | [| _; "build"; path; "-o"; out |] -> build_mode ~runtime:None path out
