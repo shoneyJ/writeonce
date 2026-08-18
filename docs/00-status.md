@@ -91,9 +91,10 @@ Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](s
 - Iterations 8–12 (shard-actor runtime, database engine, `@table`/query, HTTP
   layer, fibers, blue-green): unchanged, and unblocked by this plan.
 
-Two tracks run in this repo. The critical path is the **language track**:
-iterations 3 → 4 → 5 → 6 → 7, ending at _compile and run log-watcher_. The
-Rust-runtime track is shipped-and-maintained, not advancing.
+The project is the **language track**: iterations 3 → 4 → 5 → 6 → 7, ending at
+_compile and run log-watcher_, then the database engine (9/9b) and beyond. (The
+prior Rust `wo` runtime was removed from the repo 2026-08-18 — see
+[`discarded.md`](plan/discarded.md).)
 
 ---
 
@@ -293,27 +294,9 @@ recorded, not silently owed:
   for story iteration 7b). Spec success criterion 3 is now **MET**;
   `just oop-accept` passes all five criteria.
 
-### Rust runtime track — Stage 2 shipped, maintained
-
-| Status | Phase                    | Doc                                                                       | Notes                                                                                            |
-| ------ | ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| ✅     | 01 crate scaffolding     | [done/01](plan/done/01-scafolding-crates.md)                              | 15 crates                                                                                        |
-| ✅     | 02 epoll event loop      | [done/02](plan/done/02-event-loop-epoll.md)                               | `runtime/netpoll_epoll.rs`                                                                       |
-| ✅     | 03 hand-rolled HTTP      | [done/03](plan/done/03-hand-rolled-http.md)                               | + keep-alive & pipelining                                                                        |
-| ✅     | 04 tokio/axum cutover    | [done/04](plan/done/04-cutover-remove-tokio-axum.md)                      | deps now: anyhow, serde, serde_json, libc                                                        |
-| ✅     | 09a thread-per-core      | [09](plan/09-concurrency-scaleout.md)                                     | `scheduler.rs`, `SO_REUSEPORT`, pinned `wo-shard-<t>` workers                                    |
-| ✅     | 09b sharded engine       | [09](plan/09-concurrency-scaleout.md)                                     | `shard.rs` bus; `Arc<Mutex<Engine>>` deleted; interleaved ids                                    |
-| ✅     | 09c per-shard WAL        | [09](plan/09-concurrency-scaleout.md)                                     | ack-after-fsync; boot replay; `meta` shard guard                                                 |
-| ✅     | — keep-alive follow-up   | [09](plan/09-concurrency-scaleout.md)                                     | reads ×3.4 → 770k/s                                                                              |
-| ✅     | — io_uring group commit  | [09](plan/09-concurrency-scaleout.md)                                     | raw ring; 4.7× durable writes on real disk                                                       |
-| ✅     | 16a PG wire client       | [16](plan/16-postgres-mirror.md)                                          | hand-rolled protocol v3, zero crates                                                             |
-| ✅     | 16b PG backup mirror     | [16](plan/16-postgres-mirror.md)                                          | async JSONB upserts behind the WAL ack; RAM authoritative                                        |
-| ✅     | 13a class surface        | [13](plan/13-class-model-live-pricing.md)                                 | `class` parses, CRUD serves                                                                      |
-| ✅     | 13b method execution     | [13](plan/13-class-model-live-pricing.md)                                 | row-scoped txn per call; abort → 409 rollback                                                    |
-| ✅     | — `@table` + indexed DML | [13](plan/13-class-model-live-pricing.md)                                 | secondary indexes, `find_by`, `select Type{…}`, REST filters                                     |
-| ✅     | C proving ground A–F     | [exploration/c-runtime/00-plan.md](plan/exploration/c-runtime/00-plan.md) | 859k reads/s, 618k durable commits/s; found the ack-ordering + fd-ABA bugs the Rust port avoided |
-
-Ecommerce sample (verified 2026-06-13): `api.rest` 17/17 expected statuses pass.
+The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
+618k durable commits/s) fed the current C runtime and remains as an
+[exploration study](plan/exploration/c-runtime/00-plan.md).
 
 ---
 
@@ -357,22 +340,6 @@ log-watcher proof.
   workload needs monotonic math
 - `is` — cut 2026-08-10, 0 uses in the driving workload; emptied plan 8's old
   Task 7, which is deleted rather than deferred
-
-### Rust runtime track — not advancing while the language track runs
-
-| Status | Phase                                                     | Doc                                                                                                           | Notes                                                  |
-| ------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| ⬜     | 05 hand-rolled JSON                                       | [05](plan/05-hand-rolled-json.md)                                                                             | removes serde/serde_json                               |
-| ⬜     | 06 bespoke error type                                     | [06](plan/06-bespoke-error.md)                                                                                | removes anyhow                                         |
-| ⬜     | 07 inotify content watcher                                | [07](plan/07-inotify-content-watcher.md)                                                                      | `wo dev` hot reload                                    |
-| ⬜     | 08 sendfile static assets                                 | [08](plan/08-sendfile-static-assets.md)                                                                       | needed by the parked UI track                          |
-| ⬜     | 09d cross-shard subscriptions                             | [09](plan/09-concurrency-scaleout.md)                                                                         | LIVE fan-out; pairs with Stage 3                       |
-| ⬜     | 09e cross-shard transactions (2PC)                        | [09](plan/09-concurrency-scaleout.md)                                                                         | needed by `fn checkout` spanning shards                |
-| ⬜     | 09f observability & reshard                               | [09](plan/09-concurrency-scaleout.md)                                                                         | per-shard metrics, `WO_RESHARD`                        |
-| ⬜     | 10–12 storage completion                                  | [10](plan/10-storage-foundations.md), [11](plan/11-wal-and-recovery.md), [12](plan/12-engine-disk-cutover.md) | snapshots, compaction, WAL rotation, mmap arena engine |
-| ⬜     | 13c LIVE pricing push · Stage 3 wire layer · 13e at scale | [13](plan/13-class-model-live-pricing.md)                                                                     | replaces the 501 stub                                  |
-| ⬜     | 15a–15e MCP over streamable HTTP                          | [15](plan/15-mcp-streamable-http.md)                                                                          | 15e needs 13c + 09d                                    |
-| ⬜     | 16c–16f typed columns, lossless resync, restore, SCRAM    | [16](plan/16-postgres-mirror.md)                                                                              |                                                        |
 
 ### Frontend — removed as stale (2026-08-17)
 
