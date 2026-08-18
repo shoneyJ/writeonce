@@ -1,0 +1,11 @@
+name        = "gc-cycle"
+version     = "0.1.0"
+description = "Iteration 7b target sample: inferred GC + incremental mark-sweep — a cyclic type (traced) vs an acyclic one (owned)"
+
+[runtime]
+wo = ">= 0.1"
+
+# `woc <dir>` builds target/gc-cycle. No runtime path pinned (portable); an
+# installed woc self-locates wovm, an in-repo build passes WO_RUNTIME.
+# NOTE: this sample targets iteration 7b (inferred GC). It does not build on
+# today's toolchain — see README "Run status".

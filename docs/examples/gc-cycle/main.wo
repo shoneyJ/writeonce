@@ -1,0 +1,40 @@
+-- gc-cycle — the smallest program that needs a tracing collector, and the
+-- smallest that does not. Iteration 7b's target sample (see README).
+--
+--   ring    build a 3-node cycle, abandon it, let a collection slice reclaim it
+--   owned   build a Segment, show it dies at scope end with no collector at all
+
+fn main(args: multi Text) -> Int {
+  if len(args) >= 1 and args[0] == "owned" { return owned_demo(); }
+  return ring_demo();
+}
+
+-- The cyclic case. a -> b -> c -> a. Every Node is reachable from `a` while `a`
+-- is a live root (on the value stack). The moment `a` leaves scope the whole
+-- ring becomes unreachable but is NOT freed by any drop — ownership cannot
+-- reclaim a cycle. The next marking slice finds no root reaching the ring, so
+-- all three sweep white and are freed together.
+fn ring_demo() -> Int {
+  let a = Node { label: "a", next: nil };
+  let b = Node { label: "b", next: nil };
+  let c = Node { label: "c", next: nil };
+
+  a.next = b;           -- store into a GCREF slot: barrier-relevant while marking
+  b.next = c;
+  c.next = a;           -- closes the cycle; c.next aliases the same Node as `a`
+
+  print("ring ${a.label} -> ${a.next.label} -> ${a.next.next.label} -> ${a.next.next.next.label}");
+  -- prints: ring a -> b -> c -> a
+  -- `a`, `b`, `c` go out of scope here. No DROP frees the Nodes (they are
+  -- traced, not owned). The ring is now abandoned; a later slice collects it.
+  return 0;
+}
+
+-- The acyclic case, for contrast. Segment is `owned`: at the `}` the drop table
+-- lists its register in the OWNED mask, the VM frees the object and its Text
+-- field deterministically, and the collector never sees it.
+fn owned_demo() -> Int {
+  let s = Segment { from: "auth.log", len: 4096 };
+  print("segment ${s.from} len=${s.len}");
+  return 0;              -- `s` (and its Text) freed here by DROP, no tracing
+}

@@ -1,0 +1,22 @@
+-- Two shapes, two memory strategies — decided by the compiler, not the author.
+--
+-- Node has a field whose type is Node (`?Node`), so the class-reference graph
+-- has an edge Node -> Node: a self-loop. Tarjan's SCC over that graph puts Node
+-- in a non-trivial cycle, so the inference pass classifies it `gc` (traced).
+-- Its `next` field therefore has kind WO_K_GCREF. A ring of Nodes cannot be
+-- expressed with ownership alone (one node would need two owners), which is the
+-- whole reason a tracing collector exists.
+class Node {
+  label: Text
+  next:  ?Node        -- edge Node -> Node  =>  self-loop  =>  inferred `gc`
+}
+
+-- Segment holds only a Text (owned) and an Int (scalar). No field's type is a
+-- class, so it has no outgoing edge in the class-reference graph: it can never
+-- be part of a cycle. Inference classifies it `owned` — deterministically freed
+-- at scope end by the per-function drop machinery, never touched by the
+-- collector.
+class Segment {
+  from: Text
+  len:  Int
+}
