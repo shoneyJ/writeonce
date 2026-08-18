@@ -1075,15 +1075,15 @@ let class_of_ty (syms : Types.symbols) (t : Ast.field_ty) : string option =
   | Ast.Scalar n when Types.StringMap.mem n syms.Types.classes -> Some n
   | _ -> None
 
-let escape (ctx : ctx) (l : local) ~(pos : Ast.pos) ~message : unit =
-  match ctx.promote with
-  | Some record -> (
-    match class_of_ty ctx.syms l.l_ty with
-    | Some c -> record c (* demand promotion instead of WO-E304 *)
-    | None ->
-      report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos
-        ~label:(borrow_label l))
-  | None ->
+let escape (ctx : ctx) (l : local) ~(pos : Ast.pos) ~message
+    ~(promote_class : string option) : unit =
+  (* `promote_class` is the class of the value that actually escapes (the
+     escaping place's type), not the borrow-root local's — so `return h.box`
+     promotes `Box`, never `Holder`. In collect mode with a class in hand, record
+     it; otherwise report WO-E304. *)
+  match (ctx.promote, promote_class) with
+  | Some record, Some c -> record c
+  | _ ->
     report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos
       ~label:(borrow_label l)
 
@@ -1139,7 +1139,9 @@ let transfer (ctx : ctx) (p : place) ~(what : string) : bool =
       escape ctx l ~pos:p.ppos
         ~message:
           (Printf.sprintf "borrow of `%s` %s — borrows cannot outlive their scope" (place_text p)
-             what);
+             what)
+        ~promote_class:
+          (match place_ty ctx p with Some t -> class_of_ty ctx.syms t | None -> None);
       false
     | None -> (
       match root_local ctx p with

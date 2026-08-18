@@ -13,10 +13,9 @@
    `infer`, so `Types.is_gc_class` — which field-kind derivation, owner
    exemptions, and the class flag all key off — answers identically everywhere.
 
-   KNOWN LIMITATION (to refine with the Phase-3 landing): the demand hook
-   promotes the escaping *root local's* class, so `return h.box` over-promotes
-   `Holder` as well as `Box`. It should promote the escaping projection's type
-   only. Sound (never under-promotes) but imprecise. *)
+   The demand hook promotes the escaping *projection's* type (owner.ml's
+   `transfer` passes `place_ty p`), so `return h.box` promotes `Box`, never the
+   container `Holder`. *)
 
 module SMap = Types.StringMap
 
