@@ -743,6 +743,51 @@ let rec unwrap_nullable (t : typ) : typ =
   | TNullable inner -> unwrap_nullable inner
   | other -> other
 
+let is_nullable (t : typ) : bool = match t with TNullable _ -> true | _ -> false
+
+(* ?T narrowing facts (iteration 5 strictness, WO-E211/E212/E213): which
+   LOCAL names a condition proves non-nil when it is true, and when it is
+   false. Only plain identifiers narrow (Haxe's own rule): a field place
+   (`a.next`) can be re-assigned between the check and the use, so a chain
+   must go through a `let`. `and` propagates true-facts (both conjuncts
+   held), `or` propagates false-facts (both disjuncts failed). *)
+let rec nil_facts (c : expr) : string list * string list =
+  match c.kind with
+  | Binary (Ne, { kind = Ident x; _ }, { kind = NilLit; _ })
+  | Binary (Ne, { kind = NilLit; _ }, { kind = Ident x; _ }) -> ([ x ], [])
+  | Binary (Eq, { kind = Ident x; _ }, { kind = NilLit; _ })
+  | Binary (Eq, { kind = NilLit; _ }, { kind = Ident x; _ }) -> ([], [ x ])
+  | Binary (And, l, r) ->
+    let lt, _ = nil_facts l and rt, _ = nil_facts r in
+    (lt @ rt, [])
+  | Binary (Or, l, r) ->
+    let _, lf = nil_facts l and _, rf = nil_facts r in
+    ([], lf @ rf)
+  | _ -> ([], [])
+
+(* narrow the named locals from ?T to T in an environment (and its
+   confident twin); a name that is not nullable there is left alone *)
+let narrow_env (names : string list) (m : typ StringMap.t) : typ StringMap.t =
+  List.fold_left
+    (fun acc n ->
+      match StringMap.find_opt n acc with
+      | Some (TNullable t) -> StringMap.add n t acc
+      | _ -> acc)
+    m names
+
+(* undo a narrow when a branch's environment flows past the branch (the
+   then-env leaks out of an else-less `if` by existing convention): restore
+   each narrowed name's original type so the narrow cannot escape its
+   guard *)
+let unnarrow_env (names : string list) ~(orig : typ StringMap.t)
+    (m : typ StringMap.t) : typ StringMap.t =
+  List.fold_left
+    (fun acc n ->
+      match StringMap.find_opt n orig with
+      | Some t -> StringMap.add n t acc
+      | None -> acc)
+    m names
+
 (* `ReqInt` accepts any non-`Text` builtin scalar (`Int`, `Bool`,
    `Timestamp`, `Id`), not literally the string "Int" -- `wob_kind_of_typ`
    (above) maps all four to the identical runtime representation,
@@ -1161,6 +1206,49 @@ let typecheck_program ~file ~(module_of : string -> string)
         None
   in
 
+  (* ---- ?T forced handling (iteration 5 strictness; WO-E211/E212/E213) ----
+     The env types here are declared or confidently inferred — the fallback
+     placeholders are plain `TScalar "Int"`/`"Bool"`, never `TNullable` — so a
+     `TNullable` result is always trustworthy and these checks cannot false-
+     positive off an underivable expression. `current_ret` is the enclosing
+     fn/method's declared return type, set by each body walk below. *)
+  let current_ret : typ option ref = ref None in
+  let report_nullable ~code (pos : pos) (msg : string) : unit =
+    Diag.Collector.add collector
+      (Diag.error ~code ~file ~line:pos.line ~col:pos.col ~message:msg ())
+  in
+  let e211 (pos : pos) (what : string) : unit =
+    report_nullable ~code:nullable_used_without_check_code pos
+      (Printf.sprintf
+         "%s is possibly nil (`?T`) and is used where a plain value is required — narrow it first (`if x != nil { ... }`)"
+         what)
+  in
+  let e212 (pos : pos) (what : string) (target : string) : unit =
+    report_nullable ~code:nullable_assign_mismatch_code pos
+      (Printf.sprintf
+         "%s cannot be stored in %s — the target is not nullable; declare it `?T` or narrow the value first"
+         what target)
+  in
+  let e213 (pos : pos) (what : string) : unit =
+    report_nullable ~code:missing_nil_check_code pos
+      (Printf.sprintf
+         "%s is possibly nil (`?T`) — check it against `nil` before reaching through it"
+         what)
+  in
+  (* the boundary test every store/return/argument shares: value flows into a
+     non-nullable slot *)
+  let crosses_boundary ~(target : typ) (v : expr_type_result) : bool =
+    (not (is_nullable target)) && (v.is_nil || is_nullable v.typ)
+  in
+  let expr_label (e : expr) : string =
+    match e.kind with
+    | Ident n -> Printf.sprintf "`%s`" n
+    | Field (_, f) -> Printf.sprintf "field `%s`" f
+    | NilLit -> "`nil`"
+    | Call _ -> "this call's result"
+    | _ -> "this value"
+  in
+
   let rec typecheck_expr (env : typ StringMap.t) (cenv : typ StringMap.t) (e : expr) :
       expr_type_result =
     match e.kind with
@@ -1174,7 +1262,8 @@ let typecheck_program ~file ~(module_of : string -> string)
          with Not_found -> { typ = TScalar "Int"; is_nil = false })
     | Field (base, field_name) ->
         let base_res = typecheck_expr env cenv base in
-        (match (match base_res.typ with TRef c -> TScalar c | other -> other) with
+        if is_nullable base_res.typ then e213 base.pos (expr_label base);
+        (match (match unwrap_nullable base_res.typ with TRef c -> TScalar c | other -> other) with
          | TScalar class_name ->
              (* Only a *declared* class can be checked for a missing field.
                 typecheck_expr falls back to `TScalar "Int"` for everything
@@ -1200,9 +1289,10 @@ let typecheck_program ~file ~(module_of : string -> string)
     | Index (base, idx) ->
         let base_res = typecheck_expr env cenv base in
         let _ = typecheck_expr env cenv idx in
+        if is_nullable base_res.typ then e213 base.pos (expr_label base);
         (* `xs[i]` yields the container's element type — a `multi C` indexed
            is a C (iteration 9b: query results are indexed to pick a row) *)
-        (match base_res.typ with
+        (match unwrap_nullable base_res.typ with
          | TMulti et -> { typ = et; is_nil = false }
          | TMap (_, vt) -> { typ = vt; is_nil = false }
          | _ -> { typ = TScalar "Int"; is_nil = false })
@@ -1262,19 +1352,22 @@ let typecheck_program ~file ~(module_of : string -> string)
            so this is the clean case the brief's own note anticipated,
            not the fallback ("reuse the invalid-operand pattern"). *)
         let _ = typecheck_expr env cenv left in
-        let _ = typecheck_expr env cenv right in
+        (* short-circuit narrowing: `x != nil and x.n > 0` — the right
+           operand only evaluates when the left held, so the left's facts
+           narrow it (true-facts for `and`, false-facts for `or`) *)
+        let lt, lf = nil_facts left in
+        let rnames = match op with And -> lt | _ -> lf in
+        let _ = typecheck_expr (narrow_env rnames env) (narrow_env rnames cenv) right in
         let op_name = match op with And -> "and" | _ -> "or" in
         let check_operand (operand : expr) =
           match confident_typ cenv operand with
           | None -> () (* underivable -- stay silent, no false positives *)
           | Some t ->
-              (* `unwrap_nullable` accepts a `?Bool` operand silently --
-                 no forced-handling diagnostic for the nil case, same
-                 shape as the pre-existing, disclosed `?T`-enforcement
-                 gap (docs/plan/compiler/nullable-types-implementation.md:
-                 "?T is plumbed but not enforced"). Task 6's own
-                 WO-E211/E212/E213 work should revisit this call site
-                 too, not just field/return positions. *)
+              (* a `?Bool` operand is an unnarrowed nullable in a position
+                 that consumes the bare value (WO-E211) — unless the operand
+                 is itself a nil-comparison shape, which is the narrowing
+                 idiom and types plain Bool anyway *)
+              (if is_nullable t then e211 operand.pos (expr_label operand));
               if unwrap_nullable t <> TScalar "Bool" then
                 Diag.Collector.add collector
                   (Diag.error ~code:type_mismatch_code ~file ~line:operand.pos.line
@@ -1327,6 +1420,8 @@ let typecheck_program ~file ~(module_of : string -> string)
     | Binary (((Add | Sub | Mul | Div | Mod) as op), left, right) ->
         let lres = typecheck_expr env cenv left in
         let rres = typecheck_expr env cenv right in
+        if is_nullable lres.typ || lres.is_nil then e211 left.pos (expr_label left);
+        if is_nullable rres.typ || rres.is_nil then e211 right.pos (expr_label right);
         (* `+` is arithmetic, never string addition (docs/plan/oop-vm/
            08-builtin-surface.md's operator table) — and a Text operand here
            is not a harmless type slip: the emitter would lower it to ADD on
@@ -1354,12 +1449,19 @@ let typecheck_program ~file ~(module_of : string -> string)
                ());
         { typ = (match confident_typ cenv left with Some t -> t | None -> TScalar "Int");
           is_nil = false }
+    | Binary ((Lt | Le | Gt | Ge), left, right) ->
+        let lres = typecheck_expr env cenv left in
+        let rres = typecheck_expr env cenv right in
+        if is_nullable lres.typ || lres.is_nil then e211 left.pos (expr_label left);
+        if is_nullable rres.typ || rres.is_nil then e211 right.pos (expr_label right);
+        { typ = TScalar "Bool"; is_nil = false }
     | Binary (_, left, right) ->
         let _ = typecheck_expr env cenv left in
         let _ = typecheck_expr env cenv right in
         { typ = TScalar "Bool"; is_nil = false }
     | Interp inner ->
-        let _ = typecheck_expr env cenv inner in
+        let ir = typecheck_expr env cenv inner in
+        if is_nullable ir.typ || ir.is_nil then e211 inner.pos (expr_label inner);
         { typ = TScalar "Text"; is_nil = false }
     | Ctor (class_name, fields) ->
         (try
@@ -1920,6 +2022,10 @@ let typecheck_program ~file ~(module_of : string -> string)
            everything else it is what the author declared the binding to
            be. Only an unannotated `let` falls back to inference. *)
         let declared = Option.map resolve_field_ty ty in
+        (match declared with
+         | Some t when crosses_boundary ~target:t val_res ->
+           e212 value.pos (expr_label value) (Printf.sprintf "`%s: %s`" name (typ_label t))
+         | _ -> ());
         let bound_typ = match declared with Some t -> t | None -> val_res.typ in
         let new_cenv =
           match (declared, confident_typ cenv value) with
@@ -1930,19 +2036,64 @@ let typecheck_program ~file ~(module_of : string -> string)
         (StringMap.add name bound_typ env, new_cenv)
     | Assign { target; value } ->
         let _ = typecheck_expr env cenv target in
-        let _ = typecheck_expr env cenv value in
+        let vres = typecheck_expr env cenv value in
+        (* the boundary only where the target's type is CONFIDENTLY known,
+           never a placeholder: a local in cenv (env carries `TScalar "Int"`
+           fallbacks for unresolved initializers — `let k = env.get(...)`
+           must not read as an Int target), or a resolvable class field *)
+        let target_typ =
+          match target.kind with
+          | Ident n -> StringMap.find_opt n cenv
+          | Field (b, fname) -> (
+            match Option.map unwrap_nullable (confident_typ cenv b) with
+            | Some (TScalar cn) | Some (TRef cn) -> (
+              match StringMap.find_opt cn syms.classes with
+              | Some cls -> (
+                match List.find_opt (fun (fn2, _, _, _) -> fn2 = fname) cls.fields with
+                | Some (_, fty, _, _) -> Some (resolve_field_ty fty)
+                | None -> None)
+              | None -> None)
+            | _ -> None)
+          | _ -> None
+        in
+        (match target_typ with
+         | Some t when crosses_boundary ~target:t vres ->
+           e212 value.pos (expr_label value) (expr_label target ^ " (`" ^ typ_label t ^ "`)")
+         | _ -> ());
         (env, cenv)
     | If { cond; then_body; else_body } ->
         let _ = typecheck_expr env cenv cond in
-        let then_result = List.fold_left typecheck_stmt (env, cenv) then_body in
+        let tf, ff = nil_facts cond in
+        let then_result =
+          List.fold_left typecheck_stmt (narrow_env tf env, narrow_env tf cenv) then_body
+        in
+        (* a then-branch that cannot fall through (`if x == nil { return }`)
+           proves the false-facts for everything after the `if` *)
+        let diverges stmts =
+          match List.rev stmts with
+          | { s_kind = Return _; _ } :: _ | { s_kind = Break; _ } :: _
+          | { s_kind = Continue; _ } :: _ -> true
+          | _ -> false
+        in
         (match else_body with
-         | Some (_, else_body) -> List.fold_left typecheck_stmt (env, cenv) else_body
-         | None -> then_result)
+         | Some (_, else_body) ->
+           List.fold_left typecheck_stmt (narrow_env ff env, narrow_env ff cenv) else_body
+         | None ->
+           if diverges then_body then (narrow_env ff env, narrow_env ff cenv)
+           else
+             (* existing convention: the then-env leaks out of an else-less
+                `if` — but the narrow must NOT leak with it (the else path
+                never proved it), so restore the guarded names *)
+             let te, tc = then_result in
+             (unnarrow_env tf ~orig:env te, unnarrow_env tf ~orig:cenv tc))
     | While { cond; body } ->
         let _ = typecheck_expr env cenv cond in
-        List.fold_left typecheck_stmt (env, cenv) body
+        let tf, _ = nil_facts cond in
+        let _ = List.fold_left typecheck_stmt (narrow_env tf env, narrow_env tf cenv) body in
+        (env, cenv)
     | For { var; var2; iter; body } ->
         let iter_res = typecheck_expr env cenv iter in
+        if is_nullable iter_res.typ || iter_res.is_nil then e211 iter.pos (expr_label iter);
         (* `for k, v in m`: the names take the map's key and value types.
            The one-name form over a `multi` keeps the element type. *)
         let bind (env0 : typ StringMap.t) (t : typ option) : typ StringMap.t =
@@ -1959,7 +2110,14 @@ let typecheck_program ~file ~(module_of : string -> string)
         let cenv_body = bind cenv (confident_typ cenv iter) in
         List.fold_left typecheck_stmt (env_body, cenv_body) body
     | Return opt_e ->
-        (match opt_e with Some e -> let _ = typecheck_expr env cenv e in () | None -> ());
+        (match opt_e with
+         | Some e ->
+           let r = typecheck_expr env cenv e in
+           (match !current_ret with
+            | Some rt when crosses_boundary ~target:rt r ->
+              e211 e.pos (expr_label e)
+            | _ -> ())
+         | None -> ());
         (env, cenv)
     | ExprStmt { kind = Switch (subject, arms); _ } ->
         (* haxe-parity Task 3: the one place `want_value` is false --
@@ -1994,7 +2152,9 @@ let typecheck_program ~file ~(module_of : string -> string)
     let cenv_with_self = List.fold_left (fun acc (name, ty, _) ->
       StringMap.add name (resolve_field_ty ty) acc)
       (StringMap.singleton "self" (TScalar self_class)) m.params in
+    current_ret := Option.map resolve_field_ty m.ret;
     let _ = List.fold_left typecheck_stmt (env_with_self, cenv_with_self) m.body in
+    current_ret := None;
     false
   in
 
@@ -2011,7 +2171,9 @@ let typecheck_program ~file ~(module_of : string -> string)
       StringMap.add name (resolve_field_ty ty) acc) StringMap.empty fn.params in
     let param_cenv = List.fold_left (fun acc (name, ty, _) ->
       StringMap.add name (resolve_field_ty ty) acc) StringMap.empty fn.params in
-    ignore (List.fold_left typecheck_stmt (param_env, param_cenv) fn.body)
+    current_ret := Option.map resolve_field_ty fn.ret;
+    ignore (List.fold_left typecheck_stmt (param_env, param_cenv) fn.body);
+    current_ret := None
   ) file_syms.free_fns;
 
   ()

@@ -1,6 +1,6 @@
 # Haxe-Parity Language Adoptions Implementation Plan
 
-> **Status: ⏸ on hold behind [the executable plan](2026-08-14-logwatcher-executable.md)** (story iteration 5) — the grammar half of this plan is what let the driving workload compile, and the rest of it makes the language *refuse* more rather than making that program *run*, so it waits. Original status follows. — Tasks 1–4 ✅ shipped and review-verified: modules (`use`/`pub`), language surface (`and`/`or`, `${}` interpolation, `const`, break/continue, do-while), switch expressions, typedef records + enum payload variants. Task 5 (try/catch over the trap system) ✅ shipped 2026-08-14 — VM catch frames, expression and block catch arms, the `{code, line, method, msg}` record. Task 6 (`?T`) 🔶 half: the representation, `nil`, comparisons and narrowing-free use all work — the forced-handling diagnostics (`WO-E211`–`E213`) do not exist. Task 7 🔶 half: `static` members and `pub(read)` syntax landed, `using` and the `pub(read)` write check did not. Task 8 (`#if` + reject rows) ⬜. Board: [00-status.md](../../00-status.md)
+> **Status: ⏸ on hold behind [the executable plan](2026-08-14-logwatcher-executable.md)** (story iteration 5) — the grammar half of this plan is what let the driving workload compile, and the rest of it makes the language *refuse* more rather than making that program *run*, so it waits. Original status follows. — Tasks 1–4 ✅ shipped and review-verified: modules (`use`/`pub`), language surface (`and`/`or`, `${}` interpolation, `const`, break/continue, do-while), switch expressions, typedef records + enum payload variants. Task 5 (try/catch over the trap system) ✅ shipped 2026-08-14 — VM catch frames, expression and block catch arms, the `{code, line, method, msg}` record. Task 6 (`?T`) ✅ complete 2026-08-18 (branch `nullable-enforcement`): forced handling enforced — WO-E211/E212/E213 emit, locals narrow via `!= nil` guards / diverging early-return / `and`-chains / `while`; field places bind to a local first. Boxed scalar cells were superseded by `WO_NIL_SCALAR` before this task ran. Task 7 🔶 half: `static` members and `pub(read)` syntax landed, `using` and the `pub(read)` write check did not. Task 8 (`#if` + reject rows) ⬜. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
@@ -83,9 +83,9 @@ docs/plan/oop-vm/00-wob-format.md      grows with the three VM changes
 
 **First task of this plan:** iteration 4 (plan 3 — emitter, corpus, `woc build`) precedes plan 8; within plan 8 this task goes first — `?T` is plumbed (lexer/token/AST/parser/dump) but unenforced (E211/E212/E213 dead, probe exits 0 with zero diagnostics per `docs/plan/compiler/nullable-types-implementation.md`), and it blocks the log-watcher port (story iterations 5–6), which uses optionals throughout in place of the Haxe original's sentinel values.
 
-- [ ] Failing fixtures: narrowing goldens; un-narrowed-use must-fail; nil propagation through record optional fields; boxed scalar optional round-trip; assignment of null to plain `T` must-fail.
-- [ ] Implement; green.
-- [ ] Record commit draft: `feat: ?T optionals — null-narrowing control flow, forced handling diagnostics, zero-word heap nil + boxed scalar cells; record ?fields and future stdlib returns typed ?T.`
+- [x] Failing fixtures: narrowing goldens; un-narrowed-use must-fail; nil propagation through record optional fields; ~~boxed scalar optional round-trip~~ (superseded: `WO_NIL_SCALAR` landed earlier); assignment of null to plain `T` must-fail. (Shipped as `tests/corpus/{compile-fail/nullable-*,run/nullable-narrowing}`.)
+- [x] Implement; green (2026-08-18 — corpus 83/0, samples clean under enforcement).
+- [x] Committed on branch `nullable-enforcement`.
 
 ### Task 7: `static` members, `using` extensions, `pub(read)` accessors
 

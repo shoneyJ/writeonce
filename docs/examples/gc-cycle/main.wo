@@ -23,7 +23,14 @@ fn ring_demo() -> Int {
   b.next = c;
   c.next = a;           -- closes the cycle; c.next aliases the same Node as `a`
 
-  print("ring ${a.label} -> ${a.next.label} -> ${a.next.next.label} -> ${a.next.next.next.label}");
+  -- ?T enforcement: a field place (`a.next`) never narrows, so each hop
+  -- binds to a local and the guard narrows the locals.
+  let n1 = a.next;
+  let n2 = b.next;
+  let n3 = c.next;
+  if n1 != nil and n2 != nil and n3 != nil {
+    print("ring ${a.label} -> ${n1.label} -> ${n2.label} -> ${n3.label}");
+  }
   -- prints: ring a -> b -> c -> a
   -- `a`, `b`, `c` go out of scope here. No DROP frees the Nodes (they are
   -- traced, not owned). The ring is now abandoned; a later slice collects it.

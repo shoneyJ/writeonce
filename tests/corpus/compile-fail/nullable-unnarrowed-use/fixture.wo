@@ -1,0 +1,15 @@
+-- ?T forced handling (WO-E211): a possibly-nil value used where a plain
+-- value is required, with no narrowing — the canonical evidence probe from
+-- docs/plan/compiler/nullable-types-implementation.md, finally enforced.
+class Box {
+  v: ?Int
+}
+
+fn take_it(b: Box) -> Int {
+  return b.v
+}
+
+fn main() -> Int {
+  let b = Box { v: 3 };
+  return take_it(b)
+}

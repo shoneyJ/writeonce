@@ -78,17 +78,19 @@ class Supervisor {
 
     for log_path, cw in self.scheduled {
       if has(self.active, log_path) { continue; }
-      if cw.next_fire == nil { continue; }
-      if cw.lock_path != nil and cw.lock_probe == nil and now >= cw.next_fire - PROBE_LEAD_MS and now < cw.next_fire {
-        cw.lock_probe = Flock.held(cw.lock_path);
+      let nf = cw.next_fire;
+      if nf == nil { continue; }
+      let lp = cw.lock_path;
+      if lp != nil and cw.lock_probe == nil and now >= nf - PROBE_LEAD_MS and now < nf {
+        cw.lock_probe = Flock.held(lp);
       }
-      if now < cw.next_fire { continue; }
+      if now < nf { continue; }
       -- no probe taken (e.g. started past the fire) leaves locked false,
       -- so the watch runs — the safe direction
       let locked = cw.lock_probe == true;
       cw.lock_probe = nil;                       -- reset for the next window
       if locked {
-        print("SKIP-LOCKED ${log_path}: ${cw.lock_path} still held, window skipped");
+        if lp != nil { print("SKIP-LOCKED ${log_path}: ${lp} still held, window skipped"); }
         cw.next_fire = compute_next(cw.schedules, now);
       } else {
         print("WATCH ${log_path}: activated");
@@ -158,7 +160,8 @@ class Supervisor {
       if has(self.scheduled, log_path) == false {
         let scheds = join(cw.schedules, " | ");
         let note = "";
-        if cw.lock_path != nil { note = " (flock ${cw.lock_path})"; }
+        let flk = cw.lock_path;
+        if flk != nil { note = " (flock ${flk})"; }
         print("SCHEDULE ${log_path}: ${scheds}${note}");
       }
     }

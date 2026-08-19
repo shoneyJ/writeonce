@@ -1,0 +1,12 @@
+-- ?T deref (WO-E213): reaching through a possibly-nil value without a nil
+-- check. A field place never narrows — the fix is `let n = a.next; if n != nil`.
+class Node {
+  label: Text
+  next: ?Node
+}
+
+fn main() -> Int {
+  let a = Node { label: "a", next: nil };
+  print(a.next.label);
+  return 0
+}

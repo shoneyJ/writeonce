@@ -59,10 +59,11 @@ class Mcp {
 
     let j = json.decode(req.body) as RpcReq;    -- checked decode: ?RpcReq, never a trap
     if j == nil { return rpc_error(nil, -32700, "parse error"); }
-    if j.method == nil { return rpc_error(j.id, -32600, "invalid request: no method"); }
+    let mth = j.method;
+    if mth == nil { return rpc_error(j.id, -32600, "invalid request: no method"); }
     if j.id == nil { return HttpResp { status: 202, body: "" }; }   -- notification
 
-    switch j.method {
+    switch mth {
       case "initialize":
         return rpc_result(j.id, "{\"protocolVersion\":\"${PROTOCOL}\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"log-watcher\",\"version\":\"0.1\"}}");
       case "ping":
@@ -72,7 +73,7 @@ class Mcp {
       case "tools/call":
         return self.call_tool(j.id, j.params);
       default:
-        return rpc_error(j.id, -32601, "unknown method: ${j.method}");
+        return rpc_error(j.id, -32601, "unknown method: ${mth}");
     }
   }
 

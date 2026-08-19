@@ -81,9 +81,10 @@ Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](s
 
 **Deferred by name, with the measurement that says so:**
 
-- Iteration 5's *strictness* half (`?T` forced handling, `pub(read)` write
-  enforcement, `using`, `#if`, reject rows) — it makes the language refuse
-  more; it does not make this program run. Plan 8 stays open for it.
+- Iteration 5's *strictness* half — **`?T` forced handling landed 2026-08-18**
+  (WO-E211/212/213 + local narrowing; the samples were updated to the
+  bind-then-narrow idiom and stay green). Still open: `pub(read)` write
+  enforcement, `using`, `#if`, reject rows. Plan 8 stays open for those.
 - Everything `@gc`: iteration 7b, `set`'s `@gc` retention gap, iteration 4's
   `gc/held-cycle` leak. The sample declares **no `@gc` class** — 35 classes,
   none with the gc flag, 0 `RC_INC`/`RC_DEC` against 78 `DROP`s — so none of it
@@ -111,7 +112,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 2   | [VM core (`wovm`)](stories/language-runtime-database/02-vm-core.md)                          | ✅                           |
 | 3   | [Compiler front (`woc`)](stories/language-runtime-database/03-compiler-front.md)             | ✅ (known gaps below)        |
 | 4   | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
-| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done, strictness ⏸ deferred |
+| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ 2026-08-18** (WO-E211/212/213 + narrowing); `pub(read)`/`using`/`#if`/reject rows still ⏸ |
 | 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
 | 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | 🔄 **runs; executable in progress** |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |

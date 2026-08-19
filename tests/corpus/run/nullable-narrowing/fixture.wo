@@ -1,0 +1,36 @@
+-- ?T narrowing, all four shipped forms: the if-guard, the early-return
+-- (a diverging then-branch proves the false facts after the `if`), the
+-- short-circuit `and` chain, and the while condition. Each narrows a LOCAL
+-- from ?Int to Int; field places never narrow by design.
+class Box {
+  v: ?Int
+}
+
+fn guard(b: Box) -> Int {
+  let x = b.v;
+  if x != nil { return x + 1; }
+  return -1
+}
+
+fn early(b: Box) -> Int {
+  let x = b.v;
+  if x == nil { return -1; }
+  return x + 10
+}
+
+fn chain(b: Box) -> Bool {
+  let x = b.v;
+  return x != nil and x > 3
+}
+
+fn main() -> Int {
+  let full = Box { v: 7 };
+  let empty = Box { v: nil };
+  print_int(guard(full));
+  print_int(guard(empty));
+  print_int(early(full));
+  print_int(early(empty));
+  if chain(full) { print("chain full: gt3"); }
+  if chain(empty) == false { print("chain empty: no"); }
+  return 0
+}

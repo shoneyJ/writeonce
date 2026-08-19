@@ -9,9 +9,15 @@
 
 ## Status
 
-`?T` is **plumbed but not enforced**. Every stage that carries the syntax
-through the pipeline shipped; the one stage that would give it meaning —
-forced handling in the typechecker — did not.
+**ENFORCED (2026-08-18, branch `nullable-enforcement`).** `?T` forced
+handling shipped: WO-E211 (un-narrowed use), WO-E212 (nil/`?T` across a
+non-nullable boundary), WO-E213 (deref of a possibly-nil base) all emit, and
+narrowing works on locals — `if x != nil` guards, diverging early-return
+(`if x == nil { return }`), short-circuit `and`/`or` chains, and `while`
+conditions. Field places never narrow (bind to a local first). The evidence
+probe below now fails compile with WO-E211, corpus fixtures pin all three
+codes plus the four narrowing forms, and all three samples compile clean
+under enforcement. The historical record below is kept as written.
 
 | Component | Status |
 |-----------|--------|
@@ -29,7 +35,7 @@ class Box { v: ?Int }
 fn take_it(b: Box) -> Int { return b.v; }
 ```
 
-`woc` on this file exits **0** with **zero diagnostics**. `take_it` returns
+`woc` on this file **now exits 1 with WO-E211** (2026-08-18). Historically it exited **0** with **zero diagnostics**. `take_it` returns
 `b.v` — a `?Int` — from a function declared to return `Int`, with no null
 check anywhere. This is the entire point of `?T` (forced handling: you may
 not use a possibly-nil value where a never-nil value is required), and it is

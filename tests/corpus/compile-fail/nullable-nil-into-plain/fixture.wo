@@ -1,0 +1,6 @@
+-- ?T boundary (WO-E212): `nil` (or a ?T value) stored where the declared
+-- type is not nullable.
+fn main() -> Int {
+  let x: Int = nil;
+  return x
+}

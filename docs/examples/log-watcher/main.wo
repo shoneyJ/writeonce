@@ -75,20 +75,24 @@ fn main(args: multi Text) -> Int {
     -- the key may live outside the config file (systemd EnvironmentFile / .env)
     let api_key = env.get("LOG_WATCHER_API_KEY");
     let port: ?Int = nil;
-    if j.mcp != nil {
-      if j.mcp.apiKey != nil { api_key = j.mcp.apiKey; }
-      port = j.mcp.port;
+    let m = j.mcp;
+    if m != nil {
+      let k = m.apiKey;
+      if k != nil { api_key = k; }
+      port = m.port;
     }
     if port == nil or api_key == nil {
       print_err("config error: mcp.port and an api key (mcp.apiKey or LOG_WATCHER_API_KEY) are required");
       return 1;
     }
     let extra: multi Text = [];
-    if j.logs != nil {
-      for p in j.logs { push(extra, p); }
+    let jlogs = j.logs;
+    if jlogs != nil {
+      for p in jlogs { push(extra, p); }
     }
-    if j.services != nil {
-      for s in j.services { push(extra, s); }
+    let jsvcs = j.services;
+    if jsvcs != nil {
+      for s in jsvcs { push(extra, s); }
     }
     let mcp = Mcp { tools: Tools { cron_dir: args[1], extra_logs: extra }, api_key: api_key };
     print("mcp server on 127.0.0.1:${port} (${args[1]})");
@@ -113,12 +117,20 @@ fn load_config(path: Text, mut cfg: SupConfig) -> Bool {
     print_err("config error: ${path} is not valid JSON");
     return false;
   }
-  if j.pollInterval != nil   { cfg.poll_ms   = j.pollInterval * 1000; }
-  if j.quietPeriod != nil    { cfg.quiet_ms  = j.quietPeriod * 1000; }
-  if j.rescanInterval != nil { cfg.rescan_ms = j.rescanInterval * 1000; }
-  if j.detections != nil     { cfg.detections = j.detections; }
-  if j.services != nil {
-    for s in j.services { push(cfg.services, s); }
+  -- ?T enforcement (WO-E211/E213): a FIELD place never narrows — it could be
+  -- re-assigned between the check and the use — so each optional binds to a
+  -- local first, and the local narrows.
+  let pi = j.pollInterval;
+  if pi != nil { cfg.poll_ms = pi * 1000; }
+  let qp = j.quietPeriod;
+  if qp != nil { cfg.quiet_ms = qp * 1000; }
+  let ri = j.rescanInterval;
+  if ri != nil { cfg.rescan_ms = ri * 1000; }
+  let det = j.detections;
+  if det != nil { cfg.detections = det; }
+  let svcs = j.services;
+  if svcs != nil {
+    for s in svcs { push(cfg.services, s); }
   }
   return true;
 }
