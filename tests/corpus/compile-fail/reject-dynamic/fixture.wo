@@ -1,0 +1,9 @@
+-- Doctrine reject: `Dynamic` as a type name — static typing to the register
+-- (principle 13). Fires as WO-E225 with the doctrine-citing message.
+class C {
+  v: Dynamic
+}
+
+fn main() -> Int {
+  return 0
+}

@@ -127,6 +127,29 @@ let fail (st : state) (site : Ast.pos) (code : string) (message : string) : 'a =
 let syntax_code = Diag.parsing_prefix ^ "01" (* WO-E101: generic syntax error *)
 let table_code = Diag.parsing_prefix ^ "02" (* WO-E102: invalid @table(...) configuration *)
 let gc_removed_code = Diag.parsing_prefix ^ "04" (* WO-E104: `@gc` — GC-ness is inferred *)
+let doctrine_reject_code = Diag.parsing_prefix ^ "05" (* WO-E105: rejected Haxe keyword *)
+
+(* The systems-track spec's reject rows (Part 1 verdict table), each with its
+   doctrine reason — these words never parse as ordinary identifiers, so a
+   Haxe habit fails loudly at its own position instead of misparsing into a
+   generic syntax error (or, worst, compiling clean: `super.f()` used to). *)
+let doctrine_reject_reason (w : string) : string option =
+  match w with
+  | "extends" | "implements" | "super" | "override" ->
+    Some "no inheritance, ever — is-a is a tagged union, has-a is composition, polymorphism is structural interfaces (principle 4)"
+  | "cast" ->
+    Some "no unsafe casts — conversions are typed; `as` exists only in the json.decode target position"
+  | "Dynamic" | "untyped" ->
+    Some "static typing all the way to the register — typed `json.decode … as T -> ?T` covers the real use (principle 13)"
+  | "macro" -> Some "macros kill the fast-compile promise — codegen belongs to tooling"
+  | "extern" -> Some "one FFI hole voids the whole memory-safety story — capabilities are audited typed builtins (principle 10)"
+  | "operator" -> Some "one name, one signature — no operator overloading"
+  | _ -> None
+
+let reject_doctrine_word (st : state) (pos : Ast.pos) (w : string) (reason : string) : unit =
+  Diag.Collector.add st.collector
+    (Diag.error ~code:doctrine_reject_code ~file:st.file ~line:pos.Ast.line ~col:pos.Ast.col
+       ~message:(Printf.sprintf "`%s` is rejected: %s" w reason) ())
 
 (* haxe-parity Task 2: the haxe keyword verdict table's `inline` row —
    "adopt (values): const compile-time values; inline *functions*
@@ -1130,6 +1153,16 @@ and parse_query_expr (st : state) : Ast.expr =
 
 and parse_primary (st : state) : Ast.expr =
   match peek st with
+  | Token.Ident w when Option.is_some (doctrine_reject_reason w) ->
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    (match doctrine_reject_reason w with
+     | Some r -> reject_doctrine_word st pos w r
+     | None -> ());
+    ignore (advance st);
+    (* recovery value so downstream parsing continues; the error above is
+       already fatal to the compile *)
+    { Ast.id; pos; kind = Ast.IntLit 0 }
   | _ when is_query_trigger st -> parse_query_expr st
   | Token.Ident "delete" when (match (tok_at st (st.pos + 1)).kind with
                               | Token.Newline | Token.Semicolon | Token.Eof -> false | _ -> true) ->
@@ -1591,6 +1624,18 @@ let parse_class_or_type ?(pub = false) (st : state) (ann : type_annotations) : A
   let is_class = peek st = Token.KwClass in
   if is_class then ignore (advance st) else expect st Token.KwType "`type` or `class`";
   let name = expect_ident st "type/class name" in
+  (* reject rows at their most habitual site: `class B extends A` *)
+  (match peek st with
+   | Token.Ident (("extends" | "implements") as w) ->
+     let wpos = peek_pos st in
+     (match doctrine_reject_reason w with
+      | Some r -> reject_doctrine_word st wpos w r
+      | None -> ());
+     (* recovery: skip to the '{' so the body still parses *)
+     while (match peek st with Token.LBrace | Token.Eof -> false | _ -> true) do
+       ignore (advance st)
+     done
+   | _ -> ());
   expect st Token.LBrace "'{'";
   let id = fresh_id st in
   let fields = ref [] in
@@ -1873,6 +1918,14 @@ let parse_program (st : state) : Ast.program =
             | Token.KwType | Token.KwClass ->
               decls := Ast.Class (parse_class_or_type st ann) :: !decls
             | _ -> unexpected st "`type` or `class` after annotation")
+         | Token.Ident w when Option.is_some (doctrine_reject_reason w) ->
+           (* `macro fn …` / `extern fn …` at top level: the doctrine
+              reason, not a generic syntax error *)
+           let wpos = peek_pos st in
+           (match doctrine_reject_reason w with
+            | Some r -> reject_doctrine_word st wpos w r
+            | None -> ());
+           raise Parse_error
          | _ -> unexpected st "a top-level declaration (type/class/interface/fn/@annotation)"
        with Parse_error -> sync_to_next_top_level st)
     end

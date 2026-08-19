@@ -614,6 +614,14 @@ let rec scalar_name_of (ft : field_ty) : string option =
    class declared later in the same file is not a false positive. *)
 let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
     (prog : program) : unit =
+  let unknown_type_msg (name : string) : string =
+    match name with
+    | "Dynamic" | "untyped" ->
+      Printf.sprintf
+        "`%s` is rejected: static typing all the way to the register — typed `json.decode … as T -> ?T` covers the real use (principle 13)"
+        name
+    | _ -> Printf.sprintf "unknown type `%s`" name
+  in
   List.iter (function
     | Ast.Class c ->
         List.iter (fun (f : Ast.field) ->
@@ -622,7 +630,7 @@ let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
               Diag.Collector.add collector
                 (Diag.error ~code:unknown_type_name_code ~file
                    ~line:f.pos.line ~col:f.pos.col
-                   ~message:(Printf.sprintf "unknown type `%s`" name) ())
+                   ~message:(unknown_type_msg name) ())
           | _ -> ()
         ) c.fields
     | Ast.Union u ->
@@ -636,7 +644,7 @@ let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
                 Diag.Collector.add collector
                   (Diag.error ~code:unknown_type_name_code ~file
                      ~line:v.v_pos.line ~col:v.v_pos.col
-                     ~message:(Printf.sprintf "unknown type `%s`" name) ())
+                     ~message:(unknown_type_msg name) ())
             | _ -> ()
           ) v.v_fields
         ) u.variants

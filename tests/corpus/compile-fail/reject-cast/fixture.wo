@@ -1,0 +1,6 @@
+-- Doctrine reject (WO-E105): no unsafe casts — `as` exists only in the
+-- json.decode target position.
+fn main() -> Int {
+  let x = cast 3;
+  return 0
+}

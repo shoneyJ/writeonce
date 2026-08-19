@@ -1,0 +1,14 @@
+-- Doctrine reject (WO-E105): no inheritance, ever. `extends` fails at its
+-- own position with the doctrine reason (principle 4), never a generic
+-- syntax error. `super`/`override`/`implements` share the row.
+class A {
+  n: Int
+}
+
+class B extends A {
+  m: Int
+}
+
+fn main() -> Int {
+  return 0
+}
