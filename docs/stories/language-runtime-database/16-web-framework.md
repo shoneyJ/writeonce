@@ -1,0 +1,67 @@
+# Iteration 16 — the web framework: a `.wo` library, HTTP/1.1 behind a proxy
+
+> Format: fiberloom `product/story-iteration-template`. Part of
+> [Story — one language, one runtime, one database, one binary](00-story.md).
+>
+> **Inserted 2026-08-18.** The framework is written IN writeonce and imported
+> like any dependency (iteration 15 is the prerequisite). TLS terminates at a
+> reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the
+> framework speaks HTTP/1.1 keep-alive behind it, so no TLS exists anywhere
+> in the toolchain. h2c is the parked successor (after iterations 8/9f/11,
+> when multiplexing has a scheduler to pay off on).
+>
+> **Spec exists:** [`2026-08-18-web-framework-design.md`](../../superpowers/specs/2026-08-18-web-framework-design.md)
+> sections B (normative) and C (the parked h2c successor).
+
+## Goals
+
+- **The framework**, incubated at `docs/examples/writeonce-framework/`: an
+  HTTP/1.1 keep-alive server core (extracted from the soak-proven log-watcher
+  `mcp` pattern), a method+path router with `:param` captures, `Req`/`Resp`
+  records with builder helpers, and the no-function-values handler model —
+  `Handler` / `Middleware` structural interfaces dispatched by ICALL, with
+  WO-E205 making a non-conforming handler a compile error and `?Resp`
+  middleware short-circuiting on the shipped `?T` narrowing.
+- **The consuming app**, `docs/examples/web-app/`: a small storefront
+  (`Product`/`Order` as `@table` classes, list/show/create routes, one auth
+  middleware, JSON responses) that imports the framework **through
+  `[deps]`** — the sample exercises the whole chain: fetch → lock → build →
+  serve → durable data across restart.
+- **Honest limits stated where users read them**: single-threaded blocking
+  (concurrency arrives underneath via iterations 8/11), no chunked encoding,
+  no WebSockets, JSON-first (no templates — the removed UI track stays
+  removed).
+- **Relationship to iteration 10 recorded in both**: `service` blocks later
+  *lower onto this library* — compiler sugar over the same router, never a
+  rival stack.
+
+## Acceptance Criteria
+
+- **Given** the web-app sample, **when** `just web-app` runs, **then** deps
+  fetch, the app builds, serves list/show/create with `@table` persistence
+  across a process restart, answers 404/400 correctly, a deliberately
+  trapping handler returns 500 while the server survives, and SIGTERM stops
+  it cleanly — fd- and resident-flat under the opt-in soak.
+- **Given** a handler class missing `handle`, **when** the app compiles,
+  **then** WO-E205 names the class and interface.
+- **Given** nginx in front (documented config), **when** a browser hits it,
+  **then** the browser negotiates h2 with the proxy while the backend link is
+  HTTP/1.1 — proving the TLS/h2 story without TLS in writeonce.
+- **Given** the framework extracted to its own repository, **when** the app's
+  `[deps]` URL is updated, **then** nothing else changes (success criterion 4
+  of the spec).
+
+## Out Of Scope
+
+TLS in the toolchain (proxy-terminated by decision); HTTP/2 + the
+bytes/buffer type (parked to the h2c successor, after 8/9f/11); chunked
+transfer encoding; WebSockets/SSE; templates/SSR; multipart uploads;
+performance work beyond the soak's flatness gate (benchmarks belong to 9e's
+measurement backbone).
+
+## Proposed Solution
+
+Framework modules `http/`, `router/`, `app.wo` as spec §B lays out; the
+web-app acceptance script is the gate (curl matrix + restart + stop + soak);
+`just web-app` wires fetch-build-serve-verify into one command. Plan follows
+after this iteration is approved on the board.

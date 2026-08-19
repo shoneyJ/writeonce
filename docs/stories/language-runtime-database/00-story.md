@@ -63,6 +63,8 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
 | 13 | [Compile-time metaprogramming](13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` — the compiler generates per-type code from the class-table metadata; generic capabilities within principle 13, no reflection |
 | 14 | [skillhost host workload](14-skillhost-host-workload.md) | a host-shaped driving workload (writeonce port of skillhost) that names the runtime gaps it exposes: bounded/killable subprocess, stdin/stdout transport, fs metadata, and FFI-vs-out-of-process model driver — each a candidate iteration |
+| 15 | [deps: `wo.toml [deps]`](15-deps-package-manager.md) | exact-rev git dependencies + `wo.lock` + `.wo-deps` cache; `use <dep>` resolves a fetched project as a module root; flat-only, network-free when locked |
+| 16 | [web framework](16-web-framework.md) | a `.wo`-library framework (HTTP/1.1 keep-alive behind a TLS-terminating proxy): router, `Handler`/`Middleware` structural interfaces, `@table` data layer; `docs/examples/web-app` consumes it via `[deps]`; h2c parked behind 8/9f/11 |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable
