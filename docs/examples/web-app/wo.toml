@@ -1,0 +1,17 @@
+name        = "web-app"
+version     = "0.1.0"
+description = "Storefront sample: consumes writeonce-framework through [deps]; @table persistence; iteration 16's acceptance workload"
+
+[runtime]
+wo = ">= 0.1"
+
+# No [build] runtime pinned (portable): an installed woc self-locates wovm;
+# the in-repo gate passes WO_RUNTIME (log-watcher's precedent).
+
+# The framework is a real dependency, never a relative path — extraction of
+# the framework to its own repository changes only this URL. The acceptance
+# gate (scripts/web-app-accept.sh) substitutes a run-time file:// remote
+# built from docs/examples/writeonce-framework, so CI never needs the
+# network and this repo never carries .wo-deps/wo.lock artifacts.
+[deps]
+writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
