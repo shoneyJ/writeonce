@@ -79,10 +79,11 @@ class Mcp {
 
   -- Mcp.hx:54-84. Tool-layer failures return isError, never protocol
   -- errors; a trap inside a tool is caught at this boundary.
-  fn call_tool(id: json.Value, params: ?RpcParams) -> HttpResp {
+  fn call_tool(id: ?json.Value, params: ?RpcParams) -> HttpResp {
     if params == nil { return rpc_error(id, -32600, "tools/call: missing params.name"); }
-    if params.name == nil { return rpc_error(id, -32600, "tools/call: missing params.name"); }
-    let o = try self.dispatch(params.name, params.arguments)
+    let pname = params.name;
+    if pname == nil { return rpc_error(id, -32600, "tools/call: missing params.name"); }
+    let o = try self.dispatch(pname, params.arguments)
             catch (e) err("tool failed: ${e.msg}");
     let content = json.encode(ToolText { type: "text", text: o.text });
     let flag = "false";
@@ -98,12 +99,15 @@ class Mcp {
         return self.tools.list_logs();
       case "tail_log":
         if args == nil { return err("tail_log: path is required"); }
-        if args.path == nil { return err("tail_log: path is required"); }
-        return self.tools.tail_log(args.path, args.lines);
+        let tpath = args.path;
+        if tpath == nil { return err("tail_log: path is required"); }
+        return self.tools.tail_log(tpath, args.lines);
       case "search_log":
         if args == nil { return err("search_log: path and pattern are required"); }
-        if args.path == nil or args.pattern == nil { return err("search_log: path and pattern are required"); }
-        return self.tools.search_log(args.path, args.pattern, args.maxMatches);
+        let spath = args.path;
+        let spat = args.pattern;
+        if spath == nil or spat == nil { return err("search_log: path and pattern are required"); }
+        return self.tools.search_log(spath, spat, args.maxMatches);
       default:
         return err("unknown tool: ${name}");
     }
@@ -184,12 +188,12 @@ class Mcp {
   }
 }
 
-fn rpc_result(id: json.Value, result_json: Text) -> HttpResp {
+fn rpc_result(id: ?json.Value, result_json: Text) -> HttpResp {
   let idj = json.encode(id);
   return HttpResp { status: 200, body: "{\"jsonrpc\":\"2.0\",\"id\":${idj},\"result\":${result_json}}" };
 }
 
-fn rpc_error(id: json.Value, code: Int, message: Text) -> HttpResp {
+fn rpc_error(id: ?json.Value, code: Int, message: Text) -> HttpResp {
   let idj = json.encode(id);
   let e = json.encode(RpcErr { code: code, message: message });
   return HttpResp { status: 200, body: "{\"jsonrpc\":\"2.0\",\"id\":${idj},\"error\":${e}}" };
@@ -261,8 +265,9 @@ class Tools {
       let nf_text: ?Text = nil;
       if nf != nil { nf_text = time.iso(nf); }
       let running = false;
-      if e.lock_path != nil {
-        running = Flock.held(e.lock_path);
+      let elk = e.lock_path;
+      if elk != nil {
+        running = Flock.held(elk);
       } else {
         running = Pgrep.alive(Tools.needle(e.command));
       }

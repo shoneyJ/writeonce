@@ -209,14 +209,11 @@ Gates at the end of that session: corpus 71/0, `woc` runtest 565/0, every
 
 **Known gaps carried out of iteration 4** — recorded, not silently owed:
 
-- **`WO-E205` (unsatisfied interface) is reachable but unenforced — a real
-  hybrid-boundary inversion, not just a dead code path.** A class that does
-  not structurally satisfy an interface it's passed as compiles clean (exit
-  0, zero diagnostics) even though the violation is statically provable, and
-  the mismatched call reaches `wovm` as an `ICALL` with no matching vtable
-  entry, trapping `WO_T_BOUNDS` (6) at runtime instead of failing at compile
-  time. Pinned by `tests/corpus/trap/unsatisfied-interface/`; when `WO-E205`
-  is wired, that fixture must move to `compile-fail/` in the same change.
+- ~~`WO-E205` (unsatisfied interface) reachable but unenforced~~ — **closed
+  2026-08-18** (branch `type-enforcement`): structural satisfaction is checked
+  at call arguments, annotated `let`s, and returns; the pinned fixture moved
+  to `compile-fail/unsatisfied-interface` with `fixture.code WO-E205` in the
+  same change, as its comment demanded. The hybrid boundary is restored.
 - **`set(m, k, v)`'s `@gc` retention gap on map keys/values is open** — the
   twin of the `push` bug Task 5 fixed for `multi`. `set` has no equivalent
   special case in `owner.ml`'s `analyze_call`, so a `@gc` key or value handed

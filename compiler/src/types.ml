@@ -745,6 +745,23 @@ let rec unwrap_nullable (t : typ) : typ =
 
 let is_nullable (t : typ) : bool = match t with TNullable _ -> true | _ -> false
 
+(* Structural interface satisfaction, Go-style — the SAME rule emit.ml's
+   `satisfies` uses to build vtable rows (name + parameter count, `static fn`
+   never satisfies): a class satisfies an interface when it has a matching
+   instance method for every method the interface declares. Returns the first
+   missing/mismatched method name, None when satisfied. WO-E205's test. *)
+let class_satisfies (cls : class_info) (iface : interface_info) : string option =
+  List.fold_left
+    (fun acc (sig_ : method_sig_info) ->
+      match acc with
+      | Some _ -> acc
+      | None -> (
+        match List.find_opt (fun (m : method_info) -> m.name = sig_.name) cls.methods with
+        | Some m when (not m.is_static) && List.length m.params = List.length sig_.params ->
+          None
+        | _ -> Some sig_.name))
+    None iface.methods
+
 (* ?T narrowing facts (iteration 5 strictness, WO-E211/E212/E213): which
    LOCAL names a condition proves non-nil when it is true, and when it is
    false. Only plain identifiers narrow (Haxe's own rule): a field place
@@ -1240,6 +1257,30 @@ let typecheck_program ~file ~(module_of : string -> string)
   let crosses_boundary ~(target : typ) (v : expr_type_result) : bool =
     (not (is_nullable target)) && (v.is_nil || is_nullable v.typ)
   in
+  (* WO-E205: a class value flowing into an interface-typed slot must
+     structurally satisfy the interface — provable statically (the class's
+     whole method set is known), so it fails HERE, never as the ICALL
+     no-vtable-entry trap. Checked off confident types: silent when the
+     value's type is underivable. *)
+  let check_iface_boundary (cenv : typ StringMap.t) ~(target : typ) (value : expr) : unit =
+    match (unwrap_nullable target, Option.map unwrap_nullable (confident_typ cenv value)) with
+    | TScalar iname, Some (TScalar cname) -> (
+      match (StringMap.find_opt iname syms.interfaces, StringMap.find_opt cname syms.classes) with
+      | Some iface, Some cls -> (
+        match class_satisfies cls iface with
+        | Some missing ->
+          Diag.Collector.add collector
+            (Diag.error ~code:unsatisfied_interface_code ~file ~line:value.pos.line
+               ~col:value.pos.col
+               ~message:
+                 (Printf.sprintf
+                    "`%s` does not satisfy interface `%s`: no matching instance method `%s`"
+                    cname iname missing)
+               ())
+        | None -> ())
+      | _ -> ())
+    | _ -> ()
+  in
   let expr_label (e : expr) : string =
     match e.kind with
     | Ident n -> Printf.sprintf "`%s`" n
@@ -1297,7 +1338,58 @@ let typecheck_program ~file ~(module_of : string -> string)
          | TMap (_, vt) -> { typ = vt; is_nil = false }
          | _ -> { typ = TScalar "Int"; is_nil = false })
     | Call (callee, args) ->
-        List.iter (fun arg -> ignore (typecheck_expr env cenv arg)) args;
+        let arg_results = List.map (fun arg -> typecheck_expr env cenv arg) args in
+        (* Per-argument checks against the callee's DECLARED signature
+           (resolved the same way confident_typ resolves a call's return):
+           WO-E205 interface satisfaction, and the ?T boundary the previous
+           slice enforced everywhere else. Silent when unresolvable. *)
+        let callee_params : (string * field_ty * param_conv) list option =
+          match callee.kind with
+          | Ident name -> (
+            match resolve_free_fn name with Some fi -> Some fi.params | None -> None)
+          | Field (base, mname) -> (
+            match Option.map unwrap_nullable (confident_typ cenv base) with
+            | Some (TScalar cn) -> (
+              match StringMap.find_opt cn syms.classes with
+              | Some cls -> (
+                match List.find_opt (fun (m : method_info) -> m.name = mname) cls.methods with
+                | Some m -> Some m.params
+                | None -> None)
+              | None -> (
+                match StringMap.find_opt cn syms.interfaces with
+                | Some iface -> (
+                  match
+                    List.find_opt (fun (s : method_sig_info) -> s.name = mname) iface.methods
+                  with
+                  | Some sg -> Some sg.params
+                  | None -> None)
+                | None -> None))
+            | _ -> (
+              match base.kind with
+              | Ident head -> (
+                match static_method_of syms head mname with
+                | Some m -> Some m.params
+                | None -> None)
+              | _ -> None))
+          | _ -> None
+        in
+        (match callee_params with
+         | Some ps when List.length ps = List.length args ->
+           List.iter2
+             (fun (pname, pty, _) (arg, ares) ->
+               let pt = resolve_field_ty pty in
+               check_iface_boundary cenv ~target:pt arg;
+               if not (is_nullable pt) then begin
+                 if ares.is_nil then
+                   e212 arg.pos (expr_label arg) (Printf.sprintf "parameter `%s`" pname)
+                 else
+                   match confident_typ cenv arg with
+                   | Some t when is_nullable t -> e211 arg.pos (expr_label arg)
+                   | _ -> ()
+               end)
+             ps
+             (List.combine args arg_results)
+         | _ -> ());
         (match callee.kind with
          | Ident name when Option.is_none (resolve_free_fn name) -> (
              (* "A user-declared free fn of the same name always wins"
@@ -2026,6 +2118,9 @@ let typecheck_program ~file ~(module_of : string -> string)
          | Some t when crosses_boundary ~target:t val_res ->
            e212 value.pos (expr_label value) (Printf.sprintf "`%s: %s`" name (typ_label t))
          | _ -> ());
+        (match declared with
+         | Some t -> check_iface_boundary cenv ~target:t value
+         | None -> ());
         let bound_typ = match declared with Some t -> t | None -> val_res.typ in
         let new_cenv =
           match (declared, confident_typ cenv value) with
@@ -2116,7 +2211,10 @@ let typecheck_program ~file ~(module_of : string -> string)
            (match !current_ret with
             | Some rt when crosses_boundary ~target:rt r ->
               e211 e.pos (expr_label e)
-            | _ -> ())
+            | _ -> ());
+           (match !current_ret with
+            | Some rt -> check_iface_boundary cenv ~target:rt e
+            | None -> ())
          | None -> ());
         (env, cenv)
     | ExprStmt { kind = Switch (subject, arms); _ } ->

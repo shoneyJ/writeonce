@@ -8,7 +8,7 @@ per stage (`compiler/src/diag.ml`): `WO-E0xx` lexing, `WO-E1xx` parsing,
 is an enumeration of codes already in use, not an archaeology dig — see
 "Completeness method" below for how that was verified, "Reserved,
 not yet emitted" for codes the source declares but no check yet raises,
-and "Reachable but unenforced" for the one code (WO-E205) whose check
+and (until 2026-08-18) "Reachable but unenforced" for the one code (WO-E205) whose check
 site the milestone grammar *does* exercise, unlike the codes above it —
 see that section for why this is a live gap, not a scope boundary.
 One code (WO-E214) is emitted by the driver (`compiler/bin/main.ml`),
@@ -43,6 +43,7 @@ half of the story ("moved here" / "borrowed here" / etc.).
 | WO-E201 | haxe-parity Task 2. An `and`/`or` operand whose type is confidently known (the same narrow, "stay silent when underivable" deriver WO-E209 uses — `confident_typ`) and is not `Bool` — this language has no truthiness. Reserved since Task 6, its first real emission site. Haxe-parity Task 3 gave it two more sites: a `switch` expression's arms disagree on their yielded type (the switch's own type is fixed by the first arm — types.ml's "first wins" convention — every later arm is checked against it, via the regular `.typ` inference, not `confident_typ`; since haxe-parity Task 4 the comparison is *structural* — two typedef records with the same shape are the same type, `typ_equal`); and (review fix, Critical 2) a `case` value whose representation (`WO_K_TEXT` vs. `WO_K_SCALAR`) doesn't match the switch subject's — a real VM segfault if unchecked (a `Text` subject picks EQS, and EQS's `str_check` dereferences whatever sits in a mismatched `Int` case value's register), checked via `confident_typ`, silent when either side is unresolved. Haxe-parity Task 4 added the union-subject site: a `case` value over a confidently union-typed subject that does not name one of that union's variants (a misspelled variant, a variant of some other union, or a plain literal — union arms match variants, never values). Task 4's fix round 1 added three inverse/porosity sites, each a reviewer-reproduced silent-wrong-behavior hole: a variant-named `case` over a confidently **`?Union`** subject (it can never match — `switch` does not narrow `?T`; the message points at handling nil first, since forced handling is Task 6's), a variant-named `case` over a confidently **non-union** subject (`switch n { case Lo: }` over `n: Int` silently ordinal-matched), and a **cross-union `==`/`!=`** (`X == P` from two different bare unions was silently true whenever the ordinals matched; same-union comparison stays legal). Lexical scope wins at every one of these sites — a local sharing a variant's name is never misread as one. | `` `Wat` is not a variant of union `Kind` `` |
 | WO-E203 | haxe-parity Task 4 (`typedef` records + enum payload variants). A payload variant's argument count doesn't match its declaration, at either of the two places payload fields are positional: a construction (`Failed("a", "b")` against `Failed(reason: Text)`) or a `switch` pattern (`case Failed(a, b):`). The pattern site also rejects a non-name argument (`case Failed("x"):` — payload fields are bound positionally, never matched by value) and a payload-binding pattern sharing its arm with other values (`case Failed(r), Pending:` — the binding would be meaningless on the other match). Reserved since plan 2 Task 6; these are its first real emission sites, scoped to variant payloads only — user `fn`/method call arity is still the emitter's WO-E403, unchanged (see "Reserved, not yet emitted" below for the history of that gap). | `` variant `Failed` of `Status` takes 1 payload argument(s), given 2 `` |
 | WO-W201 *(retired, iteration 7b)* | Suggested `@gc` for a recursive/shared class. Retired: `@gc` no longer exists (WO-E104) and inference classifies exactly these classes as traced automatically, so the suggestion is obsolete. | *(no longer emitted)* |
+| WO-E205 | iteration 5 strictness (2026-08-18). A confidently class-typed value used at an interface-typed position — a call argument, an annotated `let`, or a `return` — where the class does not structurally satisfy the interface (Go-style: an instance method of the same name and parameter count for every interface method; a `static fn` never satisfies). Provable statically, so it fails at compile time instead of `ICALL`'s no-vtable-entry `WO_T_BOUNDS` trap — the hybrid boundary restored. Silent when the value's type is underivable. | `` `Rock` does not satisfy interface `Priced`: no matching instance method `current_price` `` |
 | WO-E202 | a `.field` access names a field that the base's class (a *declared* class — an unresolved/placeholder expression type never triggers this) doesn't have. | `unknown field \`price\` on \`Product\`` |
 | WO-E206 | a constructor literal (`ClassName { ... }`) omits a field the class declares that is neither defaulted nor nullable. Haxe-parity Task 4 narrowed it from "omits any field with no default was already the rule, but defaults were unenforceable" to the real omittability rule: a field with a declared default is filled by the emitter (`TailState {}` — the sample's defaults-fill-in pattern), and a `?`-typed field omitted is nil (the zero word `NEW` already leaves), for classes and typedef records alike. | `missing field \`sku\` in constructor of \`Product\`` |
 | WO-E207 | a constructor literal names a class that isn't declared anywhere in the (possibly multi-file) program. `typedef` records (haxe-parity Task 4) are classes to this check — a record name resolves here like any declared class. | `unknown type \`Widget\` in constructor` |
@@ -92,38 +93,17 @@ its first real emission site.
 
 ### Reachable but unenforced
 
-`unsatisfied_interface_code` (WO-E205) is declared in `types.ml` but does not
-belong in the "Reserved, not yet emitted" list above either. An earlier
-revision of this doc claimed WO-E205 was *unreachable by design* — that
-was wrong, caught and corrected in the plan-3 Task 4 review (2026-08-11).
-Structural interface satisfaction's one legal check site is where a value
-is used at an interface-typed position (a field, parameter, or return
-typed as an interface) — and the milestone grammar does exercise that
-position today. This compiles with exit 0 and zero diagnostics:
-
-```wo
-interface Priced { fn current_price() -> Int }
-class Rock { n: Int }
-fn quote(p: Priced) -> Int { return p.current_price() }
-fn main() { let r = Rock { n: 1 }
-  print_int(quote(r)) }
-```
-
-`Rock` has no `current_price` method, so it does not structurally satisfy
-`Priced` passed to `quote`'s interface-typed parameter — and `Rock`'s
-method set is fully known at compile time, so this is a *statically
-provable* violation, exactly the shape WO-E205 exists to catch. `woc
---emit` accepts it anyway. The unchecked call reaches `wovm` as an
-`ICALL` with no matching vtable slot, which traps `WO_T_BOUNDS` (6, "no
-vtable entry for receiver class") at runtime instead of failing to
-compile. That inverts the hybrid boundary WO-E3xx pins elsewhere
-(provable violation → compile-time diagnostic, unprovable → runtime
-trap): here a provable violation resolves as a trap. This is an owed
-gap, not a design decision, currently pinned as the known-gap fixture
-`tests/corpus/trap/unsatisfied-interface/` (plan 3, Task 4) — its own
-comment says it must move to `compile-fail/` with `fixture.code
-WO-E205` in the same change that implements this check, rather than
-silently going stale.
+**WO-E205 was wired 2026-08-18** (branch `type-enforcement`) — the owed gap
+this section used to record is closed. Structural satisfaction (`types.ml`'s
+`class_satisfies`, the same name+arity+non-static rule `emit.ml`'s
+`satisfies` builds vtable rows from) is checked wherever a confidently
+class-typed value flows into an interface-typed slot: a call argument
+against the callee's declared parameter, an annotated `let`, and a `return`
+against the declared return type. The canonical evidence program now fails
+compile at the `quote(r)` call site, and the known-gap fixture moved to
+`tests/corpus/compile-fail/unsatisfied-interface/` (`fixture.code WO-E205`)
+in the same change, exactly as its own comment demanded. See the WO-E205 row
+in the main table above.
 
 ## WO-E3xx — ownership / MVS (Task 7, `compiler/src/owner.ml`)
 

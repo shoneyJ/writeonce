@@ -1,0 +1,22 @@
+-- WO-E205 (wired 2026-08-18; formerly trap/unsatisfied-interface, which
+-- pinned the old runtime-trap behavior as a KNOWN GAP). `Rock` has no
+-- `current_price` method, so it does not structurally satisfy `Priced` --
+-- provable statically (the class's whole method set is known), so by the
+-- hybrid-boundary doctrine it fails at COMPILE time, at the `quote(r)`
+-- call site, never as the ICALL no-vtable-entry trap.
+interface Priced {
+  fn current_price() -> Int
+}
+
+class Rock {
+  n: Int
+}
+
+fn quote(p: Priced) -> Int {
+  return p.current_price()
+}
+
+fn main() {
+  let r = Rock { n: 1 }
+  print_int(quote(r))
+}
