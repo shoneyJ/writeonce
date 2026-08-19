@@ -102,3 +102,4 @@ __pycache__/
 *.pyc
 dist/
 docs/examples/*/target/
+.wo-deps/

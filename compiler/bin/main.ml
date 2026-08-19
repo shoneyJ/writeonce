@@ -44,6 +44,7 @@ let usage_msg =
    usage: woc --emit <path> -o <out.wob>\n\
    usage: woc build <dir> -o <app> [--runtime <path>]\n\
    usage: woc version\n\
+   usage: woc --update-deps <dir>  (re-fetch [deps] at their manifest revs, rewrite wo.lock)\n\
    usage: woc --dump-tokens <path>\n\
    usage: woc --dump-ast <path>\n\
    usage: woc --dump-owner <path>\n\
@@ -340,21 +341,43 @@ let module_of_file ~(root : string) (file : string) : string =
     in
     Filename.dirname rel
 
+(* iteration 15: module resolution over the app root PLUS one root per
+   dependency. A dep file's module is the dep name (its root) or
+   `<name>/<sub>` (a subdirectory) — after which the existing `use`
+   resolution, collision diagnostics and `pub` visibility work across the
+   dependency boundary unchanged. *)
+let module_of_multi ~(root : string) ~(deps : (string * string) list)
+    (file : string) : string =
+  let rec try_deps = function
+    | [] -> module_of_file ~root file
+    | (name, droot) :: tl ->
+      let prefix = droot ^ "/" in
+      let plen = String.length prefix in
+      if String.length file >= plen && String.sub file 0 plen = prefix then begin
+        let sub = module_of_file ~root:droot file in
+        if sub = "." then name else Filename.concat name sub
+      end
+      else try_deps tl
+  in
+  try_deps deps
+
 (* Returns the existing global, flat-merged `syms` (owner.ml's and most of
    emit.ml's own view — unchanged by this task) alongside the new
    per-module tables (CRITICAL 1 review finding: the emitter needs these
    too, for the one place a flat merge is the wrong answer — see
    Types.module_symbols' own doc comment). *)
 let typecheck_all (collector : Woc_lib.Diag.Collector.t) ~(root : string)
+    ?(deps : (string * string) list = [])
     (parsed : (string * Woc_lib.Ast.program) list) :
     Woc_lib.Types.symbols * (string, Woc_lib.Types.symbols) Hashtbl.t =
+  ignore root;
   let per_file_syms =
     List.map
       (fun (f, prog) -> (f, Woc_lib.Types.collect_declarations ~file:f prog collector))
       parsed
   in
   check_symbol_collisions collector per_file_syms;
-  let module_of = module_of_file ~root in
+  let module_of = module_of_multi ~root ~deps in
   Woc_lib.Types.check_modules collector ~module_of per_file_syms parsed;
   let module_syms = Woc_lib.Types.module_symbols ~module_of per_file_syms in
   (* haxe-parity Task 5: the predeclared `Error` record joins the merged
@@ -451,19 +474,33 @@ let check_only path =
    own owner tables because node ids are minted per parse (unique within
    a file, not across files). *)
 
-let compile_image path =
-  let sources = discover_and_read path in
+let compile_image ?(deps : (string * string) list = []) path =
+  (* app files first (sorted, as today), then each dep's files, deps sorted
+     by name — deterministic. The app root's own walk never descends into
+     `.wo-deps/` (the dot-rule), so dep trees are discovered exactly once. *)
+  let sources =
+    discover_and_read path
+    @ List.concat_map (fun (_, droot) -> discover_and_read droot) deps
+  in
   let collector = Woc_lib.Diag.Collector.create () in
   let parsed = parse_all collector sources in
-  let syms, module_syms = typecheck_all collector ~root:path parsed in
+  let syms, module_syms = typecheck_all collector ~root:path ~deps parsed in
   let units =
     List.map
       (fun (f, prog) ->
         { Woc_lib.Emit.file = f; prog; tables = Woc_lib.Owner.analyze ~file:f prog syms collector })
       parsed
   in
+  (* a dependency's `fn main` is never an entry candidate: only files that
+     resolve to the APP's module space may name the entry *)
+  let entry_ok f = not (List.exists (fun (_, droot) ->
+    let prefix = droot ^ "/" in
+    let plen = String.length prefix in
+    String.length f >= plen && String.sub f 0 plen = prefix) deps)
+  in
   let image =
-    Woc_lib.Emit.emit ~syms ~module_of:(module_of_file ~root:path) ~module_syms collector units
+    Woc_lib.Emit.emit ~entry_ok ~syms ~module_of:(module_of_multi ~root:path ~deps) ~module_syms
+      collector units
   in
   (collector, build_lookup sources, image)
 
@@ -559,8 +596,9 @@ let default_runtime_path () : string =
     if Sys.file_exists sibling && not (Sys.is_directory sibling) then sibling
     else "runtime/wovm"
 
-let build_mode ~(runtime : string option) (path : string) (out : string) : unit =
-  let collector, lookup, image = compile_image path in
+let build_mode ?(deps : (string * string) list = []) ~(runtime : string option)
+    (path : string) (out : string) : unit =
+  let collector, lookup, image = compile_image ~deps path in
   if Woc_lib.Diag.Collector.has_error collector then finish collector lookup
   else begin
     if String.get_int32_le image wob_off_entry = -1l then begin
@@ -779,10 +817,181 @@ let check_runtime_constraint (mf : string) (c : string) : unit =
     exit 2
   | _ -> ()
 
-let manifest_build (dir : string) : unit =
+(* ---- iteration 15: dependency resolution ------------------------------
+   `wo.toml [deps]` names exact-rev git dependencies. Everything here runs
+   the `git` BINARY via Sys.command — no network code in the compiler; `git`
+   joins `cc` in the set of external tools the toolchain may invoke. Layout:
+   `.wo-deps/<name>/` beside wo.toml (gitignored; discovery's dot-rule skips
+   it), `wo.lock` beside it pinning name -> commit SHA. The lock wins over a
+   moved rev label; a lock-satisfied build never touches the network. *)
+
+let dep_fail (mf : string) (msg : string) : 'a =
+  (* WO-E106: dependency fetch/shape failure (driver-level) *)
+  Printf.eprintf "woc: %s: error WO-E106: %s\n" mf msg;
+  exit 2
+
+let read_lock (path : string) : (string * string) list =
+  if not (Sys.file_exists path) then []
+  else begin
+    let ic = open_in path in
+    let entries = ref [] in
+    (try
+       while true do
+         let line = String.trim (input_line ic) in
+         if line <> "" && line.[0] <> '#' then
+           match String.index_opt line ' ' with
+           | Some sp ->
+             entries :=
+               (String.sub line 0 sp,
+                String.trim (String.sub line (sp + 1) (String.length line - sp - 1)))
+               :: !entries
+           | None -> ()
+       done
+     with End_of_file -> close_in ic);
+    !entries
+  end
+
+let write_lock (path : string) (entries : (string * string) list) : unit =
+  let oc = open_out path in
+  output_string oc "# wo.lock — written by woc; pins [deps] revs to commit SHAs. Do not edit.\n";
+  List.iter (fun (n, sha) -> output_string oc (n ^ " " ^ sha ^ "\n"))
+    (List.sort compare entries);
+  close_out oc
+
+(* run git, output discarded; nonzero exit -> Some failing command text *)
+let git_run (args : string) : string option =
+  let cmd = "git " ^ args ^ " >/dev/null 2>&1" in
+  if Sys.command cmd = 0 then None else Some cmd
+
+(* run git capturing one line of stdout (via a temp file: stdlib-only) *)
+let git_read (args : string) : string option =
+  let tmp = Filename.temp_file "wo-git" ".out" in
+  let cmd = "git " ^ args ^ " > " ^ Filename.quote tmp ^ " 2>/dev/null" in
+  let rc = Sys.command cmd in
+  let line =
+    if rc <> 0 then None
+    else begin
+      let ic = open_in tmp in
+      let l = try Some (String.trim (input_line ic)) with End_of_file -> None in
+      close_in ic;
+      l
+    end
+  in
+  (try Sys.remove tmp with Sys_error _ -> ());
+  line
+
+let dep_names (kvs : (string * string) list) : string list =
+  List.filter_map
+    (fun (k, _) ->
+      if String.length k > 5 && String.sub k 0 5 = "deps."
+         && Filename.check_suffix k ".git" then
+        Some (String.sub k 5 (String.length k - 5 - 4))
+      else None)
+    kvs
+  |> List.sort_uniq compare
+
+(* Validate a fetched dependency's shape: it must be a writeonce project
+   (wo.toml with a name) and must not itself declare [deps] — transitive
+   dependencies are refused flat-only in v1 (the spec's rule). *)
+let check_dep_shape (mf : string) (name : string) (root : string) : unit =
+  let dmf = Filename.concat root "wo.toml" in
+  if not (Sys.file_exists dmf) then
+    dep_fail mf
+      (Printf.sprintf "dependency `%s` is not a writeonce project (no wo.toml at its root)" name);
+  let dkvs = manifest_parse dmf in
+  if not (List.mem_assoc "name" dkvs) then
+    dep_fail mf (Printf.sprintf "dependency `%s`: its wo.toml declares no `name`" name);
+  if dep_names dkvs <> [] then
+    dep_fail mf
+      (Printf.sprintf
+         "dependency `%s` declares its own [deps] — transitive dependencies are not supported (flat-only)"
+         name)
+
+(* Resolve every [deps] entry to a checked-out root. Returns (name, root)
+   pairs sorted by name. ~update forces a re-fetch at the manifest revs and
+   rewrites the lock. *)
+let resolve_deps ?(update = false) (dir : string) (mf : string)
+    (kvs : (string * string) list) : (string * string) list =
+  let names = dep_names kvs in
+  if names = [] then []
+  else begin
+    if Sys.command "git --version >/dev/null 2>&1" <> 0 then
+      dep_fail mf "[deps] present but no `git` binary on PATH";
+    let deps_dir = Filename.concat dir ".wo-deps" in
+    if not (Sys.file_exists deps_dir) then Sys.mkdir deps_dir 0o755;
+    let lock_path = Filename.concat dir "wo.lock" in
+    let lock = ref (if update then [] else read_lock lock_path) in
+    let lock_dirty = ref update in
+    let resolve_one (name : string) : string * string =
+      (* collision with a local module directory of the same name (WO-E107) *)
+      let local = Filename.concat dir name in
+      if Sys.file_exists local && Sys.is_directory local then begin
+        Printf.eprintf
+          "woc: %s: error WO-E107: dependency `%s` collides with the local module directory `%s/`\n"
+          mf name name;
+        exit 2
+      end;
+      let url = List.assoc ("deps." ^ name ^ ".git") kvs in
+      let rev = List.assoc ("deps." ^ name ^ ".rev") kvs in
+      let cache = Filename.concat deps_dir name in
+      if update && Sys.file_exists cache then
+        ignore (Sys.command ("rm -rf " ^ Filename.quote cache));
+      let head () = git_read ("-C " ^ Filename.quote cache ^ " rev-parse HEAD") in
+      (match (Sys.file_exists cache, List.assoc_opt name !lock) with
+       | true, Some sha -> (
+         (* warm path: cache + lock agree -> zero network *)
+         match head () with
+         | Some h when h = sha -> ()
+         | Some h ->
+           dep_fail mf
+             (Printf.sprintf
+                "dependency `%s`: lock drift — wo.lock pins %s but .wo-deps has %s (a moved `rev`?); run `woc --update-deps` or remove .wo-deps/%s"
+                name sha h name)
+         | None ->
+           dep_fail mf
+             (Printf.sprintf "dependency `%s`: .wo-deps/%s is not a git checkout; remove it" name name))
+       | false, Some sha -> (
+         (* lock present, cache cold: fetch and pin to the LOCKED sha, so a
+            moved tag cannot change the build *)
+         (match git_run ("clone " ^ Filename.quote url ^ " " ^ Filename.quote cache) with
+          | Some cmd -> dep_fail mf (Printf.sprintf "dependency `%s`: fetch failed (%s)" name cmd)
+          | None -> ());
+         match git_run ("-C " ^ Filename.quote cache ^ " checkout -q " ^ Filename.quote sha) with
+         | Some _ ->
+           dep_fail mf
+             (Printf.sprintf
+                "dependency `%s`: locked commit %s is not in the remote — the history moved; run `woc --update-deps` if that is intended"
+                name sha)
+         | None -> ())
+       | (true | false), None -> (
+         (* no lock entry: fetch at the manifest rev, record the SHA *)
+         if not (Sys.file_exists cache) then
+           (match git_run ("clone " ^ Filename.quote url ^ " " ^ Filename.quote cache) with
+            | Some cmd -> dep_fail mf (Printf.sprintf "dependency `%s`: fetch failed (%s)" name cmd)
+            | None -> ());
+         (match git_run ("-C " ^ Filename.quote cache ^ " checkout -q " ^ Filename.quote rev) with
+          | Some _ ->
+            dep_fail mf
+              (Printf.sprintf "dependency `%s`: rev `%s` not found in %s" name rev url)
+          | None -> ());
+         match head () with
+         | Some h ->
+           lock := (name, h) :: List.remove_assoc name !lock;
+           lock_dirty := true
+         | None -> dep_fail mf (Printf.sprintf "dependency `%s`: cannot read the checkout's HEAD" name)));
+      check_dep_shape mf name cache;
+      (name, cache)
+    in
+    let resolved = List.map resolve_one names in
+    if !lock_dirty then write_lock lock_path !lock;
+    resolved
+  end
+
+let manifest_build ?(update_deps = false) (dir : string) : unit =
   let mf = Filename.concat dir "wo.toml" in
   let kvs = manifest_parse mf in
   let get k = List.assoc_opt k kvs in
+  let deps = resolve_deps ~update:update_deps dir mf kvs in
   (match get "runtime.wo" with Some c -> check_runtime_constraint mf c | None -> ());
   let name =
     match get "name" with
@@ -805,7 +1014,7 @@ let manifest_build (dir : string) : unit =
      with Sys_error m ->
        Printf.eprintf "woc: %s\n" m;
        exit 2);
-  build_mode ~runtime dir (Filename.concat target name)
+  build_mode ~deps ~runtime dir (Filename.concat target name)
 
 let () =
   match Sys.argv with
@@ -821,6 +1030,14 @@ let () =
   | [| _; ("version" | "--version") |] ->
     (* Go-style: `writeonce <ver> <os>/<arch>`. linux/amd64 is the only target. *)
     Printf.printf "writeonce %s linux/amd64\n" toolchain_version
+  | [| _; "--update-deps"; path |] ->
+    if Sys.file_exists path && Sys.is_directory path
+       && Sys.file_exists (Filename.concat path "wo.toml")
+    then manifest_build ~update_deps:true path
+    else begin
+      prerr_string "woc: --update-deps needs a project directory with a wo.toml\n";
+      exit 2
+    end
   | [| _; path |] ->
     if Sys.file_exists path && Sys.is_directory path
        && Sys.file_exists (Filename.concat path "wo.toml")

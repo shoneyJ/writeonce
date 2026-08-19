@@ -4250,7 +4250,8 @@ let satisfies (p : pctx) (cid : int) (ir : ifacerec) : int list option =
   in
   go [] ir.ir_methods
 
-let emit ~(syms : Types.symbols) ~(module_of : string -> string)
+let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
+    ~(module_of : string -> string)
     ~(module_syms : (string, Types.symbols) Hashtbl.t) (coll : Diag.Collector.t) (units : input list) :
     string =
   let colliding = compute_colliding_fn_names ~module_of units in
@@ -4513,6 +4514,8 @@ let emit ~(syms : Types.symbols) ~(module_of : string -> string)
                  process exit code. *)
               let entry_shaped =
                 m.name = "main"
+                && entry_ok u.file (* iteration 15: a dependency's `fn main`
+                                      is never an entry candidate *)
                 && match m.params with
                    | [] -> true
                    | [ (pa : Ast.param) ] -> ( match pa.Ast.ty with Ast.Multi "Text" -> true | _ -> false)
