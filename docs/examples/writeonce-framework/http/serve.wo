@@ -1,0 +1,80 @@
+-- http/serve.wo — response serialization + the blocking keep-alive serve
+-- loop. The dispatch seam is the Dispatcher interface (the router's App
+-- satisfies it, Task 3); it is wrapped in `try`, so a trapping handler
+-- answers 500 and the loop lives — a bad request must never kill the
+-- server. Every accept path closes its fd; `env.stopping()` is honored
+-- between connections and between keep-alive requests (a SIGTERM landing
+-- in a blocking call already unwinds cleanly — the runtime's stop story).
+use net
+use env
+
+pub interface Dispatcher {
+  fn dispatch(req: Req) -> Resp
+}
+
+fn status_text(code: Int) -> Text {
+  switch code {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 302: return "Found";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 404: return "Not Found";
+    case 409: return "Conflict";
+    case 500: return "Internal Server Error";
+    default:  return "Status";
+  }
+}
+
+pub fn serialize(resp: Resp, keep: Bool) -> Text {
+  let head = "HTTP/1.1 ${resp.status} ${status_text(resp.status)}\r\n";
+  for k, v in resp.headers {
+    head = head .. "${k}: ${v}\r\n";
+  }
+  if keep {
+    head = head .. "Connection: keep-alive\r\n";
+  } else {
+    head = head .. "Connection: close\r\n";
+  }
+  head = head .. "Content-Length: ${len(resp.body)}\r\n\r\n";
+  return head .. resp.body;
+}
+
+pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
+  let srv = net.listen(host, port);
+  print("listening on ${host}:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    let c = net.accept(srv);
+    let carry = "";
+    let alive = true;
+    while alive {
+      if env.stopping() { alive = false; continue; }
+      let p = try parse_request(c, carry) catch (e) nil;   -- an IO trap = gone
+      if p == nil { alive = false; continue; }
+      if p.closed { alive = false; continue; }
+      if p.ok == false {
+        try net.write(c, serialize(bad_request("malformed request"), false)) catch (e) {}
+        alive = false;
+        continue;
+      }
+      let r = p.req;
+      if r == nil { alive = false; continue; }
+      carry = p.rest;
+      -- Connection policy for a single-threaded server: serve PIPELINED
+      -- requests on one connection (bytes already buffered), but close when
+      -- the client would idle — a parked keep-alive connection would block
+      -- `accept` and starve every other client. A proxy in front simply
+      -- reconnects; this is the honest shape until shards/fibers (8/11).
+      let keep = len(carry) > 0;
+      let conn = r.headers["connection"];
+      if conn != nil {
+        if to_lower(conn) == "close" { keep = false; }
+      }
+      let resp = try d.dispatch(r) catch (e) server_error();
+      try net.write(c, serialize(resp, keep)) catch (e) { alive = false; }
+      if keep == false { alive = false; }
+    }
+    net.close(c);
+  }
+}

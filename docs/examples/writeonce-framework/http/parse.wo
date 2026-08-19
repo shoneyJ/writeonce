@@ -1,0 +1,148 @@
+-- http/parse.wo — HTTP/1.1 request parsing over a net connection.
+--
+-- Bounded reads only (`net.read`), so requests are buffered to the header
+-- terminator, then the body to exactly Content-Length. Keep-alive means
+-- bytes past this request belong to the NEXT one: the caller passes the
+-- carry-over in and gets the new remainder back in Parsed.rest.
+--
+-- Parsed is a three-state answer (no tuples in the language):
+--   closed=true            peer ended the connection cleanly between requests
+--   ok=false               malformed request — answer 400 and close
+--   ok=true, req non-nil   one complete request
+use net
+
+const BODY_MAX = 1048576
+
+pub typedef Parsed = {
+  closed: Bool,
+  ok:     Bool,
+  ?req:   Req,
+  rest:   Text
+}
+
+-- %XX decoding, '+' as space when plus_space (query strings only).
+-- Malformed escapes pass through verbatim — parsing stays total.
+fn hex_val(b: Int) -> Int {
+  if b >= 48 and b <= 57 { return b - 48; }        -- 0-9
+  if b >= 97 and b <= 102 { return b - 87; }       -- a-f
+  if b >= 65 and b <= 70 { return b - 55; }        -- A-F
+  return -1;
+}
+
+pub fn url_decode(t: Text, plus_space: Bool) -> Text {
+  let out = "";
+  let i = 0;
+  let n = len(t);
+  while i < n {
+    let b = byte_at(t, i);
+    if b == 37 and i + 2 < n {                     -- '%'
+      let hi = hex_val(byte_at(t, i + 1));
+      let lo = hex_val(byte_at(t, i + 2));
+      if hi >= 0 and lo >= 0 {
+        out = out .. char_of(hi * 16 + lo);
+        i = i + 3;
+        continue;
+      }
+    }
+    if plus_space and b == 43 {                    -- '+'
+      out = out .. " ";
+      i = i + 1;
+      continue;
+    }
+    out = out .. substr(t, i, 1);
+    i = i + 1;
+  }
+  return out;
+}
+
+-- "a=1&b=hello+world" -> decoded pairs; a bare key maps to ""
+fn parse_query(qs: Text) -> map<Text, Text> {
+  let q: map<Text, Text> = {};
+  if qs == "" { return q; }
+  for pair in split(qs, "&") {
+    if pair == "" { continue; }
+    let eq = index_of(pair, "=");
+    if eq < 0 {
+      q[url_decode(pair, true)] = "";
+    } else {
+      q[url_decode(substr(pair, 0, eq), true)] = url_decode(substr(pair, eq + 1, len(pair) - eq - 1), true);
+    }
+  }
+  return q;
+}
+
+fn malformed(rest: Text) -> Parsed {
+  return Parsed { closed: false, ok: false, req: nil, rest: rest };
+}
+
+-- One request off the connection. `carry` = leftover bytes from the same
+-- connection's previous request (keep-alive).
+pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
+  let buf = carry;
+  let header_end = index_of(buf, "\r\n\r\n");
+  while header_end == -1 {
+    let got = net.read(c, 8192);
+    if len(got) == 0 {
+      -- peer closed: clean between requests (empty buffer), torn otherwise
+      if trim(buf) == "" { return Parsed { closed: true, ok: true, req: nil, rest: "" }; }
+      return malformed("");
+    }
+    buf = buf .. got;
+    header_end = index_of(buf, "\r\n\r\n");
+    if header_end == -1 and len(buf) > BODY_MAX { return malformed(""); }
+  }
+
+  let lines = split(substr(buf, 0, header_end), "\r\n");
+  let req_line = split_ws(trim(lines[0]));
+  if len(req_line) < 3 { return malformed(""); }
+  let method = req_line[0];
+  let target = req_line[1];
+
+  -- path / query split, both %-decoded ('+' is a space only in the query)
+  let path = target;
+  let query: map<Text, Text> = {};
+  let qm = index_of(target, "?");
+  if qm >= 0 {
+    path = substr(target, 0, qm);
+    query = parse_query(substr(target, qm + 1, len(target) - qm - 1));
+  }
+  path = url_decode(path, false);
+
+  let headers: map<Text, Text> = {};
+  let i = 1;
+  while i < len(lines) {
+    let line = trim(lines[i]);
+    i = i + 1;
+    if line == "" { continue; }
+    let colon = index_of(line, ":");
+    if colon > 0 {
+      headers[to_lower(substr(line, 0, colon))] = trim(substr(line, colon + 1, len(line) - colon - 1));
+    }
+  }
+
+  let want = 0;
+  let cl = headers["content-length"];
+  if cl != nil {
+    let n = parse_int(cl);
+    if n == nil { return malformed(""); }
+    if n < 0 or n > BODY_MAX { return malformed(""); }
+    want = n;
+  }
+
+  let body = substr(buf, header_end + 4, len(buf) - header_end - 4);
+  while len(body) < want {
+    let got = net.read(c, 8192);
+    if len(got) == 0 { return malformed(""); }     -- peer died mid-body
+    body = body .. got;
+  }
+  -- bytes past the declared body belong to the next request on this conn
+  let rest = "";
+  if len(body) > want {
+    rest = substr(body, want, len(body) - want);
+    body = substr(body, 0, want);
+  }
+
+  let req = Req { method: method, path: path, params: {}, query: query,
+                  headers: headers, body: body };
+  return Parsed { closed: false, ok: true, req: req, rest: rest };
+}

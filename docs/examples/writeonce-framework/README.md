@@ -10,10 +10,15 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 
 ## What it is
 
-- **HTTP/1.1 keep-alive** server core (`http/`): request parsing
-  (`Content-Length` bodies), response serialization, a blocking serve loop
-  that answers 400 to malformed requests, 500 to trapping handlers (and
-  survives), closes every fd, and honors SIGTERM.
+- **HTTP/1.1** server core (`http/`): request parsing (`Content-Length`
+  bodies, %-decoded paths and query strings), response serialization, a
+  blocking serve loop that answers 400 to malformed requests, 500 to
+  trapping handlers (and survives), closes every fd, and honors SIGTERM.
+  Connection policy: **pipelined requests are served on one connection;
+  idle connections close after the response** — on a single-threaded server
+  a parked keep-alive connection would block `accept` and starve every
+  other client, so closing is the correct shape until shards/fibers (8/11).
+  A proxy in front simply reconnects.
 - **Router** (`router/`): method + path table with `:param` captures into
   `req.params`; first match wins; no match is the framework's 404.
 - **Handlers without closures**: the language has no function values by
