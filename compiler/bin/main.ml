@@ -653,13 +653,78 @@ let manifest_parse (path : string) : (string * string) list =
          in
          section := inner;
          if !section <> "runtime" && !section <> "build" && !section <> "share"
-            && !section <> "share.clients"
+            && !section <> "share.clients" && !section <> "deps"
          then
            fail !lineno
-             (Printf.sprintf "unknown section [%s] (runtime and build exist)" !section)
+             (Printf.sprintf "unknown section [%s] (runtime, build and deps exist)" !section)
        end
        else if !section = "share" || !section = "share.clients" then
          () (* iteration 9c manifest keys — parsed by the attach feature, ignored here *)
+       else if !section = "deps" then begin
+         (* iteration 15: `name = { git = "...", rev = "..." }` — the one-line
+            inline table, accepted ONLY here. A tiny scanner rather than
+            split-on-comma: the URL value may contain any character. *)
+         match String.index_opt line '=' with
+         | None -> fail !lineno "expected `name = { git = \"...\", rev = \"...\" }`"
+         | Some eq ->
+           let name = String.trim (String.sub line 0 eq) in
+           if name = "" then fail !lineno "dependency name is empty";
+           if List.mem_assoc ("deps." ^ name ^ ".git") !kvs then
+             fail !lineno (Printf.sprintf "dependency `%s` declared twice" name);
+           let body = String.trim (String.sub line (eq + 1) (String.length line - eq - 1)) in
+           let blen = String.length body in
+           if blen < 2 || body.[0] <> '{' || body.[blen - 1] <> '}' then
+             fail !lineno
+               (Printf.sprintf "`%s`: a dependency is an inline table `{ git = \"...\", rev = \"...\" }`" name);
+           let inner = String.sub body 1 (blen - 2) in
+           let i = ref 0 in
+           let n = String.length inner in
+           let git = ref None and rev = ref None in
+           let skip_ws () = while !i < n && (inner.[!i] = ' ' || inner.[!i] = '\t') do incr i done in
+           let read_ident () =
+             let s = !i in
+             while !i < n && inner.[!i] <> ' ' && inner.[!i] <> '\t' && inner.[!i] <> '=' do incr i done;
+             String.sub inner s (!i - s)
+           in
+           let read_quoted () =
+             if !i >= n || inner.[!i] <> '"' then fail !lineno "dependency values must be quoted strings";
+             incr i;
+             let s = !i in
+             while !i < n && inner.[!i] <> '"' do incr i done;
+             if !i >= n then fail !lineno "unterminated string in dependency table";
+             let v = String.sub inner s (!i - s) in
+             incr i;
+             v
+           in
+           let continue_tbl = ref true in
+           while !continue_tbl do
+             skip_ws ();
+             if !i >= n then continue_tbl := false
+             else begin
+               let k = read_ident () in
+               skip_ws ();
+               if !i >= n || inner.[!i] <> '=' then
+                 fail !lineno (Printf.sprintf "expected `=` after `%s` in dependency table" k);
+               incr i;
+               skip_ws ();
+               let v = read_quoted () in
+               (match k with
+                | "git" -> git := Some v
+                | "rev" -> rev := Some v
+                | _ -> fail !lineno (Printf.sprintf "unknown key `%s` in dependency table (git, rev exist)" k));
+               skip_ws ();
+               if !i < n then
+                 if inner.[!i] = ',' then incr i
+                 else fail !lineno "expected `,` between dependency table entries"
+             end
+           done;
+           (match (!git, !rev) with
+            | Some g, Some r when g <> "" && r <> "" ->
+              kvs := ("deps." ^ name ^ ".rev", r) :: ("deps." ^ name ^ ".git", g) :: !kvs
+            | _ ->
+              fail !lineno
+                (Printf.sprintf "dependency `%s` needs both `git` and `rev` (exact tag or SHA)" name))
+       end
        else
          match String.index_opt line '=' with
          | None -> fail !lineno "expected `key = \"value\"`"
