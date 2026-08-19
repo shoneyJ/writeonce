@@ -1,0 +1,19 @@
+-- The store's data model. Every class IS a table (iteration 9/9b): rows
+-- persist through the WAL under WO_DATA, `name` is unique-indexed, and an
+-- Order's `ref Product` is a real FK — deleting a product that orders still
+-- reference traps WO_T_FK (restrict), which the delete route surfaces as 409.
+
+@table(name: "products", index: [name])
+class Product {
+  name:  Text @unique
+  price: Int             -- cents
+  stock: Int
+
+  orders: backlink Order.product
+}
+
+@table(name: "orders", index: [product])
+class Order {
+  product: ref Product
+  qty:     Int
+}

@@ -1,0 +1,117 @@
+-- web-app — the storefront: writeonce-framework (via [deps]) + @table
+-- persistence. Every handler is a class satisfying Handler; the auth gate is
+-- a Middleware; the data layer is the language's own database — no ORM, no
+-- separate process, one binary.
+use env
+use json
+use framework
+use framework/http
+use framework/router
+
+-- decode target for POST /products, encode shape for every product answer
+typedef ProductView = { name: Text, price: Int, stock: Int }
+typedef NewOrder    = { product: Text, qty: Int }
+
+fn view_json(name: Text, price: Int, stock: Int) -> Text {
+  return json.encode(ProductView { name: name, price: price, stock: stock });
+}
+
+class Auth {
+  token: Text
+  fn before(req: Req) -> ?Resp {
+    let got = req.headers["authorization"];
+    if got == nil { return unauthorized(); }
+    if got != "Bearer ${self.token}" { return unauthorized(); }
+    return nil;
+  }
+}
+
+class ListProducts {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let body = "[";
+    let first = true;
+    for p in from x in Product order by x.name select x {
+      if first == false { body = body .. ","; }
+      first = false;
+      body = body .. view_json(p.name, p.price, p.stock);
+    }
+    return ok_json(body .. "]");
+  }
+}
+
+class ShowProduct {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let name = req.params["name"];
+    if name == nil { return bad_request("no name"); }
+    let hits = from p in Product where p.name == name take 1 select p;
+    if len(hits) == 0 { return not_found(); }
+    let p = hits[0];
+    return ok_json(view_json(p.name, p.price, p.stock));
+  }
+}
+
+class CreateProduct {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let v = json.decode(req.body) as ProductView;
+    if v == nil { return bad_request("body must be {name, price, stock}"); }
+    let made = try insert Product { name: v.name, price: v.price, stock: v.stock }
+               catch (e) nil;
+    if made == nil { return conflict("product name already exists"); }
+    return created_json(view_json(v.name, v.price, v.stock));
+  }
+}
+
+class CreateOrder {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let v = json.decode(req.body) as NewOrder;
+    if v == nil { return bad_request("body must be {product, qty}"); }
+    if v.qty < 1 { return bad_request("qty must be positive"); }
+    let hits = from p in Product where p.name == v.product take 1 select p;
+    if len(hits) == 0 { return not_found(); }
+    insert Order { product: hits[0], qty: v.qty };
+    return created_json("{\"ok\":true}");
+  }
+}
+
+class DeleteProduct {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let name = req.params["name"];
+    if name == nil { return bad_request("no name"); }
+    let hits = from p in Product where p.name == name take 1 select p;
+    if len(hits) == 0 { return not_found(); }
+    let gone = try delete hits[0] catch (e) nil;
+    if gone == nil { return conflict("orders still reference this product"); }
+    return ok_json("{\"deleted\":true}");
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 1 {
+    print_err("usage: web-app <port>   (WA_TOKEN and WO_DATA must be set)");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil {
+    print_err("web-app: <port> must be a number");
+    return 2;
+  }
+  let token = env.get("WA_TOKEN");
+  if token == nil {
+    print_err("web-app: WA_TOKEN is required (the auth middleware's bearer token)");
+    return 2;
+  }
+
+  let app = App { middleware: [], routes: [] };
+  app.use_mw(Mw { m: Auth { token: token } });
+  app.add(Route { method: "GET",    pattern: "/products",       h: ListProducts { pad: 0 } });
+  app.add(Route { method: "GET",    pattern: "/products/:name", h: ShowProduct { pad: 0 } });
+  app.add(Route { method: "POST",   pattern: "/products",       h: CreateProduct { pad: 0 } });
+  app.add(Route { method: "POST",   pattern: "/orders",         h: CreateOrder { pad: 0 } });
+  app.add(Route { method: "DELETE", pattern: "/products/:name", h: DeleteProduct { pad: 0 } });
+  return app.serve("127.0.0.1", port);
+}

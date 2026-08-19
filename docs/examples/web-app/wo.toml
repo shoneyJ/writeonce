@@ -13,5 +13,7 @@ wo = ">= 0.1"
 # gate (scripts/web-app-accept.sh) substitutes a run-time file:// remote
 # built from docs/examples/writeonce-framework, so CI never needs the
 # network and this repo never carries .wo-deps/wo.lock artifacts.
+# The [deps] KEY is the module name `use` imports (hyphens are not identifier
+# characters, so the key is `framework` while the repository keeps its name).
 [deps]
-writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }

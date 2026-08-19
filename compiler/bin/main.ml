@@ -484,6 +484,39 @@ let compile_image ?(deps : (string * string) list = []) path =
   in
   let collector = Woc_lib.Diag.Collector.create () in
   let parsed = parse_all collector sources in
+  (* A dependency's INTERNAL `use` paths are written relative to the dep's
+     own root (`use http` inside the framework), but under this compile its
+     modules live at `<depname>/...` — so prefix each dep file's use paths
+     with the dep name. Reserved stdlib namespaces stay bare, and a path
+     already starting with the dep's own name is left alone. *)
+  let parsed =
+    if deps = [] then parsed
+    else
+      List.map
+        (fun (f, prog) ->
+          let owner =
+            List.find_opt
+              (fun (_, droot) ->
+                let prefix = droot ^ "/" in
+                let plen = String.length prefix in
+                String.length f >= plen && String.sub f 0 plen = prefix)
+              deps
+          in
+          match owner with
+          | None -> (f, prog)
+          | Some (dname, _) ->
+            let redecl = function
+              | Woc_lib.Ast.Use u ->
+                (match u.Woc_lib.Ast.segments with
+                 | seg :: _
+                   when (not (Woc_lib.Types.is_stdlib_module seg)) && seg <> dname ->
+                   Woc_lib.Ast.Use { u with Woc_lib.Ast.segments = dname :: u.Woc_lib.Ast.segments }
+                 | _ -> Woc_lib.Ast.Use u)
+              | d -> d
+            in
+            (f, { Woc_lib.Ast.decls = List.map redecl prog.Woc_lib.Ast.decls }))
+        parsed
+  in
   let syms, module_syms = typecheck_all collector ~root:path ~deps parsed in
   let units =
     List.map
