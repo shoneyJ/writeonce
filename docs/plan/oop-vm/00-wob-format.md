@@ -11,7 +11,7 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 2, then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 4, then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
 **Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL).
 
@@ -47,7 +47,7 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 | 20–21 | GETF / SETF | field read/write with runtime null/native/bounds checks (trap T_BOUNDS); overwriting a non-scalar field does NOT auto-drop the old value — the compiler emits the drop |
 | 22 | DROP A | recursively drop the owned value in A per its class drop plan, null the register |
 | 23–26 | BORROW_S/BORROW_X/RELEASE_S/RELEASE_X | borrow-word ops on the object in A; violation traps T_BORROW |
-| 27–28 | RC_INC / RC_DEC | refcount ops on the `@gc` object in A |
+| 27–28 | *reserved* | were RC_INC/RC_DEC; retired with reference counting in v4 (iteration 7b) — the loader rejects them like any unknown opcode |
 | 29 | BUILTIN A B C | register A = builtin C applied to args starting at register B (fixed arity per builtin; `multi_new`/`map_new` carry kind immediates in B instead) |
 | 30 | DB_STUB | trap T_DB "engine not linked" (spec: SQL-layer statements in milestone 1) |
 | 31 | TRAP Bx | explicit trap with code Bx |
@@ -123,8 +123,8 @@ as a borrow argument — a record/class constructor literal, a variant
 construction, or an owned-returning call (`peek(Pay{})`,
 `get(Boxed(Pay{}))`) — is copied to a stable register below the call
 window and `DROP`ped by the caller once the call returns (`take`
-arguments are the callee's to drop; places are their scope's; `@gc` and
-`Text` temporaries are excluded — the rc system's and the Copy-aliasing
+arguments are the callee's to drop; places are their scope's; traced and
+`Text` temporaries are excluded — the collector's and the Copy-aliasing
 story's, respectively). Recursive drop is correct both ways, because a
 payload the callee moved out left the field nulled.
 

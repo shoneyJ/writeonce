@@ -28,9 +28,11 @@ the dependency doctrine in [the OOP spec](superpowers/specs/2026-08-01-oop-compi
 
 Objects are owned values: one owner, moves on assignment, second-class
 borrows checked mostly at compile time (mutable value semantics — the
-Rust-borrow shape without lifetime inference). `@gc` is a per-class opt-in,
-reference-counted with budgeted per-shard cycle collection — no global
-pause exists by construction.
+Rust-borrow shape without lifetime inference). GC-ness is **inferred** by
+the compiler (iteration 7b): a class in a reference cycle, or one whose
+values must escape as long-lived aliases, is traced by an incremental
+per-shard tri-color mark-sweep collector in budgeted slices — the developer
+writes no memory annotation, and no global pause exists by construction.
 *Why:* deterministic memory for the default case, aliasing freedom where
 the design wants it, and never a stop-the-world in a runtime that is also
 the database.

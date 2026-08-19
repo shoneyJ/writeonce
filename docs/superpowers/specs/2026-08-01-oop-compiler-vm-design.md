@@ -11,7 +11,7 @@ writeonce today is a declarative language executed by the Rust runtime (`crates/
 - an **OCaml compiler** (`woc`) — fast compiles, no LLVM,
 - a **C runtime VM** (`wovm`) — libc-only, evolving out of the existing `wo-rt-c` C reference,
 - **memory-safe object instances**: by default an object behaves like a Rust borrowed value (single owner, checked borrows),
-- a **per-class `@gc` override** for reference semantics, collected without stop-the-world pauses,
+- **inferred GC-ness** (iteration 7b superseded the `@gc` annotation): classes that cycle or must alias long-lived are traced, without stop-the-world pauses,
 - the same end product: one binary that is the database, the web API, and the UI, running multithreaded.
 
 ## Decisions locked during brainstorming
@@ -21,7 +21,7 @@ writeonce today is a declarative language executed by the Rust runtime (`crates/
 | Fate of Rust runtime | **Evolve `wo-rt-c` into the C runtime.** OCaml compiler targets it. `crates/rt` stays active until parity, then retires to `.dev/reference/` like v1 did. |
 | OOP shape | **Keep plan 13 doctrine: no inheritance, no override, no virtual class hierarchies — ever.** OOP = `class` (state + methods) + structural **interfaces** (Go-style) + composition (`ref`/`multi`). |
 | Borrow enforcement | **Hybrid.** Compiler proves most sites statically and emits nothing; VM enforces residual sites with borrow-word checks at runtime. |
-| GC opt-out granularity | **Per-class annotation** `@gc` — all instances of that class are GC-managed and freely aliased. |
+| GC opt-out granularity | **Inferred** (amended by the 2026-08-11 7b spec; was a per-class `@gc` annotation): structural cycles via SCC over the class-reference graph + demand promotion at escape sites. Traced instances are freely aliased. |
 | Execution model | **Register bytecode interpreter first** (computed-goto dispatch). JIT possible later, not now. AOT-to-C rejected (kills hot reload, slow builds). |
 | Concurrency model | **Shard-actor with ownership transfer.** Thread-per-core shards, one heap per shard, cross-shard = message send = ownership move. GC is per-shard, so no global pause exists by construction. (Implementation is sub-project 2; milestone 1 reserves header space.) |
 | First sub-project | **Compiler + VM core** — proves the novel risk (hybrid borrow VM) before any HTTP/DB integration. |
@@ -122,7 +122,7 @@ class PriceCache {                 -- reference semantics, freely aliased
 2. Function parameter default = immutable borrow. `mut x: T` = exclusive borrow. `take x: T` = ownership moves in.
 3. Borrows never escape: cannot be stored in a field, cannot be returned. Compile error.
 4. Fields hold owned values, `ref T` ids (existing DB-style links), or `@gc` references.
-5. `@gc` class instances alias freely: no borrow rules, reference-counted, cycles collected incrementally.
+5. Traced (inferred-gc) class instances alias freely: no borrow rules; an incremental per-shard mark-sweep collects them (amended by the 7b spec — which classes are traced is inferred).
 6. Method `self` is an immutable borrow if the body only reads, exclusive if it writes — the compiler infers this; no annotation.
 
 **Executes in milestone 1:** class/interface declarations, constructors, field access, method and interface calls, control flow (`if`/`for`/`while`/`return`), arithmetic/text operations, `let`.
@@ -144,7 +144,7 @@ struct wo_hdr {
     uint8_t  flags;      // bit0 GC_MANAGED, bit1 IN_CYCLE_BUF
     uint8_t  _pad;
     uint32_t borrow;     // 0 = free, N = shared readers, 0xFFFFFFFF = exclusive
-    uint32_t rc;         // strong count, @gc only; unused for owned
+    // (7b) the borrow word unions with the traced list's intrusive link
 };                       // object fields follow inline
 ```
 
@@ -155,9 +155,9 @@ struct wo_hdr {
 - `owner.ml` proves most sites statically (locals, linear flow, no runtime-indexed aliasing) — zero ops emitted, zero runtime cost.
 - Residual sites get `BORROW_S` / `BORROW_X` / `RELEASE` on the borrow word. Canonical residual case: two `mut` borrows through runtime indices (`items[i]`, `items[j]` where `i == j` is unprovable). A violation is a VM trap that unwinds to the method boundary as a structured error (Section 6).
 
-**`@gc` objects:** RC increment/decrement on alias creation/drop (compiler-emitted, elided for provably balanced pairs). `rc == 0` frees immediately. Cycle risk exists only when a `@gc` object holds `@gc`-typed fields — those go to a per-shard possible-cycle buffer on decrement (Bacon–Rajan trial deletion), scanned **incrementally with a fixed per-tick budget** on the shard's own event loop. Per-shard heap, per-shard buffer: no cross-shard tracing, no global pause; worst case is a bounded slice of one shard's tick.
+**Traced objects (amended by the 7b spec, 2026-08-11):** reference counting is retired. Every traced allocation links onto a per-shard traced list; an incremental tri-color mark-sweep collects it — roots snapshot from the frames' per-pc masks at cycle start, a Yuasa deletion barrier shades overwritten gcref edges while marking, allocations mid-cycle are born black, and both mark and sweep run in budgeted slices (`WO_GC_BUDGET`). The header's old `rc`+`borrow` words are the traced list's intrusive link. Per-shard heap, per-shard list: no cross-shard tracing, no global pause.
 
-**Mixing rule:** an owned object may hold `@gc` references (rc participates). A `@gc` object may hold owned values (it owns them; they drop when the holder is freed). The borrow word applies only to owned objects; `@gc` aliasing is unrestricted by design.
+**Mixing rule:** an owned object may hold traced references (the mark phase walks owned interiors to find them). A traced object may hold owned values (it owns them; they drop when sweep frees the holder). The borrow word applies only to owned objects; traced aliasing is unrestricted by design.
 
 ## Section 5 — Bytecode and VM
 

@@ -20,7 +20,7 @@ A pass between `types` and `owner` (`compiler/src/gcinfer.ml`) builds a
 is a row id, `Copy`). Tarjan's SCC over that graph: any class in a non-trivial
 SCC, or with a self-loop, is **traced (`gc`)**. Everything else is **`owned`**.
 
-For this sample, `woc --dump-gc` would print:
+For this sample, `woc --dump-gc` prints:
 
 ```
 Node       gc      (cycle Node -> Node)
@@ -118,7 +118,7 @@ flowchart TD
   ALLOC["allocate traced object<br/>color = WHITE, link into traced list"] --> LIVE
   LIVE["mutator runs<br/>(program executes)"] --> TRIG{"traced bytes since last cycle<br/>past heap goal?"}
   TRIG -- no --> LIVE
-  TRIG -- yes --> ROOTS["START CYCLE<br/>shade every root GREY<br/>(value/frame slots via pc gc-mask)"]
+  TRIG -- yes --> ROOTS["START CYCLE (snapshot)<br/>shade every root GREY<br/>(value/frame slots via pc gc-mask)"]
   ROOTS --> SLICE
   SLICE["MARK SLICE (budgeted)<br/>pop a GREY object,<br/>scan its GCREF fields +<br/>owned subtrees that may reach a gcref,<br/>shade each WHITE child GREY,<br/>then paint this object BLACK"] --> GREY{"grey set empty?"}
   GREY -- "no (budget hit)" --> SAFE["yield at next safepoint<br/>(loop back-edge / call)"]
@@ -143,14 +143,16 @@ subtree that can reach no traced object at all.
 **The barrier — why incremental is safe.** Between slices the mutator keeps
 running and can hide a live object from a half-finished mark: store a white
 object into an already-**black** object, then drop the original grey/white
-reference to it. A **Yuasa deletion barrier** closes this: on any store into a
-`GCREF` slot **while marking is active**, shade the slot's **old** value grey
-before overwriting it. In the sample, `a.next = b` (and the ring-closing
-`c.next = a`) go through the store paths `SETF`/`map_set`/`push` where the
-barrier lives — no new opcode, because `SETF` already resolves the field kind
-from the class table. Owned stores, scalars, and Text pay nothing. Reading a
-shard's roots fresh from its masks each slice is what removes Go's Dijkstra
-insertion-half and the stack rescan.
+reference to it. A **Yuasa deletion barrier** closes this: on any deletion of a
+`GCREF` edge **while marking is active** — a `SETF` overwrite, or an owned
+holder dying with a gcref inside (every such path funnels through
+`wo_drop_kind`) — the **old** target is shaded grey first. No new opcode:
+`SETF` already resolves the field kind from the class table. Owned stores,
+scalars, and Text pay nothing. Snapshot-at-beginning completes the argument:
+roots are scanned atomically when the cycle starts, and objects allocated
+mid-cycle are born black — so anything reachable at the snapshot, or created
+after it, survives; that is what removes Go's Dijkstra insertion-half and the
+stack rescan.
 
 **Trigger & budget.** A cycle starts when the shard's traced bytes since the
 last cycle cross a heap goal; each slice marks at most `WO_GC_BUDGET` objects;
@@ -199,13 +201,17 @@ traced with **no annotation** and *traced classes alias freely* — the ring
 **compiles** (the old `WO-E301: use of \`a\` after it was moved` at `c.next = a`
 is gone), and its bytecode is byte-identical to writing `@gc class Node`.
 
-**Not yet: the ring runs.** On today's runtime (RC + Bacon–Rajan, `gc.c`) a
-**nullable single-reference gc field** (`next: ?Node`) store/read is
-unimplemented — even a one-hop `a.next = b; print(a.next.label)` traps
-`null receiver` (the existing gc corpus only exercises `multi` gcref fields,
-which do work). Running the ring, and reclaiming it, is **Phase 3**: the
-incremental mark-sweep collector + full gcref field paths, the `.wob`
-opcode-27/28 retirement, and the sweep list.
+**Phase 3 (landed).** The runtime collector is the incremental tri-color
+mark-sweep this README describes: RC and trial deletion are gone, the header
+carries the sweep-list link, opcodes 27–28 are reserved (`.wob` v4), and the
+Yuasa deletion barrier lives in the store paths. **The ring runs and is
+reclaimed**: `woc --emit docs/examples/gc-cycle -o gc.wob && WO_GC_TRACE=1
+wovm gc.wob` prints `ring a -> b -> c -> a` then
+`gc: step 1 budget=64 freed=3 remaining=0`, ASan-clean; with a tiny goal
+(`WO_GC_GOAL=64`) a mid-program cycle runs while the ring is rooted and
+correctly frees nothing. (The old RC runtime couldn't even store a `?Node`
+gcref field — the unconditional RC_DEC of the nil old value trapped; that
+opcode no longer exists.)
 
 **Phase 2b (landed).** Demand promotion: the ownership pass, run in collect
 mode, promotes any class whose value *must escape* (returned, stored where it

@@ -78,23 +78,15 @@ trapped `BOUNDS "not a text value"`. Copying is the only rule correct for both
 shapes: a value read out of a place keeps its owner, and a freshly built Text
 (a call result, a `..` chain, an interpolation) stays the caller's — the
 compiler emits that drop right after the call (emit.ml's `drop_fresh_text`).
-`OWNED`/`GCREF` elements still MOVE: they are not copyable, and the `@gc`
-escape below is what keeps their counting right. Only the `@gc` half of the
-old hazard remains open.
+`OWNED`/`GCREF` elements still MOVE: they are not copyable.
 
-**`push` and `@gc` elements.** `push(m, v)`'s value argument is never a
-resolved callee parameter (`push` has no declared signature), so the
-owner pass's ordinary Take-gated transfer never reaches it; a `@gc` value
-pushed into a `multi` is special-cased in `owner.ml`'s `analyze_call`
-(the value escapes into the container exactly like a ctor field, RC_INC
-included) specifically so a `multi`-mediated `@gc` cycle can be built
-and later collected (`tests/corpus/gc/`, plan 3 task 5). **`set(m, k, v)`
-has no equivalent special case** — a `@gc` key or value handed to `set`
-is not retained, so a `map<_, SomeGcClass>` (or a `@gc`-keyed map) built
-this way will under-count its element's refcount and the collector will
-free it while the map still points at it. Nothing in the corpus
-exercises this yet; treat it as an open gap, not a proven-safe pattern,
-until `set` gets the same fix `push` did.
+**Traced elements need no bookkeeping (iteration 7b).** The old `push`
+RC_INC special case and its `set(m, k, v)` retention gap are both
+**deleted with reference counting itself**: a traced value stored into a
+container is found by the mark phase through the container, so there is
+no count to keep right and the use-after-free class those paragraphs
+guarded against cannot recur. (`tests/corpus/gc/` still builds a
+`multi`-mediated cycle and collects it — now by tracing.)
 
 ## A fresh container needs a destination of declared type
 

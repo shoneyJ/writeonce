@@ -9,13 +9,22 @@
 > settled before iteration 8 multiplies shards.
 
 
-> **Status (2026-08-14):** **not on the driving workload's path**, measured:
-> `docs/examples/log-watcher` declares no `@gc` class — 35 classes in its image,
-> none with the gc flag, and 0 `RC_INC` / 0 `RC_DEC` instructions against 78
-> `DROP`s. Its memory story is arena + deterministic drops end to end, so this
-> iteration (and iteration 4's open `gc/held-cycle` leak, and `set`'s `@gc`
-> retention gap) cannot affect whether log-watcher runs. It stays queued for
-> workloads that build cycles; the `gc/` corpus fixtures remain its only users.
+> **Status (2026-08-18): LANDED** (branch `inferred-gc`; plan
+> [`2026-08-18-inferred-gc-mark-sweep.md`](../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md)).
+> The front end infers GC-ness (structural SCC + demand promotion,
+> `woc --dump-gc`), `@gc` in source is WO-E104, and the runtime's RC +
+> Bacon–Rajan collector is replaced by an incremental per-shard tri-color
+> mark-sweep with a Yuasa deletion barrier — `.wob` is v4, opcodes 27–28
+> reserved. The worked example is
+> [`docs/examples/gc-cycle`](../../examples/gc-cycle/README.md): its ring
+> compiles with no annotation, runs, and is reclaimed in budgeted slices,
+> ASan-clean. All four recorded `@gc`/RC defects are deleted by
+> construction; `just oop-accept` is fully green (criterion 3's ASan clause
+> included).
+>
+> *(Historical status 2026-08-14: not on the log-watcher critical path — 35
+> classes, none gc, arena + deterministic drops end to end. That is still
+> true; log-watcher simply never allocates a traced object.)*
 
 ## Goals
 
