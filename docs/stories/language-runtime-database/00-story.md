@@ -65,6 +65,7 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 14 | [skillhost host workload](14-skillhost-host-workload.md) | a host-shaped driving workload (writeonce port of skillhost) that names the runtime gaps it exposes: bounded/killable subprocess, stdin/stdout transport, fs metadata, and FFI-vs-out-of-process model driver — each a candidate iteration |
 | 15 | [deps: `wo.toml [deps]`](15-deps-package-manager.md) | exact-rev git dependencies + `wo.lock` + `.wo-deps` cache; `use <dep>` resolves a fetched project as a module root; flat-only, network-free when locked |
 | 16 | [web framework](16-web-framework.md) | a `.wo`-library framework (HTTP/1.1 keep-alive behind a TLS-terminating proxy): router, `Handler`/`Middleware` structural interfaces, `@table` data layer; `docs/examples/web-app` consumes it via `[deps]`; h2c parked behind 8/9f/11 |
+| 17 | [library projects + `internal/`](17-library-projects-internal.md) | first-class library projects (`wo.toml` kind, checkable without an entry) and dependency privacy (a dep-internal module tier, Go's `internal/` shape vs Rust's `pub(crate)` analyzed) — four open forks, needs refinement |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable
