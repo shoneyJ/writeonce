@@ -89,6 +89,10 @@ list, and a pointer to the plan document that already sequences its tasks.
 - **Critical path (locked 2026-08-08): compile and run log-watcher.**
   Iterations 3 → 4 → 5 → 6 → 7 are the committed line; nothing off that
   line lands before iteration 7's acceptance. Then 7b, then 8–12 (with 9b after the database engine).
+- **Implementation order re-sequenced 2026-08-20** for everything still
+  pending: 7-finish → 17 → 9g → 14 → 9c/9d → 9e → 8 → 9f → 11 → 10 → 12 →
+  13 + parked drain. Rationale and forcing dependencies live in
+  [`docs/00-status.md`](../../00-status.md) under "Implementation order".
 - **Iteration 7b (inserted 2026-08-11)** sits after the critical path
   deliberately: it delays nothing on the log-watcher line, and it must precede
   iteration 8 because the collector should be settled before shards multiply.

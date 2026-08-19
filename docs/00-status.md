@@ -305,6 +305,41 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 
 ## Pending
 
+### Implementation order (sequenced 2026-08-20)
+
+Dependency-derived order for everything not yet landed. Rules that force it:
+9f explicitly after 8 + 9e; 9c "precedes iteration 10"; 9d's plan folds into
+9c's; 12 only after 9 + 10 (catalog to diff, HTTP to build on); 11 rides 8's
+shard scheduler; h2c parked behind 8/9f/11; the post-12 parked list stays
+parked by the 2026-08-08 scope directive.
+
+1. **7 finish** — in progress (executable plan: leaks, stop signal, fd
+   lifetime, soak); the locked critical path ends here.
+2. **17** — forks settled, compiler-driver-only, no runtime deps; kills the
+   framework's `--emit` wart while iteration 16 is fresh. (Merge the
+   `web-framework` branch first.)
+3. **9g** — likely collapses to "confirm `len(query)` + add `exists`"; the
+   skillhost corpus already showed no new grammar; do before 14 consumes it.
+4. **14** — skillhost port, the next driving workload (log-watcher's role for
+   host capabilities); stdlib-shaped, independent of shards;
+   bounded-subprocess gap first.
+5. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
+   binding; keypair-auth: manifest) while DB context is warm; 9d folds into
+   9c's plan; both must precede 10.
+6. **9e** — the measurement backbone; baseline single-shard BEFORE the
+   runtime restructure so 8/9f have numbers to sign against.
+7. **8** — shard-actor; the big structural move; precondition (collector
+   settled, 7b) already met; unblocks 9f, 11, h2c.
+8. **9f** — io_uring group-commit; explicitly after 8 + 9e.
+9. **11** — fibers on the shard scheduler; keeps VM-core work contiguous
+   with 8/9f (same dispatch/io seams).
+10. **10** — HTTP service layer; after 9c by its own precedence note;
+    lowers `service` blocks onto the iteration-16 framework.
+11. **12** — blue-green; prerequisites 9 + 10 now exist.
+12. **13 + parked drain** — metaprogramming (spec first), then h2c,
+    group-by, `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — all held
+    behind 12 by the scope directive.
+
 ### Language track — sequenced, on the critical path
 
 | #   | Item                                                                                                                                                                           | Plan                                                                                               |
