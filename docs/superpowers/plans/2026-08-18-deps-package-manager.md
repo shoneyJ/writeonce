@@ -51,43 +51,43 @@ section A (normative). Story: [`15-deps-package-manager.md`](../../stories/langu
 
 **Files:** modify `compiler/bin/main.ml` (manifest_parse + its doc comment).
 
-- [ ] Extend the value grammar with the one-line inline table — a braced,
+- [x] Extend the value grammar with the one-line inline table — a braced,
   comma-separated list of `key = "string"` pairs — accepted ONLY under
   `[deps]`; anywhere else it stays "only quoted string values are supported".
   Inside it, `git` and `rev` are required, both non-empty; any other key is
   the existing unknown-key error. Section whitelist gains `deps`.
-- [ ] Represent each entry as (name, git URL, rev) in the parsed manifest;
+- [x] Represent each entry as (name, git URL, rev) in the parsed manifest;
   a duplicate dep name is the duplicate-key error family.
-- [ ] Verify: a manifest with a well-formed `[deps]` parses (no behavior
+- [x] Verify: a manifest with a well-formed `[deps]` parses (no behavior
   yet); a missing `rev`, a bare unquoted value, and an inline table outside
   `[deps]` each produce their named diagnostic. Run `just woc-test` — all
   existing golden/manifest behavior unchanged.
-- [ ] Commit.
+- [x] Commit.
 
 ## Task 2 — resolver: fetch, cache, lock
 
 **Files:** modify `compiler/bin/main.ml` (a `resolve_deps` step inside
 manifest_build, before discovery); `.gitignore` (`.wo-deps/`).
 
-- [ ] Layout: `.wo-deps/<name>/` beside `wo.toml`; `wo.lock` beside it too —
+- [x] Layout: `.wo-deps/<name>/` beside `wo.toml`; `wo.lock` beside it too —
   one line per dep, name and resolved commit SHA, sorted, with a one-line
   header comment naming the generator.
-- [ ] Cold path (no lock entry or no cache dir): run `git clone` into the
+- [x] Cold path (no lock entry or no cache dir): run `git clone` into the
   cache dir and `git -C <dir> checkout <rev>`, then read the resolved SHA via
   `git -C <dir> rev-parse HEAD`; write/refresh the lock entry. Every git
   invocation's failure is WO-E106 naming the dep, the URL/rev, and which step
   failed. A missing `git` binary is its own WO-E106 message.
-- [ ] Warm path (lock entry present, cache dir present): compare the cache's
+- [x] Warm path (lock entry present, cache dir present): compare the cache's
   HEAD SHA to the lock; equal means proceed with zero network. A cache
   matching the manifest `rev` label but not the lock (a moved tag) is
   WO-E106 "lock drift" naming both SHAs and pointing at `--update-deps`.
-- [ ] `woc --update-deps <dir>`: re-fetches every dep at its manifest rev and
+- [x] `woc --update-deps <dir>`: re-fetches every dep at its manifest rev and
   rewrites the lock; document in the usage text.
-- [ ] Guard rails, each its own diagnostic: the fetched dep has no `wo.toml`
+- [x] Guard rails, each its own diagnostic: the fetched dep has no `wo.toml`
   or no `name` (not a writeonce project); the dep's `wo.toml` contains
   `[deps]` (transitive — refused flat-only, per spec); the dep name collides
   with a local top-level module directory in the app (WO-E107).
-- [ ] Verify manually against a local `file://` remote: cold build fetches
+- [x] Verify manually against a local `file://` remote: cold build fetches
   and writes the lock; second build is offline (prove by running with
   `GIT_TRACE` absent and the remote renamed away); tag-move produces the
   drift diagnostic; `--update-deps` clears it. Commit.
@@ -97,22 +97,22 @@ manifest_build, before discovery); `.gitignore` (`.wo-deps/`).
 **Files:** modify `compiler/bin/main.ml` (discovery + `module_of` + entry
 candidate filtering in manifest_build's pipeline call).
 
-- [ ] Discovery: after resolve_deps, discover each dep root exactly as the
+- [x] Discovery: after resolve_deps, discover each dep root exactly as the
   app root is discovered (same skip rules — dot-dirs, `target/`, and now
   `.wo-deps/` itself under the app root so dep trees are never discovered
   twice) and append its files to the compilation unit list. Deterministic
   order: app files first (sorted, as today), then deps sorted by name.
-- [ ] Module mapping: `module_of` for a dep file prefixes the dep name — the
+- [x] Module mapping: `module_of` for a dep file prefixes the dep name — the
   dep's root maps to module `<name>`, its subdirectory `sub/` to
   `<name>/sub` — so the existing `use` resolution, collision diagnostics,
   and `pub` visibility work across the boundary with no changes in
   `types.ml`.
-- [ ] Entry restriction: the `main` the emitter selects (and WO-E405 checks)
+- [x] Entry restriction: the `main` the emitter selects (and WO-E405 checks)
   must come from the app root's own files; a dep's `fn main` is never an
   entry candidate. The spec's rule "a dep's main is ignored" means exactly
   the selection filter — the fn itself still compiles as an ordinary
   module-scoped fn.
-- [ ] Verify: an app importing one dep via `use <name>` and `use <name>/sub`
+- [x] Verify: an app importing one dep via `use <name>` and `use <name>/sub`
   builds and runs; the dep having its own `fn main` changes nothing;
   `woc --dump-owner`/`--dump-bc` on the app still work (multi-file dump
   conventions apply to dep files like any other unit). Commit.
@@ -124,15 +124,15 @@ candidate filtering in manifest_build's pipeline call).
 script builds its `file://` remotes in a temp dir at run time, so nothing
 network-shaped or `.git`-shaped is committed).
 
-- [ ] The gate script, one check per behavior, log-watcher-accept style:
+- [x] The gate script, one check per behavior, log-watcher-accept style:
   (1) cold fetch + lock written + app runs; (2) offline rebuild with the
   remote removed; (3) moved-tag drift diagnostic; (4) `--update-deps`
   refresh; (5) transitive-dep refusal; (6) dep-name/local-module collision;
   (7) dep `fn main` ignored — app's entry wins; (8) missing-`rev` manifest
   diagnostic. Exit nonzero on the first failure, count summary at the end.
-- [ ] `just deps-accept` wired; run it plus `just woc-test` and
+- [x] `just deps-accept` wired; run it plus `just woc-test` and
   `just oop-e2e` — all green, nothing pre-existing re-blessed.
-- [ ] Commit.
+- [x] Commit.
 
 ## Task 5 — docs closeout
 
@@ -142,7 +142,7 @@ network-shaped or `.git`-shaped is committed).
 story `15-deps-package-manager.md` (status note), `docs/08-project-structure.md`
 (`.wo-deps/` + `wo.lock` in the project-layout listing).
 
-- [ ] Apply; `just deps-accept` still green; commit.
+- [x] Apply; `just deps-accept` still green; commit.
 
 ## Success criteria (from the story, restated as the gate)
 

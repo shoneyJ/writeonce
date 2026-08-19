@@ -262,6 +262,24 @@ runtime = "../../../runtime/wovm"   # path to the wovm the binary is built from
 
 `woc myproject/` compiles every `.wo` file under the directory as one program.
 
+### Dependencies
+
+A project can depend on other writeonce repositories — exact-rev git
+dependencies, declared in the manifest:
+
+```toml
+[deps]
+niceframework = { git = "https://github.com/shoneyj/niceframework", rev = "v0.1.0" }
+```
+
+`woc` fetches each dep (via the `git` binary) into `.wo-deps/<name>/`, pins
+the resolved commit in `wo.lock`, and `use niceframework` (or
+`use niceframework/sub`) imports its public names like any module. Builds
+never touch the network once the lock is satisfied; a moved tag is reported,
+and `woc --update-deps myproject/` refreshes the lock deliberately. Flat
+dependencies only (a dep may not have its own `[deps]`) — honest and small,
+by design.
+
 Programs that create tables read their data directory from the `WO_DATA`
 environment variable at run time:
 

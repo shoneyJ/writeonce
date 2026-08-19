@@ -130,7 +130,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 12  | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md)               | ⬜                           | Hold |
 | 13  | [Compile-time metaprogramming](stories/language-runtime-database/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
 | 14  | [skillhost host workload](stories/language-runtime-database/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
-| 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ⬜ spec'd 2026-08-18 (web-framework spec §A); the enabler for 16 |
+| 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
 | 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ⬜ spec'd 2026-08-18 (§B; h2c parked §C behind 8/9f/11); TLS proxy-terminated by decision |
 
 ---
@@ -320,7 +320,6 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 | 9f  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 9e                                               |
 | 9g  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
-| 15  | deps — `wo.toml [deps]` exact-rev git fetch, `wo.lock`, `.wo-deps` cache, `use <dep>` resolution; flat-only v1 | [spec §A](superpowers/specs/2026-08-18-web-framework-design.md) · [plan](superpowers/plans/2026-08-18-deps-package-manager.md) |
 | 16  | web framework — `.wo` library (HTTP/1.1 keep-alive behind a TLS-terminating proxy), Handler/Middleware interfaces, @table data layer; web-app sample consumes via [deps] | [spec §B](superpowers/specs/2026-08-18-web-framework-design.md) — depends on 15; h2c parked (§C) behind 8/9f/11 |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md)                   |

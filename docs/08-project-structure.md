@@ -118,5 +118,8 @@ ASan, single-binary smoke, both unit gates). Sample acceptance:
 - Plan/spec files: `YYYY-MM-DD-<topic>.md` under `docs/superpowers/{specs,plans}/`;
   compiler plans under `docs/plan/compiler/`; normative contracts under
   `docs/plan/oop-vm/`.
+- A project's dependencies (iteration 15): `wo.toml [deps]` declares
+  exact-rev git deps; they fetch to `.wo-deps/<name>/` (gitignored) and pin
+  in `wo.lock` (committed).
 - Sample projects live under `docs/examples/<name>/` with their own `wo.toml`
   and module `justfile`.

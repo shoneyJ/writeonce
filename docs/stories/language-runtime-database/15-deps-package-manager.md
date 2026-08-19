@@ -3,8 +3,13 @@
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).
 >
-> **Inserted 2026-08-18.** The enabler for code shared between writeonce
-> repositories — the web framework (iteration 16) is the driving consumer.
+> **Inserted 2026-08-18. LANDED the same day** (branch `web-framework`): all
+> acceptance criteria met — `just deps-accept` 8/0 (cold fetch + lock, use
+> <dep> and <dep>/sub, offline-when-locked with the remote deleted,
+> lock-beats-moved-tag, --update-deps, drift/transitive/collision
+> diagnostics WO-E106/E107, dep `fn main` never the entry, manifest shape).
+> The enabler for code shared between writeonce repositories — the web
+> framework (iteration 16) is the driving consumer.
 >
 > **Spec exists:** [`2026-08-18-web-framework-design.md`](../../superpowers/specs/2026-08-18-web-framework-design.md)
 > section A is normative for this iteration. **Plan:**
