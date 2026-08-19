@@ -7,7 +7,11 @@
 > repositories — the web framework (iteration 16) is the driving consumer.
 >
 > **Spec exists:** [`2026-08-18-web-framework-design.md`](../../superpowers/specs/2026-08-18-web-framework-design.md)
-> section A is normative for this iteration.
+> section A is normative for this iteration. **Plan:**
+> [`2026-08-18-deps-package-manager.md`](../../superpowers/plans/2026-08-18-deps-package-manager.md)
+> (5 tasks: manifest inline-table + [deps]; resolver fetch/cache/lock;
+> multi-root discovery + module mapping + entry restriction; the
+> `just deps-accept` gate over file:// remotes; docs closeout).
 
 ## Goals
 
