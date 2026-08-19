@@ -10,8 +10,8 @@ the diagnostic codes are catalogued in
 ## The pipeline
 
 ```
-lexer.ml   →  parser.ml  →  types.ml    →  owner.ml     →  emit.ml   →  .wob
-tokens        AST           symbols +      move/drop/rc     bytecode
+lexer.ml   →  parser.ml  →  types.ml  →  gcinfer.ml  →  owner.ml   →  emit.ml  →  .wob
+tokens        AST           symbols      traced set     move/drop     bytecode
                             typecheck      tables
 ```
 
@@ -54,8 +54,12 @@ against `nil` must lower to `EQ` and never `EQS`.
 
 ### 3. The owner pass hands the emitter tables, not decisions
 
-`owner.ml` computes moves, scope-end drops, branch-join drops, rc sites and
-residual borrow guards, keyed by **node id and label**. `emit.ml` looks them up
+`owner.ml` computes moves, scope-end drops, branch-join drops and residual
+borrow guards, keyed by **node id and label** (rc sites are gone since
+iteration 7b — reference counting no longer exists; `gcinfer.ml` classifies
+each class owned/traced first, structurally via SCC over the class-reference
+graph plus demand promotion at escape sites, and `Types.is_gc_class` answers
+from that set). `emit.ml` looks them up
 by the same keys. When a construct has arms — `switch`, `if`, `try` — both files
 must agree on the label strings and on the arm ORDER (`switch_lowering_order`
 moves `default` last in both). A silent mismatch means a drop that never runs.

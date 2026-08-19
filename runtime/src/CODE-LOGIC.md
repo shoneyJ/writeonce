@@ -13,16 +13,16 @@ the first: constants there and prose there must never disagree.
 | file | what it owns |
 | --- | --- |
 | `wob.h` | every format constant: header offsets, field kinds, opcodes, builtin ids, trap codes, the 16-byte object header, the class descriptor |
-| `obj.h/.c` | the per-shard arena, object allocation, `wo_str` (header + length + inline bytes, no NUL) |
+| `obj.h/.c` | the per-shard arena, object allocation (traced instances link onto the traced list, born white — black mid-cycle), the per-class may-gcref fixpoint, `wo_str` (header + length + inline bytes, no NUL) |
 | `cont.h/.c` | `multi` and `map` as native classes: struct heads in the arena, backing arrays malloc'd, map lookup a linear scan over parallel key/value arrays |
-| `gc.h/.c` | the kind-directed dispatcher (`wo_drop_kind`/`wo_drop_obj`), refcounting for `@gc`, and the budgeted Bacon–Rajan cycle collector |
+| `gc.h/.c` | the kind-directed dispatcher (`wo_drop_kind`/`wo_drop_obj`) for owned values, and the incremental tri-color mark-sweep for traced (inferred-gc) objects: per-shard traced list, snapshot-at-beginning roots, Yuasa deletion barrier (the `wo_drop_kind` GCREF case + `SETF`), budgeted mark and sweep slices (iteration 7b — RC and Bacon–Rajan are gone) |
 | `borrow.h/.c` | the borrow word: shared counts and the exclusive sentinel |
 | `loader.h/.c` | parse and **validate** an image; the validation contract in its header comment is exactly what the interpreter may then assume |
 | `vm.h/.c` | the register interpreter: window-overlap calls, dual-flavor dispatch, traps, unwinding, catch frames |
 | `builtin.h/.c` | the pure builtins: print, containers, text |
 | `sysio.c` | the OS half: `fs`, `time`, `env`, `net`, `proc` |
 | `json.c` | `json.encode` / `json.decode`, driven by class metadata |
-| `main.c` | the CLI: find an image (argument or embedded trailer), build argv, call the entry, map its result to an exit code |
+| `main.c` | the CLI: find an image (argument or embedded trailer), build argv, call the entry, map its result to an exit code; post-exit gc pump (a rootless cycle frees everything unreachable, in budgeted slices) |
 
 `builtin.c`'s `wo_builtin` is the single entry point the interpreter calls; it
 forwards ids at or above `WO_B_SYS_FIRST` to `sysio.c` and the json pair to
