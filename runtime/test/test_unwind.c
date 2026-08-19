@@ -104,30 +104,51 @@ static void test_two_frame_unwind_frees_both(void) {
 }
 
 /* rc inc/dec through opcodes frees exactly at zero (@gc malloc-path class) */
-static void test_rc_opcodes_free_at_zero(void) {
+/* iteration 7b: opcodes 27-28 (the old RC_INC/RC_DEC) are reserved in .wob
+ * v4 — the loader must reject an image that carries one, exactly like any
+ * other unknown opcode. A traced instance abandoned by a clean return is
+ * rt_destroy's to free (ASan proves it). */
+static void test_reserved_rc_opcode_rejected(void) {
     wb_t *b = wb_new();
     uint32_t kc = wb_const_text(b, "GBig");
     uint32_t kf = wb_const_text(b, "main");
     wb_class(b, kc, WO_CLASSF_GC, big_kinds, BIG);
     uint32_t code[] = {
-        wo_ins_abx(WOP_NEW, 0, 0),         /* rc 1 */
-        wo_ins_abc(WOP_RC_INC, 0, 0, 0),   /* rc 2 */
-        wo_ins_abc(WOP_RC_DEC, 0, 0, 0),   /* rc 1 */
-        wo_ins_abc(WOP_RC_DEC, 0, 0, 0),   /* rc 0: freed */
+        wo_ins_abx(WOP_NEW, 0, 0),
+        wo_ins_abc(27 /* retired RC_INC */, 0, 0, 0),
         wo_ins_abc(WOP_RET0, 0, 0, 0),
     };
-    wb_method(b, kf, WOB_NONE, 0, 1, code, 5, NULL, 0, NULL, 0);
+    wb_method(b, kf, WOB_NONE, 0, 1, code, 3, NULL, 0, NULL, 0);
     size_t len;
     uint8_t *img = wb_finish(b, &len);
     uint64_t ret = 0;
     wo_err err;
-    T_EQ(run_img(img, len, &ret, &err), 0); /* no trap; ASan proves the free */
+    T_EQ(run_img(img, len, &ret, &err), -2); /* loader rejection */
+    free(img);
+}
+
+static void test_abandoned_traced_freed_at_destroy(void) {
+    wb_t *b = wb_new();
+    uint32_t kc = wb_const_text(b, "GBig");
+    uint32_t kf = wb_const_text(b, "main");
+    wb_class(b, kc, WO_CLASSF_GC, big_kinds, BIG);
+    uint32_t code[] = {
+        wo_ins_abx(WOP_NEW, 0, 0), /* traced, linked; never dropped */
+        wo_ins_abc(WOP_RET0, 0, 0, 0),
+    };
+    wb_method(b, kf, WOB_NONE, 0, 1, code, 2, NULL, 0, NULL, 0);
+    size_t len;
+    uint8_t *img = wb_finish(b, &len);
+    uint64_t ret = 0;
+    wo_err err;
+    T_EQ(run_img(img, len, &ret, &err), 0); /* ASan: rt_destroy frees it */
     free(img);
 }
 
 int main(void) {
     test_borrow_violation_frees_owned();
     test_two_frame_unwind_frees_both();
-    test_rc_opcodes_free_at_zero();
+    test_reserved_rc_opcode_rejected();
+    test_abandoned_traced_freed_at_destroy();
     return t_report("test_unwind");
 }

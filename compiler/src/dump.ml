@@ -446,11 +446,6 @@ let dump_ast (prog : Ast.program) : string =
                       block; source order is only here to keep the
                       rendering deterministic.
 
-     == RC ==       "LINE:COL ACQUIRE|RELEASE <place> ELIDED|KEPT" for
-                      @gc reference counting. ELIDED marks a pair the
-                      emitter may skip because increment and decrement
-                      are provably balanced inside one scope.
-
      == RESIDUAL ==   "LINE:COL RESIDUAL <op> <place> vs <op> <place>" —
                       the sites static proof could not settle, so the
                       emitter wraps them in runtime borrow ops
@@ -523,12 +518,6 @@ let dump_owner (t : Owner.tables) : string =
     | Owner.DBreak -> Printf.sprintf "%s BREAK %s" pos (drop_items_str d.Owner.dr_items)
     | Owner.DContinue -> Printf.sprintf "%s CONTINUE %s" pos (drop_items_str d.Owner.dr_items)
   in
-  let rc_line (r : Owner.rc_site) =
-    Printf.sprintf "%s %s %s %s" (owner_pos_str r.Owner.rc_pos)
-      (match r.Owner.rc_op with Owner.RcAcquire -> "ACQUIRE" | Owner.RcRelease -> "RELEASE")
-      r.Owner.rc_place
-      (if r.Owner.rc_elided then "ELIDED" else "KEPT")
-  in
   let res_line (r : Owner.residual_site) =
     Printf.sprintf "%s RESIDUAL %s %s vs %s %s" (owner_pos_str r.Owner.rs_pos)
       (acc_kind_str r.Owner.rs_a_kind) r.Owner.rs_a (acc_kind_str r.Owner.rs_b_kind) r.Owner.rs_b
@@ -537,7 +526,6 @@ let dump_owner (t : Owner.tables) : string =
   let lines =
     section "== MOVES ==" (List.map move_line t.Owner.moves)
     @ section "== DROPS ==" (List.map drop_line t.Owner.drops)
-    @ section "== RC ==" (List.map rc_line t.Owner.rcs)
     @ section "== RESIDUAL ==" (List.map res_line t.Owner.residuals)
   in
   String.concat "\n" lines ^ "\n"

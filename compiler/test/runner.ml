@@ -1965,13 +1965,6 @@ let () =
        (fun (d : Owner.drop_site) ->
          List.for_all (fun (i : Owner.drop_item) -> i.Owner.di_node > 0) d.Owner.dr_items)
        tables.Owner.drops);
-  let rc_path = "golden/owner/rc.wo" in
-  let rc_tables, _ = owner_str ~file:rc_path (read_file rc_path) in
-  check "rc table: every entry carries a real AST node id"
-    (List.for_all (fun (r : Owner.rc_site) -> r.Owner.rc_node > 0) rc_tables.Owner.rcs);
-  check "rc table: the balanced pair is elided, the escaping one kept"
-    (List.exists (fun (r : Owner.rc_site) -> r.Owner.rc_elided) rc_tables.Owner.rcs
-    && List.exists (fun (r : Owner.rc_site) -> not r.Owner.rc_elided) rc_tables.Owner.rcs);
   let res_path = "golden/owner/residual.wo" in
   let res_tables, _ = owner_str ~file:res_path (read_file res_path) in
   check_eq "residual table: only the runtime-index pairs are residual" ~expected:3
@@ -2236,23 +2229,6 @@ let () =
     (List.exists (fun d -> names_of d = [ "w" ]) returns)
 
 let () =
-  (* IMPORTANT: a `mut` argument means the callee may replace what the place
-     holds. For a @gc place that invalidates rc elision — the elided
-     increment would leave the alias as the last reference to a freed
-     object. The clobber therefore has to happen before the ownership class
-     is consulted, since @gc arguments create no access entry at all. *)
-  let path = "golden/owner/rc.wo" in
-  let tables, _ = owner_str ~file:path (read_file path) in
-  let at line =
-    List.filter (fun (r : Owner.rc_site) -> r.Owner.rc_pos.Ast.line = line) tables.Owner.rcs
-  in
-  single_site "rc: `balanced` has one ACQUIRE" (at 15) (fun r ->
-      check "rc: an alias whose source is never clobbered is ELIDED" r.Owner.rc_elided);
-  single_site "rc: `clobbered` has one ACQUIRE" (at 34) (fun r ->
-      check "rc: an alias whose source root is passed `mut` is KEPT"
-        (not r.Owner.rc_elided))
-
-let () =
   let path = "golden/owner/moves.wo" in
   let exit_code, stdout, stderr = run_cli [ "--dump-owner"; path ] in
   check "cli smoke: --dump-owner on a clean file exits 0" (exit_code = 0);
@@ -2295,7 +2271,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 3 then fail "unsupported version";
+  if u32 4 <> 4 then fail "unsupported version";
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2614,26 +2590,26 @@ let method_block (dump : string) (name : string) : string =
   String.concat "\n" (collect [] false lines)
 
 let () =
-  (* The spec's zero-cost promise, as an assertion and not only a pinned
-     dump: a method whose ownership is fully proven contains no borrow op
-     and no rc op. golden/bc/elision.wo's `proven` aliases a @gc
-     reference and passes it to a reader; owner.ml marks the pair ELIDED
-     (golden/owner/rc.wo pins that), so nothing may be emitted for it. *)
+  (* The zero-cost promise, iteration 7b edition: a proven method emits no
+     borrow op, and NO method anywhere emits an rc op — reference counting
+     is gone from the instruction stream entirely (opcodes 27/28 reserved). *)
   let path = "golden/bc/elision.wo" in
   let image, _ = emit_str ~file:path (read_file path) in
-  let block = method_block (Disasm.dump image) "proven" in
+  let dump = Disasm.dump image in
+  let block = method_block dump "proven" in
   check "elision: `proven` was found in the disassembly" (block <> "");
   List.iter
     (fun op ->
       check
         (Printf.sprintf "elision: `proven` emits no %s (zero-cost when provable)" op)
         (find_substring ~needle:op block = None))
-    [ "BORROW_S"; "BORROW_X"; "RELEASE_S"; "RELEASE_X"; "RC_INC"; "RC_DEC" ];
-  (* the contrast, so the fixture cannot pass by emitting nothing anywhere:
-     main stores the @gc value into a field, which is a KEPT acquire *)
-  let main_block = method_block (Disasm.dump image) "main" in
-  check "elision: the escaping acquire in `main` is still emitted (fixture is not vacuous)"
-    (find_substring ~needle:"RC_INC" main_block <> None)
+    [ "BORROW_S"; "BORROW_X"; "RELEASE_S"; "RELEASE_X" ];
+  List.iter
+    (fun op ->
+      check
+        (Printf.sprintf "rc retired: the whole image contains no %s" op)
+        (find_substring ~needle:op dump = None))
+    [ "RC_INC"; "RC_DEC" ]
 
 let () =
   (* haxe-parity Task 3: the compare-and-jump chain lowers onto the
@@ -2786,12 +2762,9 @@ let () =
     (List.fold_left max 0 masks <= List.fold_left max 0 popcounts)
 
 (* The ownership tables are a contract, not a hint: every DROP the DROPS
-   table asks for, and every rc op the RC table does not mark ELIDED, has
-   to appear in the emitted code exactly once — and nothing else may. A
-   count identity over a whole file is the cheapest way to state that, and
-   it is what caught a missing constructor-field @gc acquire (the escape
-   increment is anchored on the value's expression node, so lowering it
-   per statement kind silently skipped one of the four escapes). *)
+   table asks for has to appear in the emitted code exactly once — and
+   nothing else may (rc ops don't exist since iteration 7b). A count
+   identity over a whole file is the cheapest way to state that. *)
 let () =
   let count_op needle dump =
     String.split_on_char '\n' dump
@@ -2817,23 +2790,14 @@ let () =
                        d.Owner.dr_items))
             0 tables.Owner.drops
         in
-        let kept op =
-          List.length
-            (List.filter
-               (fun (r : Owner.rc_site) -> r.Owner.rc_op = op && not r.Owner.rc_elided)
-               tables.Owner.rcs)
-        in
         let image, _ = emit_str ~file:path src in
         let dump = Disasm.dump image in
         check_eq
           (Printf.sprintf "table contract %s: one DROP per owned drop-table item" path)
           ~expected:want_drops ~actual:(count_op "DROP " dump) string_of_int;
         check_eq
-          (Printf.sprintf "table contract %s: one RC_INC per KEPT acquire" path)
-          ~expected:(kept Owner.RcAcquire) ~actual:(count_op "RC_INC" dump) string_of_int;
-        check_eq
-          (Printf.sprintf "table contract %s: one RC_DEC per KEPT release" path)
-          ~expected:(kept Owner.RcRelease) ~actual:(count_op "RC_DEC" dump) string_of_int;
+          (Printf.sprintf "table contract %s: rc ops never appear (7b)" path)
+          ~expected:0 ~actual:(count_op "RC_INC" dump + count_op "RC_DEC" dump) string_of_int;
         (* The residual table is both the only licence to emit a borrow
            op and an obligation to emit one per *operand*: guards are
            coalesced per operand, never per entry (asking twice for an

@@ -140,8 +140,6 @@ let ins_str (i : int) (pc : int) : string =
   | 24 -> Printf.sprintf "BORROW_X  r%d" a
   | 25 -> Printf.sprintf "RELEASE_S r%d" a
   | 26 -> Printf.sprintf "RELEASE_X r%d" a
-  | 27 -> Printf.sprintf "RC_INC    r%d" a
-  | 28 -> Printf.sprintf "RC_DEC    r%d" a
   | 29 ->
     if c = 4 || c = 9 then Printf.sprintf "BUILTIN   r%d, kinds=0x%02x, %s" a b (builtin_name c)
     else Printf.sprintf "BUILTIN   r%d, r%d, %s" a b (builtin_name c)
@@ -164,7 +162,7 @@ let dump (img : string) : string =
   let line fmt = Buffer.add_string out (fmt ^ "\n") in
   if u32 img 0 <> magic then raise (Bad "bad magic");
   let ver = u32 img 4 in
-  if ver <> 3 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  if ver <> 4 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in

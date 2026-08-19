@@ -264,8 +264,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
         [WOP_GETF] = &&L_GETF,         [WOP_SETF] = &&L_SETF,
         [WOP_DROP] = &&L_DROP,         [WOP_BORROW_S] = &&L_BORROW_S,
         [WOP_BORROW_X] = &&L_BORROW_X, [WOP_RELEASE_S] = &&L_RELEASE_S,
-        [WOP_RELEASE_X] = &&L_RELEASE_X, [WOP_RC_INC] = &&L_RC_INC,
-        [WOP_RC_DEC] = &&L_RC_DEC,     [WOP_BUILTIN] = &&L_BUILTIN,
+        [WOP_RELEASE_X] = &&L_RELEASE_X, [WOP_BUILTIN] = &&L_BUILTIN,
         [WOP_DB_STUB] = &&L_DB_STUB,   [WOP_TRAP] = &&L_TRAP,
         [WOP_TRY] = &&L_TRY,           [WOP_ENDTRY] = &&L_ENDTRY,
     };
@@ -487,14 +486,6 @@ dispatch:
         wo_release_excl((wo_hdr *)(uintptr_t)R[wo_ins_a(ins)]);
         NEXT();
     }
-
-    /* iteration 7b: reference counting is retired — tracing owns traced
-     * lifetimes, so alias bookkeeping means nothing. The opcodes stay
-     * accepted as no-ops until the emitter stops producing them and the
-     * format reserves 27–28 (the .wob version bump); a no-op is also what
-     * deletes the old RC_DEC-on-nil trap that broke `?Node` field stores. */
-    CASE(RC_INC) : NEXT();
-    CASE(RC_DEC) : NEXT();
 
     CASE(CONCAT) : {
         const char *why;

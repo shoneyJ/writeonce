@@ -7,5 +7,4 @@
 10:3 RETURN [it]
 16:16 LIVE-MASK [bag, held]
 17:3 RETURN [held]
-== RC ==
 == RESIDUAL ==

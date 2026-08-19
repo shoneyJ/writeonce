@@ -28,26 +28,23 @@ m1   proven args=1 regs=3 [free fn]
   0002  CALL      r2, m0
   0003  RET       r2
 m2   main args=0 regs=6 [free fn] [ENTRY]
-  lines: 0->29 3->30 7->31 13->28
+  lines: 0->29 3->30 6->31 12->28
   drops: pc 3 owned={} gc={r0}
-  drops: pc 7 owned={r1} gc={r0}
-  drops: pc 14 owned={} gc={r0}
-  drops: pc 15 owned={} gc={}
+  drops: pc 6 owned={r1} gc={r0}
+  drops: pc 13 owned={} gc={r0}
   0000  NEW       r0, c0
   0001  LOADK     r1, k8
   0002  SETF      r0, f0, r1
   0003  NEW       r1, c1
   0004  MOVE      r2, r0
-  0005  RC_INC    r2
-  0006  SETF      r1, f0, r2
-  0007  MOVE      r4, r1
-  0008  CALL      r4, m1
-  0009  MOVE      r3, r4
-  0010  LOADK     r5, k9
-  0011  ADD       r2, r3, r5
-  0012  BUILTIN   r2, r2, print_int
-  0013  DROP      r1
-  0014  RC_DEC    r0
-  0015  RET0
+  0005  SETF      r1, f0, r2
+  0006  MOVE      r4, r1
+  0007  CALL      r4, m1
+  0008  MOVE      r3, r4
+  0009  LOADK     r5, k9
+  0010  ADD       r2, r3, r5
+  0011  BUILTIN   r2, r2, print_int
+  0012  DROP      r1
+  0013  RET0
 == ENTRY ==
 m2

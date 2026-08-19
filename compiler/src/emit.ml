@@ -25,7 +25,6 @@
    Owner.tables            the four ownership tables, verbatim:
                              moves     -> which MOVEs are real transfers
                              drops     -> DROP placement + drop-table masks
-                             rcs       -> RC_INC / RC_DEC, minus ELIDED pairs
                              residuals -> the ONLY places borrow ops appear
 
    Where the drop map is synced is worth stating once: the owner table is
@@ -152,7 +151,7 @@ let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
    ============================================================ *)
 
 let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
-let wob_version = 3 (* v3: v2 + per-class secondary-index metadata *)
+let wob_version = 4 (* v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
 let k_int = 0
@@ -187,8 +186,7 @@ let op_borrow_s = 23
 let op_borrow_x = 24
 let op_release_s = 25
 let op_release_x = 26
-let op_rc_inc = 27
-let op_rc_dec = 28
+(* opcodes 27-28 (RC_INC/RC_DEC) retired in v4 — reserved, never emitted *)
 let op_builtin = 29
 let op_db_stub = 30
 
@@ -567,7 +565,6 @@ type views = {
      This is how the emitter learns which locals the frame destroys
      without re-deriving owner.ml's own "holds" decision. *)
   v_holder : (int, Owner.local_kind) Hashtbl.t;
-  v_rc : (int, Owner.rc_site list) Hashtbl.t; (* by rc_node *)
   (* region node -> the region's position and its per-operand coalesced
      guards *)
   v_res : (int, Ast.pos * (int * Owner.acc_kind) list) Hashtbl.t;
@@ -585,7 +582,7 @@ let build_views (t : Owner.tables) : views =
     { v_move = Hashtbl.create 16; v_scope = Hashtbl.create 16; v_join = Hashtbl.create 16;
       v_return = Hashtbl.create 16; v_break = Hashtbl.create 16; v_continue = Hashtbl.create 16;
       v_overwrite = Hashtbl.create 16; v_mask = Hashtbl.create 16;
-      v_holder = Hashtbl.create 16; v_rc = Hashtbl.create 16; v_res = Hashtbl.create 16;
+      v_holder = Hashtbl.create 16; v_res = Hashtbl.create 16;
       v_res_used = Hashtbl.create 16 }
   in
   List.iter
@@ -606,11 +603,6 @@ let build_views (t : Owner.tables) : views =
       | Owner.DOverwrite -> Hashtbl.replace v.v_overwrite d.Owner.dr_node ()
       | Owner.DLiveMask -> Hashtbl.replace v.v_mask d.Owner.dr_node items)
     t.Owner.drops;
-  List.iter
-    (fun (r : Owner.rc_site) ->
-      let prev = try Hashtbl.find v.v_rc r.Owner.rc_node with Not_found -> [] in
-      Hashtbl.replace v.v_rc r.Owner.rc_node (prev @ [ r ]))
-    t.Owner.rcs;
   (* Guard coalescing, per dump.ml's normative note: one entry per
      (region, operand) with the strongest access kind, never one pair per
      table entry. AExcl outranks AShared; a move is never a residual
@@ -1235,9 +1227,10 @@ let emit_drops (p : pctx) (f : fstate) (items : Owner.drop_item list) : unit =
           put f (ins_abc op_drop r 0 0);
           mask_clear f r
         | Owner.LGc ->
-          (* a @gc handle's release is an rc site, never a DROP: the RC
-             table carries it (with its own ELIDED decision) *)
-          ()))
+          (* a traced handle's death emits nothing — tracing owns the
+             lifetime (7b). Clearing its gc-mask bit keeps the root maps
+             precise: a scope-ended handle must not pin garbage. *)
+          mask_clear f r))
     items
 
 let emit_scope_drops (p : pctx) (f : fstate) (v : views) ~(node : int) ~(label : string) : unit =
@@ -1257,37 +1250,6 @@ let emit_join_drops (p : pctx) (f : fstate) (v : views) ~(node : int) ~(label : 
   match Hashtbl.find_opt v.v_join (node, label) with
   | Some items -> emit_drops p f items
   | None -> ()
-
-(* RC sites, minus the ELIDED ones — the spec's zero-cost promise lives
-   here and in the residual-only borrow rule. `which` selects acquires or
-   releases; a return site carries both plus the returned value's own
-   escape increment, and acquires must precede releases or a balanced
-   pair could momentarily reach rc 0. *)
-let emit_rc (p : pctx) (f : fstate) (v : views) ~(node : int) ~(acquire : bool)
-    ?(groups : int list option) () : unit =
-  match Hashtbl.find_opt v.v_rc node with
-  | None -> ()
-  | Some sites ->
-    List.iter
-      (fun (r : Owner.rc_site) ->
-        let want = match r.Owner.rc_op with Owner.RcAcquire -> true | Owner.RcRelease -> false in
-        let in_scope =
-          match groups with None -> true | Some gs -> List.mem r.Owner.rc_group gs
-        in
-        if want = acquire && in_scope && not r.Owner.rc_elided then
-          let reg =
-            if r.Owner.rc_group >= 0 then Hashtbl.find_opt f.f_decl r.Owner.rc_group
-            else Hashtbl.find_opt f.f_node r.Owner.rc_node
-          in
-          match reg with
-          | Some g ->
-            put f (ins_abc (if acquire then op_rc_inc else op_rc_dec) g 0 0);
-            if not acquire then mask_clear f g
-          | None ->
-            err p ~code:unguardable_code ~file:f.f_file ~pos:r.Owner.rc_pos
-              ~message:
-                (Printf.sprintf "rc site for `%s` has no register in `%s`" r.Owner.rc_place f.f_fn))
-      sites
 
 (* The frame's drop map at a call / DB_STUB site. The owner table is
    authoritative here (it is taken after the call's own argument
@@ -1827,16 +1789,6 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     put f (ins_abc op_db_stub 0 0 0)
   | Switch (subject, arms) -> emit_switch p f v e ~dst subject arms);
   Hashtbl.replace f.f_node e.id dst;
-  (* An escaping @gc value takes its increment right where the value
-     lands. owner.ml's gc_escape anchors that acquire on the *place
-     expression's* own node and gives it group -1 (never elidable), and
-     it fires for all four escapes alike: a constructor field, an
-     assignment into a field, a `take` argument, and a return. Emitting
-     it here — once, at the one place every expression passes through —
-     is what keeps all four in step; anchoring it per statement kind is
-     how the constructor-field case went missing. *)
-  emit_rc p f v ~node:e.id ~acquire:true ()
-
 (* An operand that only needs to *be* in some register: a place already
    living in one is used where it is, everything else lands in a fresh
    temporary. This is what keeps a proven method's disassembly free of
@@ -1861,7 +1813,6 @@ and emit_tail (p : pctx) (f : fstate) (v : views) (e : Ast.expr) : int =
   | Ident n when lookup_local f n <> None ->
     let r = match lookup_local f n with Some (r, _) -> r | None -> 0 in
     Hashtbl.replace f.f_node e.id r;
-    emit_rc p f v ~node:e.id ~acquire:true ();
     r
   | _ ->
     (* allocate (so the register counts towards the budget and the
@@ -2300,7 +2251,6 @@ and emit_switch ?(want_value = true) (p : pctx) (f : fstate) (v : views) (e : As
           | None -> ())
         | _ -> emit_stmt p f v last));
       emit_scope_drops p f v ~node:e.id ~label;
-      emit_rc p f v ~node:e.id ~acquire:false ~groups:(declared_since f saved_decls) ();
       f.f_nlocals <- saved_locals;
       f.f_env <- saved_env;
       f.f_declared <- saved_decls;
@@ -2400,7 +2350,6 @@ and emit_try (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast
       | None -> emit_expr p f v ~dst ve)
     | _ -> emit_stmt p f v last));
   emit_scope_drops p f v ~node:e.id ~label:"CATCH";
-  emit_rc p f v ~node:e.id ~acquire:false ~groups:(declared_since f saved_decls) ();
   f.f_nlocals <- saved_locals;
   f.f_env <- saved_env;
   f.f_declared <- saved_decls;
@@ -3560,8 +3509,7 @@ and emit_stmt_body (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
     | None -> ());
     (match Hashtbl.find_opt v.v_holder s.s_id with
     | Some kind -> mask_set f kind r
-    | None -> ());
-    emit_rc p f v ~node:s.s_id ~acquire:true ()
+    | None -> ())
   | Assign { target; value } -> emit_assign p f v s target value
   | ExprStmt ({ kind = Ast.Switch (subj, arms); _ } as e) ->
     (* Task 4 fix round 1: the one place a switch's value is DISCARDED —
@@ -3577,7 +3525,6 @@ and emit_stmt_body (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
     f.f_cur_line <- e.pos.line;
     emit_switch ~want_value:false p f v e ~dst:t subj arms;
     Hashtbl.replace f.f_node e.id t;
-    emit_rc p f v ~node:e.id ~acquire:true ();
     (match Hashtbl.find_opt v.v_move e.id with
     | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
     | None -> ())
@@ -3616,17 +3563,9 @@ and emit_stmt_body (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
 and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast.expr)
     (value : Ast.expr) : unit =
   let overwrite = Hashtbl.mem v.v_overwrite s.s_id in
-  (* a @gc value the assignment displaces is released, not dropped: the
-     RC table carries that RELEASE at the assignment's own node *)
-  let releases =
-    match Hashtbl.find_opt v.v_rc s.s_id with
-    | None -> false
-    | Some sites ->
-      List.exists
-        (fun (r : Owner.rc_site) ->
-          r.Owner.rc_op = Owner.RcRelease && not r.Owner.rc_elided)
-        sites
-  in
+  (* iteration 7b: a traced value an assignment displaces needs nothing —
+     tracing owns its lifetime (the VM's store barrier shades it while a
+     mark is live). Only OVERWRITE (owned) entries lower to a drop. *)
   match target.kind with
   | Ident n -> (
     match lookup_local f n with
@@ -3635,7 +3574,7 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
         ~message:(Printf.sprintf "assignment to `%s`, which is not a local or parameter" n)
     | Some (r, ty) ->
       Hashtbl.replace f.f_node target.id r;
-      if overwrite || releases then begin
+      if overwrite then begin
         (* the replaced value dies here (the owner table's OVERWRITE or
            RELEASE entry); compute the new one into a temporary first so
            destroying the old one cannot destroy what is about to be
@@ -3649,14 +3588,8 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
            the source can live inside what is about to be dropped. *)
         copy_place_text p f t value;
         f.f_cur_line <- s.s_pos.line;
-        if overwrite then begin
-          put f (ins_abc op_drop r 0 0);
-          mask_clear f r
-        end;
-        if releases then begin
-          Hashtbl.replace f.f_node s.s_id r;
-          emit_rc p f v ~node:s.s_id ~acquire:false ()
-        end;
+        put f (ins_abc op_drop r 0 0);
+        mask_clear f r;
         put f (ins_abc op_move r t 0)
       end
       else begin
@@ -3715,18 +3648,15 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
             let b = emit_operand p f v base in
             Hashtbl.replace f.f_node target.id b;
             let idx = check_field_idx p f target.pos idx in
-            if overwrite || releases then begin
-              (* SETF never auto-drops (format doc): the compiler emits
-                 the destruction of the field's previous value — a DROP
-                 for an owned field, an rc release for a @gc one *)
+            if overwrite then begin
+              (* SETF never auto-drops (format doc): the compiler emits the
+                 destruction of the field's previous OWNED value. A traced
+                 old value needs nothing here — tracing owns its lifetime
+                 (the VM's SETF barrier shades it while a mark is live). *)
               let old = alloc_temp p f target.pos in
               f.f_cur_line <- s.s_pos.line;
               put f (ins_abc op_getf old b idx);
-              if overwrite then put f (ins_abc op_drop old 0 0);
-              if releases then begin
-                Hashtbl.replace f.f_node s.s_id old;
-                emit_rc p f v ~node:s.s_id ~acquire:false ()
-              end
+              put f (ins_abc op_drop old 0 0)
             end;
             let t = alloc_temp p f value.pos in
             emit_expr p f v ~dst:t ~expected:fty value;
@@ -3803,10 +3733,8 @@ and emit_assign (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (target : Ast
 and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.expr option) : unit =
   match opt with
   | None ->
-    emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_return s.s_id with Some items -> emit_drops p f items | None -> ());
     List.iter (fun r -> put f (ins_abc op_drop r 0 0)) f.f_esc_drops;
-    emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_ret0 0 0 0);
     f.f_div <- true
@@ -3833,13 +3761,8 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
     (match Hashtbl.find_opt v.v_move e.id with
     | Some place -> ( match lookup_local f place with Some (sr, _) -> mask_clear f sr | None -> ())
     | None -> ());
-    (* the escaping value's own increment was emitted where the value
-       landed (emit_expr / emit_tail), which is before the frame's
-       releases below — a balanced pair must never reach rc 0 in between *)
-    emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_return s.s_id with Some items -> emit_drops p f items | None -> ());
     List.iter (fun r -> if r <> t then put f (ins_abc op_drop r 0 0)) f.f_esc_drops;
-    emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     put f (ins_abc op_ret t 0 0);
     f.f_div <- true
@@ -3861,9 +3784,7 @@ and emit_break (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
   | [] ->
     err p ~code:cannot_lower_code ~file:f.f_file ~pos:s.s_pos ~message:"`break` outside of a loop"
   | lf :: _ ->
-    emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_break s.s_id with Some items -> emit_drops p f items | None -> ());
-    emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     let pc = here f in
     put f (ins_asbx op_jmp 0 0);
@@ -3876,9 +3797,7 @@ and emit_continue (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) : unit =
     err p ~code:cannot_lower_code ~file:f.f_file ~pos:s.s_pos
       ~message:"`continue` outside of a loop"
   | lf :: _ ->
-    emit_rc p f v ~node:s.s_id ~acquire:true ();
     (match Hashtbl.find_opt v.v_continue s.s_id with Some items -> emit_drops p f items | None -> ());
-    emit_rc p f v ~node:s.s_id ~acquire:false ();
     f.f_cur_line <- s.s_pos.line;
     let pc = here f in
     put f (ins_asbx op_jmp 0 0);
@@ -3891,10 +3810,8 @@ and emit_block (p : pctx) (f : fstate) (v : views) ~(node : int) ~(label : strin
   let saved_env = f.f_env in
   let saved_decls = f.f_declared in
   List.iter (emit_stmt p f v) body;
-  (* scope end: the owner table's DROPs first, then the @gc releases for
-     the handles this block declared — owner.ml's own pop_scope order *)
+  (* scope end: the owner table's DROPs, owner.ml's own pop_scope order *)
   emit_scope_drops p f v ~node ~label;
-  emit_rc p f v ~node ~acquire:false ~groups:(declared_since f saved_decls) ();
   f.f_nlocals <- saved_locals;
   f.f_env <- saved_env;
   f.f_declared <- saved_decls;
@@ -4049,7 +3966,6 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     List.iter (emit_stmt p f v) body;
     f.f_loops <- List.tl f.f_loops;
     emit_scope_drops p f v ~node:s.s_id ~label:"FOR";
-    emit_rc p f v ~node:s.s_id ~acquire:false ~groups:(declared_since f saved_decls) ();
     let continue_target = here f in
     List.iter (fun pc -> patch_jump p f ~file:f.f_file ~pos:s.s_pos pc continue_target) lf.lf_continues;
     f.f_temp <- f.f_nlocals;
@@ -4112,7 +4028,6 @@ and emit_for (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (var : string)
     List.iter (emit_stmt p f v) body;
     f.f_loops <- List.tl f.f_loops;
     emit_scope_drops p f v ~node:s.s_id ~label:"FOR";
-    emit_rc p f v ~node:s.s_id ~acquire:false ~groups:(declared_since f saved_decls) ();
     (* haxe-parity Task 2: `continue` re-enters right here — after this
        iteration's own scope-end cleanup (a `continue` already ran the
        equivalent of it at its own site, from v_continue — see
@@ -4249,7 +4164,6 @@ let emit_method (p : pctx) (v : views) ~(file : string) ~(self_class : (int * st
   stmt_reset f;
   f.f_cur_line <- m.pos.line;
   emit_scope_drops p f v ~node:m.id ~label:"BODY";
-  emit_rc p f v ~node:m.id ~acquire:false ~groups:(declared_since f []) ();
   (* the terminator rule: the loader rejects a method whose last
      instruction is not one, and the implicit void return is what
      control falling off the end means *)

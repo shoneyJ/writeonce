@@ -461,8 +461,6 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             case WOP_BORROW_X:
             case WOP_RELEASE_S:
             case WOP_RELEASE_X:
-            case WOP_RC_INC:
-            case WOP_RC_DEC:
                 RCHK(A);
                 break;
             case WOP_BUILTIN: {

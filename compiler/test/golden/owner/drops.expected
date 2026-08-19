@@ -19,5 +19,4 @@
 50:3 JOIN-DROP ELSE [a]
 58:3 RETURN [a]
 64:3 RETURN [a]
-== RC ==
 == RESIDUAL ==

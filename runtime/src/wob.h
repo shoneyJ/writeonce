@@ -12,7 +12,8 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 3u /* v3: v2's field metadata + per-class index metadata */
+#define WOB_VERSION 4u /* v4 (iteration 7b): opcodes 27-28 (RC_INC/RC_DEC) retired;
+ * the drop table's gc mask now means "GC roots at this pc" */
 #define WOB_HDR_SIZE 44u
 #define WOB_OFF_MAGIC 0u
 #define WOB_OFF_VERSION 4u
@@ -168,8 +169,8 @@ enum {
     WOP_BORROW_X = 24,
     WOP_RELEASE_S = 25,
     WOP_RELEASE_X = 26,
-    WOP_RC_INC = 27,
-    WOP_RC_DEC = 28,
+    /* 27-28 were RC_INC/RC_DEC — retired with reference counting (v4,
+       iteration 7b). Reserved: the loader rejects them. */
     WOP_BUILTIN = 29, /* A B C: r[A] = builtin C, args from r[B] */
     WOP_DB_STUB = 30, /* traps WO_T_DB "engine not linked" */
     WOP_TRAP = 31,    /* Bx: explicit trap */

@@ -277,22 +277,9 @@ type drop_site = {
   dr_items : drop_item list;
 }
 
-type rc_op =
-  | RcAcquire
-  | RcRelease
-
-(* rc_group ties a binding's ACQUIRE to its RELEASE(s): both are elided
-   together when the pair is provably balanced inside one scope. Escape
-   sites (a @gc value returned, stored, or moved into a `take`) use group
-   -1 — an increment that outlives the scope can never be elided. *)
-type rc_site = {
-  rc_node : int;
-  rc_pos : Ast.pos;
-  rc_op : rc_op;
-  rc_place : string;
-  rc_group : int;
-  mutable rc_elided : bool;
-}
+(* iteration 7b: the rc-site machinery (acquire/release pairs, elision
+   groups, the clobber rule) is gone with reference counting itself — a
+   traced value's aliases need no bookkeeping, tracing owns the lifetime. *)
 
 type acc_kind =
   | AShared
@@ -319,7 +306,6 @@ type residual_site = {
 type tables = {
   moves : move_site list;
   drops : drop_site list;
-  rcs : rc_site list;
   residuals : residual_site list;
 }
 
@@ -368,7 +354,6 @@ type scope = {
 type sink = {
   mutable s_moves : move_site list;
   mutable s_drops : drop_site list;
-  mutable s_rcs : rc_site list;
   mutable s_res : residual_site list;
 }
 
@@ -393,14 +378,6 @@ type ctx = {
   (* set when the current path has returned; a diverged path contributes
      no scope-end drops and drops out of if/else joins *)
   mutable diverged : bool;
-  (* rc bookkeeping, resolved into rc_elided at the end of the function *)
-  mutable fn_rcs : rc_site list;
-  rc_groups : (int, string option) Hashtbl.t; (* group -> source root, None = fresh allocation *)
-  rc_escaped : (int, unit) Hashtbl.t;
-  (* roots that are assigned to, or exclusively borrowed, anywhere in
-     this function — an rc pair whose source root is clobbered cannot be
-     elided, because the original reference may die inside the scope *)
-  clobbered : (string, unit) Hashtbl.t;
   (* iteration 7b demand-promotion (Gcinfer): when Some, the pass runs in
      collect mode — a class value that would fail the escape rule records its
      class here instead of raising WO-E304, so inference can promote it to
@@ -860,13 +837,6 @@ let record_drop (ctx : ctx) ~node ~(pos : Ast.pos) ~kind ~items : unit =
     ctx.sink.s_drops <-
       { dr_node = node; dr_pos = pos; dr_kind = kind; dr_items = items } :: ctx.sink.s_drops
 
-let record_rc (ctx : ctx) ~node ~(pos : Ast.pos) ~op ~place ~group : unit =
-  if ctx.recording then
-    ctx.fn_rcs <-
-      { rc_node = node; rc_pos = pos; rc_op = op; rc_place = place; rc_group = group;
-        rc_elided = false }
-      :: ctx.fn_rcs
-
 let record_residual (ctx : ctx) ~node ~(pos : Ast.pos) ~(a : place) ~a_kind ~(b : place) ~b_kind :
     unit =
   if ctx.recording then
@@ -878,8 +848,6 @@ let record_residual (ctx : ctx) ~node ~(pos : Ast.pos) ~(a : place) ~a_kind ~(b 
         rs_a_node = a.pnode; rs_b = place_text (canon ctx b); rs_b_kind = b_kind;
         rs_b_node = b.pnode }
       :: ctx.sink.s_res
-
-let clobber (ctx : ctx) (root : string) : unit = Hashtbl.replace ctx.clobbered root ()
 
 (* ============================================================
    Scopes, live sets, snapshots
@@ -929,14 +897,6 @@ let mask_items (ls : local list) : drop_item list =
       { di_name = l.l_name; di_kind = (if l.l_class = Gc then LGc else LOwned); di_node = l.l_node })
     ls
 
-(* Releases for the @gc handles a scope exit destroys. *)
-let release_gc (ctx : ctx) ~node ~pos (ls : local list) : unit =
-  List.iter
-    (fun l ->
-      if l.l_class = Gc then
-        record_rc ctx ~node ~pos ~op:RcRelease ~place:l.l_name ~group:l.l_node)
-    ls
-
 let pop_scope (ctx : ctx) : unit =
   match ctx.scopes with
   | [] -> ()
@@ -944,8 +904,7 @@ let pop_scope (ctx : ctx) : unit =
     if not ctx.diverged then begin
       let live = List.filter is_live_holder sc.sc_locals in
       record_drop ctx ~node:sc.sc_node ~pos:sc.sc_pos ~kind:(DScope sc.sc_label)
-        ~items:(owned_items live);
-      release_gc ctx ~node:sc.sc_node ~pos:sc.sc_pos live
+        ~items:(owned_items live)
     end;
     ctx.scopes <- rest
 
@@ -1087,16 +1046,6 @@ let escape (ctx : ctx) (l : local) ~(pos : Ast.pos) ~message
     report ctx ~code:borrow_escape_code ~pos ~message ~rel:l.l_pos
       ~label:(borrow_label l)
 
-(* A @gc value reaching a location that outlives this scope: one
-   increment at the escape site, never elidable. If the escaping value is
-   a whole local, its own binding pair can no longer be elided either. *)
-let gc_escape (ctx : ctx) (p : place) : unit =
-  record_rc ctx ~node:p.pnode ~pos:p.ppos ~op:RcAcquire ~place:(place_text p) ~group:(-1);
-  if p.projs = [] then
-    match root_local ctx p with
-    | Some l -> Hashtbl.replace ctx.rc_escaped l.l_node ()
-    | None -> ()
-
 (* Whether passing/assigning this place would be a *real* transfer — the
    positive half of `transfer`'s decision below, needed one step earlier by
    analyze_call: an argument that cannot transfer (a borrow, a projection,
@@ -1130,9 +1079,7 @@ let is_real_transfer (ctx : ctx) (p : place) : bool =
 let transfer (ctx : ctx) (p : place) ~(what : string) : bool =
   match place_class ctx p with
   | Copy -> false
-  | Gc ->
-    gc_escape ctx p;
-    false
+  | Gc -> false (* traced values alias freely; tracing owns the lifetime *)
   | Owned -> (
     match is_borrow_root ctx p with
     | Some l ->
@@ -1155,7 +1102,6 @@ let transfer (ctx : ctx) (p : place) ~(what : string) : bool =
           else begin
             check_against_borrows ctx ~node:p.pnode ~pos:p.ppos p AMove;
             l.l_state <- Moved p.ppos;
-            clobber ctx p.root;
             true
           end)))
 
@@ -1302,9 +1248,6 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
       let excl = match resolved with Some c -> c.ce_recv_excl | None -> false in
       (match place_of base with
       | Some p ->
-        (* same ordering as the argument case below: a receiver a method
-           writes to is clobbered whatever its class *)
-        if excl then clobber ctx p.root;
         if place_class ctx p = Owned then
           Some { ac_place = p; ac_kind = (if excl then AExcl else AShared) }
         else None
@@ -1329,13 +1272,6 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
            | None -> []
            | Some p -> (
              let _, conv = conv_of i in
-             (* Clobbering is decided *before* the ownership class, because
-                it is not an ownership question: a `mut` argument means the
-                callee may replace what the place holds, and for a @gc place
-                that is exactly what invalidates rc elision (the alias would
-                be the last reference and its increment was elided). Getting
-                this order wrong is a use-after-free, not an imprecision. *)
-             if conv = Mut then clobber ctx p.root;
              match (place_class ctx p, conv) with
              | Copy, _ | Gc, _ -> []
              | Owned, Take ->
@@ -1366,27 +1302,10 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
           a.ac_place AExcl)
     accesses;
   (* transfers last *)
-  (* `push`'s value argument (builtin `multi_push`) stores a @gc reference
-     inside the container permanently — an escape exactly like a ctor
-     field or a `take` argument. `push` is never a resolved callee (it has
-     no declared params), so `conv_of` defaults it to Borrow and the
-     ordinary Take-gated transfer above never fires for it; without this
-     the container holds the reference with no matching RC_INC, and the
-     collector frees the value out from under the container it still sits
-     in. Narrow to `push`'s own value slot (index 1) and to Gc places only
-     — an Owned element's move-on-push is a separate, pre-existing gap
-     this task does not touch. *)
-  (* Keyed on "`push` is not a user-declared fn", NOT on "the callee did not
-     resolve": since 2026-08-14 resolve_callee answers for builtins too (their
-     return types are what give a `split`/`slice` binding its drop), and the
-     old `resolved = None` test silently stopped firing — the pushed @gc value
-     lost its RC_INC, the collector freed it while the container still held it,
-     and both `gc/` fixtures died with a use-after-free. *)
-  let is_push_gc_value i =
-    i = 1
-    && Types.StringMap.find_opt "push" ctx.syms.Types.free_fns = None
-    && match callee.kind with Ident "push" -> true | _ -> false
-  in
+  (* iteration 7b deleted the `push`-of-a-gc-value special case (an RC_INC
+     escape site): a traced value stored into a container needs no
+     bookkeeping — tracing finds it through the container. The bug class the
+     old special case guarded against cannot recur without RC. *)
   List.iteri
     (fun i a ->
       match place_of a with
@@ -1396,7 +1315,7 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
         if conv = Take then
           (if transfer ctx p ~what:(Printf.sprintf "cannot be passed to `take %s`" pname) then
              record_move ctx p (MvArg pname))
-        else if is_push_gc_value i && place_class ctx p = Gc then gc_escape ctx p)
+        )
     args;
   record_drop ctx ~node:call_e.id ~pos:call_e.pos ~kind:DLiveMask
     ~items:(mask_items (live_holders ctx))
@@ -1860,15 +1779,8 @@ and analyze_let (ctx : ctx) (s : Ast.stmt) (name : string) (ty : Ast.field_ty op
             (true, None, Live)
           end
           else (false, Some p, Borrowed s.s_pos)))
-    | Gc, None ->
-      (* fresh allocation: its release is the allocation's own, never
-         elidable *)
-      Hashtbl.replace ctx.rc_groups s.s_id None;
-      (true, None, Live)
-    | Gc, Some p ->
-      Hashtbl.replace ctx.rc_groups s.s_id (Some p.root);
-      record_rc ctx ~node:s.s_id ~pos:s.s_pos ~op:RcAcquire ~place:(place_text p) ~group:s.s_id;
-      (true, Some p, Live)
+    | Gc, None -> (true, None, Live) (* traced: no bookkeeping (7b) *)
+    | Gc, Some p -> (true, Some p, Live)
   in
   declare ctx
     { l_name = name; l_ty = vty; l_class = cls; l_node = s.s_id; l_pos = s.s_pos; l_holds = holds;
@@ -1902,7 +1814,6 @@ and analyze_assign (ctx : ctx) (s : Ast.stmt) (target : Ast.expr) (value : Ast.e
   (match tplace with
   | None -> read_expr ctx target
   | Some p ->
-    clobber ctx p.root;
     check_against_borrows ctx ~node:s.s_id ~pos:p.ppos p AExcl;
     if p.projs = [] then begin
       match root_local ctx p with
@@ -1910,10 +1821,6 @@ and analyze_assign (ctx : ctx) (s : Ast.stmt) (target : Ast.expr) (value : Ast.e
         if l.l_class = Owned then
           record_drop ctx ~node:s.s_id ~pos:p.ppos ~kind:DOverwrite
             ~items:[ { di_name = place_text p; di_kind = LOwned; di_node = p.pnode } ]
-        else if l.l_class = Gc then begin
-          Hashtbl.replace ctx.rc_escaped l.l_node ();
-          record_rc ctx ~node:s.s_id ~pos:p.ppos ~op:RcRelease ~place:(place_text p) ~group:(-1)
-        end
       | _ -> ()
     end
     else begin
@@ -1924,7 +1831,7 @@ and analyze_assign (ctx : ctx) (s : Ast.stmt) (target : Ast.expr) (value : Ast.e
       | Owned ->
         record_drop ctx ~node:s.s_id ~pos:p.ppos ~kind:DOverwrite
             ~items:[ { di_name = place_text p; di_kind = LOwned; di_node = p.pnode } ]
-      | Gc -> record_rc ctx ~node:s.s_id ~pos:p.ppos ~op:RcRelease ~place:(place_text p) ~group:(-1)
+      | Gc -> () (* traced: tracing owns the old value's lifetime (7b) *)
       | Copy -> ()
     end);
   (* the incoming value *)
@@ -1966,7 +1873,6 @@ and analyze_return (ctx : ctx) (s : Ast.stmt) (opt : Ast.expr option) : unit =
         record_move ctx p MvReturn));
   let live = live_holders ctx in
   record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DReturn ~items:(owned_items live);
-  release_gc ctx ~node:s.s_id ~pos:s.s_pos live;
   ctx.diverged <- true
 
 (* haxe-parity Task 2: `break`/`continue` reuse analyze_return's own
@@ -1988,8 +1894,7 @@ and analyze_break (ctx : ctx) (s : Ast.stmt) : unit =
   | [] -> ()
   | loop_node :: _ ->
     let live = live_holders_upto ctx loop_node in
-    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DBreak ~items:(owned_items live);
-    release_gc ctx ~node:s.s_id ~pos:s.s_pos live);
+    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DBreak ~items:(owned_items live));
   ctx.diverged <- true
 
 and analyze_continue (ctx : ctx) (s : Ast.stmt) : unit =
@@ -1997,8 +1902,7 @@ and analyze_continue (ctx : ctx) (s : Ast.stmt) : unit =
   | [] -> ()
   | loop_node :: _ ->
     let live = live_holders_upto ctx loop_node in
-    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DContinue ~items:(owned_items live);
-    release_gc ctx ~node:s.s_id ~pos:s.s_pos live);
+    record_drop ctx ~node:s.s_id ~pos:s.s_pos ~kind:DContinue ~items:(owned_items live));
   ctx.diverged <- true
 
 (* ============================================================
@@ -2022,25 +1926,12 @@ let param_local (ctx : ctx) (p : Ast.param) : local =
       { l_name = p.name; l_ty = p.ty; l_class = cls; l_node = p.id; l_pos = p.pos; l_holds = false;
         l_src = None; l_bkind = (if p.conv = Mut then AExcl else AShared); l_state = state })
 
-let resolve_rc (ctx : ctx) : unit =
-  List.iter
-    (fun r ->
-      if r.rc_group >= 0 then
-        r.rc_elided <-
-          (not (Hashtbl.mem ctx.rc_escaped r.rc_group))
-          && (match Hashtbl.find_opt ctx.rc_groups r.rc_group with
-             | Some (Some root) -> not (Hashtbl.mem ctx.clobbered root)
-             | _ -> false))
-    ctx.fn_rcs;
-  ctx.sink.s_rcs <- ctx.fn_rcs @ ctx.sink.s_rcs
-
 let analyze_fn ~(file : string) ?(promote : (string -> unit) option = None)
     (syms : Types.symbols) (coll : Diag.Collector.t) (sink : sink)
     ~(self_class : string option) (m : Ast.method_decl) : unit =
   let ctx =
     { file; syms; coll; sink; fn_name = m.name; scopes = []; loop_stack = []; recording = true;
-      diverged = false; fn_rcs = []; rc_groups = Hashtbl.create 8; rc_escaped = Hashtbl.create 8;
-      clobbered = Hashtbl.create 8; promote }
+      diverged = false; promote }
   in
   push_scope ctx ~node:m.id ~pos:m.pos ~label:"BODY";
   (* `self` is always a borrow (spec rule 6) *)
@@ -2055,8 +1946,7 @@ let analyze_fn ~(file : string) ?(promote : (string -> unit) option = None)
         l_state = (if cls = Gc then Live else Borrowed m.pos) });
   List.iter (fun p -> declare ctx (param_local ctx p)) m.params;
   List.iter (analyze_stmt ctx) m.body;
-  pop_scope ctx;
-  resolve_rc ctx
+  pop_scope ctx
 
 (* ============================================================
    Entry point
@@ -2066,7 +1956,7 @@ let pos_key (p : Ast.pos) = (p.line, p.col)
 
 let analyze ~(file : string) ?(promote : (string -> unit) option = None)
     (prog : Ast.program) (syms : Types.symbols) (coll : Diag.Collector.t) : tables =
-  let sink = { s_moves = []; s_drops = []; s_rcs = []; s_res = [] } in
+  let sink = { s_moves = []; s_drops = []; s_res = [] } in
   List.iter
     (function
       | Ast.Class c ->
@@ -2086,5 +1976,4 @@ let analyze ~(file : string) ?(promote : (string -> unit) option = None)
   let sort_by key l = List.stable_sort (fun a b -> compare (key a) (key b)) (List.rev l) in
   { moves = sort_by (fun m -> pos_key m.mv_pos) sink.s_moves;
     drops = sort_by (fun d -> pos_key d.dr_pos) sink.s_drops;
-    rcs = sort_by (fun r -> pos_key r.rc_pos) sink.s_rcs;
     residuals = sort_by (fun r -> pos_key r.rs_pos) sink.s_res }

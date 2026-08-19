@@ -3,5 +3,4 @@
 == DROPS ==
 18:5 OVERWRITE self.name
 22:5 OVERWRITE self.prices
-== RC ==
 == RESIDUAL ==
