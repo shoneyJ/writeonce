@@ -35,6 +35,14 @@ dist:
 deps-accept:
     ./scripts/deps-accept.sh
 
+# web-app: iteration 16's gate — the whole chain at run time, network-free:
+# a temp git remote from docs/examples/writeonce-framework, file:// URL
+# substituted into a temp copy of docs/examples/web-app, then fetch -> lock
+# -> build -> serve -> the storefront matrix (auth/CRUD/@unique/FK/404/400/
+# pipelining) -> SIGTERM -> WAL restart persistence.
+web-app:
+    ./scripts/web-app-accept.sh
+
 # install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
 # `woc version` + a from-scratch project build+run (self-located wovm) + the
 # wo-constraint refusal all work — the "tarball install actually works" gate.
