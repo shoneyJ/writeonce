@@ -3,7 +3,17 @@
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).
 >
-> **Inserted 2026-08-18.** The framework is written IN writeonce and imported
+> **Inserted 2026-08-18. LANDED 2026-08-19** (branch `web-framework`):
+> `just web-app` 14/0 — deps chain, auth middleware, CRUD with @unique 409 /
+> FK-restrict 409 / checked-decode 400, :name captures, 404, pipelined
+> keep-alive, SIGTERM, WAL restart persistence. Two notable as-built facts:
+> (1) connection policy is pipelined-keep-alive/close-when-idle — a probe
+> showed a parked keep-alive connection starves accept on a single-threaded
+> server; (2) the chain exposed and fixed two compiler gaps — owned values
+> stored in containers now MOVE (`run/container-owned-move`), and a dep's
+> internal `use` paths resolve dep-relatively.
+>
+> The framework is written IN writeonce and imported
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a
 > reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the
 > framework speaks HTTP/1.1 keep-alive behind it, so no TLS exists anywhere

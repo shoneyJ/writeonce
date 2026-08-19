@@ -303,6 +303,15 @@ acceptance tests:
   just employee            # compile + run every mode against a durable database
   ```
 
+- **`docs/examples/writeonce-framework/` + `docs/examples/web-app/`** — a web
+  framework written in writeonce (HTTP/1.1 behind a TLS-terminating proxy,
+  router with `:param` captures, interface-based handlers) and a storefront
+  consuming it **as a `[deps]` dependency**, with `@table` persistence. Run:
+
+  ```bash
+  just web-app
+  ```
+
 - **`docs/examples/log-watcher/`** — a long-running daemon that watches log
   files for silent death, using the `fs`/`time`/`net`/`proc` stdlib. Run it:
 

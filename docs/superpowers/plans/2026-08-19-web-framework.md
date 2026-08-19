@@ -1,5 +1,22 @@
 # Iteration 16 — the web framework + web-app: implementation plan
 
+> **Status: COMPLETE (2026-08-19)** — all tasks landed on branch
+> `web-framework`; `just web-app` 14/0. Deviations from the plan as written,
+> recorded honestly: (1) registration is `app.add(Route { method, pattern,
+> h })` — the get/post/put helper fns were dropped because the ctor-literal-
+> plus-`take` shape is the ownership pattern the corpus pins
+> (`run/container-owned-move`); a helper taking an interface-typed parameter
+> is unproven ground, deferred; (2) show/delete key on `:name` (the @unique
+> index probe, the employee-proven pattern), not `:id` — row-id lookup is not
+> in the query surface; (3) the `[deps]` key is `framework` (hyphens are not
+> identifier characters in `use` paths); (4) connection policy became
+> pipelined-keep-alive/close-when-idle after a probe showed an idle parked
+> connection starves accept on a single-threaded server; (5) two compiler
+> gaps surfaced and were fixed en route: owned-values-in-containers now MOVE,
+> and a dep's internal `use` paths resolve dep-relatively; (6) Dispatcher
+> takes `mut req` so :param captures land on the borrowed request — the
+> borrow checker correctly refused rebuilding a Req from borrowed maps.
+
 > **For agentic workers:** use superpowers:executing-plans (inline) or
 > subagent-driven-development. Steps are checkboxes. Per repo rule, this plan
 > carries **actions in words + verification commands, no code blocks** — the
@@ -50,35 +67,35 @@ section B (normative; §C's h2c stays parked). Story:
 **Files:** create `docs/examples/writeonce-framework/{wo.toml,README.md,
 http/types.wo}`.
 
-- [ ] Project manifest (`name = "writeonce-framework"`); README states what
+- [x] Project manifest (`name = "writeonce-framework"`); README states what
   it is, the single-thread/proxy deployment story, and the disclosed limits
   up front.
-- [ ] `Req` record: method, path, params (`:param` captures), query, headers
+- [x] `Req` record: method, path, params (`:param` captures), query, headers
   (all `map<Text, Text>`), body Text. `Resp` record: status, headers, body.
   Builder free fns: ok_text, ok_json, not_found, bad_request, server_error,
   redirect — each returns a fully-formed `Resp` (content-type set).
-- [ ] Verify: the framework directory typechecks standalone (`woc` on it —
+- [x] Verify: the framework directory typechecks standalone (`woc` on it —
   no `fn main`, so check-only) with zero diagnostics. Commit.
 
 ## Task 2 — HTTP/1.1: parse, serialize, keep-alive serve loop
 
 **Files:** create `docs/examples/writeonce-framework/http/{parse.wo,serve.wo}`.
 
-- [ ] Request parsing from a `net` connection: request line (method,
+- [x] Request parsing from a `net` connection: request line (method,
   target — split path from query string, decode `%`-escapes in both), header
   lines to the blank line, then exactly `Content-Length` bytes of body
   (missing length = empty body; a non-integer length or an oversized one is
   a 400). Header names lowercase on read so lookups are predictable.
   Anything malformed: respond 400, close, continue serving.
-- [ ] Response serialization: status line with reason text, headers,
+- [x] Response serialization: status line with reason text, headers,
   `Content-Length` always computed from the body, `Connection: keep-alive`
   unless the request asked to close.
-- [ ] The serve loop: `net.listen`, accept, then per connection read
+- [x] The serve loop: `net.listen`, accept, then per connection read
   requests until EOF/close/stop — the keep-alive inner loop; the dispatch
   callback boundary is a structural interface the router provides (Task 3),
   wrapped in `try` so a trapping handler answers 500 and the loop lives.
   Close the connection fd on every exit path and the listener on stop.
-- [ ] Verify with a throwaway `.wo` main beside the framework (not
+- [x] Verify with a throwaway `.wo` main beside the framework (not
   committed): serve one echo handler, curl matrix — GET with query,
   keep-alive reuse (two requests, one connection), 400 on garbage, SIGTERM
   stops cleanly. Commit.
@@ -87,17 +104,17 @@ http/types.wo}`.
 
 **Files:** create `docs/examples/writeonce-framework/{router/router.wo,app.wo}`.
 
-- [ ] `Handler` interface (`handle(req) -> Resp`) and `Middleware` interface
+- [x] `Handler` interface (`handle(req) -> Resp`) and `Middleware` interface
   (`before(req) -> ?Resp`, nil = continue) — the spec's shapes verbatim.
-- [ ] Route table: `App` holds `multi` of route records (method, the pattern
+- [x] Route table: `App` holds `multi` of route records (method, the pattern
   split into segments, the handler value). Matching walks segments; a
   `:name` segment captures into `req.params`. First match wins; no match is
   the framework's 404. Registration helpers: get/post/put/delete_ plus a
   generic route(method, pattern, handler).
-- [ ] `App.serve(port)`: run middleware in order (a `Resp` short-circuits —
+- [x] `App.serve(port)`: run middleware in order (a `Resp` short-circuits —
   `?Resp` narrowing), then route, then the matched handler, all inside the
   Task-2 loop's try boundary.
-- [ ] Verify with the throwaway main: two routes incl. `/things/:id`
+- [x] Verify with the throwaway main: two routes incl. `/things/:id`
   echoing the capture, a header-checking middleware that short-circuits 401,
   404 for unknown paths, 500 for a deliberately trapping handler with the
   server surviving. Commit.
@@ -107,22 +124,22 @@ http/types.wo}`.
 **Files:** create `docs/examples/web-app/{wo.toml,README.md,types.wo,main.wo}`
 (+ a module justfile mirroring the other samples).
 
-- [ ] `wo.toml`: `[deps] writeonce-framework = { git = <future GitHub URL>,
+- [x] `wo.toml`: `[deps] writeonce-framework = { git = <future GitHub URL>,
   rev = "v0.1.0" }` (documentation value; the gate substitutes a `file://`
   remote), `[build]` runtime unpinned (portable, per the log-watcher
   precedent).
-- [ ] Data model: `@table Product` (name @unique, price, stock) and
+- [x] Data model: `@table Product` (name @unique, price, stock) and
   `@table Order` (`ref Product`, qty) — small, honest, exercising `@unique`
   and FK restrict through web routes.
-- [ ] Routes: list products (query + json encode), show by `:id`, create
+- [x] Routes: list products (query + json encode), show by `:id`, create
   product (json decode body — the checked decode's nil path is a 400),
   create order (FK), delete product (FK restrict surfaces as a 409-style
   error body, caught via try). One auth middleware (a shared-token header,
   401 otherwise) registered before the routes.
-- [ ] `fn main`: build the App, register middleware + routes, `serve(port)`
+- [x] `fn main`: build the App, register middleware + routes, `serve(port)`
   with the port from args. README documents the curl matrix and the nginx
   h2-in-front config sketch.
-- [ ] Verify by hand end to end once (fetch via a local file:// remote,
+- [x] Verify by hand end to end once (fetch via a local file:// remote,
   serve, curl, restart, drop). Commit.
 
 ## Task 5 — the acceptance gate
@@ -130,7 +147,7 @@ http/types.wo}`.
 **Files:** create `scripts/web-app-accept.sh`; modify `justfile`
 (`web-app` recipe).
 
-- [ ] The gate builds the whole chain at run time: git-init a temp remote
+- [x] The gate builds the whole chain at run time: git-init a temp remote
   from `docs/examples/writeonce-framework/` (tag `v0.1.0`), copy
   `docs/examples/web-app/` to a temp dir, substitute the `file://` URL into
   its manifest, then: fetch+build (lock written); serve on a scratch port
@@ -140,10 +157,10 @@ http/types.wo}`.
   body while the server keeps serving; keep-alive reuse; kill -TERM stops
   cleanly; restart and the product list still answers (WAL persistence);
   fd/resident flatness via an opt-in `WA_SOAK` mirroring log-watcher's.
-- [ ] Wire `just web-app`; run it plus the standing gates
+- [x] Wire `just web-app`; run it plus the standing gates
   (`just woc-test`, `just oop-e2e`, `just deps-accept`, `just log-watcher`,
   `just employee`) — all green.
-- [ ] Commit.
+- [x] Commit.
 
 ## Task 6 — docs closeout
 
@@ -152,7 +169,7 @@ landed), story `16-web-framework.md` (landing note), `README.md` (one
 paragraph + pointer under the samples list), `docs/08-project-structure.md`
 (the two new sample entries).
 
-- [ ] Apply; `just web-app` still green; commit.
+- [x] Apply; `just web-app` still green; commit.
 
 ## Success criteria (spec §Success criteria, restated)
 
