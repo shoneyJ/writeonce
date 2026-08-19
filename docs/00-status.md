@@ -254,17 +254,18 @@ recorded, not silently owed:
   `for e in parse_dir(dir).entries` keeps the entries alive (good) but leaks
   the `ParseResult` shell (its drop is recorded for no register). Found in the
   same disassembly; a leak, not a corruption.
-- **json's two documented limits**: a `Bool` field encodes as `0`/`1` (the
-  class-table kind byte does not distinguish it from an integer), and a JSON
-  number with a fraction or exponent decodes by truncation.
+- ~~json's two documented limits~~ — **closed 2026-08-18** (branch
+  `json-fidelity`): a `Bool` field encodes `true`/`false` (WOB_FIELD_BOOL /
+  WOB_FIELD_NIL_BOOL in the field metadata), and a fraction/exponent is
+  malformed for an Int field — the checked decode yields nil instead of
+  truncating (floats stay representable via a raw `json.Value` field).
 - **`net` fd lifetime is the program's problem.** `net.close` exists; the
   sample's MCP server never calls it, so a long-running `mcp` session leaks
   descriptors. That is the sample's bug to fix, not the runtime's.
 - **The workload has never run under ASan**, and iteration 4's `gc/held-cycle`
   leak (above) is still open. The corpus itself stays ASan-clean.
-- **`json.encode` of a `Bool` and of a nil scalar are asymmetric**: a nullable
-  scalar encodes as `null` (the field metadata says so), a plain `Bool` still
-  encodes as `0`/`1`.
+- ~~`json.encode` Bool/nil-scalar asymmetry~~ — **closed 2026-08-18** with the
+  same change: `Bool` encodes `true`/`false`, `?Bool` nil encodes `null`.
 - **No corpus fixtures cover the new surface.** By explicit direction
   (2026-08-14) the acceptance for this work is the log-watcher program itself,
   not fixture pairs; `tests/corpus/` still gates every pre-existing behavior

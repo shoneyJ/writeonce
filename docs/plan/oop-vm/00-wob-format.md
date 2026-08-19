@@ -18,7 +18,7 @@ All integers little-endian; offsets are absolute file offsets.
 **Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
 
 1. `field_names[i]` — constant index of the field's name, or all-ones for "not recorded" (what a hand-built test image writes).
-2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; all-ones for none.
+2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; `0xFFFFFFFD` a nullable scalar (`WO_NIL_SCALAR` nil); `0xFFFFFFFC` a plain `Bool` (json encodes `true`/`false`); `0xFFFFFFFB` a `?Bool` (both); all-ones for none.
 3. `field_elem[i]` — a container field's element kinds: a MULTI's element kind, or a MAP's key kind in the low nibble and value kind in the next; 0 otherwise.
 
 Field kinds: 0 SCALAR, 1 OWNED, 2 GCREF, 3 TEXT, 4 MULTI, 5 MAP. Runtime object layout: 16-byte header then one 8-byte slot per field, in declaration order.

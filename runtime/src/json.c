@@ -17,10 +17,12 @@
  *           `?T` spells nil. Malformed input yields nil, never a trap —
  *           that is what makes `json.decode(t) as T` a *checked* decode.
  *
- * Two deliberate, documented limits: a `Bool` field is a WO_K_SCALAR slot
- * like every other integer, so it encodes as 0/1 rather than false/true (the
- * kind byte does not distinguish them); and a JSON number with a fraction or
- * an exponent decodes by truncation to i64, since the language has no float.
+ * Fidelity (iteration 5 strictness closed both old documented limits): a
+ * `Bool` field carries WOB_FIELD_BOOL / WOB_FIELD_NIL_BOOL in field_class,
+ * so it encodes true/false and its `?Bool` nil is null; a JSON number with a
+ * fraction or an exponent is MALFORMED for an Int field (the language has no
+ * float) — the whole decode yields nil instead of silently truncating.
+ * Floats stay representable through a raw `json.Value` field.
  * A `json.Value` field (field_class == WOB_FIELD_JSON_RAW) holds the raw JSON
  * slice it was decoded from, and encodes back verbatim.
  */
@@ -126,8 +128,13 @@ static void enc_value(jbuf *b, const wo_module *mod, uint64_t v, uint8_t kind, u
     switch (kind) {
     case WO_K_SCALAR:
         /* a nullable scalar holding its nil word is JSON null, not a number */
-        if (fclass == WOB_FIELD_NIL_SCALAR && v == WO_NIL_SCALAR) jb_put(b, "null", 4);
-        else jb_int(b, (int64_t)v);
+        if ((fclass == WOB_FIELD_NIL_SCALAR || fclass == WOB_FIELD_NIL_BOOL) &&
+            v == WO_NIL_SCALAR)
+            jb_put(b, "null", 4);
+        else if (fclass == WOB_FIELD_BOOL || fclass == WOB_FIELD_NIL_BOOL)
+            jb_put(b, v ? "true" : "false", v ? 4 : 5);
+        else
+            jb_int(b, (int64_t)v);
         return;
     case WO_K_TEXT: {
         const wo_str *s = (const wo_str *)(uintptr_t)v;
@@ -323,7 +330,8 @@ static int jparse_object(jp *j, uint32_t class_id, uint64_t *out) {
        `0` for a scalar one — so a nullable scalar starts at its own nil word
        (wob.h's WO_NIL_SCALAR) and stays there if the object omits the key. */
     for (uint32_t i = 0; i < c->field_cnt; i++)
-        if (c->field_class && c->field_class[i] == WOB_FIELD_NIL_SCALAR)
+        if (c->field_class && (c->field_class[i] == WOB_FIELD_NIL_SCALAR ||
+                               c->field_class[i] == WOB_FIELD_NIL_BOOL))
             fs[i] = WO_NIL_SCALAR;
     jskip_ws(j);
     if (j->p >= j->end || *j->p != '{') {
@@ -406,7 +414,10 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
     }
     char c = *j->p;
     if (c == 'n') { /* null: this field's own nil word */
-        uint64_t nilw = fclass == WOB_FIELD_NIL_SCALAR ? WO_NIL_SCALAR : 0;
+        uint64_t nilw =
+            (fclass == WOB_FIELD_NIL_SCALAR || fclass == WOB_FIELD_NIL_BOOL)
+                ? WO_NIL_SCALAR
+                : 0;
         return jskip_value(j) == 0 ? (*out = nilw, 0) : -1;
     }
     if (c == '{') {
@@ -534,18 +545,12 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
             digits++;
         }
         if (!digits) return -1;
-        if (j->p < j->end && (*j->p == '.' || *j->p == 'e' || *j->p == 'E')) {
-            /* consume the fraction/exponent; the integer part is the value */
-            if (*j->p == '.') {
-                j->p++;
-                while (j->p < j->end && *j->p >= '0' && *j->p <= '9') j->p++;
-            }
-            if (j->p < j->end && (*j->p == 'e' || *j->p == 'E')) {
-                j->p++;
-                if (j->p < j->end && (*j->p == '-' || *j->p == '+')) j->p++;
-                while (j->p < j->end && *j->p >= '0' && *j->p <= '9') j->p++;
-            }
-        }
+        if (j->p < j->end && (*j->p == '.' || *j->p == 'e' || *j->p == 'E'))
+            /* a fraction or exponent cannot round-trip an i64 slot: MALFORMED
+             * for this language (no float), so the checked decode fails whole
+             * instead of silently truncating. Floats belong in a raw
+             * `json.Value` field. */
+            return -1;
         *out = kind == WO_K_SCALAR ? (uint64_t)(neg ? -acc : acc) : 0;
         return 0;
     }

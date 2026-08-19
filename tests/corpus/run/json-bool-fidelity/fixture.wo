@@ -1,0 +1,25 @@
+-- json fidelity (iteration 5 strictness): a Bool field encodes true/false
+-- (WOB_FIELD_BOOL / WOB_FIELD_NIL_BOOL in field_class — the kind byte alone
+-- cannot tell Bool from Int), a ?Bool nil is null both ways, and a JSON
+-- number with a fraction or exponent is MALFORMED for an Int field: the
+-- checked decode yields nil instead of silently truncating.
+use json
+
+class Flags {
+  on: Bool
+  maybe: ?Bool
+  n: Int
+}
+
+fn main() -> Int {
+  print(json.encode(Flags { on: true, maybe: nil, n: 7 }));
+  let back = json.decode("{\"on\":false,\"maybe\":true,\"n\":9}") as Flags;
+  if back != nil {
+    print(json.encode(Flags { on: back.on, maybe: back.maybe, n: back.n }));
+  }
+  let frac = json.decode("{\"on\":true,\"maybe\":null,\"n\":3.7}") as Flags;
+  if frac == nil { print("fraction rejected"); }
+  let expo = json.decode("{\"on\":true,\"maybe\":null,\"n\":2e3}") as Flags;
+  if expo == nil { print("exponent rejected"); }
+  return 0;
+}

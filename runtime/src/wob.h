@@ -49,6 +49,13 @@
  * exists so the runtime can tell the two apart where it must write absence
  * itself, which today is json.decode leaving an absent key nil. */
 #define WOB_FIELD_NIL_SCALAR 0xFFFFFFFDu
+/* json fidelity (iteration 5 strictness): the kind byte cannot distinguish a
+ * Bool slot from an Int slot, so json.encode used to emit 0/1 for a `Bool` —
+ * invalid for any JSON consumer expecting a boolean. field_class carries the
+ * distinction instead: BOOL marks a plain `Bool` field, NIL_BOOL a `?Bool`
+ * (nil spelled WO_NIL_SCALAR, exactly like NIL_SCALAR, plus bool encoding). */
+#define WOB_FIELD_BOOL 0xFFFFFFFCu
+#define WOB_FIELD_NIL_BOOL 0xFFFFFFFBu
 
 /* nil for a nullable scalar: -(2^62). Not INT64_MIN, deliberately — the
  * compiler's own integers are OCaml's 63-bit native ints, so INT64_MIN is not

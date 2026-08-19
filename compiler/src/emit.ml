@@ -1358,6 +1358,8 @@ let check_field_idx (p : pctx) (f : fstate) (pos : Ast.pos) (v : int) : int =
    per-type generated code. *)
 let wob_field_json_raw = 0xFFFFFFFE
 let wob_field_nil_scalar = 0xFFFFFFFD
+let wob_field_bool = 0xFFFFFFFC (* a plain `Bool` field: encode true/false *)
+let wob_field_nil_bool = 0xFFFFFFFB (* a `?Bool` field: NIL_SCALAR nil + bool encoding *)
 
 (* nil for a nullable SCALAR is not the zero word: `0` is a real Int, and the
    driving workload stores it in a `?Int` (a cron `*` field expands to `0`), so
@@ -1379,10 +1381,14 @@ let is_nullable_scalar (p : pctx) (ty : Ast.field_ty) : bool =
 
 let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
   let name_of t = match t with Ast.Scalar n -> Some n | _ -> None in
-  if is_nullable_scalar p ty then wob_field_nil_scalar
+  if is_nullable_scalar p ty then
+    (match ty with
+     | Ast.Nullable (Ast.Scalar "Bool") -> wob_field_nil_bool
+     | _ -> wob_field_nil_scalar)
   else
   match unwrap ty with
   | Ast.Scalar n when n = Types.json_value_type -> wob_field_json_raw
+  | Ast.Scalar "Bool" -> wob_field_bool
   | Ast.Scalar n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
   | Ast.Multi e | Ast.Map (_, e) -> (
     match name_of (Ast.Scalar e) with
