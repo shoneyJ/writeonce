@@ -28,6 +28,13 @@ wovm-test:
 dist:
     ./scripts/mkdist.sh
 
+# deps-accept: iteration 15's gate — wo.toml [deps] + git fetch + wo.lock,
+# proven against local file:// remotes built at run time (network-free):
+# cold fetch, offline rebuild, lock-beats-moved-tag, --update-deps, drift/
+# transitive/collision diagnostics, dep-main-never-entry, manifest shape.
+deps-accept:
+    ./scripts/deps-accept.sh
+
 # install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
 # `woc version` + a from-scratch project build+run (self-located wovm) + the
 # wo-constraint refusal all work — the "tarball install actually works" gate.
