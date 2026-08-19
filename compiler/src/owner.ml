@@ -1304,8 +1304,27 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
   (* transfers last *)
   (* iteration 7b deleted the `push`-of-a-gc-value special case (an RC_INC
      escape site): a traced value stored into a container needs no
-     bookkeeping — tracing finds it through the container. The bug class the
-     old special case guarded against cannot recur without RC. *)
+     bookkeeping — tracing finds it through the container.
+
+     Storing an OWNED, non-copied value into a container is a MOVE, exactly
+     like a `take` argument: the container owns the element and frees it in
+     its own drop plan (runtime/src/gc.c multi_free/map_free), so the caller
+     dropping it too was a double free. This was the disclosed
+     "move-on-push" gap — it stayed latent while pushed elements were Texts
+     (copied at the boundary, 2026-08-14) and detonated the moment iteration
+     16's route-table pattern pushed a CLASS value (`push(self.routes, r)`
+     plus the take-param's scope-end DROP = the container's element freed
+     twice). `push`'s value slot and `set`'s key/value slots transfer;
+     Text/json.Value stay copy-stored (`stores_by_copy`), so their fresh-
+     value drop is still the caller's. A user-declared fn of the same name
+     wins, exactly like the builtin table's shadowing rule. *)
+  let container_store_slot (i : int) : bool =
+    match callee.kind with
+    | Ident "push" -> i = 1 && Types.StringMap.find_opt "push" ctx.syms.Types.free_fns = None
+    | Ident "set" ->
+      (i = 1 || i = 2) && Types.StringMap.find_opt "set" ctx.syms.Types.free_fns = None
+    | _ -> false
+  in
   List.iteri
     (fun i a ->
       match place_of a with
@@ -1315,6 +1334,10 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
         if conv = Take then
           (if transfer ctx p ~what:(Printf.sprintf "cannot be passed to `take %s`" pname) then
              record_move ctx p (MvArg pname))
+        else if container_store_slot i && place_class ctx p = Owned
+                && not (stores_by_copy ctx p) then
+          (if transfer ctx p ~what:"cannot be stored in a container" then
+             record_move ctx p (MvArg "element"))
         )
     args;
   record_drop ctx ~node:call_e.id ~pos:call_e.pos ~kind:DLiveMask

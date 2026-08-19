@@ -1,0 +1,45 @@
+-- Storing an OWNED class value into a container is a MOVE (iteration 16's
+-- route-table pattern found the disclosed "move-on-push" double-free: the
+-- container's drop plan frees elements, so the pusher must not also drop
+-- what it pushed). Texts stay copy-stored — the mixed push below pins both.
+interface Handler {
+  fn handle(x: Int) -> Int
+}
+
+class AddOne {
+  n: Int
+  fn handle(x: Int) -> Int { return x + self.n }
+}
+
+class Route {
+  path: Text
+  h: Handler
+}
+
+class App {
+  routes: multi Route
+  names: multi Text
+
+  fn add(take r: Route, name: Text) {
+    push(self.routes, r);
+    push(self.names, name);
+  }
+
+  fn run(path: Text, x: Int) -> Int {
+    for r in self.routes {
+      if r.path == path { return r.h.handle(x); }
+    }
+    return -1;
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  let app = App { routes: [], names: [] };
+  app.add(Route { path: "/a", h: AddOne { n: 7 } }, "a");
+  app.add(Route { path: "/b", h: AddOne { n: 100 } }, "b");
+  print_int(app.run("/b", 1));
+  print_int(app.run("/a", 1));
+  print_int(app.run("/x", 1));
+  print_int(count(app.names));
+  return 0;
+}
