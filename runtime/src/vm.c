@@ -53,10 +53,47 @@ static void vm_release_frame(wo_vm *vm, uint32_t d, uint32_t pc, uint32_t keep_p
             R[r] = 0;
         }
         if ((ent->gc & bit) && !(keep_gc & bit) && R[r]) {
-            wo_rc_dec(&vm->rt, (wo_hdr *)(uintptr_t)R[r]);
+            /* a traced reference dying with its frame: tracing owns the
+             * lifetime, and a mid-cycle root snapshot already shaded it —
+             * the register just goes away */
             R[r] = 0;
         }
     }
+}
+
+/* ---- collector integration (iteration 7b) -------------------------------
+ * The root snapshot: shade every live frame's gc-masked registers (traced
+ * objects) and walk its owned-masked registers' interiors (owned values
+ * that may hold gcrefs). The governing drop entry per frame follows
+ * vm_unwind's convention — the current instruction for the innermost
+ * frame (the caller synced f->pc first), the CALL for outer ones. Runs
+ * once, atomically, when a cycle begins: bounded by the stack, not the
+ * heap. */
+static void vm_gc_roots(wo_vm *vm) {
+    for (uint32_t d = vm->depth; d > 0; d--) {
+        const wo_frame *f = &vm->frames[d - 1];
+        const wo_methodrec *me = &vm->mod->methods[f->method];
+        uint32_t gpc = (d == vm->depth) ? f->pc : f->pc - 1;
+        const wo_dropent *ent = vm_dropent(me, gpc);
+        if (!ent) continue;
+        const uint64_t *R = vm->regs + f->base;
+        for (uint32_t r = 0; r < me->reg_cnt; r++) {
+            uint64_t bit = 1ull << r;
+            if (((ent->gc | ent->owned) & bit) && R[r])
+                wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)R[r]);
+        }
+    }
+}
+
+/* One safepoint: start a cycle when the trigger says so (snapshot the
+ * roots before the mutator resumes), then run one budgeted slice while a
+ * cycle is live. The caller synced the innermost frame's pc first. */
+static void vm_gc_safepoint(wo_vm *vm) {
+    if (wo_gc_want_start(&vm->rt)) {
+        wo_gc_begin(&vm->rt);
+        vm_gc_roots(vm);
+    }
+    if (vm->rt.gc_phase != WO_GC_IDLE) wo_gc_slice(&vm->rt, vm->rt.gc_budget);
 }
 
 /* Trap unwinding — the spec's "traps never leak" promise (spec §6). Walk
@@ -195,6 +232,18 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
         return -1;                                       \
     } while (0)
 
+/* Collector safepoint (iteration 7b): placed at allocations, calls, and
+ * loop back-edges — the pcs that already carry drop-table entries, so the
+ * root snapshot's masks are exact. Costs one predictable branch when the
+ * collector is idle and the trigger is cold. */
+#define GC_SAFEPOINT()                                                       \
+    do {                                                                     \
+        if (vm->rt.gc_phase != WO_GC_IDLE || wo_gc_want_start(&vm->rt)) {    \
+            vm->frames[vm->depth - 1].pc = pc - 1;                           \
+            vm_gc_safepoint(vm);                                             \
+        }                                                                    \
+    } while (0)
+
     RELOAD();
 
     /* dual-flavor dispatch, one shared case-body text (spec §5): computed
@@ -293,6 +342,7 @@ dispatch:
     }
 
     CASE(JMP) : {
+        if (wo_ins_sbx(ins) < 0) GC_SAFEPOINT(); /* loop back-edge */
         pc = (uint32_t)((int64_t)pc + wo_ins_sbx(ins));
         NEXT();
     }
@@ -303,6 +353,7 @@ dispatch:
     }
 
     CASE(CALL) : {
+        GC_SAFEPOINT();
         /* Lua-style window overlap: callee r0 = caller slot A; args sit at
          * A..A+argc-1; the return value lands back in slot A */
         const wo_methodrec *callee = &mod->methods[wo_ins_bx(ins)];
@@ -356,6 +407,7 @@ dispatch:
     }
 
     CASE(NEW) : {
+        GC_SAFEPOINT(); /* allocation is the trigger's natural home */
         wo_hdr *o = wo_obj_new(&vm->rt, wo_ins_bx(ins));
         if (!o) TRAPF(WO_T_OOM, "out of memory");
         R[wo_ins_a(ins)] = (uint64_t)(uintptr_t)o;
@@ -385,6 +437,15 @@ dispatch:
         wo_hdr *o = recv_check(vm, R[wo_ins_a(ins)], wo_ins_b(ins), &why);
         if (!o) TRAPF(WO_T_BOUNDS, "%s", why);
         uint64_t v = R[wo_ins_c(ins)];
+        /* Yuasa deletion barrier (iteration 7b): overwriting a gcref slot
+         * while marking deletes an edge the snapshot may depend on — shade
+         * the OLD target before the store. Inactive outside marking; owned
+         * fields, scalars and text pay nothing. */
+        if (vm->rt.gc_phase == WO_GC_MARK &&
+            vm->mod->classes[o->class_id].kinds[wo_ins_b(ins)] == WO_K_GCREF) {
+            uint64_t old = wo_fields(o)[wo_ins_b(ins)];
+            if (old) wo_gc_shade(&vm->rt, (wo_hdr *)(uintptr_t)old);
+        }
         if (v && vm->mod->classes[o->class_id].kinds[wo_ins_b(ins)] == WO_K_TEXT) {
             const wo_str *src = (const wo_str *)(uintptr_t)v;
             if (src->h.class_id != WO_CLS_STR) TRAPF(WO_T_BOUNDS, "not a text value");
@@ -427,18 +488,13 @@ dispatch:
         NEXT();
     }
 
-    CASE(RC_INC) : {
-        uint64_t v = R[wo_ins_a(ins)];
-        if (!v) TRAPF(WO_T_BOUNDS, "null receiver");
-        wo_rc_inc((wo_hdr *)(uintptr_t)v);
-        NEXT();
-    }
-    CASE(RC_DEC) : {
-        uint64_t v = R[wo_ins_a(ins)];
-        if (!v) TRAPF(WO_T_BOUNDS, "null receiver");
-        wo_rc_dec(&vm->rt, (wo_hdr *)(uintptr_t)v);
-        NEXT();
-    }
+    /* iteration 7b: reference counting is retired — tracing owns traced
+     * lifetimes, so alias bookkeeping means nothing. The opcodes stay
+     * accepted as no-ops until the emitter stops producing them and the
+     * format reserves 27–28 (the .wob version bump); a no-op is also what
+     * deletes the old RC_DEC-on-nil trap that broke `?Node` field stores. */
+    CASE(RC_INC) : NEXT();
+    CASE(RC_DEC) : NEXT();
 
     CASE(CONCAT) : {
         const char *why;
@@ -570,6 +626,7 @@ dispatch:
 #undef NEXT
 #undef RELOAD
 #undef TRAPF
+#undef GC_SAFEPOINT
 #undef DROP_CATCHES
 }
 

@@ -93,40 +93,26 @@ static int load_self_embedded(wo_module *mod, char *err, size_t errlen) {
     return rc == 0 ? 1 : -1;
 }
 
-/* ---- gc pump -----------------------------------------------------------
- * Deliberately the simplest possible driver over the plan-1 collector's
- * already-budgeted step interface (wo_gc_step, gc.h): after the entry
- * method returns, drain the cycle-candidate buffer in bounded slices until
- * it is empty. This is post-exit-only pacing and nothing more — real
- * scheduler-integrated pacing (stepping between turns of live work while
- * the program keeps running) is sub-project 2's job; this milestone only
- * proves the budgeted-step interface end to end and makes it observable.
- * WO_GC_TRACE prints one stderr line per step (never stdout — the corpus
- * harness diffs stdout byte-for-byte) so a fixture can assert "collection
- * happened in bounded slices", not just "the leak is gone". */
+/* ---- gc pump (iteration 7b) ---------------------------------------------
+ * After the entry method returns the stack is empty, so a collection cycle
+ * has no roots: everything still on the traced list is unreachable and one
+ * cycle frees it all, in budgeted slices (WO_GC_BUDGET objects per slice —
+ * rt owns the knobs now, read at init). WO_GC_TRACE prints one stderr line
+ * per slice (never stdout — the corpus harness diffs stdout byte-for-byte)
+ * so a fixture can assert "collection happened in bounded slices", not just
+ * "the leak is gone". A mid-program cycle interrupted by exit is finished
+ * here the same way. The zero-progress guard turns a would-be hang (a bug)
+ * into a leak the ASan gate reports instead. */
 static void gc_pump(wo_vm *vm) {
-    size_t budget = 64; /* candidates per step: no prior art to size this
-                            against (post-exit draining is new), so picked
-                            to mirror WO_HEAP_MB's default 64 — small
-                            enough that a deliberately oversized abandoned
-                            structure visibly takes more than one step,
-                            large enough that ordinary programs clear in
-                            one or two */
-    const char *benv = getenv("WO_GC_BUDGET");
-    if (benv && benv[0]) {
-        char *end = NULL;
-        unsigned long v = strtoul(benv, &end, 10);
-        if (end && *end == '\0' && v >= 1 && v <= 1000000) budget = v;
-    }
-    int trace = getenv("WO_GC_TRACE") != NULL;
-    size_t step = 0;
-    while (vm->rt.cycbuf.len > 0) {
-        size_t before = vm->rt.cycbuf.len;
-        size_t freed = wo_gc_step(&vm->rt, budget);
-        step++;
-        if (trace)
-            fprintf(stderr, "gc: step %zu budget=%zu freed=%zu visited=%zu remaining=%zu\n", step,
-                    budget, freed, before - vm->rt.cycbuf.len, vm->rt.cycbuf.len);
+    wo_rt *rt = &vm->rt;
+    size_t at_begin = rt->gc_traced_cnt;
+    while (rt->gc_traced) {
+        if (rt->gc_phase == WO_GC_IDLE) {
+            at_begin = rt->gc_traced_cnt;
+            wo_gc_begin(rt); /* no roots: the stack is empty at depth 0 */
+        }
+        wo_gc_slice(rt, rt->gc_budget);
+        if (rt->gc_phase == WO_GC_IDLE && rt->gc_traced_cnt == at_begin) break;
     }
 }
 

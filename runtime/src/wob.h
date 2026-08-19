@@ -75,26 +75,35 @@ enum {
 #define WO_STACK_SLOTS 4096u
 #define WO_MAX_FRAMES 256u
 
-/* ---- object header: every heap value carries this (spec section 4) ---- */
-typedef struct wo_hdr {
+/* ---- object header: every heap value carries this (spec section 4;
+ * iteration 7b rewrote the second half). Retiring `rc` freed four bytes,
+ * and traced objects are exempt from borrow rules so their borrow word is
+ * dead too — those two adjacent words are one union: non-traced values use
+ * the borrow word, traced objects use the 8 bytes as the intrusive
+ * sweep-list link. The header stays exactly 16 bytes. ---- */
+typedef struct wo_hdr wo_hdr;
+struct wo_hdr {
     uint32_t class_id; /* class-table index or a WO_CLS_* sentinel */
     uint16_t shard_id; /* always 0 in milestone 1; reserved for sub-project 2 */
     uint8_t flags;
     uint8_t pad;
-    uint32_t borrow; /* WO_BORROW_FREE / reader count / WO_BORROW_EXCL */
-    uint32_t rc;     /* strong count, @gc objects only */
-} wo_hdr;
+    union {
+        uint32_t borrow; /* non-traced: WO_BORROW_FREE / readers / EXCL */
+        wo_hdr *gclink;  /* traced: next object on the per-shard traced list */
+    };
+};
 _Static_assert(sizeof(wo_hdr) == 16, "object header must be exactly 16 bytes");
 
 /* header flags */
-#define WO_F_GC 0x01u    /* instance of a @gc class: rc rules apply */
-#define WO_F_BUF 0x02u   /* sitting in the cycle-candidate buffer */
+#define WO_F_GC 0x01u    /* instance of a traced (inferred-gc) class */
 #define WO_F_CONST 0x04u /* loader-interned constant (strings): free is a no-op */
-/* two color bits for Bacon–Rajan trial deletion */
+/* two color bits for tri-color incremental mark-sweep (iteration 7b).
+ * WHITE must be the all-zero value: wo_obj_new memsets the object, so an
+ * allocation outside a marking cycle is born white by construction. */
 #define WO_F_COLOR 0x18u
-#define WO_COLOR_BLACK 0x00u
+#define WO_COLOR_WHITE 0x00u
 #define WO_COLOR_GRAY 0x08u
-#define WO_COLOR_WHITE 0x10u
+#define WO_COLOR_BLACK 0x10u
 
 /* native class-id sentinels (top of the u32 range; loader rejects user
  * class counts anywhere near these) */

@@ -25,18 +25,39 @@ void wo_arena_destroy(wo_arena *a);
 void *wo_arena_alloc(wo_arena *a, size_t size); /* NULL = region OOM */
 void wo_arena_free(wo_arena *a, void *p, size_t size);
 
+/* Collector phase (iteration 7b, gc.c). IDLE -> MARK at the heap-goal
+ * trigger; MARK -> SWEEP when the gray worklist drains; SWEEP -> IDLE when
+ * the traced-list cursor reaches the end. The Yuasa deletion barrier is
+ * active during MARK only. */
+enum { WO_GC_IDLE = 0, WO_GC_MARK = 1, WO_GC_SWEEP = 2 };
+
 /* Runtime context: what every module needs. One per shard (one total in
- * milestone 1): the arena, the loaded class table, the cycle-candidate
- * buffer (filled by gc.c), and the output stream builtin print writes to
- * (tests point it at a temp file to capture output). */
+ * milestone 1): the arena, the loaded class table, the tracing collector's
+ * state (gc.c), and the output stream builtin print writes to (tests point
+ * it at a temp file to capture output). */
 typedef struct wo_rt {
     wo_arena arena;
     const wo_classdesc *classes;
     uint32_t class_cnt;
+    /* ---- tracing collector (iteration 7b) ---- */
+    wo_hdr *gc_traced;    /* per-shard traced list: every live traced object */
+    size_t gc_traced_cnt; /* list length (trace/reporting only) */
     struct {
-        wo_hdr **items;
+        wo_hdr **items; /* gray worklist: traced objects awaiting a scan */
         size_t len, cap;
-    } cycbuf;
+        int oom; /* worklist realloc failed: finish the cycle freeing nothing */
+    } gc_gray;
+    int gc_phase;          /* WO_GC_IDLE / MARK / SWEEP */
+    wo_hdr **gc_sweep;     /* SWEEP: link slot the cursor resumes at */
+    size_t gc_alloc_bytes; /* traced bytes since the last cycle (trigger) */
+    size_t gc_goal;        /* start a cycle past this many traced bytes */
+    size_t gc_budget;      /* objects processed per slice (WO_GC_BUDGET) */
+    int gc_trace;          /* WO_GC_TRACE: one stderr line per slice */
+    size_t gc_step_no;     /* slices run so far (the trace's step counter) */
+    uint8_t *gc_may;       /* per-class "may transitively hold a gcref" bit —
+                              lets mark skip owned subtrees that cannot reach
+                              a traced object. Computed at init; NULL =
+                              conservative (traverse everything). */
     void *out; /* FILE*; kept void* so obj.h needn't pull in stdio */
     /* the database engine's handles (database/src), opaque here so the VM
        core needn't include engine headers: db = wo_db*, wal = wo_wal*.
@@ -50,8 +71,10 @@ int wo_rt_init(wo_rt *rt, size_t heap_cap, const wo_classdesc *classes,
                uint32_t class_cnt); /* 0 ok, -1 alloc failure; out = stdout */
 void wo_rt_destroy(wo_rt *rt);
 
-/* New zeroed instance of a class-table class. @gc classes get the GC flag
- * and rc 1 (the creating reference). NULL = OOM (VM traps WO_T_OOM). */
+/* New zeroed instance of a class-table class. A traced (inferred-gc) class
+ * instance links itself onto the traced list, born white when the collector
+ * is idle and black during a cycle (live-at-birth for that cycle). NULL =
+ * OOM (VM traps WO_T_OOM). */
 wo_hdr *wo_obj_new(wo_rt *rt, uint32_t class_id);
 
 /* Strings: header + length + inline bytes, class id WO_CLS_STR. */

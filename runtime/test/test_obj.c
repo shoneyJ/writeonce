@@ -18,21 +18,24 @@ static void test_owned_object_zeroed(void) {
     T_EQ(o->class_id, 0);
     T_EQ(o->flags, 0);
     T_EQ(o->borrow, WO_BORROW_FREE);
-    T_EQ(o->rc, 0);
     T_EQ(wo_fields(o)[0], 0);
     T_EQ(wo_fields(o)[1], 0);
     wo_arena_free(&rt.arena, o, wo_obj_size(&CLASSES[0]));
     wo_rt_destroy(&rt);
 }
 
-static void test_gc_object_rc1(void) {
+/* iteration 7b: a traced-class instance carries the GC flag, is born white
+ * (collector idle), and links itself onto the traced list — rt_destroy is
+ * what frees it, so no manual arena_free here. */
+static void test_gc_object_tracked(void) {
     wo_rt rt;
     T_EQ(wo_rt_init(&rt, 1 << 16, CLASSES, 2), 0);
     wo_hdr *o = wo_obj_new(&rt, 1);
     T_CHECK(o != NULL);
     T_CHECK(o->flags & WO_F_GC);
-    T_EQ(o->rc, 1);
-    wo_arena_free(&rt.arena, o, wo_obj_size(&CLASSES[1]));
+    T_EQ(o->flags & WO_F_COLOR, WO_COLOR_WHITE);
+    T_EQ(rt.gc_traced, o);
+    T_EQ(rt.gc_traced_cnt, 1);
     wo_rt_destroy(&rt);
 }
 
@@ -78,7 +81,7 @@ static void test_const_string_survives_free(void) {
 
 int main(void) {
     test_owned_object_zeroed();
-    test_gc_object_rc1();
+    test_gc_object_tracked();
     test_strings();
     test_const_string_survives_free();
     return t_report("test_obj");

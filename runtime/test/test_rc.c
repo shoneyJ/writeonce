@@ -1,4 +1,6 @@
-/* test_rc — RC + drop plans: deterministic destruction.
+/* test_rc — deterministic drops + the owned/traced boundary (iteration 7b:
+ * reference counting is gone; this suite now pins what replaced it on the
+ * owned side, and that owned deaths never free traced objects).
  *
  * Testing trick used by every memory test from here on: classes get ~130
  * fields so instances exceed the 1024-byte size-class ceiling and take the
@@ -11,7 +13,7 @@
 
 /* class 0 "Node": field0 OWNED (child Node), field1 TEXT, rest scalars */
 static uint8_t node_kinds[BIG];
-/* class 1 "Shared" (@gc): all scalars */
+/* class 1 "Shared" (traced): all scalars */
 static uint8_t shared_kinds[BIG];
 /* class 2 "Holder": field0 GCREF, field1 MULTI (of TEXT), rest scalars */
 static uint8_t holder_kinds[BIG];
@@ -48,19 +50,23 @@ static void test_owned_tree_recursive_drop(void) {
     wo_rt_destroy(&rt);
 }
 
-/* A holder's gcref field decrements on drop; the final external decrement
- * frees the @gc object. */
-static void test_gcref_field_decrements(void) {
+/* An owned holder dying must NOT free the traced object its gcref field
+ * points at — tracing owns that lifetime. The object stays on the traced
+ * list; a rootless cycle then frees it (and rt_destroy would too). */
+static void test_holder_death_leaves_traced_alive(void) {
     wo_rt rt;
     T_EQ(wo_rt_init(&rt, 1 << 16, CLASSES, 3), 0);
-    wo_hdr *shared = wo_obj_new(&rt, 1); /* rc = 1 (creating ref) */
-    wo_rc_inc(shared);                   /* holder's reference */
-    T_EQ(shared->rc, 2);
+    wo_hdr *shared = wo_obj_new(&rt, 1);
+    T_EQ(rt.gc_traced_cnt, 1);
     wo_hdr *holder = wo_obj_new(&rt, 2);
     wo_fields(holder)[0] = (uint64_t)(uintptr_t)shared;
-    wo_drop_obj(&rt, holder); /* drops holder, decrements shared to 1 */
-    T_EQ(shared->rc, 1);
-    wo_rc_dec(&rt, shared); /* final ref gone -> freed (ASan-proven) */
+    wo_drop_obj(&rt, holder); /* gcref edge is a no-op: shared survives */
+    T_EQ(rt.gc_traced_cnt, 1);
+    T_EQ(rt.gc_traced, shared);
+    /* one rootless cycle reclaims it */
+    wo_gc_begin(&rt);
+    while (rt.gc_phase != WO_GC_IDLE) wo_gc_slice(&rt, 16);
+    T_EQ(rt.gc_traced_cnt, 0);
     wo_rt_destroy(&rt);
 }
 
@@ -78,26 +84,24 @@ static void test_container_fields_freed_with_holder(void) {
     wo_rt_destroy(&rt);
 }
 
-/* rc_inc/rc_dec pairing frees exactly at zero. */
-static void test_rc_zero_frees(void) {
+/* Teardown safety net: traced objects still on the list when the runtime
+ * dies are freed by rt_destroy itself (a test or a trap path that never
+ * pumped must still be leak-free — ASan proves the malloc-path frees). */
+static void test_rt_destroy_frees_traced_remnants(void) {
     wo_rt rt;
     T_EQ(wo_rt_init(&rt, 1 << 16, CLASSES, 3), 0);
-    wo_hdr *s = wo_obj_new(&rt, 1);
-    wo_rc_inc(s);
-    wo_rc_inc(s);
-    T_EQ(s->rc, 3);
-    wo_rc_dec(&rt, s);
-    wo_rc_dec(&rt, s);
-    T_EQ(s->rc, 1);
-    wo_rc_dec(&rt, s); /* freed here */
-    wo_rt_destroy(&rt);
+    (void)wo_obj_new(&rt, 1);
+    (void)wo_obj_new(&rt, 1);
+    T_EQ(rt.gc_traced_cnt, 2);
+    wo_rt_destroy(&rt); /* frees both (ASan-proven) */
+    T_CHECK(1);
 }
 
 int main(void) {
     setup_classes();
     test_owned_tree_recursive_drop();
-    test_gcref_field_decrements();
+    test_holder_death_leaves_traced_alive();
     test_container_fields_freed_with_holder();
-    test_rc_zero_frees();
+    test_rt_destroy_frees_traced_remnants();
     return t_report("test_rc");
 }
