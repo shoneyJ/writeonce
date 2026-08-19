@@ -11,7 +11,13 @@
 > when multiplexing has a scheduler to pay off on).
 >
 > **Spec exists:** [`2026-08-18-web-framework-design.md`](../../superpowers/specs/2026-08-18-web-framework-design.md)
-> sections B (normative) and C (the parked h2c successor).
+> sections B (normative) and C (the parked h2c successor). **Plan:**
+> [`2026-08-19-web-framework.md`](../../superpowers/plans/2026-08-19-web-framework.md)
+> (6 tasks: types/builders; HTTP/1.1 parse+serve; router+interfaces+App;
+> the web-app storefront; the `just web-app` gate; docs closeout). Two
+> enabling risks retired before planning: interface-field dispatch (probe)
+> and the route-table owned-move double-free (fixed, pinned by
+> `run/container-owned-move`).
 
 ## Goals
 
