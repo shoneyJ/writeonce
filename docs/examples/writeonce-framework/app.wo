@@ -1,0 +1,50 @@
+-- app.wo — the assembly: an App holds the middleware chain and the route
+-- table, satisfies http's Dispatcher interface, and serves.
+--
+--   let app = App { middleware: [], routes: [] };
+--   app.use_mw(Mw { m: Auth { token: t } });
+--   app.add(Route { method: "GET", pattern: "/products/:id", h: Show {} });
+--   return app.serve("127.0.0.1", port);
+--
+-- Dispatch order: middleware in registration order (a Resp short-circuits),
+-- then the first matching route (method + pattern), else the framework 404.
+-- The serve loop wraps dispatch in `try`, so a trapping handler answers 500
+-- and the server survives.
+use http
+use router
+
+pub class App {
+  middleware: multi Mw
+  routes:     multi Route
+
+  fn use_mw(take m: Mw) {
+    push(self.middleware, m);
+  }
+
+  fn add(take r: Route) {
+    push(self.routes, r);
+  }
+
+  fn dispatch(mut req: Req) -> Resp {
+    for mw in self.middleware {
+      let short = mw.m.before(req);
+      if short != nil { return short; }
+    }
+    for r in self.routes {
+      if r.method == req.method {
+        let params: map<Text, Text> = {};
+        if route_match(r.pattern, req.path, params) {
+          -- captures land on the borrowed request itself (mut) — a failed
+          -- match above never touched it, since captures collect locally
+          for k, v in params { req.params[k] = v; }
+          return r.h.handle(req);
+        }
+      }
+    }
+    return not_found();
+  }
+
+  fn serve(host: Text, port: Int) -> Int {
+    return http.serve(host, port, self);
+  }
+}

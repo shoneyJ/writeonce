@@ -9,7 +9,7 @@ use net
 use env
 
 pub interface Dispatcher {
-  fn dispatch(req: Req) -> Resp
+  fn dispatch(mut req: Req) -> Resp
 }
 
 fn status_text(code: Int) -> Text {

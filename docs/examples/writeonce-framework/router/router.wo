@@ -1,0 +1,57 @@
+-- router/router.wo — the handler model and the route table.
+--
+-- No function values in this language, by doctrine — so a handler is a
+-- CLASS satisfying the Handler interface (its fields are the closure
+-- substitute), dispatched structurally (ICALL). A class missing `handle`
+-- is a compile error (WO-E205). Middleware is its own interface because
+-- the signature differs: `before` returns `?Resp` — nil means continue,
+-- a Resp short-circuits (401 gates, redirects).
+
+pub interface Handler {
+  fn handle(req: Req) -> Resp
+}
+
+pub interface Middleware {
+  fn before(req: Req) -> ?Resp
+}
+
+-- One route: method + pattern + the handler value. Built with a ctor
+-- literal at the registration site (`Route { method: "GET", pattern:
+-- "/products/:id", h: ProductShow {} }`) — the exact ownership shape the
+-- conformance corpus pins (run/container-owned-move).
+pub class Route {
+  method:  Text
+  pattern: Text
+  h:       Handler
+}
+
+-- Middleware wrapper record, same shape as Route for the same reason.
+pub class Mw {
+  m: Middleware
+}
+
+-- Does `pattern` match `path`? Fills `params` with :name captures.
+-- Segments split on '/', empties dropped (so "/a//b" == "/a/b" and the
+-- root "/" is the empty segment list). First mismatch wins; a :segment
+-- captures anything non-empty.
+pub fn route_match(pattern: Text, path: Text, mut params: map<Text, Text>) -> Bool {
+  let ps = split(pattern, "/");
+  let xs = split(path, "/");
+  let psegs: multi Text = [];
+  for s in ps { if s != "" { push(psegs, s); } }
+  let xsegs: multi Text = [];
+  for s in xs { if s != "" { push(xsegs, s); } }
+  if len(psegs) != len(xsegs) { return false; }
+  let i = 0;
+  while i < len(psegs) {
+    let p = psegs[i];
+    let x = xsegs[i];
+    if starts_with(p, ":") {
+      params[substr(p, 1, len(p) - 1)] = x;
+    } else {
+      if p != x { return false; }
+    }
+    i = i + 1;
+  }
+  return true;
+}
