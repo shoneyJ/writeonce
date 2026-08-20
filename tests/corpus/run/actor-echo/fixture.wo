@@ -1,0 +1,34 @@
+-- the arc: spawn/send/actor M — an actor is a class with receive(msg: M);
+-- messages MOVE; delivery is one message at a time; main's return reaps
+-- idle actors clean (ASan gate covers this fixture too).
+
+class Note {
+  text: Text
+}
+
+class Logger {
+  prefix: Text
+  seen: Int
+  fn receive(msg: Note) {
+    self.seen = self.seen + 1;
+    print("${self.prefix}${msg.text} #${self.seen}");
+  }
+}
+
+fn main() -> Int {
+  let a: actor Note = spawn Logger { prefix: "log: ", seen: 0 };
+  send(a, Note { text: "first" });
+  send(a, Note { text: "second" });
+  let n = Note { text: "third" };
+  send(a, n);
+  -- the scheduler drains actor messages when main yields or ends; a
+  -- backward-jump loop hands turns over under the default budget? No:
+  -- default budget is 4000 — force turns with a tiny spin so delivery
+  -- interleaves before main returns
+  let i = 0;
+  while i < 20000 {
+    i = i + 1;
+  }
+  print("main done");
+  return 0;
+}

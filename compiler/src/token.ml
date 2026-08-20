@@ -63,6 +63,9 @@ type kind =
      field-name collision to dodge (see lexer.ml's module doc for why
      those other names stayed idents). *)
   | KwUse
+  (* the concurrency arc (iterations 8+11): `spawn Cls { ... }`. `send`
+     is deliberately NOT a keyword — it is a builtin free-fn name. *)
+  | KwSpawn
   | KwPub
   (* haxe-parity Task 2 (small control surface): break/continue/do-while,
      const values, and/or booleans, and inline-fn rejection (the haxe

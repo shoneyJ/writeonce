@@ -19,6 +19,7 @@ type typ =
   | TMulti of typ                        (* multi T *)
   | TMap of typ * typ                    (* map<K, V> *)
   | TRef of string                       (* ref T — ID link *)
+  | TActor of string                     (* actor M — a typed actor address (arc 8+11); a copyable scalar word *)
   | TVoid                                (* no return *)
 
 (* .wob field kinds (docs/plan/oop-vm/00-wob-format.md) *)
@@ -325,6 +326,7 @@ let rec field_ty_of_typ (t : typ) : field_ty option =
   | TMulti (TScalar n) -> Some (Multi n)
   | TMap (TScalar k, TScalar v) -> Some (Map (k, v))
   | TNullable inner -> ( match field_ty_of_typ inner with Some ft -> Some (Nullable ft) | None -> None)
+  | TActor m -> Some (Actor m)
   | TMulti _ | TMap _ | TVoid -> None
 
 let rec typ_of_field_ty (ft : field_ty) : typ =
@@ -334,6 +336,7 @@ let rec typ_of_field_ty (ft : field_ty) : typ =
   | Multi inner_name -> TMulti (TScalar inner_name)
   | Map (k_name, v_name) -> TMap (TScalar k_name, TScalar v_name)
   | Backlink (c, _) -> TMulti (TScalar c) (* reads as a collection of C *)
+  | Actor m -> TActor m
   | Nullable inner -> TNullable (typ_of_field_ty inner)
 
 (* wob_kind_of_typ: maps internal typ to .wob field kind *)
@@ -368,6 +371,7 @@ let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
     | TMulti _ -> WO_K_MULTI
     | TMap _ -> WO_K_MAP
     | TRef _ -> WO_K_SCALAR
+    | TActor _ -> WO_K_SCALAR (* an address is a copyable word; the runtime owns actors *)
     | TVoid -> WO_K_SCALAR
   in
   kind_of t
@@ -389,6 +393,7 @@ let invalid_builtin_code = Diag.types_prefix ^ "09"
 let module_not_imported_code = Diag.types_prefix ^ "10"
 let nullable_used_without_check_code = Diag.types_prefix ^ "11"
 let nullable_assign_mismatch_code = Diag.types_prefix ^ "12"
+let spawn_no_receive_code = Diag.types_prefix ^ "21" (* WO-E221: spawn target lacks fn receive(msg: M); E219/E220 are taken on the language-surface-strictness branch *)
 let missing_nil_check_code = Diag.types_prefix ^ "13"
 
 (* haxe-parity Task 1 (modules). module_not_imported_code (WO-E210,
@@ -603,7 +608,7 @@ let rec scalar_name_of (ft : field_ty) : string option =
   match ft with
   | Scalar name -> Some name
   | Nullable inner -> scalar_name_of inner
-  | Ref _ | Multi _ | Map _ | Backlink _ -> None
+  | Ref _ | Multi _ | Map _ | Backlink _ | Actor _ -> None
 
 (* Checked once per field declaration (not at every access/use site), so
    the diagnostic lands at the field's own declaration position and
@@ -854,6 +859,7 @@ let rec typ_label (t : typ) : string =
   | TMulti _ -> "multi"
   | TMap _ -> "map"
   | TRef name -> "ref " ^ name
+  | TActor m -> "actor " ^ m
   | TVoid -> "void"
 
 (* A builtin call's own confident return type, for when it appears as
@@ -1173,6 +1179,16 @@ let typecheck_program ~file ~(module_of : string -> string)
                         | None -> None))
                 | _ -> None))
         | _ -> None)
+    | Spawn (cn, _fields) -> (
+        match StringMap.find_opt cn syms.classes with
+        | Some cls -> (
+          match List.find_opt (fun (m : method_info) -> m.name = "receive") cls.methods with
+          | Some { params = [ (_, pty, _) ]; _ } -> (
+            match typ_of_field_ty pty with
+            | TScalar mname -> Some (TActor mname)
+            | _ -> None)
+          | _ -> None)
+        | None -> None)
     | Ctor (class_name, _fields) ->
         (* `Ctor`'s class name is never a placeholder -- unlike
            `Ident`/`Field`/`Index`/`Call`, there is no fallback path
@@ -1433,6 +1449,40 @@ let typecheck_program ~file ~(module_of : string -> string)
                              "variant `%s` of `%s` takes %d payload argument(s), given %d"
                              vi.vi_name u.u_name want got)
                         ())
+             | None when name = "send" ->
+                 (* arc: send(addr, msg) — bespoke shape: addr is an
+                    `actor M`, msg must BE an M (exactly; moves are checked
+                    by the owner pass). Silent when underivable, the
+                    standing contract. *)
+                 (if List.length args <> 2 then
+                    Diag.Collector.add collector
+                      (Diag.error ~code:bad_arity_code ~file ~line:e.pos.line ~col:e.pos.col
+                         ~message:
+                           (Printf.sprintf "`send` takes 2 arguments (address, message), given %d"
+                              (List.length args))
+                         ())
+                  else
+                    match args with
+                    | [ a; m ] -> (
+                      match confident_typ cenv a with
+                      | Some (TActor want) -> (
+                        match confident_typ cenv m with
+                        | Some (TScalar got) when got <> want ->
+                          Diag.Collector.add collector
+                            (Diag.error ~code:type_mismatch_code ~file ~line:m.pos.line
+                               ~col:m.pos.col
+                               ~message:
+                                 (Printf.sprintf
+                                    "this actor receives `%s` — the message is a `%s`" want got)
+                               ())
+                        | _ -> ())
+                      | Some _ ->
+                        Diag.Collector.add collector
+                          (Diag.error ~code:type_mismatch_code ~file ~line:a.pos.line
+                             ~col:a.pos.col
+                             ~message:"`send`'s first argument must be an `actor M` address" ())
+                      | None -> ())
+                    | _ -> ())
              | None ->
                  let confident_types = List.map (confident_typ cenv) args in
                  check_builtin_call ~file collector name e.pos args confident_types)
@@ -1563,6 +1613,36 @@ let typecheck_program ~file ~(module_of : string -> string)
         let ir = typecheck_expr env cenv inner in
         if is_nullable ir.typ || ir.is_nil then e211 inner.pos (expr_label inner);
         { typ = TScalar "Text"; is_nil = false }
+    | Spawn (cn, fields) ->
+        (* the ctor half checks exactly as a ctor literal (completeness,
+           field types, ?T boundaries) — delegate, then type the address *)
+        let _ = typecheck_expr env cenv { e with kind = Ctor (cn, fields) } in
+        let bad why =
+          Diag.Collector.add collector
+            (Diag.error ~code:spawn_no_receive_code ~file ~line:e.pos.line ~col:e.pos.col
+               ~message:
+                 (Printf.sprintf
+                    "`spawn %s { ... }`: %s — an actor is a class with `fn receive(msg: M)` where M is a class, record, or union"
+                    cn why)
+               ());
+          { typ = TScalar "Int"; is_nil = false }
+        in
+        (match StringMap.find_opt cn syms.classes with
+         | Some cls -> (
+           match List.find_opt (fun (m : method_info) -> m.name = "receive") cls.methods with
+           | Some { params = [ (_, pty, _) ]; _ } -> (
+             match typ_of_field_ty pty with
+             | TScalar mname
+               when StringMap.mem mname syms.classes
+                    || StringMap.mem mname syms.unions ->
+               { typ = TActor mname; is_nil = false }
+             | TScalar mname -> bad (Printf.sprintf "receive's message type `%s` is not a declared class, record, or union" mname)
+             | _ -> bad "receive's parameter must be a plain class, record, or union type")
+           | Some _ -> bad "its `receive` must take exactly one parameter"
+           | None -> bad (Printf.sprintf "`%s` has no `receive` method" cn))
+         | None ->
+           (* unknown class: the delegated Ctor check already reported E207 *)
+           { typ = TScalar "Int"; is_nil = false })
     | Ctor (class_name, fields) ->
         (try
            let cls = StringMap.find class_name syms.classes in
@@ -2448,7 +2528,7 @@ and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : e
   | Binary (_, l, r) ->
     walk_expr bound visit l;
     walk_expr bound visit r
-  | Ctor (_, fields) | Insert (_, fields) ->
+  | Ctor (_, fields) | Insert (_, fields) | Spawn (_, fields) ->
     List.iter (fun (_, v) -> walk_expr bound visit v) fields
   | Interp inner -> walk_expr bound visit inner
   | ListLit items -> List.iter (walk_expr bound visit) items
@@ -2728,6 +2808,7 @@ let rec field_ty_str (ft : field_ty) : string =
   | Multi s -> "multi " ^ s
   | Map (k, v) -> "map<" ^ k ^ ", " ^ v ^ ">"
   | Backlink (c, f) -> "backlink " ^ c ^ "." ^ f
+  | Actor m -> "actor " ^ m
   | Nullable t -> "?" ^ field_ty_str t
 
 let dump_symbols (syms : symbols) : string =

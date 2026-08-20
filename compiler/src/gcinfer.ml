@@ -29,6 +29,7 @@ let rec refs_of_ty (classes : Types.class_info SMap.t) (t : Ast.field_ty) :
   | Ast.Map (k, v) -> List.filter (fun n -> SMap.mem n classes) [ k; v ]
   | Ast.Nullable ft -> refs_of_ty classes ft
   | Ast.Ref _ | Ast.Backlink _ -> [] (* id / virtual inverse: no pointer edge *)
+  | Ast.Actor _ -> [] (* an address word — the runtime owns actors, never a pointer edge *)
 
 let edges (classes : Types.class_info SMap.t) (ci : Types.class_info) :
     string list =

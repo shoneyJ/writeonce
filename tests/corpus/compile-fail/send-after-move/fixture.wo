@@ -1,0 +1,20 @@
+-- a message MOVES on send: the sender's binding is dead afterwards
+
+class Note {
+  text: Text
+}
+
+class Sink {
+  pad: Int
+  fn receive(msg: Note) {
+    print(msg.text);
+  }
+}
+
+fn main() -> Int {
+  let a = spawn Sink { pad: 0 };
+  let n = Note { text: "gone" };
+  send(a, n);
+  print(n.text);
+  return 0;
+}

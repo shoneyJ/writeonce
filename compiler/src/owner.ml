@@ -421,6 +421,7 @@ let oclass_of (ctx : ctx) (ft : Ast.field_ty) : oclass =
       | Some u -> if u.Types.u_has_payload then Owned else Copy
       | None -> Copy (* unknown type: WO-E225 already reported by types.ml *))
   | Ref _ -> Copy
+  | Actor _ -> Copy (* an address is a copyable word; the runtime owns actors *)
   | Backlink _ -> Copy (* a virtual collection of row ids read on demand *)
   | Multi _ | Map _ -> Owned
   | Nullable _ -> Copy (* unreachable: unwrapped above *)
@@ -505,6 +506,17 @@ let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
      field/parameter it is built into) decides. *)
   | ListLit (first :: _) -> (
     match expr_ty ctx first with Some (Scalar n) -> Some (Multi n) | _ -> None)
+  (* arc: a spawn's value is a typed address — a copyable scalar word *)
+  | Spawn (cn, _) -> (
+    match Types.StringMap.find_opt cn ctx.syms.Types.classes with
+    | Some cls -> (
+      match
+        List.find_opt (fun (m : Types.method_info) -> m.Types.name = "receive") cls.Types.methods
+      with
+      | Some { Types.params = [ (_, pty, _) ]; _ } -> (
+        match pty with Ast.Scalar mname -> Some (Ast.Actor mname) | _ -> None)
+      | _ -> None)
+    | None -> None)
   | ListLit [] | MapLit -> None
   (* haxe-parity Task 6: `nil` is the zero word — contextual on its
      destination, and never something this frame owns. *)
@@ -1124,6 +1136,9 @@ let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
     read_place_parts ctx e
   | Call (callee, args) -> analyze_call ctx e callee args
   | Ctor (cn, fields) -> analyze_ctor ctx cn fields
+  (* arc: spawn's ctor half moves fields exactly as a ctor literal does;
+     the result (an address) is Copy, so no drop for the spawn itself *)
+  | Spawn (cn, fields) -> analyze_ctor ctx cn fields
   | Insert (_, fields) ->
     (* iteration 9 Task 3: the engine copies every field value at the row
        API (the two-worlds bulkhead), so an insert BORROWS its values —
@@ -1323,6 +1338,9 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
     | Ident "push" -> i = 1 && Types.StringMap.find_opt "push" ctx.syms.Types.free_fns = None
     | Ident "set" ->
       (i = 1 || i = 2) && Types.StringMap.find_opt "set" ctx.syms.Types.free_fns = None
+    (* arc: send(addr, msg) MOVES the message to the runtime — the sender's
+       binding dies (compile-time move, iteration 8's criterion) *)
+    | Ident "send" -> i = 1 && Types.StringMap.find_opt "send" ctx.syms.Types.free_fns = None
     | _ -> false
   in
   List.iteri
@@ -1336,8 +1354,13 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
              record_move ctx p (MvArg pname))
         else if container_store_slot i && place_class ctx p = Owned
                 && not (stores_by_copy ctx p) then
-          (if transfer ctx p ~what:"cannot be stored in a container" then
-             record_move ctx p (MvArg "element"))
+          (if
+             transfer ctx p
+               ~what:
+                 (match callee.kind with
+                 | Ident "send" -> "cannot be sent — a message moves to the receiver"
+                 | _ -> "cannot be stored in a container")
+           then record_move ctx p (MvArg "element"))
         )
     args;
   record_drop ctx ~node:call_e.id ~pos:call_e.pos ~kind:DLiveMask

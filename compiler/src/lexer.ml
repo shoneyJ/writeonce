@@ -125,6 +125,7 @@ let keyword_kind = function
   | "true" -> Some Token.KwTrue
   | "false" -> Some Token.KwFalse
   | "use" -> Some Token.KwUse
+  | "spawn" -> Some Token.KwSpawn
   | "pub" -> Some Token.KwPub
   | "break" -> Some Token.KwBreak
   | "continue" -> Some Token.KwContinue

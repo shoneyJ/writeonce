@@ -395,6 +395,11 @@ let parse_field_ty (st : state) : Ast.field_ty =
         expect st Token.Dot "'.'";
         let fld = expect_ident st "backlink source field" in
         Ast.Backlink (cls, fld)
+    | Token.Ident "actor" ->
+        (* the concurrency arc: `actor M` — a typed actor address,
+           contextual like multi/map (actor stays a legal identifier) *)
+        ignore (advance st);
+        Ast.Actor (expect_ident st "actor message type")
     | Token.Ident "map" ->
         ignore (advance st);
         expect st Token.Lt "'<'";
@@ -1239,6 +1244,16 @@ and parse_primary (st : state) : Ast.expr =
         "only the empty map literal `{}` is an expression — build entries with `set(m, k, v)`";
     ignore (advance st);
     { Ast.id; pos; kind = Ast.MapLit }
+  | Token.KwSpawn ->
+    (* arc: `spawn Cls { fields }` — exactly a ctor literal behind the
+       keyword; fields MOVE in, result is the actor address *)
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    let lit = parse_ctor_literal st in
+    (match lit.Ast.kind with
+     | Ast.Ctor (cn, fields) -> { Ast.id; pos; kind = Ast.Spawn (cn, fields) }
+     | _ -> unexpected st "a class constructor after `spawn`")
   | Token.Ident _ when looks_like_ctor st -> parse_ctor_literal st
   | Token.Ident s ->
     let pos = peek_pos st in
@@ -1966,6 +1981,8 @@ let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : As
     { e with Ast.kind = Ast.Binary (op, subst_expr consts bound l, subst_expr consts bound r) }
   | Ast.Ctor (cn, fields) ->
     { e with Ast.kind = Ast.Ctor (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
+  | Ast.Spawn (cn, fields) ->
+    { e with Ast.kind = Ast.Spawn (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Insert (cn, fields) ->
     { e with Ast.kind = Ast.Insert (cn, List.map (fun (n, v) -> (n, subst_expr consts bound v)) fields) }
   | Ast.Delete t -> { e with Ast.kind = Ast.Delete (subst_expr consts bound t) }

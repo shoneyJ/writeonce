@@ -59,7 +59,24 @@ typedef struct wo_fiber {
     wo_err caught;
     wo_fib_state state;
     struct wo_fiber *next; /* intrusive FIFO link (run queue) */
+    /* arc actors: when this fiber is an actor's delivery fiber, `actor`
+     * points at it and `cur_msg` is the message the current receive call
+     * borrows — the RUNTIME owns it and drops it after the call returns. */
+    struct wo_actor *actor;
+    uint64_t cur_msg;
 } wo_fiber;
+
+/* An actor: moved-in state, its receive method, a FIFO mailbox, and at
+ * most one delivery fiber at a time (one message at a time — the actor
+ * guarantee). Actors live until program end (v1: no actor death). */
+typedef struct wo_actor {
+    uint64_t instance;   /* the moved-in state object (runtime-owned) */
+    uint32_t method;     /* receive's method index (self + msg = 2 args) */
+    uint64_t *msgs;      /* FIFO ring, growable */
+    uint32_t mhead, mlen, mcap;
+    wo_fiber *active;    /* the delivery fiber, NULL when idle */
+    struct wo_actor *next_all; /* the vm's all-actors list */
+} wo_actor;
 
 typedef struct wo_vm {
     const wo_module *mod;
@@ -70,7 +87,13 @@ typedef struct wo_vm {
     uint32_t nfibers;        /* live fibers besides main */
     int64_t budget0;         /* reductions per slice (WO_REDUCTIONS, default 4000) */
     int64_t budget;          /* countdown for the live fiber */
+    wo_actor *actors;        /* every spawned actor (torn down at destroy) */
 } wo_vm;
+
+/* arc: the spawn/send builtins' runtime halves (vm.c owns the scheduler). */
+int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
+                      uint64_t *out_addr, const char **msg);
+int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **msg);
 
 /* Spawn a fiber that will run method_idx(args) — the runtime half the
  * `spawn` expression lowers onto (stage 1 Task 3); Task 2's tests drive it

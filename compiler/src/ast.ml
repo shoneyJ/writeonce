@@ -73,6 +73,9 @@ type field_ty =
                                     `ref` — NOT a stored column; reading it
                                     scans C's index on f. Types as multi C. *)
   | Nullable of field_ty   (* ?T wrapper *)
+  | Actor of string        (* actor M: a typed actor address (arc, 8+11);
+                              M is the receive-message class. A copyable
+                              scalar word at runtime. *)
 
 (* Parameter passing convention (spec section 3, rule 2): default is an
    immutable borrow; `mut` is an exclusive borrow; `take` moves
@@ -252,6 +255,10 @@ and expr_kind =
      uses either, so neither is grammar here (YAGNI, recorded in the
      task report). *)
   | Switch of expr * switch_arm list
+  (* the concurrency arc: `spawn Cls { fields }` — construct the actor's
+     state (exactly a ctor literal, fields MOVE in) and start it; the
+     result is an `actor M` address, M inferred from Cls's receive. *)
+  | Spawn of string * (string * expr) list
   (* Container literals, the driving workload's own spelling for a fresh
      container: `[]` / `[a, b, c]` for a `multi T`, `{}` for an empty
      `map<K, V>`. They lower to exactly what `multi_new()`/`map_new()`

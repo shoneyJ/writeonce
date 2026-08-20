@@ -786,6 +786,8 @@ let b_db_delete = 63
 let b_db_scan = 64
 let b_db_get_field = 65
 let b_db_probe = 66
+let b_spawn = 68 (* arc: spawn(instance, receive_method_idx) -> actor address *)
+let b_send = 69 (* arc: send(addr, msg) — msg moves to the runtime *)
 
 (* iteration 9b: `d.staff` where staff is `backlink Employee.dept` reads by
    probing Employee's index on its `dept` column. Resolve to (source cid,
@@ -950,7 +952,9 @@ let is_builtin_name (n : string) =
       (* systems stdlib *)
       "len"; "byte_at"; "print_err"; "starts_with"; "ends_with"; "index_of"; "last_index_of";
       "substr"; "trim"; "to_lower"; "char_of"; "parse_int"; "split"; "split_ws"; "join"; "slice";
-      "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at" ]
+      "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at";
+      (* the concurrency arc *)
+      "send" ]
 
 (* ---- unions and variants (haxe-parity Task 4) ------------------------
 
@@ -1118,6 +1122,17 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
     | Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Some (Scalar "Bool")
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
+  (* arc: a spawn's value is the typed actor address (a scalar word) *)
+  | Spawn (cn, _) -> (
+    match Types.StringMap.find_opt cn p.p_syms.Types.classes with
+    | Some cls -> (
+      match
+        List.find_opt (fun (m : Types.method_info) -> m.Types.name = "receive") cls.Types.methods
+      with
+      | Some { Types.params = [ (_, pty, _) ]; _ } -> (
+        match pty with Ast.Scalar mname -> Some (Ast.Actor mname) | _ -> None)
+      | _ -> None)
+    | None -> None)
   | Insert _ -> Some (Scalar "Int")
   | Delete _ -> Some (Scalar "Int")
   | Query q ->
@@ -1395,6 +1410,7 @@ let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
     | Some n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
     | None -> wob_none)
   | Ast.Ref n -> ( match class_of_name p n with Some cid -> cid | None -> wob_none)
+  | Ast.Actor _ -> wob_none (* an address word: no per-class drop metadata *)
   | Ast.Backlink _ | Ast.Nullable _ -> wob_none
 
 let field_elem_meta (p : pctx) (ty : Ast.field_ty) : int =
@@ -1730,6 +1746,26 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
     put f (ins_abc op_neg dst b 0)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
+  | Spawn (cn, fields) ->
+    (* build the actor's state exactly as a ctor, then hand instance +
+       receive's method index to the runtime; dst gets the address word.
+       Reserve dst like emit_ctor does — in tail position dst can sit at
+       f_temp and the two-slot argument window would clobber it. *)
+    let outer = f.f_temp in
+    if f.f_temp <= dst then f.f_temp <- dst + 1;
+    let t = alloc_temps p f e.pos 2 in
+    emit_ctor p f v ~dst:t e cn fields;
+    (match SM.find_opt (cn ^ ".receive") p.p_method_id with
+     | Some midx ->
+       put f (ins_abx op_loadk (t + 1) (check_bx p f e.pos "constant" (const_int p midx)));
+       sync_mask p f v e.id;
+       f.f_cur_line <- e.pos.line;
+       put f (ins_abc op_builtin dst t b_spawn)
+     | None ->
+       err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
+         ~message:(Printf.sprintf "`spawn %s`: no `receive` method (typecheck should have refused)" cn);
+       put f (ins_abx op_loadk dst (const_int p 0)));
+    f.f_temp <- outer
   | Insert (cn, fields) -> emit_insert p f v ~dst e cn fields
   | Delete target -> (
     match ty_of_expr p f target with
@@ -3320,6 +3356,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
     then 1
     else if
       id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has
+      || id = b_send
       (* systems stdlib, two arguments *)
       || id = b_byte_at || id = b_starts_with || id = b_ends_with || id = b_index_of
       || id = b_last_index_of || id = b_split || id = b_join || id = b_map_remove
@@ -3359,7 +3396,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
          dangle the value just read) and the stores, which either copy (Text,
          handled by copied_container_call) or take ownership (OWNED/GCREF). *)
       let reader = List.mem name [ "get"; "latest"; "key_at"; "val_at" ] in
-      (if not (List.mem name [ "push"; "set" ]) then
+      (if not (List.mem name [ "push"; "set"; "send" ]) then
          List.iteri
            (fun i (a : Ast.expr) ->
              (* a reader's result points into arg0 (the container) — dropping
@@ -3389,6 +3426,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       List.iteri (fun i (a : Ast.expr) -> if i > 0 then drop_fresh_text p f (base + i) a) args
   in
   match name with
+  | "send" -> fixed b_send (* arc: msg (arg1) moved to the runtime — never dropped here *)
   | "now" -> fixed b_now
   | "print" -> fixed b_print
   | "print_int" -> fixed b_print_int

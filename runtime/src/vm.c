@@ -28,7 +28,24 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
     return wo_rt_init(&vm->rt, heap_cap, mod->classes, mod->class_cnt);
 }
 
-void wo_vm_destroy(wo_vm *vm) { wo_rt_destroy(&vm->rt); }
+void wo_vm_destroy(wo_vm *vm) {
+    /* actors first — dropping their state and queued messages needs the
+     * runtime alive */
+    wo_actor *a = vm->actors;
+    while (a) {
+        wo_actor *nx = a->next_all;
+        if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; i < a->mlen; i++) {
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap];
+            if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
+        }
+        free(a->msgs);
+        free(a);
+        a = nx;
+    }
+    vm->actors = NULL;
+    wo_rt_destroy(&vm->rt);
+}
 
 /* ---- the run queue (stage 1 Task 2) ---------------------------------- */
 
@@ -78,6 +95,12 @@ static void fib_reap(wo_vm *vm, wo_fiber *fb) {
     vm->cur = fb;
     vm_unwind(vm, 0);
     vm->cur = save;
+    if (fb->actor) {
+        /* the in-flight message is the runtime's to drop */
+        if (fb->cur_msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)fb->cur_msg);
+        fb->cur_msg = 0;
+        fb->actor->active = NULL;
+    }
     if (fb != &vm->f0) {
         vm->nfibers--;
         free(fb);
@@ -88,6 +111,90 @@ static void fib_reap(wo_vm *vm, wo_fiber *fb) {
 static void fib_reap_all(wo_vm *vm) {
     wo_fiber *fb;
     while ((fb = fib_dequeue(vm)) != NULL) fib_reap(vm, fb);
+}
+
+/* ---- actors (arc stage 1 Task 3) -------------------------------------- */
+
+static uint64_t actor_pop(wo_actor *a) {
+    uint64_t m = a->msgs[a->mhead];
+    a->mhead = (a->mhead + 1) % a->mcap;
+    a->mlen--;
+    return m;
+}
+
+static int actor_push(wo_actor *a, uint64_t m) {
+    if (a->mlen == a->mcap) {
+        uint32_t ncap = a->mcap ? a->mcap * 2 : 8;
+        uint64_t *nm = malloc((size_t)ncap * 8u);
+        if (!nm) return -1;
+        for (uint32_t i = 0; i < a->mlen; i++) nm[i] = a->msgs[(a->mhead + i) % a->mcap];
+        free(a->msgs);
+        a->msgs = nm;
+        a->mhead = 0;
+        a->mcap = ncap;
+    }
+    a->msgs[(a->mhead + a->mlen) % a->mcap] = m;
+    a->mlen++;
+    return 0;
+}
+
+/* Mailbox nonempty, no delivery fiber: start one on the next message.
+ * receive borrows both self and the message; the runtime keeps ownership
+ * of the message (fiber->cur_msg) and drops it when the call returns. */
+static int actor_activate(wo_vm *vm, wo_actor *a) {
+    uint64_t m = actor_pop(a);
+    uint64_t args[2] = { a->instance, m };
+    wo_fiber *fb = wo_vm_spawn_fiber(vm, a->method, args, 2);
+    if (!fb) return -1;
+    fb->actor = a;
+    fb->cur_msg = m;
+    a->active = fb;
+    return 0;
+}
+
+int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
+                      uint64_t *out_addr, const char **msg) {
+    if (method_idx >= vm->mod->method_cnt
+        || vm->mod->methods[method_idx].arg_cnt != 2) {
+        *msg = "spawn: receive must take (self, msg)";
+        return WO_T_BOUNDS;
+    }
+    if (!instance) {
+        *msg = "spawn: nil instance";
+        return WO_T_BOUNDS;
+    }
+    wo_actor *a = calloc(1, sizeof(*a));
+    if (!a) {
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    a->instance = instance;
+    a->method = method_idx;
+    a->next_all = vm->actors;
+    vm->actors = a;
+    *out_addr = (uint64_t)(uintptr_t)a;
+    return 0;
+}
+
+int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **msg) {
+    wo_actor *a = (wo_actor *)(uintptr_t)addr;
+    if (!a) {
+        *msg = "send: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "send: nil message";
+        return WO_T_BOUNDS;
+    }
+    if (actor_push(a, msg_val) != 0) {
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    if (!a->active && actor_activate(vm, a) != 0) {
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    return 0;
 }
 
 /* The drop-table entry governing instruction [pc]: the last one recorded
@@ -165,6 +272,17 @@ static void vm_gc_roots(wo_vm *vm) {
     vm_gc_roots_fiber(vm, vm->cur);
     for (const wo_fiber *fb = vm->qhead; fb; fb = fb->next)
         vm_gc_roots_fiber(vm, fb);
+    /* actors: moved-in state, queued messages, and the in-flight message
+     * are runtime-owned — none sits in any frame's masks */
+    for (const wo_actor *a = vm->actors; a; a = a->next_all) {
+        if (a->instance) wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; i < a->mlen; i++) {
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap];
+            if (m) wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)m);
+        }
+        if (a->active && a->active->cur_msg)
+            wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)a->active->cur_msg);
+    }
 }
 
 /* One safepoint: start a cycle when the trigger says so (snapshot the
@@ -514,20 +632,48 @@ dispatch:
  * wrapper returns nothing owned — Task 3's contract). The queue cannot be
  * empty when a spawned fiber ends: main never parks in stage 1, so it is
  * either live or queued. */
-#define FIBER_DONE(rv)                          \
-    do {                                        \
-        if (vm->cur == &vm->f0) {               \
-            fib_reap_all(vm);                   \
-            *ret = (rv);                        \
-            return 0;                           \
-        }                                       \
-        wo_fiber *dead = vm->cur;               \
-        vm->cur = fib_dequeue(vm);              \
-        vm->nfibers--;                          \
-        free(dead);                             \
-        vm->budget = vm->budget0;               \
-        RELOAD();                               \
-        NEXT();                                 \
+#define FIBER_DONE(rv)                                                    \
+    do {                                                                  \
+        if (vm->cur == &vm->f0) {                                         \
+            fib_reap_all(vm);                                             \
+            *ret = (rv);                                                  \
+            return 0;                                                     \
+        }                                                                 \
+        wo_fiber *dead = vm->cur;                                         \
+        if (dead->actor) {                                                \
+            wo_actor *a = dead->actor;                                    \
+            if (dead->cur_msg) {                                          \
+                wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)dead->cur_msg); \
+                dead->cur_msg = 0;                                        \
+            }                                                             \
+            if (a->mlen) {                                                \
+                /* next message: REUSE this context, re-queued for       \
+                 * fairness (one message per turn, never a monopolist) */ \
+                uint64_t m_ = actor_pop(a);                               \
+                const wo_methodrec *sme_ = &vm->mod->methods[a->method];  \
+                dead->depth = 1;                                          \
+                dead->ncatch = 0;                                         \
+                dead->frames[0].method = a->method;                       \
+                dead->frames[0].pc = 0;                                   \
+                dead->frames[0].base = 0;                                 \
+                dead->regs[0] = a->instance;                              \
+                dead->regs[1] = m_;                                       \
+                memset(dead->regs + 2, 0, (size_t)(sme_->reg_cnt - 2) * 8u); \
+                dead->cur_msg = m_;                                       \
+                fib_enqueue(vm, dead);                                    \
+                vm->cur = fib_dequeue(vm);                                \
+                vm->budget = vm->budget0;                                 \
+                RELOAD();                                                 \
+                NEXT();                                                   \
+            }                                                             \
+            a->active = NULL;                                             \
+        }                                                                 \
+        vm->cur = fib_dequeue(vm);                                        \
+        vm->nfibers--;                                                    \
+        free(dead);                                                       \
+        vm->budget = vm->budget0;                                         \
+        RELOAD();                                                         \
+        NEXT();                                                           \
     } while (0)
 
     CASE(RET) : {

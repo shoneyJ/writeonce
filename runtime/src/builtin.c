@@ -72,6 +72,18 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
     if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) return wo_builtin_db(vm, R, ins, msg);
     switch (C) {
+    case WO_B_SPAWN: {
+        /* arc: R[B] = the moved-in instance, R[B+1] = receive's method
+         * index (a compile-time constant); R[A] = the actor address */
+        int rc = wo_vm_actor_spawn(vm, R[B], (uint32_t)R[B + 1], &R[A], msg);
+        return rc;
+    }
+    case WO_B_SEND: {
+        int rc = wo_vm_actor_send(vm, R[B], R[B + 1], msg);
+        if (rc) return rc;
+        R[A] = 0;
+        return 0;
+    }
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);

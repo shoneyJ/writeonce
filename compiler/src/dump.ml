@@ -51,6 +51,7 @@ let kind_label (k : Token.kind) : string =
   | Token.KwInsert -> "KW_INSERT"
   | Token.KwSelect -> "KW_SELECT"
   | Token.KwUse -> "KW_USE"
+  | Token.KwSpawn -> "KW_SPAWN"
   | Token.KwPub -> "KW_PUB"
   | Token.KwBreak -> "KW_BREAK"
   | Token.KwContinue -> "KW_CONTINUE"
@@ -151,6 +152,7 @@ let rec field_ty_str : Ast.field_ty -> string = function
   | Ast.Multi s -> Printf.sprintf "multi %s" s
   | Ast.Map (k, v) -> Printf.sprintf "map<%s, %s>" k v
   | Ast.Backlink (c, f) -> Printf.sprintf "backlink %s.%s" c f
+  | Ast.Actor m -> Printf.sprintf "actor %s" m
   | Ast.Nullable t -> "?" ^ field_ty_str t
 
 let param_str (p : Ast.param) : string = Printf.sprintf "%s%s: %s" (conv_str p.conv) p.name (field_ty_str p.ty)
@@ -242,6 +244,9 @@ let rec expr_str (e : Ast.expr) : string =
   | Ast.MapLit -> "{}"
   | Ast.NilLit -> "nil"
   | Ast.As (inner, ty) -> Printf.sprintf "%s as %s" (expr_str inner) (field_ty_str ty)
+  | Ast.Spawn (cn, fields) ->
+    Printf.sprintf "spawn %s{%s}" cn
+      (String.concat ", " (List.map (fun (n, v) -> n ^ ": " ^ expr_str v) fields))
   (* Like SWITCH above: a one-line summary, not a full unparse of the
      catch arm's statements. *)
   | Ast.Try { body; ename; handler } ->

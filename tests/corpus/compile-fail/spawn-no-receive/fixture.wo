@@ -1,0 +1,10 @@
+-- spawn's target must be an actor: a class with fn receive(msg: M)
+
+class Silent {
+  n: Int
+}
+
+fn main() -> Int {
+  let a = spawn Silent { n: 1 };
+  return 0;
+}
