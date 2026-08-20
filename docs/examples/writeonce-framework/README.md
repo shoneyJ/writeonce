@@ -58,8 +58,10 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 - `Content-Length` bodies only (no chunked encoding), no WebSockets/SSE,
   JSON-first (no templates). Form-encoded bodies parse through
   `form_values(req)` (`+` and `%XX` decoded, nil on any other
-  content-type); `media_type(req)` names the body's media type for
-  content negotiation. Multipart: not yet.
+  content-type); multipart/form-data through `multipart_parts(req)`
+  (whole-body, bounded by BODY_MAX — no streaming uploads until
+  fibers/shards) with `part_named` for fields; `media_type(req)` names
+  the body's media type for content negotiation.
 
 ## The core checklist (what a framework core owes, and where this one is)
 
@@ -72,7 +74,7 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 | Bearer/Basic auth mechanism + principal | ✅ `http/auth.wo`, `req.principal` |
 | Body parsing hooks: JSON | ✅ the language's checked `json.decode` |
 | Body parsing hooks: form-encoded | ✅ `form_values(req)` — nil unless the content-type says form; `media_type(req)` exposed for content negotiation |
-| Body parsing hooks: multipart | ⬜ candidate next slice |
+| Body parsing hooks: multipart | ✅ `multipart_parts(req)` (RFC 7578: fields + file parts, filename/mime kept) + `part_named` |
 | Error handling → status mapping | 🔶 trap = 500, builders per status; a per-error mapping hook is a candidate slice |
 | Body streaming, backpressure | ⏸ needs fibers/shards (iterations 8/11) — whole bodies until then, by design |
 | Cancellation propagation | ⏸ process-level only (`env.stopping()`); per-request cancel needs fibers (11) |

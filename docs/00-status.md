@@ -43,8 +43,14 @@ core checklist (✅ / candidate / parked-by-design rows).
 
 **Form-encoded bodies landed 2026-08-20** (same branch): `media_type(req)`
 + `form_values(req)` (nil on any other content-type; '+'/%XX decoded);
-CreateProduct accepts form OR JSON into one insert path; `just web-app`
-**19/0**. Multipart is the candidate next slice.
+CreateProduct accepts form OR JSON into one insert path.
+
+**Multipart landed 2026-08-20** (same branch): `http/multipart.wo` —
+RFC 7578 fields + file parts, strict malformed-is-nil, `part_named`;
+whole-body within BODY_MAX (streaming parks behind 8/11). CreateProduct
+takes multipart/form/JSON; `just web-app` **21/0**. Surfaced + fixed the
+RETURN flavor of the interp-of-borrowed-place emitter bug (emit_return now
+sees through Interp; same corpus pin). Body-parsing hooks: all three ✅.
 
 Next per the implementation order (17 parked): finish the half-done
 database branches — 9c (ipc-attach: manifest + binding) and 9d

@@ -42,8 +42,8 @@ class ShowProduct {
   }
 }
 
--- Accepts BOTH bodies: a form post (application/x-www-form-urlencoded,
--- the framework's form_values hook) and JSON — same insert either way.
+-- Accepts THREE bodies: multipart/form-data (curl -F), a form post
+-- (application/x-www-form-urlencoded), and JSON — same insert either way.
 fn create_product(name: Text, price: Int, stock: Int) -> Resp {
   let made = try insert Product { name: name, price: price, stock: stock }
              catch (e) nil;
@@ -54,6 +54,21 @@ fn create_product(name: Text, price: Int, stock: Int) -> Resp {
 class CreateProduct {
   pad: Int
   fn handle(req: Req) -> Resp {
+    if media_type(req) == "multipart/form-data" {
+      let ps = multipart_parts(req);
+      if ps == nil { return bad_request("unreadable multipart body"); }
+      let name = part_named(ps, "name");
+      if name == nil { return bad_request("multipart needs name, price, stock"); }
+      let pstr = part_named(ps, "price");
+      if pstr == nil { return bad_request("multipart needs name, price, stock"); }
+      let sstr = part_named(ps, "stock");
+      if sstr == nil { return bad_request("multipart needs name, price, stock"); }
+      let price = parse_int(pstr);
+      if price == nil { return bad_request("price must be a number"); }
+      let stock = parse_int(sstr);
+      if stock == nil { return bad_request("stock must be a number"); }
+      return create_product(name, price, stock);
+    }
     if media_type(req) == "application/x-www-form-urlencoded" {
       let f = form_values(req);
       if f == nil { return bad_request("unreadable form body"); }

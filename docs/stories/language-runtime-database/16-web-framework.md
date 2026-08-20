@@ -42,7 +42,17 @@
 > (nil unless the content-type says form; '+' and %XX decoded through the
 > existing query decoder). Probe 7/7 release + ASan; web-app's
 > CreateProduct now accepts form OR JSON into one insert path;
-> `just web-app` 19/0. Multipart stays the candidate next slice.
+> `just web-app` 19/0.
+>
+> **Multipart LANDED 2026-08-20** (same branch): `http/multipart.wo` —
+> RFC 7578 parts (fields + file parts with filename/mime), quoted or bare
+> boundary, strict malformed-is-nil (missing closing marker, missing
+> content-disposition), `part_named` accessor; whole-body within BODY_MAX,
+> streaming parks behind 8/11. Probe 13/13 + reuse loop, release + ASan;
+> CreateProduct accepts multipart/form/JSON; `just web-app` 21/0. It
+> surfaced the RETURN flavor of the interp-of-borrowed-place emitter bug
+> (`return "${p.content}"` — corruption two requests after the handler);
+> fixed in emit_return, pinned in the same fixture.
 >
 > The framework is written IN writeonce and imported
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a

@@ -1,0 +1,103 @@
+-- http/multipart.wo — multipart/form-data parsing (RFC 7578), the body
+-- hook for file uploads and curl -F. Whole-body parsing over the buffered
+-- body (the serve loop already bounds it at BODY_MAX): parts split on the
+-- boundary, each part = headers, blank line, content. Anything malformed
+-- answers nil — the caller's 400, never a guess.
+
+pub typedef Part = {
+  name:     Text,   -- content-disposition name (form field)
+  filename: Text,   -- "" unless the part is a file
+  mime:     Text,   -- the part's own content-type, lowercased, "" if absent
+  content:  Text    -- the raw bytes
+}
+
+-- A quoted parameter value loses its quotes; a bare one is trimmed.
+fn unquote(v: Text) -> Text {
+  let t = trim(v);
+  if len(t) >= 2 and starts_with(t, "\"") and ends_with(t, "\"") {
+    return substr(t, 1, len(t) - 2);
+  }
+  return t;
+}
+
+-- The boundary parameter from the RAW content-type header (media_type
+-- strips parameters, so this reads the header itself). Value may be quoted;
+-- the parameter key is case-insensitive, the value is not.
+fn boundary_of(req: Req) -> ?Text {
+  let ct = req.headers["content-type"];
+  if ct == nil { return nil; }
+  for tok in split(ct, ";") {
+    let t = trim(tok);
+    if starts_with(to_lower(t), "boundary=") {
+      let v = unquote(substr(t, 9, len(t) - 9));
+      if v != "" { return v; }
+    }
+  }
+  return nil;
+}
+
+-- One piece between boundary markers: "\r\n<headers>\r\n\r\n<content>\r\n".
+-- nil on any malformation; a part without a content-disposition is
+-- malformed (RFC 7578: every part carries one).
+fn parse_part(piece: Text) -> ?Part {
+  if starts_with(piece, "\r\n") == false { return nil; }
+  let he = index_of(piece, "\r\n\r\n");
+  if he < 0 { return nil; }
+  if he + 6 > len(piece) { return nil; }
+  if ends_with(piece, "\r\n") == false { return nil; }
+  let headers = substr(piece, 2, he - 2);
+  let content = substr(piece, he + 4, len(piece) - he - 6);
+  let name = "";
+  let filename = "";
+  let mime = "";
+  let disposed = false;
+  for line in split(headers, "\r\n") {
+    let low = to_lower(line);
+    if starts_with(low, "content-disposition:") {
+      disposed = true;
+      for tok in split(line, ";") {
+        let t = trim(tok);
+        let tl = to_lower(t);
+        if starts_with(tl, "name=") { name = unquote(substr(t, 5, len(t) - 5)); }
+        if starts_with(tl, "filename=") { filename = unquote(substr(t, 9, len(t) - 9)); }
+      }
+    }
+    if starts_with(low, "content-type:") {
+      mime = to_lower(trim(substr(line, 13, len(line) - 13)));
+    }
+  }
+  if disposed == false { return nil; }
+  return Part { name: name, filename: filename, mime: mime, content: content };
+}
+
+-- The request's parts, in body order. nil unless the content-type is
+-- multipart/form-data with a boundary, every part parses, and the body
+-- carries the closing "--boundary--" marker.
+pub fn multipart_parts(req: Req) -> ?multi Part {
+  if media_type(req) != "multipart/form-data" { return nil; }
+  let b = boundary_of(req);
+  if b == nil { return nil; }
+  let pieces = split(req.body, "--${b}");
+  if len(pieces) < 2 { return nil; }
+  let parts: multi Part = [];
+  let i = 1;
+  let ended = false;
+  while i < len(pieces) {
+    let piece = pieces[i];
+    if starts_with(piece, "--") { ended = true; break; }
+    let p = parse_part(piece);
+    if p == nil { return nil; }
+    push(parts, p);
+    i = i + 1;
+  }
+  if ended == false { return nil; }
+  return parts;
+}
+
+-- The content of the first part with this field name; nil if absent.
+pub fn part_named(parts: multi Part, name: Text) -> ?Text {
+  for p in parts {
+    if p.name == name { return "${p.content}"; }
+  }
+  return nil;
+}

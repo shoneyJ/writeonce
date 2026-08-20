@@ -112,6 +112,11 @@ expect "form-encoded create (201, + and %XX decoded)" \
   "$(hit POST /products 'name=form+kettle&price=1250&stock=2' yes 'application/x-www-form-urlencoded; charset=UTF-8')" 201 '"name":"form kettle"'
 expect "form with a non-numeric price is 400" \
   "$(hit POST /products 'name=x&price=abc&stock=1' yes 'application/x-www-form-urlencoded')" 400
+MP=$'--BXB\r\ncontent-disposition: form-data; name="name"\r\n\r\nmp teapot\r\n--BXB\r\ncontent-disposition: form-data; name="price"\r\n\r\n700\r\n--BXB\r\ncontent-disposition: form-data; name="stock"\r\n\r\n3\r\n--BXB--\r\n'
+expect "multipart create (201, curl -F shape)" \
+  "$(hit POST /products "$MP" yes 'multipart/form-data; boundary=BXB')" 201 '"name":"mp teapot"'
+expect "multipart without the closing marker is 400" \
+  "$(hit POST /products $'--BXB\r\ncontent-disposition: form-data; name="name"\r\n\r\nx\r\n' yes 'multipart/form-data; boundary=BXB')" 400
 expect "list shows the product"       "$(hit GET /products)" 200 '"price":900'
 expect "show by :name capture"        "$(hit GET /products/mug)" 200 '"stock":5'
 expect "unknown product is 404"       "$(hit GET /products/none)" 404
