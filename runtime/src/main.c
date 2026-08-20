@@ -10,6 +10,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
 
 #include "cont.h"
 #include "gc.h"
@@ -167,6 +169,17 @@ int main(int argc, char **argv) {
     }
     VM.shard_id = 0;
     VM.is_primary = 1;
+    VM.rt.shard_id = 0;
+    VM.wake_efd = eventfd(0, EFD_NONBLOCK);
+    VM.in_mu = calloc(1, sizeof(pthread_mutex_t));
+    if (!VM.in_mu || VM.wake_efd < 0
+        || pthread_mutex_init((pthread_mutex_t *)VM.in_mu, NULL) != 0) {
+        fprintf(stderr, "wovm: cannot set up the primary shard\n");
+        wo_vm_destroy(&VM);
+        wo_module_free(&mod);
+        return 2;
+    }
+    wo_tls_set(&VM);
     /* the arc's stage 2: all cores by default (the brave landing), one
      * pinned worker vm per extra core; WO_SHARDS caps or forces it */
     {

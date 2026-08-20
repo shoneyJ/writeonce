@@ -8,6 +8,7 @@ wo_multi *wo_multi_new(wo_rt *rt, uint8_t elem_kind) {
     if (!m) return NULL;
     memset(m, 0, sizeof(*m));
     m->h.class_id = WO_CLS_MULTI;
+    m->h.shard_id = rt->shard_id;
     m->elem_kind = elem_kind;
     return m;
 }
@@ -35,6 +36,7 @@ wo_map *wo_map_new(wo_rt *rt, uint8_t key_kind, uint8_t val_kind) {
     if (!m) return NULL;
     memset(m, 0, sizeof(*m));
     m->h.class_id = WO_CLS_MAP;
+    m->h.shard_id = rt->shard_id;
     m->key_kind = key_kind;
     m->val_kind = val_kind;
     return m;

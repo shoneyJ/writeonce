@@ -36,6 +36,8 @@ enum { WO_GC_IDLE = 0, WO_GC_MARK = 1, WO_GC_SWEEP = 2 };
  * state (gc.c), and the output stream builtin print writes to (tests point
  * it at a temp file to capture output). */
 typedef struct wo_rt {
+    uint16_t shard_id; /* arc T6: stamped into every allocation's header;
+                          a drop whose header disagrees routes home */
     wo_arena arena;
     const wo_classdesc *classes;
     uint32_t class_cnt;

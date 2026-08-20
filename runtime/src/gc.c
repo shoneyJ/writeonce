@@ -68,7 +68,16 @@ static void class_free(wo_rt *rt, wo_hdr *o) {
     wo_arena_free(&rt->arena, o, wo_obj_size(c));
 }
 
+/* arc T6: a drop on the wrong shard routes home — the owner's arena is
+ * single-threaded by doctrine, so the free travels as an envelope.
+ * (vm.c owns the engine; this hook keeps gc.c engine-blind.) */
+void wo_route_free(wo_hdr *h);
+
 void wo_drop_obj(wo_rt *rt, wo_hdr *o) {
+    if (o && o->shard_id != rt->shard_id && !(o->flags & WO_F_CONST)) {
+        wo_route_free(o);
+        return;
+    }
     if (!o) return;
     switch (o->class_id) {
     case WO_CLS_STR:
@@ -104,9 +113,15 @@ void wo_drop_kind(wo_rt *rt, uint8_t kind, uint64_t v) {
          * edge's death means nothing. */
         if (rt->gc_phase == WO_GC_MARK) wo_gc_shade(rt, (wo_hdr *)(uintptr_t)v);
         return;
-    case WO_K_TEXT:
-        wo_str_free(rt, (wo_str *)(uintptr_t)v);
+    case WO_K_TEXT: {
+        wo_str *sp = (wo_str *)(uintptr_t)v;
+        if (sp->h.shard_id != rt->shard_id && !(sp->h.flags & WO_F_CONST)) {
+            wo_route_free(&sp->h); /* home arena frees it (arc T6) */
+            return;
+        }
+        wo_str_free(rt, sp);
         return;
+    }
     default:
         return; /* loader guarantees kinds; defensive no-op */
     }

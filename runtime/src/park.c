@@ -7,6 +7,7 @@
 #include "park.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
@@ -231,10 +232,31 @@ int wo_io_arm(wo_vm *vm, wo_fiber *fb) {
     return 0;
 }
 
+/* user_data sentinel for the wake-eventfd's own readiness (fibers are
+ * heap pointers, never 1) */
+#define EFD_SENTINEL 1ull
+
+static void efd_drain(wo_vm *vm) {
+    uint64_t v = 0;
+    ssize_t n = read(vm->wake_efd, &v, sizeof v);
+    (void)n;
+}
+
 int wo_io_wait(wo_vm *vm) {
     for (;;) {
         if (wo_sys_stop_pending()) return WO_IO_STOP;
         if (vm->io_kind == 0) {
+            /* keep the wake eventfd armed (oneshot POLL_ADD, re-armed
+             * after each firing) so inbox pushes interrupt the wait */
+            if (vm->wake_efd >= 0 && !vm->efd_armed) {
+                struct io_uring_sqe sqe;
+                memset(&sqe, 0, sizeof sqe);
+                sqe.opcode = IORING_OP_POLL_ADD;
+                sqe.fd = vm->wake_efd;
+                sqe.poll32_events = POLLIN;
+                sqe.user_data = EFD_SENTINEL;
+                if (uring_submit(vm, &sqe) == 0) vm->efd_armed = 1;
+            }
             rings r = ring_ptrs(vm);
             uint32_t head = *r.cq_head;
             uint32_t tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
@@ -242,24 +264,44 @@ int wo_io_wait(wo_vm *vm) {
                 long rc = syscall(SYS_io_uring_enter, vm->io_fd, 0u, 1u,
                                   IORING_ENTER_GETEVENTS, NULL, 0);
                 if (rc < 0 && errno == EINTR) continue; /* stop checked on loop */
-                if (rc < 0) return -1;
+                if (rc < 0) {
+                    fprintf(stderr, "DBG uring_enter shard=%u errno=%d\n", vm->shard_id, errno);
+                    return -1;
+                }
                 tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
             }
             int woke = 0;
             while (head != tail) {
                 struct io_uring_cqe *cqe = &r.cqes[head & *r.cq_mask];
-                wo_fiber *fb = (wo_fiber *)(uintptr_t)cqe->user_data;
-                if (fb && fb->state == WO_FIB_PARKED) {
-                    wake(vm, fb);
-                    woke = 1;
+                if (cqe->user_data == EFD_SENTINEL) {
+                    vm->efd_armed = 0;
+                    efd_drain(vm);
+                    woke = 2; /* inbox wake: the caller adopts */
+                } else {
+                    wo_fiber *fb = (wo_fiber *)(uintptr_t)cqe->user_data;
+                    if (fb && fb->state == WO_FIB_PARKED) {
+                        wake(vm, fb);
+                        if (!woke) woke = 1;
+                    }
                 }
                 head++;
             }
             __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
+            if (woke == 2) return 1; /* adopt-needed */
             if (woke) return 0;
             continue;
         }
-        /* epoll: timeout from the nearest sleep deadline */
+        /* epoll: the wake eventfd is registered once, level-triggered
+         * (data.ptr NULL = the sentinel) */
+        if (vm->wake_efd >= 0 && !vm->efd_armed) {
+            struct epoll_event ev;
+            memset(&ev, 0, sizeof ev);
+            ev.events = EPOLLIN;
+            ev.data.ptr = NULL;
+            if (epoll_ctl(vm->io_fd, EPOLL_CTL_ADD, vm->wake_efd, &ev) == 0
+                || errno == EEXIST)
+                vm->efd_armed = 1;
+        }
         int timeout = -1;
         int64_t now = now_ms();
         for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
@@ -271,14 +313,20 @@ int wo_io_wait(wo_vm *vm) {
         struct epoll_event evs[16];
         int n = epoll_wait(vm->io_fd, evs, 16, timeout);
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0) return -1;
+        if (n < 0) {
+            fprintf(stderr, "DBG epoll_wait shard=%u errno=%d\n", vm->shard_id, errno);
+            return -1;
+        }
         int woke = 0;
         for (int i = 0; i < n; i++) {
             wo_fiber *fb = (wo_fiber *)evs[i].data.ptr;
-            if (fb && fb->state == WO_FIB_PARKED) {
+            if (!fb) { /* the wake eventfd: adopt-needed */
+                efd_drain(vm);
+                woke = 2;
+            } else if (fb->state == WO_FIB_PARKED) {
                 epoll_ctl(vm->io_fd, EPOLL_CTL_DEL, fb->park_fd, NULL);
                 wake(vm, fb);
-                woke = 1;
+                if (!woke) woke = 1;
             }
         }
         now = now_ms();
@@ -291,6 +339,7 @@ int wo_io_wait(wo_vm *vm) {
             }
             fb = nx;
         }
+        if (woke == 2) return 1; /* adopt-needed */
         if (woke) return 0;
     }
 }

@@ -24,7 +24,13 @@
 # rejection, a crash, a hang — fails and names the fixture. One line
 # per fixture, a final tally, nonzero exit if anything failed.
 
-set -uo pipefail  # no -e: a failing fixture is handled explicitly, one at a time
+set -uo pipefail
+
+# The corpus asserts EXACT outputs — deterministic single-shard semantics.
+# Multi-shard scheduling is nondeterministic by nature (the arc's spec
+# narrows determinism to output SETS there); the multi-shard/TSan proofs
+# live in the fibers gate, not here.
+export WO_SHARDS=1  # no -e: a failing fixture is handled explicitly, one at a time
 shopt -s nullglob
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

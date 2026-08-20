@@ -1,0 +1,24 @@
+-- WO-E222: an actor's state or message must not be (or contain) a traced
+-- class — aliased graphs cannot cross shard heaps. Node is traced by
+-- inference (self-referential); Box contains it.
+
+class Node {
+  next: ?Node
+  v: Int
+}
+
+class Box {
+  head: ?Node
+}
+
+class Keeper {
+  pad: Int
+  fn receive(msg: Box) {
+    if msg.head == nil { print("empty"); } else { print("full"); }
+  }
+}
+
+fn main() -> Int {
+  let a = spawn Keeper { pad: 0 };
+  return 0;
+}

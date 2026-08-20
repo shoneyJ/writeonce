@@ -13,7 +13,9 @@
 #include "park.h"
 
 #include <pthread.h>
+#include <poll.h>
 #include <sched.h>
+#include <errno.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
@@ -24,26 +26,157 @@ uint32_t wo_vm_depth(const wo_vm *vm) { return vm->cur->depth; }
 wo_engine wo_eng = {0};
 
 static _Atomic int eng_shutdown = 0;
+static _Atomic int eng_teardown = 0; /* set once threads are joined: routed
+    frees become no-ops (every arena dies wholesale) and envelopes are
+    discarded, so teardown order cannot dangle a mutex */
+static _Atomic uint32_t eng_rr = 0; /* round-robin spawn cursor */
+static _Thread_local wo_vm *tls_vm = NULL;
+
+wo_vm *wo_tls_vm(void) { return tls_vm; }
+void wo_tls_set(wo_vm *vm) { tls_vm = vm; }
+
+/* push an envelope into a shard's inbox and wake it (any thread) */
+static void inbox_push(wo_vm *to, wo_envelope *e) {
+    pthread_mutex_t *mu = (pthread_mutex_t *)to->in_mu;
+    pthread_mutex_lock(mu);
+    e->next = NULL;
+    if (to->in_tail) to->in_tail->next = e;
+    else to->in_head = e;
+    to->in_tail = e;
+    /* capture the wake fd UNDER the lock: worker_late_init rewrites the
+     * whole vm under this same mutex (TSan caught the unlocked read) */
+    int efd = to->wake_efd;
+    pthread_mutex_unlock(mu);
+    if (efd >= 0) {
+        uint64_t one = 1;
+        ssize_t n = write(efd, &one, sizeof one);
+        (void)n;
+    }
+}
+
+static void fib_enqueue(wo_vm *vm, wo_fiber *fb);
+static int actor_push(wo_actor *a, uint64_t m);
+static int actor_activate(wo_vm *vm, wo_actor *a);
+static void fib_reap_all(wo_vm *vm);
+
+/* the owning thread drains its inbox: adopt actors, deliver sends,
+ * execute home-routed frees. Returns how many envelopes were handled. */
+static int wo_vm_adopt(wo_vm *vm) {
+    pthread_mutex_lock((pthread_mutex_t *)vm->in_mu);
+    wo_envelope *e = vm->in_head;
+    vm->in_head = vm->in_tail = NULL;
+    pthread_mutex_unlock((pthread_mutex_t *)vm->in_mu);
+    int n = 0;
+    while (e) {
+        wo_envelope *nx = e->next;
+        switch (e->kind) {
+        case 1: /* adopt a freshly spawned actor: link it, nothing runs yet */
+            e->actor->next_all = vm->actors;
+            vm->actors = e->actor;
+            break;
+        case 0: /* a cross-shard send: mailbox + activation on the HOME thread */
+            if (actor_push(e->actor, e->payload) == 0 && !e->actor->active)
+                (void)actor_activate(vm, e->actor);
+            break;
+        case 2: /* a home-routed free: this arena owns the object */
+            wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+            break;
+        }
+        free(e);
+        n++;
+        e = nx;
+    }
+    return n;
+}
+
+/* route a drop to the object's home shard (gc.c calls through this when
+ * the header's shard id is not the current thread's) */
+void wo_route_free(wo_hdr *h) {
+    if (eng_teardown) return; /* arenas are torn down wholesale */
+    wo_vm *to = &wo_eng.shards[h->shard_id];
+    wo_envelope *e = calloc(1, sizeof *e);
+    if (!e) return; /* OOM on the free path: leak rather than crash */
+    e->kind = 2;
+    e->payload = (uint64_t)(uintptr_t)h;
+    inbox_push(to, e);
+}
 
 /* A worker's whole life in T5: pinned, parked on its wake eventfd until
  * shutdown. T6 gives it an inbox to adopt fibers from and the serve loop
  * that runs them. */
+static size_t eng_heap_cap = 0;
+
+/* lazily give a worker its full vm (arena, GC, I/O plane) — paid on the
+ * first envelope, not at boot (20 idle shards must stay ~free) */
+static int worker_late_init(wo_vm *vm) {
+    if (vm->rt.arena.base) return 0;
+    /* under the inbox mutex: wo_vm_init memsets the whole vm, and a
+     * concurrent inbox_push would race the in_head/in_tail wipe (TSan
+     * caught exactly this). The mutex OBJECT is malloc'd and stable;
+     * pushers block on it while the fields are rebuilt. */
+    void *mu = vm->in_mu;
+    pthread_mutex_lock((pthread_mutex_t *)mu);
+    const wo_module *mod = vm->mod;
+    uint32_t id = vm->shard_id;
+    int efd = vm->wake_efd;
+    wo_envelope *h = vm->in_head, *t = vm->in_tail;
+    int rc = wo_vm_init(vm, mod, eng_heap_cap);
+    if (rc == 0) {
+        vm->shard_id = id;
+        vm->rt.shard_id = (uint16_t)id;
+        vm->is_primary = 0;
+        vm->wake_efd = efd;
+        vm->in_mu = mu;
+        vm->in_head = h;
+        vm->in_tail = t;
+        tls_vm = vm;
+    }
+    pthread_mutex_unlock((pthread_mutex_t *)mu);
+    return rc;
+}
+
+int wo_vm_serve(wo_vm *vm); /* vm_run's worker flavor, defined below it */
+
+/* one blocking wait for the FIRST envelope (the vm — and its I/O plane —
+ * does not exist yet); after late init the plane's own wait watches the
+ * eventfd and this poll never runs again */
+static void worker_first_wait(wo_vm *vm) {
+    struct pollfd p = { .fd = vm->wake_efd, .events = POLLIN };
+    while (!eng_shutdown) {
+        int n = poll(&p, 1, -1);
+        if (n > 0 || (n < 0 && errno != EINTR)) return;
+        if (wo_sys_stop_pending()) return;
+    }
+}
+
 static void *shard_main(void *arg) {
     wo_vm *vm = (wo_vm *)arg;
+    tls_vm = vm;
     cpu_set_t set;
     CPU_ZERO(&set);
-    CPU_SET((int)vm->shard_id, &set);
+    CPU_SET((int)(vm->shard_id % 64u), &set);
     pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+    worker_first_wait(vm);
+    if (eng_shutdown || worker_late_init(vm) != 0) return NULL;
     while (!eng_shutdown) {
-        uint64_t v = 0;
-        ssize_t n = read(vm->wake_efd, &v, sizeof v); /* blocks until woken */
-        (void)n;
+        (void)wo_vm_adopt(vm);
+        if (vm->qhead) {
+            int rc = wo_vm_serve(vm); /* runs until drained (2) or stop */
+            if (rc == 1) break;       /* stop: everything reaped inside */
+        } else {
+            int rc = wo_io_wait(vm); /* parked fibers AND the wake eventfd */
+            if (rc == WO_IO_STOP) {
+                fib_reap_all(vm);
+                break;
+            }
+        }
     }
     return NULL;
 }
 
 int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
     wo_eng.nshards = nshards;
+    eng_heap_cap = heap_cap;
     if (nshards <= 1) return 0; /* the one-shard degenerate case: no threads */
     pthread_t *ts = calloc(nshards - 1, sizeof(pthread_t));
     if (!ts) return -1;
@@ -58,8 +191,11 @@ int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
         sv->mod = mod;
         sv->shard_id = i;
         sv->is_primary = 0;
-        sv->wake_efd = eventfd(0, 0);
+        sv->wake_efd = eventfd(0, EFD_NONBLOCK);
         if (sv->wake_efd < 0) return -1;
+        sv->in_mu = calloc(1, sizeof(pthread_mutex_t));
+        if (!sv->in_mu || pthread_mutex_init((pthread_mutex_t *)sv->in_mu, NULL) != 0)
+            return -1;
         if (pthread_create(&ts[i - 1], NULL, shard_main, sv) != 0) return -1;
     }
     (void)heap_cap; /* consumed at lazy init (T6) */
@@ -76,10 +212,57 @@ void wo_engine_stop(void) {
         (void)n;
     }
     for (uint32_t i = 1; i < wo_eng.nshards; i++) pthread_join(ts[i - 1], NULL);
+    /* single-threaded from here. Every arena dies wholesale, so routed
+     * frees and queued payloads need no per-object drops — DISCARD the
+     * envelopes (freeing the malloc'd nodes/actors) and let the arenas
+     * take their contents with them. The flag also turns any route_free
+     * raised by the destroys below into a no-op, so no teardown ordering
+     * can lock a freed mutex (the ASan SEGV this replaces). */
+    eng_teardown = 1;
+    for (uint32_t i = 0; i < wo_eng.nshards; i++) {
+        wo_vm *sv = &wo_eng.shards[i];
+        if (!sv->in_mu) continue;
+        wo_envelope *e = sv->in_head;
+        sv->in_head = sv->in_tail = NULL;
+        while (e) {
+            wo_envelope *nx = e->next;
+            if (e->kind == 1 && e->actor) {
+                free(e->actor->msgs);
+                free(e->actor);
+            }
+            free(e);
+            e = nx;
+        }
+    }
     for (uint32_t i = 1; i < wo_eng.nshards; i++) {
         close(wo_eng.shards[i].wake_efd);
         if (wo_eng.shards[i].rt.arena.base) /* lazily init'ed only */
             wo_vm_destroy(&wo_eng.shards[i]);
+        free(wo_eng.shards[i].in_mu);
+        wo_eng.shards[i].in_mu = NULL;
+    }
+    /* the primary's inbox: same discard (main destroys its vm right after) */
+    {
+        wo_vm *pv = &wo_eng.shards[0];
+        if (pv->in_mu) {
+            wo_envelope *e = pv->in_head;
+            pv->in_head = pv->in_tail = NULL;
+            while (e) {
+                wo_envelope *nx = e->next;
+                if (e->kind == 1 && e->actor) {
+                    free(e->actor->msgs);
+                    free(e->actor);
+                }
+                free(e);
+                e = nx;
+            }
+            free(pv->in_mu);
+            pv->in_mu = NULL;
+        }
+        if (pv->wake_efd >= 0) {
+            close(pv->wake_efd);
+            pv->wake_efd = -1;
+        }
     }
     free(ts);
     wo_eng.threads = NULL;
@@ -90,6 +273,7 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
     memset(vm, 0, sizeof(*vm));
     vm->mod = mod;
     vm->cur = &vm->f0; /* fiber 0: main — the one-fiber degenerate case */
+    vm->wake_efd = -1; /* engines/main wire a real one; tests run without */
     vm->budget0 = 4000; /* reductions per slice, the BEAM-ish default */
     {
         const char *e = getenv("WO_REDUCTIONS");
@@ -253,8 +437,26 @@ int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
     }
     a->instance = instance;
     a->method = method_idx;
-    a->next_all = vm->actors;
-    vm->actors = a;
+    /* placement (arc T6): round-robin across shards; same-shard when the
+     * engine is absent (tests) or single. The actor's list membership
+     * belongs to its HOME thread — an adopt envelope carries it there. */
+    uint32_t n = wo_eng.nshards ? wo_eng.nshards : 1;
+    uint32_t home = n > 1 ? (eng_rr++ % n) : vm->shard_id;
+    a->home = home;
+    if (home == vm->shard_id) {
+        a->next_all = vm->actors;
+        vm->actors = a;
+    } else {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            free(a);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        e->kind = 1;
+        e->actor = a;
+        inbox_push(&wo_eng.shards[home], e);
+    }
     *out_addr = (uint64_t)(uintptr_t)a;
     return 0;
 }
@@ -268,6 +470,21 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
     if (!msg_val) {
         *msg = "send: nil message";
         return WO_T_BOUNDS;
+    }
+    if (a->home != vm->shard_id) {
+        /* cross-shard: the HOME thread owns the mailbox — send travels as
+         * an inbox envelope, ownership moves with it (the mutex is the
+         * happens-before edge TSan sees) */
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        e->kind = 0;
+        e->actor = a;
+        e->payload = msg_val;
+        inbox_push(&wo_eng.shards[a->home], e);
+        return 0;
     }
     if (actor_push(a, msg_val) != 0) {
         *msg = "out of memory";
@@ -541,15 +758,25 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
  * cur/queued/parked). */
 #define NEXT_RUNNABLE()                              \
     do {                                             \
+        if (vm->in_mu) (void)wo_vm_adopt(vm);        \
         vm->cur = fib_dequeue(vm);                   \
         while (!vm->cur) {                           \
+            if (!vm->is_primary && !vm->parked) {    \
+                vm->cur = &vm->f0; /* parked-safe sentinel */ \
+                return 2; /* worker drained: back to the serve loop */ \
+            }                                        \
+            if (!vm->is_primary && eng_shutdown) {   \
+                fib_reap_all(vm);                    \
+                vm->cur = &vm->f0;                   \
+                return 1; /* engine stopping: die clean */ \
+            }                                        \
             int iorc_ = wo_io_wait(vm);              \
             if (iorc_ == WO_IO_STOP) {               \
                 fib_reap_all(vm);                    \
                 vm->cur = &vm->f0;                   \
                 return 1;                            \
             }                                        \
-            if (iorc_ != 0) {                        \
+            if (iorc_ < 0) {                         \
                 fib_reap_all(vm);                    \
                 vm->cur = &vm->f0;                   \
                 if (err) {                           \
@@ -558,6 +785,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
                 }                                    \
                 return -1;                           \
             }                                        \
+            if (vm->in_mu) (void)wo_vm_adopt(vm);    \
             vm->cur = fib_dequeue(vm);               \
         }                                            \
         vm->budget = vm->budget0;                    \
@@ -1055,6 +1283,19 @@ dispatch:
 #undef GC_SAFEPOINT
 #undef FIBER_BUDGET
 #undef DROP_CATCHES
+}
+
+/* the worker flavor of wo_vm_call: no entry frame — run whatever the run
+ * queue holds (adopted fibers, actor deliveries) until drained (rc 2),
+ * stopped (1), or a fatal error (-1). */
+int wo_vm_serve(wo_vm *vm) {
+    tls_vm = vm;
+    if (!vm->qhead) return 2;
+    vm->cur = fib_dequeue(vm);
+    vm->budget = vm->budget0;
+    uint64_t ret = 0;
+    wo_err err;
+    return vm_run(vm, &ret, &err);
 }
 
 int wo_vm_call(wo_vm *vm, uint32_t method_idx, const uint64_t *args,

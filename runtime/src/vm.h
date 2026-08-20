@@ -87,6 +87,7 @@ typedef struct wo_fiber {
 typedef struct wo_actor {
     uint64_t instance;   /* the moved-in state object (runtime-owned) */
     uint32_t method;     /* receive's method index (self + msg = 2 args) */
+    uint32_t home;       /* the shard whose thread owns mailbox + delivery */
     uint64_t *msgs;      /* FIFO ring, growable */
     uint32_t mhead, mlen, mcap;
     wo_fiber *active;    /* the delivery fiber, NULL when idle */
@@ -100,7 +101,16 @@ typedef struct wo_vm {
      * (runs the entry, owns the database); workers run wo_vm_serve. */
     uint32_t shard_id;
     int is_primary;
-    int wake_efd; /* wakes an idle worker (inbox arrivals, shutdown) */
+    int wake_efd; /* wakes this shard's I/O wait (inbox arrivals, shutdown) */
+    /* the cross-shard inbox (arc T6): OTHER shards push envelopes here
+     * under in_mu and write wake_efd; only the OWNING thread pops. A
+     * mutex-guarded list, not the spec's lock-free ring — disclosed
+     * deviation, rings arrive when 9e measures the mutex. */
+    void *in_mu;         /* pthread_mutex_t*, opaque here */
+    struct wo_envelope *in_head, *in_tail;
+    /* home-routed frees: objects owned by THIS shard's arena, dropped on
+     * another shard, come back here to die (header shard_id routes) */
+    struct wo_envelope *free_head;
     wo_fiber f0;    /* fiber 0: main — embedded; spawned fibers are calloc'd */
     wo_fiber *cur;  /* the live fiber — every interpreter access goes here */
     wo_fiber *qhead, *qtail; /* RUNNABLE fibers awaiting the interpreter */
@@ -112,6 +122,7 @@ typedef struct wo_vm {
     wo_fiber *parked;        /* fibers waiting on the plane */
     uint32_t nparked;
     int io_kind;             /* 0 = uring, 1 = epoll */
+    int efd_armed;           /* wake_efd registered on the plane (uring oneshot) */
     int io_fd;               /* ring fd or epoll fd */
     void *io_sq, *io_cq, *io_sqes; /* uring mmaps (NULL under epoll) */
     size_t io_sq_len, io_cq_len, io_sqes_len;
@@ -134,6 +145,19 @@ typedef struct wo_engine {
 } wo_engine;
 
 extern wo_engine wo_eng; /* the process's one engine (vm.c) */
+
+/* inbox envelope kinds (arc T6) */
+typedef struct wo_envelope {
+    struct wo_envelope *next;
+    int kind; /* 0 = SEND (actor, payload), 1 = SPAWN-ADOPT (actor), 2 = FREE (payload = wo_hdr*) */
+    struct wo_actor *actor;
+    uint64_t payload;
+} wo_envelope;
+
+/* the shard whose thread we are on (thread-local; obj.c stamps and gc.c
+ * routes with it). NULL only before main's vm exists. */
+wo_vm *wo_tls_vm(void);
+void wo_tls_set(wo_vm *vm);
 
 /* Start shards 1..n-1 (0 is the caller's, already init'ed in shards[0]).
  * 0 ok. Stop joins every worker and destroys their vms. */

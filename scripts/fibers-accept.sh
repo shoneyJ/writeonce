@@ -52,9 +52,43 @@ check_run() { # name [env pairs...]
   fi
 }
 
-check_run "auto"
-check_run "uring" WO_IO=uring
-check_run "epoll" WO_IO=epoll
+# EXACT checks pin one shard (deterministic by construction); the
+# multi-shard runs assert output SETS — the arc's honest narrowing
+check_run "auto" WO_SHARDS=1
+check_run "uring" WO_SHARDS=1 WO_IO=uring
+check_run "epoll" WO_SHARDS=1 WO_IO=epoll
+
+# multi-shard (default = all cores): cross-shard placement + envelopes.
+# Order across shards is scheduling; the SET of lines is the contract.
+mout="$("$DIR/target/fibers" 2>&1)"
+mc=$(printf '%s
+' "$mout" | grep -c "count +")
+mt=$(printf '%s
+' "$mout" | grep -c "main tick")
+if [[ "$mc" == "3" && "$mt" == "8" ]]    && printf '%s' "$mout" | grep -q "count +3 = 6"    && printf '%s' "$mout" | grep -q "sleeper: up"    && printf '%s' "$mout" | grep -q "part2 done"; then
+  ok "multi-shard: cross-shard actor delivered the full set"
+else
+  bad "multi-shard" "$(printf '%s' "$mout" | tr '
+' '|')"
+fi
+
+# TSan: the cross-shard path race-checked (multi-shard, both parts)
+make -C "$ROOT/runtime" wovm-tsan -s >/dev/null 2>&1
+if "$WOC" build "$DIR" -o "$DIR/target/fibers_tsan" --runtime "$ROOT/runtime/build/wovm_tsan" >/dev/null 2>&1; then
+  tout="$("$DIR/target/fibers_tsan" 2>&1)"
+  if printf '%s' "$tout" | grep -q "unexpected memory mapping"; then
+    # kernel 6.5+ high-entropy ASLR vs TSan: the standard workaround
+    tout="$(setarch "$(uname -m)" -R "$DIR/target/fibers_tsan" 2>&1)"
+  fi
+  if printf '%s' "$tout" | grep -q "part2 done" && ! printf '%s' "$tout" | grep -qi "ThreadSanitizer"; then
+    ok "TSan multi-shard run clean"
+  else
+    bad "tsan" "$(printf '%s' "$tout" | grep -i -m2 "SUMMARY\|WARNING" | tr '
+' '|')"
+  fi
+else
+  bad "tsan" "build failed"
+fi
 
 # ASan flavor: rebuild the binary against the ASan runtime and repeat once
 make -C "$ROOT/runtime" wovm-asan -s >/dev/null 2>&1

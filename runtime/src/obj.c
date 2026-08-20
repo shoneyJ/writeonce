@@ -148,6 +148,7 @@ wo_hdr *wo_obj_new(wo_rt *rt, uint32_t class_id) {
     if (!o) return NULL;
     memset(o, 0, sz); /* color: WHITE by construction (all-zero) */
     o->class_id = class_id;
+    o->shard_id = rt->shard_id;
     if (c->flags & WO_CLASSF_GC) {
         o->flags = WO_F_GC;
         /* born black while a cycle runs: live-at-birth for that cycle */
@@ -162,6 +163,7 @@ wo_str *wo_str_alloc(wo_rt *rt, uint32_t len) {
     if (!s) return NULL;
     memset(&s->h, 0, sizeof(s->h));
     s->h.class_id = WO_CLS_STR;
+    s->h.shard_id = rt->shard_id;
     s->len = len;
     return s;
 }

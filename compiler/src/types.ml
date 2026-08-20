@@ -394,6 +394,7 @@ let module_not_imported_code = Diag.types_prefix ^ "10"
 let nullable_used_without_check_code = Diag.types_prefix ^ "11"
 let nullable_assign_mismatch_code = Diag.types_prefix ^ "12"
 let spawn_no_receive_code = Diag.types_prefix ^ "21" (* WO-E221: spawn target lacks fn receive(msg: M); E219/E220 are taken on the language-surface-strictness branch *)
+let traced_send_code = Diag.types_prefix ^ "22" (* WO-E222: traced(-containing) type in an actor message or actor state — aliased graphs cannot cross heap boundaries *)
 let missing_nil_check_code = Diag.types_prefix ^ "13"
 
 (* haxe-parity Task 1 (modules). module_not_imported_code (WO-E210,
@@ -851,6 +852,43 @@ let req_label = function
   | ReqMap -> "a `map`"
   | ReqContainer -> "a `multi` or `map`"
   | ReqAny -> "any" (* matches_req is always true here -- never rendered *)
+
+(* arc T6 (WO-E222): does this type name a traced class, or a class/union
+ * that transitively CONTAINS one? An actor's state and messages may cross
+ * heap boundaries (placement is round-robin — every spawn/send may cross),
+ * and aliased graphs cannot: their lifetime is one shard's collector's.
+ * Fixpoint over the class graph, memoized per query via a visited set. *)
+let contains_traced (syms : symbols) (root : string) : bool =
+  let rec go (seen : StringSet.t) (name : string) : bool =
+    if StringSet.mem name seen then false
+    else if is_gc_class syms name then true
+    else
+      let seen = StringSet.add name seen in
+      let field_hits fields =
+        List.exists
+          (fun (_, ft, _, _) ->
+            match unwrap_nullable (typ_of_field_ty ft) with
+            | TScalar n | TMulti (TScalar n) | TMap (_, TScalar n) -> go seen n
+            | _ -> false)
+          fields
+      in
+      match StringMap.find_opt name syms.classes with
+      | Some cls -> field_hits cls.fields
+      | None -> (
+        match StringMap.find_opt name syms.unions with
+        | Some u ->
+          List.exists
+            (fun (v : variant_info) ->
+              List.exists
+                (fun (_, ft) ->
+                  match unwrap_nullable (typ_of_field_ty ft) with
+                  | TScalar n | TMulti (TScalar n) | TMap (_, TScalar n) -> go seen n
+                  | _ -> false)
+                v.vi_fields)
+            u.u_variants
+        | None -> false)
+  in
+  go StringSet.empty root
 
 let rec typ_label (t : typ) : string =
   match t with
@@ -1627,6 +1665,15 @@ let typecheck_program ~file ~(module_of : string -> string)
                ());
           { typ = TScalar "Int"; is_nil = false }
         in
+        let e222 (pos : pos) (what : string) (tname : string) : unit =
+          Diag.Collector.add collector
+            (Diag.error ~code:traced_send_code ~file ~line:pos.line ~col:pos.col
+               ~message:
+                 (Printf.sprintf
+                    "%s type `%s` is traced (or contains a traced class) — aliased graphs cannot cross shard heaps; spawn placement makes every actor potentially remote"
+                    what tname)
+               ())
+        in
         (match StringMap.find_opt cn syms.classes with
          | Some cls -> (
            match List.find_opt (fun (m : method_info) -> m.name = "receive") cls.methods with
@@ -1635,6 +1682,8 @@ let typecheck_program ~file ~(module_of : string -> string)
              | TScalar mname
                when StringMap.mem mname syms.classes
                     || StringMap.mem mname syms.unions ->
+               if contains_traced syms cn then e222 e.pos "actor state" cn;
+               if contains_traced syms mname then e222 e.pos "message" mname;
                { typ = TActor mname; is_nil = false }
              | TScalar mname -> bad (Printf.sprintf "receive's message type `%s` is not a declared class, record, or union" mname)
              | _ -> bad "receive's parameter must be a plain class, record, or union type")

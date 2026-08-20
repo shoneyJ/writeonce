@@ -58,6 +58,12 @@ build/wovm_asan: src/main.c $(VMSRC) $(VMHDR) | build
 
 wovm-asan: build/wovm_asan
 
+# TSan flavor (arc stage 2): the cross-shard proofs run under this
+build/wovm_tsan: src/main.c $(VMSRC) $(VMHDR) | build
+	$(CC) $(CFLAGS) -fsanitize=thread -g -Isrc -I../database/src -o $@ src/main.c $(VMSRC) $(LDFLAGS)
+
+wovm-tsan: build/wovm_tsan
+
 # fixture generator for the CLI smoke test
 build/mkwob: test/mkwob.c test/wob_build.c $(VMHDR) | build
 	$(CC) $(CFLAGS) -Isrc -Itest -o $@ test/mkwob.c test/wob_build.c
@@ -74,4 +80,4 @@ clean:
 	rm -f wo-rt bench/bench wovm
 	rm -rf build
 
-.PHONY: bench run clean test test-iso wovm-asan
+.PHONY: bench run clean test test-iso wovm-asan wovm-tsan
