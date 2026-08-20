@@ -61,6 +61,13 @@ pub fn conflict(msg: Text) -> Resp {
   return Resp { status: 409, headers: h, body: "{\"error\":\"${msg}\"}" };
 }
 
+pub fn method_not_allowed(allow: Text) -> Resp {
+  let h: map<Text, Text> = {};
+  h["content-type"] = "application/json";
+  h["allow"] = allow;
+  return Resp { status: 405, headers: h, body: "{\"error\":\"method not allowed\"}" };
+}
+
 pub fn server_error() -> Resp {
   let h: map<Text, Text> = {};
   h["content-type"] = "application/json";
@@ -71,4 +78,10 @@ pub fn redirect(location: Text) -> Resp {
   let h: map<Text, Text> = {};
   h["location"] = location;
   return Resp { status: 302, headers: h, body: "" };
+}
+
+-- Set (or overwrite) one header on a built response — the escape hatch for
+-- anything the builders don't cover: cache-control, etag, custom headers.
+pub fn set_header(mut r: Resp, name: Text, value: Text) {
+  r.headers[name] = value;
 }

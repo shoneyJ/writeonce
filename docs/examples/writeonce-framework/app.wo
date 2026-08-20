@@ -25,22 +25,44 @@ pub class App {
     push(self.routes, r);
   }
 
+  -- Registration helpers — the ctor-literal-into-take shape, per method.
+  fn get(pattern: Text, take h: Handler) {
+    push(self.routes, Route { method: "GET", pattern: pattern, h: h });
+  }
+
+  fn post(pattern: Text, take h: Handler) {
+    push(self.routes, Route { method: "POST", pattern: pattern, h: h });
+  }
+
+  fn put(pattern: Text, take h: Handler) {
+    push(self.routes, Route { method: "PUT", pattern: pattern, h: h });
+  }
+
+  fn delete_(pattern: Text, take h: Handler) {
+    push(self.routes, Route { method: "DELETE", pattern: pattern, h: h });
+  }
+
   fn dispatch(mut req: Req) -> Resp {
     for mw in self.middleware {
       let short = mw.m.before(req);
       if short != nil { return short; }
     }
+    -- Path-first matching so a wrong-method hit on a known path answers
+    -- 405 with the Allow header (registration order) instead of a 404.
+    let allow = "";
     for r in self.routes {
-      if r.method == req.method {
-        let params: map<Text, Text> = {};
-        if route_match(r.pattern, req.path, params) {
+      let params: map<Text, Text> = {};
+      if route_match(r.pattern, req.path, params) {
+        if r.method == req.method {
           -- captures land on the borrowed request itself (mut) — a failed
           -- match above never touched it, since captures collect locally
           for k, v in params { req.params[k] = v; }
           return r.h.handle(req);
         }
+        if allow == "" { allow = "${r.method}"; } else { allow = "${allow}, ${r.method}"; }
       }
     }
+    if allow != "" { return method_not_allowed(allow); }
     return not_found();
   }
 

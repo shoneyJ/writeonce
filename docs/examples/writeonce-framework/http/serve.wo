@@ -20,13 +20,16 @@ fn status_text(code: Int) -> Text {
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
     case 409: return "Conflict";
     case 500: return "Internal Server Error";
     default:  return "Status";
   }
 }
 
-pub fn serialize(resp: Resp, keep: Bool) -> Text {
+-- head_only: HEAD answers — full status line + headers (Content-Length of
+-- the body a GET would have sent) with the body itself suppressed.
+pub fn serialize(resp: Resp, keep: Bool, head_only: Bool) -> Text {
   let head = "HTTP/1.1 ${resp.status} ${status_text(resp.status)}\r\n";
   for k, v in resp.headers {
     head = head .. "${k}: ${v}\r\n";
@@ -37,6 +40,7 @@ pub fn serialize(resp: Resp, keep: Bool) -> Text {
     head = head .. "Connection: close\r\n";
   }
   head = head .. "Content-Length: ${len(resp.body)}\r\n\r\n";
+  if head_only { return head; }
   return head .. resp.body;
 }
 
@@ -54,13 +58,18 @@ pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
       if p == nil { alive = false; continue; }
       if p.closed { alive = false; continue; }
       if p.ok == false {
-        try net.write(c, serialize(bad_request("malformed request"), false)) catch (e) {}
+        try net.write(c, serialize(bad_request("malformed request"), false, false)) catch (e) {}
         alive = false;
         continue;
       }
       let r = p.req;
       if r == nil { alive = false; continue; }
       carry = p.rest;
+      -- HEAD is GET with the body suppressed: route and dispatch as GET,
+      -- serialize with head_only so Content-Length still names the body a
+      -- GET would have carried (RFC 9110 §9.3.2).
+      let is_head = r.method == "HEAD";
+      if is_head { r.method = "GET"; }
       -- Connection policy for a single-threaded server: serve PIPELINED
       -- requests on one connection (bytes already buffered), but close when
       -- the client would idle — a parked keep-alive connection would block
@@ -72,7 +81,7 @@ pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
         if to_lower(conn) == "close" { keep = false; }
       }
       let resp = try d.dispatch(r) catch (e) server_error();
-      try net.write(c, serialize(resp, keep)) catch (e) { alive = false; }
+      try net.write(c, serialize(resp, keep, is_head)) catch (e) { alive = false; }
       if keep == false { alive = false; }
     }
     net.close(c);

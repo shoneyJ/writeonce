@@ -13,6 +13,17 @@
 > stored in containers now MOVE (`run/container-owned-move`), and a dep's
 > internal `use` paths resolve dep-relatively.
 >
+> **v1 polish LANDED 2026-08-20** (branch `framework-v1`, developer
+> directive: ship routing/middleware/req-resp as a polished micro-framework,
+> nothing MVC-scale): registration helpers `get/post/put/delete_` (the
+> take-Handler shape, probe-proven — deviation 1 of the 16 plan retired),
+> 405 + `Allow` on wrong-method path hits, HEAD served as GET with the body
+> suppressed (RFC 9110 §9.3.2), a request-line `Logging` middleware,
+> `set_header`; `just web-app` 16/0. It exposed and fixed a third compiler
+> gap: a Text single-segment interpolation of a place crossed
+> `let`/assignment boundaries uncopied — `copy_place_text` now sees through
+> `Interp` (`run/interp-borrowed-field`).
+>
 > The framework is written IN writeonce and imported
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a
 > reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the

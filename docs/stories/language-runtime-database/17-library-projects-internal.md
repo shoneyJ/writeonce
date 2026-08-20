@@ -7,8 +7,13 @@
 > as an iteration, do not implement yet).
 >
 > **Refined 2026-08-20: all four forks SETTLED** (developer decisions, no code
-> changed). See "Settled decisions" and "Impact analysis" below. Next step is
-> the spec/plan; implementation stays parked until asked.
+> changed). See "Settled decisions" and "Impact analysis" below.
+>
+> **⏸ PARKED 2026-08-20** (developer directive: framework v1 work first).
+> The spec and plan were written and approved before parking; both sit ready
+> on branch `library-internal`
+> (`docs/superpowers/specs/2026-08-20-library-kind-internal-design.md`,
+> `docs/superpowers/plans/2026-08-20-library-kind-internal.md`).
 
 ## Why this iteration exists
 

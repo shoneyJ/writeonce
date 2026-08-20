@@ -19,41 +19,25 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
-**The web framework becomes a first-class library — iteration 17.** The goal
-shifted 2026-08-20: the previous NEXT PLAN ("make log-watcher executable —
-nothing else") was met in full 2026-08-15 (milestone record below), and the
-driving workload is now `docs/examples/writeonce-framework` consumed by
-`docs/examples/web-app` through `[deps]`. Iteration 17's forks are settled
-(decisions + framework/compiler/VM/GC impact in
-[the iteration](stories/language-runtime-database/17-library-projects-internal.md));
-what remains, in order:
+**Framework v1 — a polished micro-framework (routing, middleware,
+`Req`/`Resp`), nothing MVC-scale.** Directive 2026-08-20: iteration 17
+(library kind + `internal/`) is **parked** — spec + plan approved and ready
+on branch `library-internal` — and the framework itself is the work. The
+v1-polish slice landed the same day (branch `framework-v1`): registration
+helpers `get/post/put/delete_` (the take-Handler shape, probe-proven),
+405 + `Allow` on wrong-method hits, HEAD served as GET with the body
+suppressed, a `Logging` middleware, `set_header`; `just web-app` grew to
+16/0. En route it exposed and fixed a real emitter bug: a Text-typed
+single-segment interpolation of a place (`"${r.method}"`, `r` a loop
+borrow) crossed `let`/assignment boundaries uncopied — aliased the field,
+crashed the release build; `copy_place_text` now sees through `Interp`
+exactly as `drop_fresh_text` does, pinned by
+`tests/corpus/run/interp-borrowed-field`.
 
-1. Merge the `web-framework` branch to master (iterations 15–17 docs + code,
-   local only). Why first: everything iteration 17 edits exists ONLY on that
-   branch — the framework and web-app sources, the `[deps]` resolution code
-   in `compiler/bin/main.ml` (17's `internal/` rule lands in that exact
-   code), and the `just web-app` regression gate. Starting 17 unmerged means
-   stacking a branch on an unreviewed branch; merged, 17 is a small clean
-   diff off master.
-2. Spec + plan from the settled decisions (prose only, per convention).
-3. `kind = "library"` in `wo.toml` (default `"program"`): `woc <dir>` on a
-   library runs the FULL pipeline as a check — parse, typecheck, borrow
-   check, GC inference — with no entry required; an explicit build still
-   works when a `main` exists (dual lib+bin).
-4. The `internal/` rule at the `[deps]` boundary: a consumer `use` of a dep
-   path containing the segment `internal` is a new WO-E1xx at the `use`,
-   naming the dependency; inside the dep it stays legal.
-5. Framework reorg: request-parser and serve-loop plumbing move under
-   `internal/`; the public surface (`Handler`, `Middleware`, `App`,
-   `Req`/`Resp`, builders) does not move.
-6. Gate: `just web-app` stays 14/0, plus new checks — library check without
-   an entry succeeds, a consumer `internal` import is refused, and the
-   iteration-16 `--emit` verification workaround is deleted.
-
-The VM and GC are untouched by design — visibility is compile-time name
-resolution, libraries compile whole-program into the consumer's image, and
-GC inference stays whole-program (app usage may promote dep classes; that is
-intended).
+Next per the implementation order (17 parked): finish the half-done
+database branches — 9c (ipc-attach: manifest + binding) and 9d
+(keypair-auth: manifest) — both need their forks brainstormed before
+planning.
 
 ---
 
@@ -167,8 +151,8 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 13  | [Compile-time metaprogramming](stories/language-runtime-database/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
 | 14  | [skillhost host workload](stories/language-runtime-database/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
 | 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
-| 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; `just web-app` 14/0; h2c parked (§C) behind 8/9f/11 |
-| 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⬜ **forks settled 2026-08-20, awaiting spec/plan**: kind = "library" manifest key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design (impact analysis in the iteration) |
+| 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route |
+| 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
 
 ---
 
@@ -176,10 +160,11 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | Iteration 17 — web framework as first-class library: spec/plan from the settled forks, then `kind = "library"` + `internal/` + framework reorg | [iteration 17](stories/language-runtime-database/17-library-projects-internal.md) |
+| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 9c/9d's forks | [order](#implementation-order-re-sequenced-2026-08-20--framework-goal) |
 
-Off-goal work is parked; the goal shifted 2026-08-20 from log-watcher (met)
-to the web framework as a first-class library.
+Off-goal work is parked; the goal (2026-08-20) is the web framework as a
+polished micro-framework v1 — iteration 17 (library kind + `internal/`) is
+parked with its spec + plan ready on branch `library-internal`.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 
@@ -353,9 +338,10 @@ parked behind 8/9f/11; the post-12 parked list stays parked by the
 2026-08-08 scope directive. (Iteration 7 dropped from this list — landed
 2026-08-15.)
 
-1. **17** — THE goal slice: `kind = "library"` + `internal/` + framework
-   reorg; forks settled, compiler-driver-only, no runtime deps. Merge the
-   `web-framework` branch first.
+1. ~~**17**~~ — **PARKED 2026-08-20** (developer directive: framework v1
+   first); spec + plan approved, ready on branch `library-internal` for
+   whenever it unparks. The framework v1-polish slice took its place and
+   landed the same day (branch framework-v1, `just web-app` 16/0).
 2. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
    binding; keypair-auth: manifest) before they rot; 9d folds into 9c's
    plan; both must precede 10.

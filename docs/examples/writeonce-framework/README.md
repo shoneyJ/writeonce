@@ -20,7 +20,16 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   other client, so closing is the correct shape until shards/fibers (8/11).
   A proxy in front simply reconnects.
 - **Router** (`router/`): method + path table with `:param` captures into
-  `req.params`; first match wins; no match is the framework's 404.
+  `req.params`; first match wins; a known path with the wrong method is
+  **405 with the `Allow` header** (registration order); no matching path is
+  the framework's 404. **HEAD is served free**: routed as GET, body
+  suppressed, `Content-Length` still names the body a GET would carry.
+- **Registration helpers**: `app.get/post/put/delete_(pattern, handler)`
+  push the route for you (`delete_` because `delete` is the query
+  keyword); `app.add(Route { ... })` stays for anything else. A
+  request-line `Logging` middleware ships in `router/`, and
+  `set_header(resp, name, value)` is the escape hatch for headers the
+  builders don't set.
 - **Handlers without closures**: the language has no function values by
   doctrine, so a route handler is a class satisfying the `Handler` interface
   (`fn handle(req: Req) -> Resp`), dispatched structurally — a

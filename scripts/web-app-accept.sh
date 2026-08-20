@@ -96,7 +96,57 @@ expect "unknown product is 404"       "$(hit GET /products/none)" 404
 expect "create order (FK)"            "$(hit POST /orders '{"product":"mug","qty":2}')" 201
 expect "delete restricted by FK (409), server survives" "$(hit DELETE /products/mug)" 409 "reference"
 
-# ---- 11. pipelined keep-alive: two requests, one connection ----
+# ---- 11. 405 on a known path with the wrong method (Allow header) ----
+ma="$(timeout 5 python3 - "$PORT" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.create_connection(("127.0.0.1", port), timeout=3)
+s.sendall(b"PUT /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
+d = b""
+while True:
+    got = s.recv(4000)
+    if not got: break
+    d += got
+head = d.split(b"\r\n\r\n")[0].decode()
+status = head.splitlines()[0].split(" ")[1]
+allow = [l.split(":", 1)[1].strip() for l in head.splitlines() if l.lower().startswith("allow")]
+print(status + "|" + (allow[0] if allow else ""))
+PYEOF
+)"
+[[ "$ma" == "405|GET, POST" ]] && ok "405 + Allow on wrong method" \
+                               || bad "405" "got $ma (want 405|GET, POST)"
+
+# ---- 12. HEAD: GET's headers, no body ----
+hd="$(timeout 5 python3 - "$PORT" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+def raw(req):
+    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+    s.sendall(req)
+    d = b""
+    while True:
+        got = s.recv(4000)
+        if not got: break
+        d += got
+    s.close()
+    return d
+tail = b" /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+g = raw(b"GET" + tail)
+h = raw(b"HEAD" + tail)
+ghead, _, gbody = g.partition(b"\r\n\r\n")
+hhead, _, hbody = h.partition(b"\r\n\r\n")
+def cl(head):
+    return [l.split(b":")[1].strip() for l in head.splitlines() if l.lower().startswith(b"content-length")][0]
+status = hhead.decode().splitlines()[0].split(" ")[1]
+print(f"{status}|{(cl(h[:len(hhead)]) == cl(g[:len(ghead)]))}|{len(hbody)}|{len(gbody)}")
+PYEOF
+)"
+IFS='|' read -r hs same hb gb <<<"$hd"
+[[ "$hs" == "200" && "$same" == "True" && "$hb" == "0" && "$gb" != "0" ]] \
+  && ok "HEAD answers GET's Content-Length with no body" \
+  || bad "HEAD" "status=$hs same-length=$same head-body=$hb get-body=$gb"
+
+# ---- 13. pipelined keep-alive: two requests, one connection ----
 n="$(timeout 5 python3 - "$PORT" <<'PYEOF'
 import socket, sys
 port = int(sys.argv[1])
@@ -117,14 +167,14 @@ PYEOF
 [[ "$n" == "2" ]] && ok "pipelined keep-alive (2 responses, 1 connection)" \
                   || bad "pipelining" "expected 2 responses, got $n"
 
-# ---- 12. SIGTERM stops it ----
+# ---- 14. SIGTERM stops it ----
 kill -TERM "$SRV"
 stopped=1
 for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { stopped=0; break; }; sleep 0.1; done
 [[ $stopped -eq 0 ]] && ok "SIGTERM stops the server" || bad "stop" "still running"
 SRV=""
 
-# ---- 13. restart persistence (WAL replay) ----
+# ---- 15. restart persistence (WAL replay) ----
 WA_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$W/srv.out" 2>&1 &
 SRV=$!
 sleep 0.5

@@ -108,10 +108,10 @@ fn main(args: multi Text) -> Int {
 
   let app = App { middleware: [], routes: [] };
   app.use_mw(Mw { m: Auth { token: token } });
-  app.add(Route { method: "GET",    pattern: "/products",       h: ListProducts { pad: 0 } });
-  app.add(Route { method: "GET",    pattern: "/products/:name", h: ShowProduct { pad: 0 } });
-  app.add(Route { method: "POST",   pattern: "/products",       h: CreateProduct { pad: 0 } });
-  app.add(Route { method: "POST",   pattern: "/orders",         h: CreateOrder { pad: 0 } });
-  app.add(Route { method: "DELETE", pattern: "/products/:name", h: DeleteProduct { pad: 0 } });
+  app.get("/products",             ListProducts { pad: 0 });
+  app.get("/products/:name",       ShowProduct { pad: 0 });
+  app.post("/products",            CreateProduct { pad: 0 });
+  app.post("/orders",              CreateOrder { pad: 0 });
+  app.delete_("/products/:name",   DeleteProduct { pad: 0 });
   return app.serve("127.0.0.1", port);
 }
