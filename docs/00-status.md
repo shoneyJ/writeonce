@@ -29,7 +29,12 @@ driving workload is now `docs/examples/writeonce-framework` consumed by
 what remains, in order:
 
 1. Merge the `web-framework` branch to master (iterations 15–17 docs + code,
-   local only).
+   local only). Why first: everything iteration 17 edits exists ONLY on that
+   branch — the framework and web-app sources, the `[deps]` resolution code
+   in `compiler/bin/main.ml` (17's `internal/` rule lands in that exact
+   code), and the `just web-app` regression gate. Starting 17 unmerged means
+   stacking a branch on an unreviewed branch; merged, 17 is a small clean
+   diff off master.
 2. Spec + plan from the settled decisions (prose only, per convention).
 3. `kind = "library"` in `wo.toml` (default `"program"`): `woc <dir>` on a
    library runs the FULL pipeline as a check — parse, typecheck, borrow
