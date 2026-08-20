@@ -1,7 +1,7 @@
 # Iteration 7 — log-watcher proof workload
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 ## Goals
 
@@ -19,7 +19,7 @@
 > SIGTERM ends parked syscalls, fds flat across 200 requests, and the
 > `LW_SOAK` gate holds RSS/descriptors flat under sustained load.
 > `just log-watcher`: 7 checks, 0 failures. The work is recorded in
-> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md)
+> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../../plan/compiler/2026-08-14-logwatcher-executable.md)
 > and nothing else blocks this iteration.
 
 ## Acceptance Criteria
@@ -69,7 +69,7 @@
 - The authoring plan (`docs/superpowers/plans/2026-08-01-log-watcher-sample.md`)
   is spent: the `.wo` files exist and compile.
 - What remains is
-  [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md)
+  [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../../plan/compiler/2026-08-14-logwatcher-executable.md)
   — six tasks, every one traced to a measurement on this sample: the ownership
   pass learning stdlib return types, dropping a projected temporary, the
   runtime's own argv container, honouring the stop signal in blocking calls,

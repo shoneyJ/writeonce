@@ -1,7 +1,7 @@
 # Iteration 4 — single binary end-to-end
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 ## Goals
 

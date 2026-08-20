@@ -39,7 +39,7 @@ keep-alive with `Content-Length` bodies only.
 
 **Spec:** [`../specs/2026-08-18-web-framework-design.md`](../specs/2026-08-18-web-framework-design.md)
 section B (normative; §C's h2c stays parked). Story:
-[`16-web-framework.md`](../../stories/language-runtime-database/16-web-framework.md).
+[`16-web-framework.md`](../../stories/language-runtime-database/done/16-web-framework.md).
 
 ## Global Constraints
 

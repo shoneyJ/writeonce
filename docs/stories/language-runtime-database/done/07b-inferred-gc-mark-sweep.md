@@ -1,7 +1,7 @@
 # Iteration 7b — inferred GC + incremental mark-sweep
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-11**, after the plan was first drawn — hence `7b` rather
 > than a renumber. It sits here because the log-watcher critical path
@@ -10,13 +10,13 @@
 
 
 > **Status (2026-08-18): LANDED** (branch `inferred-gc`; plan
-> [`2026-08-18-inferred-gc-mark-sweep.md`](../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md)).
+> [`2026-08-18-inferred-gc-mark-sweep.md`](../../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md)).
 > The front end infers GC-ness (structural SCC + demand promotion,
 > `woc --dump-gc`), `@gc` in source is WO-E104, and the runtime's RC +
 > Bacon–Rajan collector is replaced by an incremental per-shard tri-color
 > mark-sweep with a Yuasa deletion barrier — `.wob` is v4, opcodes 27–28
 > reserved. The worked example is
-> [`docs/examples/gc-cycle`](../../examples/gc-cycle/README.md): its ring
+> [`docs/examples/gc-cycle`](../../../examples/gc-cycle/README.md): its ring
 > compiles with no annotation, runs, and is reclaimed in budgeted slices,
 > ASan-clean. All four recorded `@gc`/RC defects are deleted by
 > construction; `just oop-accept` is fully green (criterion 3's ASan clause
@@ -88,11 +88,11 @@
 
 ## Info
 
-- Governing spec: [`docs/superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md`](../../superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md).
+- Governing spec: [`docs/superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md`](../../../superpowers/specs/2026-08-11-inferred-gc-mark-sweep-design.md).
 - **Gated by the benchmark (2026-08-15):** this is the "implement garbage
   collection" lever of the performance arc — tri-color mark-sweep replacing
   RC changes the write path's tail latency, so landing it means re-running
-  iteration [9e](09e-durability-throughput-scale.md) and recording the
+  iteration [9e](../refine/09e-durability-throughput-scale.md) and recording the
   delta (does tracing help or hurt p99 under write load?).
 - **Constraint added by the database track (2026-08-15):** a GC-managed value
   in a `@table` field is a compile error (the engine/heap bulkhead — 9b

@@ -1,7 +1,7 @@
 # Iteration 9 — database engine
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 ## Goals
 
@@ -54,7 +54,7 @@
   counts references. The full analysis (row views as borrows without a
   runtime net, cursor stability, GC-pause interaction) lives in the 9b
   design's section 6:
-  [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md).
+  [`2026-08-15-table-relations-query-design.md`](../../../superpowers/specs/2026-08-15-table-relations-query-design.md).
 
 ## Proposed Solution
 

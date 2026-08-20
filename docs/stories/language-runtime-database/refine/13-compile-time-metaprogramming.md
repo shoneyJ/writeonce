@@ -1,11 +1,11 @@
 # Iteration 13 — compile-time metaprogramming (derive from the class table)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-16.** A language-capability iteration, deliberately
 > numbered to echo the principle it lives inside:
-> [principle 13, "statically typed, all the way to the register"](../../00-principles.md).
+> [principle 13, "statically typed, all the way to the register"](../../../00-principles.md).
 > It comes late because it earns its keep only once there are enough
 > types worth deriving over (the `@table` classes of iteration 9/9b, the
 > records the query surface projects), and it must never be the excuse that

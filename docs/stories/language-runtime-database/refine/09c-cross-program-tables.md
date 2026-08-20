@@ -1,7 +1,7 @@
 # Iteration 9c — cross-program tables: attach to a running program's database
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-15**, hence `9c`. It follows 9b because a program
 > attaching to another's tables wants the same typed statements and queries

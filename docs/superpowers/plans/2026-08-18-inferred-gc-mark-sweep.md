@@ -148,7 +148,7 @@ is the largest phase and lands with Phase 2's front-end.
 
 ## Phase 4 — Migration: amend the normative docs
 
-**Files:** `docs/00-principles.md` (principle 3), the OOP spec (decision table, §3 rule 5, §4 memory model), `docs/plan/oop-vm/00-wob-format.md`, `01-error-catalog.md` (retire WO-W201, update WO-E304 wording, add the new WO-E1xx), `08-builtin-surface.md` (delete the `push` special case + `set` gap), `docs/00-status.md` (record 7b superseding iteration 2's memory model), `docs/stories/language-runtime-database/07b-inferred-gc-mark-sweep.md` (status → done), `docs/examples/gc-cycle/README.md` (flip "Run status" to shipped + wire a `just gc-cycle` acceptance).
+**Files:** `docs/00-principles.md` (principle 3), the OOP spec (decision table, §3 rule 5, §4 memory model), `docs/plan/oop-vm/00-wob-format.md`, `01-error-catalog.md` (retire WO-W201, update WO-E304 wording, add the new WO-E1xx), `08-builtin-surface.md` (delete the `push` special case + `set` gap), `docs/00-status.md` (record 7b superseding iteration 2's memory model), `docs/stories/language-runtime-database/done/07b-inferred-gc-mark-sweep.md` (status → done), `docs/examples/gc-cycle/README.md` (flip "Run status" to shipped + wire a `just gc-cycle` acceptance).
 
 - [x] Apply each amendment in the spec's §8 migration table. Add a `docs/examples/gc-cycle` acceptance script + `just gc-cycle` recipe running `--dump-gc` + ring/owned demos under `WO_GC_TRACE`.
 - [x] Verify: `just oop-accept` green; `just gc-cycle` green; `git grep '@gc' -- '*.wo'` returns nothing (success criterion 1). Commit.

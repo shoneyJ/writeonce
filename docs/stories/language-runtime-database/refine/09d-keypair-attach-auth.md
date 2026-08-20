@@ -1,7 +1,7 @@
 # Iteration 9d — keypair authentication for cross-program attach
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-15.** Promotes iteration 9c's identity fork (Info,
 > fork 3) to its own iteration: the name + unix-uid lean is the milestone

@@ -1,7 +1,7 @@
 # Iteration 9g — query grammar, driven by real embedded-DB corpora
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-16.** A query-surface iteration in the 9b family: the
 > language-integrated query grows to cover the grammar that *real

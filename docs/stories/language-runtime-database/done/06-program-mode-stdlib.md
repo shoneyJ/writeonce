@@ -1,7 +1,7 @@
 # Iteration 6 — program mode + systems stdlib
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 
 > **Status (2026-08-14):** ✅ landed for the surface the driving workload uses —
@@ -11,7 +11,7 @@
 > `Proc` records, plus `json` encode/decode over `.wob` v2 class metadata.
 > What the workload never calls was not written. Two lifetime defects found
 > here are being fixed as part of
-> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md):
+> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../../plan/compiler/2026-08-14-logwatcher-executable.md):
 > the runtime's own argv container is never freed, and blocking `accept`/`read`
 > ignore the stop signal.
 

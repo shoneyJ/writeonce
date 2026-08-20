@@ -1,7 +1,7 @@
 # Iteration 9e — durability proof, throughput, and scale under load
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-15.** The measurement backbone. Everything after the
 > functional engine (9/9b) is an *optimization*, and an optimization without

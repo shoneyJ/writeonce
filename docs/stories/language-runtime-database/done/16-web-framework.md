@@ -1,7 +1,7 @@
 # Iteration 16 — the web framework: a `.wo` library, HTTP/1.1 behind a proxy
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-18. LANDED 2026-08-19** (branch `web-framework`):
 > `just web-app` 14/0 — deps chain, auth middleware, CRUD with @unique 409 /
@@ -61,9 +61,9 @@
 > in the toolchain. h2c is the parked successor (after iterations 8/9f/11,
 > when multiplexing has a scheduler to pay off on).
 >
-> **Spec exists:** [`2026-08-18-web-framework-design.md`](../../superpowers/specs/2026-08-18-web-framework-design.md)
+> **Spec exists:** [`2026-08-18-web-framework-design.md`](../../../superpowers/specs/2026-08-18-web-framework-design.md)
 > sections B (normative) and C (the parked h2c successor). **Plan:**
-> [`2026-08-19-web-framework.md`](../../superpowers/plans/2026-08-19-web-framework.md)
+> [`2026-08-19-web-framework.md`](../../../superpowers/plans/2026-08-19-web-framework.md)
 > (6 tasks: types/builders; HTTP/1.1 parse+serve; router+interfaces+App;
 > the web-app storefront; the `just web-app` gate; docs closeout). Two
 > enabling risks retired before planning: interface-field dispatch (probe)

@@ -1,7 +1,7 @@
 # Iteration 9f — io_uring group-commit write path
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-15.** The write-path optimization, and deliberately the
 > LAST database performance iteration: it only earns its complexity once

@@ -1,7 +1,7 @@
 # Iteration 9b — `@table`, relations, and language-integrated query
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-11**, hence `9b` rather than a renumber. It follows
 > iteration 9 because a query surface needs tables that actually execute, and
@@ -9,13 +9,13 @@
 > results.
 >
 > **Spec exists (2026-08-15):**
-> [`2026-08-15-table-relations-query-design.md`](../../superpowers/specs/2026-08-15-table-relations-query-design.md)
+> [`2026-08-15-table-relations-query-design.md`](../../../superpowers/specs/2026-08-15-table-relations-query-design.md)
 > settles the three forks recorded in *Info* below (kept as the decision
 > record): the SQL/Cypher layer is superseded as the program surface,
 > the syntax is a compiler-desugared comprehension, and the references
 > contribute vocabulary + semantics (System.Linq) and execution + integrity
 > vocabulary (PostgreSQL, surveyed with the spec). Plan:
-> [`2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md).
+> [`2026-08-15-employee-relations-query.md`](../../../plan/compiler/2026-08-15-employee-relations-query.md).
 
 ## Goals
 

@@ -1,7 +1,7 @@
 # Iteration 14 — skillhost: a host-shaped workload, and the capability gaps it exposes
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-16.** A driving-workload iteration, the way iteration 7's
 > log-watcher drove the systems stdlib. The workload is a writeonce port of

@@ -123,7 +123,7 @@ itself, and all six landed:
    quarantine warm-up.
 
 Plan: [`plan/compiler/2026-08-14-logwatcher-executable.md`](plan/compiler/2026-08-14-logwatcher-executable.md) ·
-Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](stories/language-runtime-database/07-logwatcher-proof.md)
+Story slice: [`docs/stories/language-runtime-database/done/07-logwatcher-proof.md`](stories/language-runtime-database/done/07-logwatcher-proof.md)
 
 **Deferred by name, with the measurement that says so:**
 
@@ -157,29 +157,29 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | #   | Iteration                                                                                    | State                        |
 | --- | -------------------------------------------------------------------------------------------- | ---------------------------- | ---- |
-| 1   | [Principles doc](stories/language-runtime-database/01-principles-doc.md)                     | ✅                           |
-| 2   | [VM core (`wovm`)](stories/language-runtime-database/02-vm-core.md)                          | ✅                           |
-| 3   | [Compiler front (`woc`)](stories/language-runtime-database/03-compiler-front.md)             | ✅ (known gaps below)        |
-| 4   | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
+| 1   | [Principles doc](stories/language-runtime-database/done/01-principles-doc.md)                     | ✅                           |
+| 2   | [VM core (`wovm`)](stories/language-runtime-database/done/02-vm-core.md)                          | ✅                           |
+| 3   | [Compiler front (`woc`)](stories/language-runtime-database/done/03-compiler-front.md)             | ✅ (known gaps below)        |
+| 4   | [Single binary end-to-end](stories/language-runtime-database/done/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
 | 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
-| 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
-| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
-| 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
+| 6   | [Program mode + stdlib](stories/language-runtime-database/done/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
+| 7   | [log-watcher proof](stories/language-runtime-database/done/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
+| 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/done/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
-| 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
-| 9b  | [`@table`, relations, query](stories/language-runtime-database/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
-| 9c  | [Cross-program tables](stories/language-runtime-database/09c-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
-| 9d  | [Keypair attach auth](stories/language-runtime-database/09d-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
-| 9e  | [Durability, throughput, scale](stories/language-runtime-database/09e-durability-throughput-scale.md) | ⬜ needs a spec first        |
-| 9f  | [io_uring group-commit](stories/language-runtime-database/09f-io-uring-commit.md)            | ⬜ after 8 + 9e              |
-| 9g  | [Query grammar corpus](stories/language-runtime-database/09g-query-grammar-corpus.md) | ⬜ needs a spec first        |
+| 9   | [Database engine](stories/language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
+| 9b  | [`@table`, relations, query](stories/language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
+| 9c  | [Cross-program tables](stories/language-runtime-database/refine/09c-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
+| 9d  | [Keypair attach auth](stories/language-runtime-database/refine/09d-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
+| 9e  | [Durability, throughput, scale](stories/language-runtime-database/refine/09e-durability-throughput-scale.md) | ⬜ needs a spec first        |
+| 9f  | [io_uring group-commit](stories/language-runtime-database/refine/09f-io-uring-commit.md)            | ⬜ after 8 + 9e              |
+| 9g  | [Query grammar corpus](stories/language-runtime-database/refine/09g-query-grammar-corpus.md) | ⬜ needs a spec first        |
 | 10  | [HTTP service layer](stories/language-runtime-database/10-http-service.md)                   | ⬜                           | Hold |
-| 11  | [Fibers](stories/language-runtime-database/11-fibers.md)                                     | ⬜                           | Hold |
+| 11  | [Fibers](stories/language-runtime-database/refine/11-fibers.md)                                     | ⬜                           | Hold |
 | 12  | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md)               | ⬜                           | Hold |
-| 13  | [Compile-time metaprogramming](stories/language-runtime-database/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
-| 14  | [skillhost host workload](stories/language-runtime-database/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
-| 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
-| 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
+| 13  | [Compile-time metaprogramming](stories/language-runtime-database/refine/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
+| 14  | [skillhost host workload](stories/language-runtime-database/refine/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
+| 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/done/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
+| 16  | [web framework](stories/language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
 | 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
 | 18  | [framework v2: memory-rich features](stories/language-runtime-database/18-memory-db-features.md) | 🔄 **spec APPROVED 2026-08-20, plan next** ([spec](superpowers/specs/2026-08-20-memory-db-features-design.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub REJECTED until 8/11 |
 

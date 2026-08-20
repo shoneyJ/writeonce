@@ -1,7 +1,7 @@
 # Iteration 11 — fibers (green threads on the shard scheduler)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 ## Goals
 
@@ -59,12 +59,12 @@
 
 ## Info
 
-- Research note: [`docs/plan/exploration/fibers/00-fibers.md`](../../plan/exploration/fibers/00-fibers.md)
+- Research note: [`docs/plan/exploration/fibers/00-fibers.md`](../../../plan/exploration/fibers/00-fibers.md)
   — kernel's-eye evidence (task_struct costs, CFS collapse at high task
   counts) and the precedent survey (BEAM reductions adopted; Go stack
   copying and Tokio coloring rejected; Loom's park-under-blocking-API
   matches the stdlib posture).
-- Vision origin: [blue-green vision §3](../../plan/exploration/blue-green-vm/00-vision.md);
+- Vision origin: [blue-green vision §3](../../../plan/exploration/blue-green-vm/00-vision.md);
   iteration 8's scheduler is the substrate this extends.
 - Open questions to settle in the spec: spawn surface (handle vs actor
   address), budget size and check granularity, parked-fiber drop
