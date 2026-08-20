@@ -43,6 +43,12 @@ deps-accept:
 web-app:
     ./scripts/web-app-accept.sh
 
+# fibers: the hybrid-scheduler demo (docs/examples/fibers) — part 1 byte-
+# exact budget interleave, part 2 parked-sleeper-blocks-nobody, on the
+# uring AND epoll backends plus an ASan run.
+fibers:
+    ./scripts/fibers-accept.sh
+
 # install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
 # `woc version` + a from-scratch project build+run (self-located wovm) + the
 # wo-constraint refusal all work — the "tarball install actually works" gate.

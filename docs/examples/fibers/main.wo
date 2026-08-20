@@ -1,0 +1,74 @@
+use time
+
+-- fibers — the writeonce hybrid demonstrated (BEAM's shape):
+--   cooperative MECHANICS (no signals, no interrupts) with
+--   reduction-budget EVICTION (loop back-edges pay one reduction; at
+--   zero the fiber re-queues whether it likes it or not), actors as the
+--   spawn surface (one message at a time, ownership-moving sends), and
+--   blocking builtins that PARK on the shard's io_uring plane instead
+--   of holding the thread.
+--
+-- Part 1 is deterministic by construction (budget accounting, no time):
+-- its output is byte-exact. Part 2 shows a sleeping fiber not blocking
+-- anyone; its ordering is asserted loosely by the acceptance gate
+-- because it depends on real time.
+
+class Tick {
+  n: Int
+}
+
+-- Part 1: a counting actor; main and the actor interleave one message
+-- per main-yield under the default budget.
+class Counter {
+  label: Text
+  total: Int
+  fn receive(msg: Tick) {
+    self.total = self.total + msg.n;
+    print("${self.label} +${msg.n} = ${self.total}");
+  }
+}
+
+-- Part 2: an actor whose receive PARKS mid-message. The park releases
+-- the shard: main keeps ticking while this fiber sleeps.
+class Sleeper {
+  pad: Int
+  fn receive(msg: Tick) {
+    print("sleeper: down for ${msg.n}ms");
+    time.sleep(msg.n);
+    print("sleeper: up");
+  }
+}
+
+fn spin(rounds: Int) {
+  -- burn reductions so the scheduler's eviction gets a chance: each
+  -- back-edge pays one reduction; the default budget is 4000
+  let i = 0;
+  while i < rounds {
+    i = i + 1;
+  }
+}
+
+fn main() -> Int {
+  -- ---- part 1: deterministic budget interleave ----
+  let c: actor Tick = spawn Counter { label: "count", total: 0 };
+  send(c, Tick { n: 1 });
+  send(c, Tick { n: 2 });
+  send(c, Tick { n: 3 });
+  -- three yields deliver exactly three messages, one per turn
+  spin(5000);
+  spin(5000);
+  spin(5000);
+  print("part1 done");
+
+  -- ---- part 2: a parked fiber blocks nobody ----
+  let s: actor Tick = spawn Sleeper { pad: 0 };
+  send(s, Tick { n: 150 });
+  let t = 0;
+  while t < 8 {
+    time.sleep(25);
+    print("main tick ${t}");
+    t = t + 1;
+  }
+  print("part2 done");
+  return 0;
+}

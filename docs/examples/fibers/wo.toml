@@ -1,0 +1,6 @@
+name        = "fibers"
+version     = "0.1.0"
+description = "the hybrid scheduler demonstrated: budget eviction + actors + parked sleeps"
+
+[runtime]
+wo = ">= 0.1"
