@@ -164,7 +164,7 @@ flowchart TD
     UNIX["unix socket binding"]:::blocked
     PEERV["trusted-proxy PEER verification"]:::blocked
 
-    CRYPTO["GATE: crypto fork — C builtins vs language bit ops (brainstorm)"]:::gate
+    CRYPTO["GATE: crypto fork — C builtins vs language bit ops (brainstorm); digests want iteration 20's Bytes"]:::gate
     SHA["SHA-256/512, HMAC, CRC32"]:::blocked
     ETAG["ETag + conditional requests"]:::blocked
     COOKIE["signed cookies"]:::blocked

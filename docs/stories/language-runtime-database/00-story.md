@@ -72,6 +72,7 @@ iterations by number, so numbers never renumber.
 | 22 | 9g | [Query grammar corpus](refine/09g-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 14 |
 | 23 | 14 | [skillhost host workload](refine/14-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) — demoted with the framework goal |
 | 24 | 13 | [Compile-time metaprogramming](refine/13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` from class-table metadata; held behind 12 with the parked drain by the 2026-08-08 scope directive |
+| 26 | 20 | [Float + Bytes](20-missing-scalar-types.md) | the missing scalars, full stack: IEEE-quiet f64 through literals/VM/@table/WAL/json (fractions decode at last) + Bytes as the binary carrier; forks settled 2026-08-20, spec next — feeds 19 (WS frames) and the crypto fork (digests) |
 | ⏸ | 17 | [library projects + `internal/`](17-library-projects-internal.md) | **PARKED** (spec + plan approved, branch `library-internal`) — `wo.toml` kind = "library" + Go's `internal/` rule; slots anywhere after 16 whenever directed, bringing the framework reorg with it |
 
 Review protocol: the developer reads one iteration, approves or amends;
