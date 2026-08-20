@@ -37,6 +37,13 @@
 > what parks behind 8/11 by design (streaming, backpressure, per-request
 > cancellation).
 >
+> **Form-encoded bodies LANDED 2026-08-20** (same branch): `media_type(req)`
+> (content-type lowercased, parameters stripped) and `form_values(req)`
+> (nil unless the content-type says form; '+' and %XX decoded through the
+> existing query decoder). Probe 7/7 release + ASan; web-app's
+> CreateProduct now accepts form OR JSON into one insert path;
+> `just web-app` 19/0. Multipart stays the candidate next slice.
+>
 > The framework is written IN writeonce and imported
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a
 > reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the

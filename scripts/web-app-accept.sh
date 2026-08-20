@@ -55,13 +55,14 @@ SRV=$!
 for _ in $(seq 1 40); do grep -q listening "$W/srv.out" 2>/dev/null && break; sleep 0.1; done
 
 # one tiny HTTP client; python is already a repo test dependency
-hit() { # method path [body] [auth: yes|no] -> "STATUS|BODY"
-  python3 - "$PORT" "$1" "$2" "${3:-}" "${4:-yes}" <<'PYEOF'
+hit() { # method path [body] [auth: yes|no] [content-type] -> "STATUS|BODY"
+  python3 - "$PORT" "$1" "$2" "${3:-}" "${4:-yes}" "${5:-}" <<'PYEOF'
 import socket, sys
-port, method, path, body, auth = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+port, method, path, body, auth, ct = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 s = socket.create_connection(("127.0.0.1", port), timeout=5)
 h = f"{method} {path} HTTP/1.1\r\nhost: a\r\n"
 if auth == "yes": h += "authorization: Bearer s3cr3t\r\n"
+if ct: h += f"content-type: {ct}\r\n"
 h += f"content-length: {len(body)}\r\n\r\n{body}"
 s.sendall(h.encode())
 d = b""
@@ -107,6 +108,10 @@ expect "empty list"                   "$(hit GET /products)" 200 "[]"
 expect "create product (201)"         "$(hit POST /products '{"name":"mug","price":900,"stock":5}')" 201 '"name":"mug"'
 expect "duplicate name is 409 (@unique)" "$(hit POST /products '{"name":"mug","price":1,"stock":1}')" 409
 expect "malformed json is 400"        "$(hit POST /products '{oops')" 400
+expect "form-encoded create (201, + and %XX decoded)" \
+  "$(hit POST /products 'name=form+kettle&price=1250&stock=2' yes 'application/x-www-form-urlencoded; charset=UTF-8')" 201 '"name":"form kettle"'
+expect "form with a non-numeric price is 400" \
+  "$(hit POST /products 'name=x&price=abc&stock=1' yes 'application/x-www-form-urlencoded')" 400
 expect "list shows the product"       "$(hit GET /products)" 200 '"price":900'
 expect "show by :name capture"        "$(hit GET /products/mug)" 200 '"stock":5'
 expect "unknown product is 404"       "$(hit GET /products/none)" 404

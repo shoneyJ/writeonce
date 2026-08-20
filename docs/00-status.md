@@ -38,9 +38,13 @@ exactly as `drop_fresh_text` does, pinned by
 parsing, pure-`.wo` base64, constant-time `ct_eq`, `req.principal` as the
 blessed principal slot (Middleware.before takes `mut req`), `BearerAuth` +
 `BasicAuth` middlewares; policy stays app-side. Probe matrix 26/26
-ASan-clean; web-app dogfoods BearerAuth; `just web-app` **17/0**. The
-framework README carries the core checklist (✅ / candidate / parked-by-
-design rows).
+ASan-clean; web-app dogfoods BearerAuth. The framework README carries the
+core checklist (✅ / candidate / parked-by-design rows).
+
+**Form-encoded bodies landed 2026-08-20** (same branch): `media_type(req)`
++ `form_values(req)` (nil on any other content-type; '+'/%XX decoded);
+CreateProduct accepts form OR JSON into one insert path; `just web-app`
+**19/0**. Multipart is the candidate next slice.
 
 Next per the implementation order (17 parked): finish the half-done
 database branches — 9c (ipc-attach: manifest + binding) and 9d

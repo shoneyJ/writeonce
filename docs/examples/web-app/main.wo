@@ -42,15 +42,36 @@ class ShowProduct {
   }
 }
 
+-- Accepts BOTH bodies: a form post (application/x-www-form-urlencoded,
+-- the framework's form_values hook) and JSON — same insert either way.
+fn create_product(name: Text, price: Int, stock: Int) -> Resp {
+  let made = try insert Product { name: name, price: price, stock: stock }
+             catch (e) nil;
+  if made == nil { return conflict("product name already exists"); }
+  return created_json(view_json(name, price, stock));
+}
+
 class CreateProduct {
   pad: Int
   fn handle(req: Req) -> Resp {
+    if media_type(req) == "application/x-www-form-urlencoded" {
+      let f = form_values(req);
+      if f == nil { return bad_request("unreadable form body"); }
+      let name = f["name"];
+      if name == nil { return bad_request("form needs name, price, stock"); }
+      let ps = f["price"];
+      if ps == nil { return bad_request("form needs name, price, stock"); }
+      let ss = f["stock"];
+      if ss == nil { return bad_request("form needs name, price, stock"); }
+      let price = parse_int(ps);
+      if price == nil { return bad_request("price must be a number"); }
+      let stock = parse_int(ss);
+      if stock == nil { return bad_request("stock must be a number"); }
+      return create_product(name, price, stock);
+    }
     let v = json.decode(req.body) as ProductView;
     if v == nil { return bad_request("body must be {name, price, stock}"); }
-    let made = try insert Product { name: v.name, price: v.price, stock: v.stock }
-               catch (e) nil;
-    if made == nil { return conflict("product name already exists"); }
-    return created_json(view_json(v.name, v.price, v.stock));
+    return create_product(v.name, v.price, v.stock);
   }
 }
 

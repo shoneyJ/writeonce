@@ -56,7 +56,10 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   TLS+ALPN and gives browsers HTTP/2 while this backend speaks HTTP/1.1
   keep-alive. See the web-app sample's README for the nginx sketch.
 - `Content-Length` bodies only (no chunked encoding), no WebSockets/SSE,
-  JSON-first (no templates).
+  JSON-first (no templates). Form-encoded bodies parse through
+  `form_values(req)` (`+` and `%XX` decoded, nil on any other
+  content-type); `media_type(req)` names the body's media type for
+  content negotiation. Multipart: not yet.
 
 ## The core checklist (what a framework core owes, and where this one is)
 
@@ -68,7 +71,8 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 | Request/response types | ✅ `Req`/`Resp` + builders + `set_header` |
 | Bearer/Basic auth mechanism + principal | ✅ `http/auth.wo`, `req.principal` |
 | Body parsing hooks: JSON | ✅ the language's checked `json.decode` |
-| Body parsing hooks: form-encoded, multipart | ⬜ candidate next slices (form first — `parse_query` already decodes the encoding) |
+| Body parsing hooks: form-encoded | ✅ `form_values(req)` — nil unless the content-type says form; `media_type(req)` exposed for content negotiation |
+| Body parsing hooks: multipart | ⬜ candidate next slice |
 | Error handling → status mapping | 🔶 trap = 500, builders per status; a per-error mapping hook is a candidate slice |
 | Body streaming, backpressure | ⏸ needs fibers/shards (iterations 8/11) — whole bodies until then, by design |
 | Cancellation propagation | ⏸ process-level only (`env.stopping()`); per-request cancel needs fibers (11) |
