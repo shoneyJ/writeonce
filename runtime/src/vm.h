@@ -40,6 +40,12 @@ typedef struct wo_catch {
  * the shard-wide pieces (module, runtime, and which fiber is live).
  * Stage 1 Task 1 is a pure extraction: one embedded fiber, `cur` always
  * points at it, behavior byte-identical. */
+typedef enum {
+    WO_FIB_RUNNABLE = 0,
+    WO_FIB_PARKED = 1, /* stage 1 Task 4: waiting on an fd/deadline */
+    WO_FIB_DONE = 2,
+} wo_fib_state;
+
 typedef struct wo_fiber {
     uint64_t regs[WO_STACK_SLOTS];
     wo_frame frames[WO_MAX_FRAMES];
@@ -51,14 +57,27 @@ typedef struct wo_fiber {
     /* the error a caught trap landed with, read by WO_B_ERR_FILL while
      * the catch arm builds its record */
     wo_err caught;
+    wo_fib_state state;
+    struct wo_fiber *next; /* intrusive FIFO link (run queue) */
 } wo_fiber;
 
 typedef struct wo_vm {
     const wo_module *mod;
     wo_rt rt;
-    wo_fiber f0;    /* fiber 0: main. Stage 1 Task 2 grows the run queue. */
+    wo_fiber f0;    /* fiber 0: main — embedded; spawned fibers are calloc'd */
     wo_fiber *cur;  /* the live fiber — every interpreter access goes here */
+    wo_fiber *qhead, *qtail; /* RUNNABLE fibers awaiting the interpreter */
+    uint32_t nfibers;        /* live fibers besides main */
+    int64_t budget0;         /* reductions per slice (WO_REDUCTIONS, default 4000) */
+    int64_t budget;          /* countdown for the live fiber */
 } wo_vm;
+
+/* Spawn a fiber that will run method_idx(args) — the runtime half the
+ * `spawn` expression lowers onto (stage 1 Task 3); Task 2's tests drive it
+ * directly. The fiber is RUNNABLE and queued; it runs when the scheduler
+ * reaches it. Returns NULL on allocation failure or bad method/arity. */
+wo_fiber *wo_vm_spawn_fiber(wo_vm *vm, uint32_t method_idx, const uint64_t *args,
+                            uint32_t argc);
 
 /* heap_cap = arena byte capacity (the CLI's WO_HEAP_MB feeds this) */
 int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap);

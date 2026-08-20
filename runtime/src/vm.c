@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "borrow.h"
@@ -15,10 +16,79 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
     memset(vm, 0, sizeof(*vm));
     vm->mod = mod;
     vm->cur = &vm->f0; /* fiber 0: main — the one-fiber degenerate case */
+    vm->budget0 = 4000; /* reductions per slice, the BEAM-ish default */
+    {
+        const char *e = getenv("WO_REDUCTIONS");
+        if (e && *e) {
+            long v = atol(e);
+            if (v > 0) vm->budget0 = v;
+        }
+    }
+    vm->budget = vm->budget0;
     return wo_rt_init(&vm->rt, heap_cap, mod->classes, mod->class_cnt);
 }
 
 void wo_vm_destroy(wo_vm *vm) { wo_rt_destroy(&vm->rt); }
+
+/* ---- the run queue (stage 1 Task 2) ---------------------------------- */
+
+static void vm_unwind(wo_vm *vm, uint32_t stop_depth);
+
+static void fib_enqueue(wo_vm *vm, wo_fiber *fb) {
+    fb->state = WO_FIB_RUNNABLE;
+    fb->next = NULL;
+    if (vm->qtail) vm->qtail->next = fb;
+    else vm->qhead = fb;
+    vm->qtail = fb;
+}
+
+static wo_fiber *fib_dequeue(wo_vm *vm) {
+    wo_fiber *fb = vm->qhead;
+    if (fb) {
+        vm->qhead = fb->next;
+        if (!vm->qhead) vm->qtail = NULL;
+        fb->next = NULL;
+    }
+    return fb;
+}
+
+wo_fiber *wo_vm_spawn_fiber(wo_vm *vm, uint32_t method_idx, const uint64_t *args,
+                            uint32_t argc) {
+    if (method_idx >= vm->mod->method_cnt) return NULL;
+    const wo_methodrec *sme = &vm->mod->methods[method_idx];
+    if (argc != sme->arg_cnt) return NULL;
+    wo_fiber *fb = calloc(1, sizeof(*fb));
+    if (!fb) return NULL;
+    fb->depth = 1;
+    fb->frames[0].method = method_idx;
+    fb->frames[0].pc = 0;
+    fb->frames[0].base = 0;
+    if (argc) memcpy(fb->regs, args, (size_t)argc * 8u);
+    memset(fb->regs + argc, 0, (size_t)(sme->reg_cnt - argc) * 8u);
+    vm->nfibers++;
+    fib_enqueue(vm, fb);
+    return fb;
+}
+
+/* Unwind and release one fiber's live frames (drop maps run — parked and
+ * queued fibers die as cleanly as trapped ones), then free it if it is a
+ * spawned one. `vm->cur` is borrowed to do it, restored after. */
+static void fib_reap(wo_vm *vm, wo_fiber *fb) {
+    wo_fiber *save = vm->cur;
+    vm->cur = fb;
+    vm_unwind(vm, 0);
+    vm->cur = save;
+    if (fb != &vm->f0) {
+        vm->nfibers--;
+        free(fb);
+    }
+}
+
+/* Main finished (return or stop): every remaining fiber unwinds clean. */
+static void fib_reap_all(wo_vm *vm) {
+    wo_fiber *fb;
+    while ((fb = fib_dequeue(vm)) != NULL) fib_reap(vm, fb);
+}
 
 /* The drop-table entry governing instruction [pc]: the last one recorded
  * at or before it. NULL = nothing live there. */
@@ -89,7 +159,13 @@ static void vm_gc_roots_fiber(wo_vm *vm, const wo_fiber *fb) {
     }
 }
 
-static void vm_gc_roots(wo_vm *vm) { vm_gc_roots_fiber(vm, &vm->f0); }
+static void vm_gc_roots(wo_vm *vm) {
+    /* the live fiber plus every queued one; fiber 0 is always one of
+     * those two (parked fibers join here in stage 1 Task 4) */
+    vm_gc_roots_fiber(vm, vm->cur);
+    for (const wo_fiber *fb = vm->qhead; fb; fb = fb->next)
+        vm_gc_roots_fiber(vm, fb);
+}
 
 /* One safepoint: start a cycle when the trigger says so (snapshot the
  * roots before the mutator resumes), then run one budgeted slice while a
@@ -235,6 +311,24 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
             RELOAD();                                    \
             NEXT();                                      \
         }                                                \
+        /* uncaught: the fiber's stack is already unwound. Main dying is \
+         * the program dying (unchanged); a spawned fiber dies ALONE —   \
+         * the report goes to stderr the uncaught-trap way and the       \
+         * program lives (the arc's isolation rule). */                  \
+        if (vm->cur != &vm->f0) {                        \
+            if (err)                                     \
+                fprintf(stderr,                          \
+                        "wovm: fiber trap %d at %s:%d: %s\n", \
+                        err->code, err->method, err->line, err->msg); \
+            wo_fiber *dead = vm->cur;                    \
+            vm->cur = fib_dequeue(vm);                   \
+            vm->nfibers--;                               \
+            free(dead);                                  \
+            vm->budget = vm->budget0;                    \
+            RELOAD();                                    \
+            NEXT();                                      \
+        }                                                \
+        fib_reap_all(vm);                                \
         return -1;                                       \
     } while (0)
 
@@ -248,6 +342,27 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
             vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;                           \
             vm_gc_safepoint(vm);                                             \
         }                                                                    \
+    } while (0)
+
+/* Reduction budget (stage 1 Task 2). Checked ONLY at loop back-edges,
+ * AFTER the jump has landed, so the saved pc is the loop head and resume
+ * makes progress — a pre-instruction save at budget 1 would re-execute
+ * the jump, hit the same decrement, and livelock. (Deviation from the
+ * spec's "same three sites as the GC": NEW/CALL re-execution has the
+ * identical livelock shape; back-edges alone bound every loop, which is
+ * what preemption is for. Recorded in the arc plan.) */
+#define FIBER_BUDGET()                                       \
+    do {                                                     \
+        if (--vm->budget <= 0) {                             \
+            vm->budget = vm->budget0;                        \
+            if (vm->qhead) {                                 \
+                vm->cur->frames[vm->cur->depth - 1].pc = pc; \
+                fib_enqueue(vm, vm->cur);                    \
+                vm->cur = fib_dequeue(vm);                   \
+                RELOAD();                                    \
+                NEXT();                                      \
+            }                                                \
+        }                                                    \
     } while (0)
 
     RELOAD();
@@ -347,7 +462,12 @@ dispatch:
     }
 
     CASE(JMP) : {
-        if (wo_ins_sbx(ins) < 0) GC_SAFEPOINT(); /* loop back-edge */
+        if (wo_ins_sbx(ins) < 0) {
+            GC_SAFEPOINT(); /* loop back-edge */
+            pc = (uint32_t)((int64_t)pc + wo_ins_sbx(ins));
+            FIBER_BUDGET(); /* after the jump lands: resume = the loop head */
+            NEXT();
+        }
         pc = (uint32_t)((int64_t)pc + wo_ins_sbx(ins));
         NEXT();
     }
@@ -387,15 +507,35 @@ dispatch:
     while (vm->cur->ncatch && vm->cur->catches[vm->cur->ncatch - 1].depth > vm->cur->depth) \
         vm->cur->ncatch--
 
+/* A fiber's last frame returned. Main ending IS the program ending: every
+ * other fiber unwinds through its drop maps (clean, ASan-proven) and the
+ * program's value is main's. A spawned fiber ending just leaves the
+ * scheduler; its return value is discarded (the spawn surface's entry
+ * wrapper returns nothing owned — Task 3's contract). The queue cannot be
+ * empty when a spawned fiber ends: main never parks in stage 1, so it is
+ * either live or queued. */
+#define FIBER_DONE(rv)                          \
+    do {                                        \
+        if (vm->cur == &vm->f0) {               \
+            fib_reap_all(vm);                   \
+            *ret = (rv);                        \
+            return 0;                           \
+        }                                       \
+        wo_fiber *dead = vm->cur;               \
+        vm->cur = fib_dequeue(vm);              \
+        vm->nfibers--;                          \
+        free(dead);                             \
+        vm->budget = vm->budget0;               \
+        RELOAD();                               \
+        NEXT();                                 \
+    } while (0)
+
     CASE(RET) : {
         uint64_t rv = R[wo_ins_a(ins)];
         vm->cur->regs[vm->cur->frames[vm->cur->depth - 1].base] = rv;
         vm->cur->depth--;
         DROP_CATCHES();
-        if (vm->cur->depth == 0) {
-            *ret = rv;
-            return 0;
-        }
+        if (vm->cur->depth == 0) FIBER_DONE(rv);
         RELOAD();
         NEXT();
     }
@@ -403,10 +543,7 @@ dispatch:
         vm->cur->regs[vm->cur->frames[vm->cur->depth - 1].base] = 0;
         vm->cur->depth--;
         DROP_CATCHES();
-        if (vm->cur->depth == 0) {
-            *ret = 0;
-            return 0;
-        }
+        if (vm->cur->depth == 0) FIBER_DONE(0);
         RELOAD();
         NEXT();
     }
@@ -536,6 +673,25 @@ dispatch:
             vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;
             vm->cur->ncatch = 0;
             vm_unwind(vm, 0);
+            /* a stop ends the PROGRAM: every fiber — the stopped one,
+             * queued ones, main wherever it is — unwinds clean */
+            if (vm->cur != &vm->f0) {
+                wo_fiber *dead = vm->cur;
+                vm->cur = &vm->f0;
+                vm->nfibers--;
+                free(dead);
+                if (vm->f0.depth) {
+                    /* main was queued mid-run: release its frames too */
+                    wo_fiber *q = vm->qhead, *prev = NULL;
+                    while (q && q != &vm->f0) { prev = q; q = q->next; }
+                    if (q) { /* unlink f0 from the queue */
+                        if (prev) prev->next = q->next; else vm->qhead = q->next;
+                        if (vm->qtail == q) vm->qtail = prev;
+                        vm_unwind(vm, 0);
+                    }
+                }
+            }
+            fib_reap_all(vm);
             return 1;
         }
         if (brc) TRAPF((uint32_t)brc, "%s", bmsg);
@@ -624,6 +780,7 @@ dispatch:
 #undef RELOAD
 #undef TRAPF
 #undef GC_SAFEPOINT
+#undef FIBER_BUDGET
 #undef DROP_CATCHES
 }
 
