@@ -9,11 +9,12 @@
 #include "cont.h"
 #include "gc.h"
 
-uint32_t wo_vm_depth(const wo_vm *vm) { return vm->depth; }
+uint32_t wo_vm_depth(const wo_vm *vm) { return vm->cur->depth; }
 
 int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
     memset(vm, 0, sizeof(*vm));
     vm->mod = mod;
+    vm->cur = &vm->f0; /* fiber 0: main — the one-fiber degenerate case */
     return wo_rt_init(&vm->rt, heap_cap, mod->classes, mod->class_cnt);
 }
 
@@ -33,7 +34,7 @@ static const wo_dropent *vm_dropent(const wo_methodrec *me, uint32_t pc) {
  * uncaught trap uses. A borrow held by a dying register does not block
  * its drop — the borrower IS the dying region. */
 static void vm_release_frame(wo_vm *vm, uint32_t d, uint32_t pc, uint32_t keep_pc) {
-    const wo_frame *f = &vm->frames[d - 1];
+    const wo_frame *f = &vm->cur->frames[d - 1];
     const wo_methodrec *me = &vm->mod->methods[f->method];
     const wo_dropent *ent = vm_dropent(me, pc);
     if (!ent) return; /* no entry: nothing live in this frame */
@@ -45,7 +46,7 @@ static void vm_release_frame(wo_vm *vm, uint32_t d, uint32_t pc, uint32_t keep_p
             keep_gc = k->gc;
         }
     }
-    uint64_t *R = vm->regs + f->base;
+    uint64_t *R = vm->cur->regs + f->base;
     for (uint32_t r = 0; r < me->reg_cnt; r++) {
         uint64_t bit = 1ull << r;
         if ((ent->owned & bit) && !(keep_owned & bit) && R[r]) {
@@ -69,14 +70,17 @@ static void vm_release_frame(wo_vm *vm, uint32_t d, uint32_t pc, uint32_t keep_p
  * frame (the caller synced f->pc first), the CALL for outer ones. Runs
  * once, atomically, when a cycle begins: bounded by the stack, not the
  * heap. */
-static void vm_gc_roots(wo_vm *vm) {
-    for (uint32_t d = vm->depth; d > 0; d--) {
-        const wo_frame *f = &vm->frames[d - 1];
+/* One fiber's frames as GC roots. EVERY fiber — running, queued, parked —
+ * pins its values (the arc's rule); vm_gc_roots walks them all. Stage 1
+ * Task 1: exactly one fiber exists. */
+static void vm_gc_roots_fiber(wo_vm *vm, const wo_fiber *fb) {
+    for (uint32_t d = fb->depth; d > 0; d--) {
+        const wo_frame *f = &fb->frames[d - 1];
         const wo_methodrec *me = &vm->mod->methods[f->method];
-        uint32_t gpc = (d == vm->depth) ? f->pc : f->pc - 1;
+        uint32_t gpc = (d == fb->depth) ? f->pc : f->pc - 1;
         const wo_dropent *ent = vm_dropent(me, gpc);
         if (!ent) continue;
-        const uint64_t *R = vm->regs + f->base;
+        const uint64_t *R = fb->regs + f->base;
         for (uint32_t r = 0; r < me->reg_cnt; r++) {
             uint64_t bit = 1ull << r;
             if (((ent->gc | ent->owned) & bit) && R[r])
@@ -84,6 +88,8 @@ static void vm_gc_roots(wo_vm *vm) {
         }
     }
 }
+
+static void vm_gc_roots(wo_vm *vm) { vm_gc_roots_fiber(vm, &vm->f0); }
 
 /* One safepoint: start a cycle when the trigger says so (snapshot the
  * roots before the mutator resumes), then run one budgeted slice while a
@@ -105,11 +111,11 @@ static void vm_gc_safepoint(wo_vm *vm) {
  * slot sees 0 and skips. stop_depth is 0 for an uncaught trap (the whole
  * stack dies) and the catching frame's depth for a caught one. */
 static void vm_unwind(wo_vm *vm, uint32_t stop_depth) {
-    for (uint32_t d = vm->depth; d > stop_depth; d--) {
-        const wo_frame *f = &vm->frames[d - 1];
-        vm_release_frame(vm, d, (d == vm->depth) ? f->pc : f->pc - 1, UINT32_MAX);
+    for (uint32_t d = vm->cur->depth; d > stop_depth; d--) {
+        const wo_frame *f = &vm->cur->frames[d - 1];
+        vm_release_frame(vm, d, (d == vm->cur->depth) ? f->pc : f->pc - 1, UINT32_MAX);
     }
-    vm->depth = stop_depth;
+    vm->cur->depth = stop_depth;
 }
 
 /* Residual runtime checks the loader cannot do statically (registers are
@@ -153,7 +159,7 @@ static wo_str *str_check(uint64_t v, const char **why) {
  * `try` binds exactly the same four fields. */
 static void vm_fill_err(wo_vm *vm, wo_err *out, uint32_t tcode, const char *fmt, va_list ap) {
     const wo_module *mod = vm->mod;
-    const wo_frame *f = &vm->frames[vm->depth - 1];
+    const wo_frame *f = &vm->cur->frames[vm->cur->depth - 1];
     const wo_methodrec *me = &mod->methods[f->method];
     out->code = tcode;
     out->line = 0; /* last line-table entry with pc <= trapping pc */
@@ -175,10 +181,10 @@ static int vm_trap(wo_vm *vm, wo_err *err, uint32_t tcode, const char *fmt,
      * caller passed no err: it is the value `catch (e)` binds. */
     va_list ap;
     va_start(ap, fmt);
-    vm_fill_err(vm, &vm->caught, tcode, fmt, ap);
+    vm_fill_err(vm, &vm->cur->caught, tcode, fmt, ap);
     va_end(ap);
-    if (vm->ncatch) {
-        const wo_catch *c = &vm->catches[vm->ncatch - 1];
+    if (vm->cur->ncatch) {
+        const wo_catch *c = &vm->cur->catches[vm->cur->ncatch - 1];
         uint32_t cdepth = c->depth;
         uint32_t hpc = c->pc;
         /* Which instruction governs the catching frame's own live set has
@@ -186,18 +192,18 @@ static int vm_trap(wo_vm *vm, wo_err *err, uint32_t tcode, const char *fmt,
          * instruction when the trap was raised in this very frame, the
          * CALL (pc - 1, the saved pc is the resume point) when it came
          * from deeper. */
-        int trapped_here = (cdepth == vm->depth);
-        vm->ncatch--;
+        int trapped_here = (cdepth == vm->cur->depth);
+        vm->cur->ncatch--;
         /* frames above the catching one die whole */
         vm_unwind(vm, cdepth);
         /* in the catching frame only the try region's own values die: the
          * handler's drop entry names what survives into the catch arm */
-        wo_frame *cf = &vm->frames[cdepth - 1];
+        wo_frame *cf = &vm->cur->frames[cdepth - 1];
         vm_release_frame(vm, cdepth, trapped_here ? cf->pc : cf->pc - 1, hpc);
         cf->pc = hpc;
         return 0;
     }
-    if (err) *err = vm->caught;
+    if (err) *err = vm->cur->caught;
     vm_unwind(vm, 0);
     return -1;
 }
@@ -212,10 +218,10 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
 
 #define RELOAD()                                                  \
     do {                                                          \
-        me = &mod->methods[vm->frames[vm->depth - 1].method];     \
+        me = &mod->methods[vm->cur->frames[vm->cur->depth - 1].method];     \
         code = me->code;                                          \
-        pc = vm->frames[vm->depth - 1].pc;                        \
-        R = vm->regs + vm->frames[vm->depth - 1].base;            \
+        pc = vm->cur->frames[vm->cur->depth - 1].pc;                        \
+        R = vm->cur->regs + vm->cur->frames[vm->cur->depth - 1].base;            \
     } while (0)
 
 /* pc is post-incremented at dispatch: the trapping instruction is pc-1.
@@ -224,7 +230,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
  * keeps going — the same macro serves both surfaces. */
 #define TRAPF(tcode, ...)                                \
     do {                                                 \
-        vm->frames[vm->depth - 1].pc = pc - 1;           \
+        vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;           \
         if (vm_trap(vm, err, tcode, __VA_ARGS__) == 0) { \
             RELOAD();                                    \
             NEXT();                                      \
@@ -239,7 +245,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
 #define GC_SAFEPOINT()                                                       \
     do {                                                                     \
         if (vm->rt.gc_phase != WO_GC_IDLE || wo_gc_want_start(&vm->rt)) {    \
-            vm->frames[vm->depth - 1].pc = pc - 1;                           \
+            vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;                           \
             vm_gc_safepoint(vm);                                             \
         }                                                                    \
     } while (0)
@@ -356,19 +362,19 @@ dispatch:
         /* Lua-style window overlap: callee r0 = caller slot A; args sit at
          * A..A+argc-1; the return value lands back in slot A */
         const wo_methodrec *callee = &mod->methods[wo_ins_bx(ins)];
-        uint32_t nbase = vm->frames[vm->depth - 1].base + wo_ins_a(ins);
-        if (vm->depth >= WO_MAX_FRAMES)
+        uint32_t nbase = vm->cur->frames[vm->cur->depth - 1].base + wo_ins_a(ins);
+        if (vm->cur->depth >= WO_MAX_FRAMES)
             TRAPF(WO_T_STACK, "frame stack overflow (%u frames)",
                   (unsigned)WO_MAX_FRAMES);
         if (nbase + callee->reg_cnt > WO_STACK_SLOTS)
             TRAPF(WO_T_STACK, "value stack overflow");
-        vm->frames[vm->depth - 1].pc = pc;
-        vm->frames[vm->depth].method = wo_ins_bx(ins);
-        vm->frames[vm->depth].pc = 0;
-        vm->frames[vm->depth].base = nbase;
-        vm->depth++;
+        vm->cur->frames[vm->cur->depth - 1].pc = pc;
+        vm->cur->frames[vm->cur->depth].method = wo_ins_bx(ins);
+        vm->cur->frames[vm->cur->depth].pc = 0;
+        vm->cur->frames[vm->cur->depth].base = nbase;
+        vm->cur->depth++;
         /* zero non-argument registers: drop masks must never see stale bits */
-        memset(vm->regs + nbase + callee->arg_cnt, 0,
+        memset(vm->cur->regs + nbase + callee->arg_cnt, 0,
                (size_t)(callee->reg_cnt - callee->arg_cnt) * 8u);
         RELOAD();
         NEXT();
@@ -378,15 +384,15 @@ dispatch:
  * out of a try region never runs its ENDTRY, and a handler pc in a frame
  * that no longer exists would land the next trap on a dead window. */
 #define DROP_CATCHES()                                                  \
-    while (vm->ncatch && vm->catches[vm->ncatch - 1].depth > vm->depth) \
-        vm->ncatch--
+    while (vm->cur->ncatch && vm->cur->catches[vm->cur->ncatch - 1].depth > vm->cur->depth) \
+        vm->cur->ncatch--
 
     CASE(RET) : {
         uint64_t rv = R[wo_ins_a(ins)];
-        vm->regs[vm->frames[vm->depth - 1].base] = rv;
-        vm->depth--;
+        vm->cur->regs[vm->cur->frames[vm->cur->depth - 1].base] = rv;
+        vm->cur->depth--;
         DROP_CATCHES();
-        if (vm->depth == 0) {
+        if (vm->cur->depth == 0) {
             *ret = rv;
             return 0;
         }
@@ -394,10 +400,10 @@ dispatch:
         NEXT();
     }
     CASE(RET0) : {
-        vm->regs[vm->frames[vm->depth - 1].base] = 0;
-        vm->depth--;
+        vm->cur->regs[vm->cur->frames[vm->cur->depth - 1].base] = 0;
+        vm->cur->depth--;
         DROP_CATCHES();
-        if (vm->depth == 0) {
+        if (vm->cur->depth == 0) {
             *ret = 0;
             return 0;
         }
@@ -527,8 +533,8 @@ dispatch:
          * every live value is still released on the way out; the CLI turns
          * this into the same exit status a clean `return 0` gives. */
         if (brc == WO_SYS_STOPPED) {
-            vm->frames[vm->depth - 1].pc = pc - 1;
-            vm->ncatch = 0;
+            vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;
+            vm->cur->ncatch = 0;
             vm_unwind(vm, 0);
             return 1;
         }
@@ -568,18 +574,18 @@ dispatch:
         if ((uint32_t)wo_ins_a(ins) + callee->arg_cnt > me->reg_cnt)
             TRAPF(WO_T_STACK, "call window exceeds frame"); /* runtime: callee
                                                 unknown to the loader here */
-        uint32_t nbase = vm->frames[vm->depth - 1].base + wo_ins_a(ins);
-        if (vm->depth >= WO_MAX_FRAMES)
+        uint32_t nbase = vm->cur->frames[vm->cur->depth - 1].base + wo_ins_a(ins);
+        if (vm->cur->depth >= WO_MAX_FRAMES)
             TRAPF(WO_T_STACK, "frame stack overflow (%u frames)",
                   (unsigned)WO_MAX_FRAMES);
         if (nbase + callee->reg_cnt > WO_STACK_SLOTS)
             TRAPF(WO_T_STACK, "value stack overflow");
-        vm->frames[vm->depth - 1].pc = pc;
-        vm->frames[vm->depth].method = hit->method;
-        vm->frames[vm->depth].pc = 0;
-        vm->frames[vm->depth].base = nbase;
-        vm->depth++;
-        memset(vm->regs + nbase + callee->arg_cnt, 0,
+        vm->cur->frames[vm->cur->depth - 1].pc = pc;
+        vm->cur->frames[vm->cur->depth].method = hit->method;
+        vm->cur->frames[vm->cur->depth].pc = 0;
+        vm->cur->frames[vm->cur->depth].base = nbase;
+        vm->cur->depth++;
+        memset(vm->cur->regs + nbase + callee->arg_cnt, 0,
                (size_t)(callee->reg_cnt - callee->arg_cnt) * 8u);
         RELOAD();
         NEXT();
@@ -590,20 +596,20 @@ dispatch:
     CASE(TRAP) : { TRAPF(wo_ins_bx(ins), "explicit trap"); }
 
     CASE(TRY) : {
-        if (vm->ncatch >= WO_MAX_CATCH)
+        if (vm->cur->ncatch >= WO_MAX_CATCH)
             TRAPF(WO_T_STACK, "catch stack overflow (%u regions)",
                   (unsigned)WO_MAX_CATCH);
-        vm->catches[vm->ncatch].depth = vm->depth;
-        vm->catches[vm->ncatch].pc = (uint32_t)((int64_t)pc + wo_ins_sbx(ins));
-        vm->catches[vm->ncatch].reg = wo_ins_a(ins);
-        vm->ncatch++;
+        vm->cur->catches[vm->cur->ncatch].depth = vm->cur->depth;
+        vm->cur->catches[vm->cur->ncatch].pc = (uint32_t)((int64_t)pc + wo_ins_sbx(ins));
+        vm->cur->catches[vm->cur->ncatch].reg = wo_ins_a(ins);
+        vm->cur->ncatch++;
         NEXT();
     }
     CASE(ENDTRY) : {
         /* the try region completed without trapping. Defensive on an
          * unpaired ENDTRY (a miscompile the loader cannot see): pop
          * nothing rather than corrupt the stack. */
-        if (vm->ncatch) vm->ncatch--;
+        if (vm->cur->ncatch) vm->cur->ncatch--;
         NEXT();
     }
 
@@ -639,12 +645,12 @@ int wo_vm_call(wo_vm *vm, uint32_t method_idx, const uint64_t *args,
         }
         return -1;
     }
-    vm->depth = 1;
-    vm->ncatch = 0; /* catch regions never survive a call boundary */
-    vm->frames[0].method = method_idx;
-    vm->frames[0].pc = 0;
-    vm->frames[0].base = 0;
-    if (argc) memcpy(vm->regs, args, (size_t)argc * 8u);
-    memset(vm->regs + argc, 0, (size_t)(me->reg_cnt - argc) * 8u);
+    vm->cur->depth = 1;
+    vm->cur->ncatch = 0; /* catch regions never survive a call boundary */
+    vm->cur->frames[0].method = method_idx;
+    vm->cur->frames[0].pc = 0;
+    vm->cur->frames[0].base = 0;
+    if (argc) memcpy(vm->cur->regs, args, (size_t)argc * 8u);
+    memset(vm->cur->regs + argc, 0, (size_t)(me->reg_cnt - argc) * 8u);
     return vm_run(vm, ret, err);
 }

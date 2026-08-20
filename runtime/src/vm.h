@@ -34,9 +34,13 @@ typedef struct wo_catch {
 
 #define WO_MAX_CATCH 64u
 
-typedef struct wo_vm {
-    const wo_module *mod;
-    wo_rt rt;
+/* The concurrency arc (iterations 8+11, stage 1): a FIBER is exactly the
+ * interpreter state the vm used to hold inline — the register window, the
+ * frame stack, the catch stack, and the caught-error slot. The vm owns
+ * the shard-wide pieces (module, runtime, and which fiber is live).
+ * Stage 1 Task 1 is a pure extraction: one embedded fiber, `cur` always
+ * points at it, behavior byte-identical. */
+typedef struct wo_fiber {
     uint64_t regs[WO_STACK_SLOTS];
     wo_frame frames[WO_MAX_FRAMES];
     uint32_t depth;
@@ -47,6 +51,13 @@ typedef struct wo_vm {
     /* the error a caught trap landed with, read by WO_B_ERR_FILL while
      * the catch arm builds its record */
     wo_err caught;
+} wo_fiber;
+
+typedef struct wo_vm {
+    const wo_module *mod;
+    wo_rt rt;
+    wo_fiber f0;    /* fiber 0: main. Stage 1 Task 2 grows the run queue. */
+    wo_fiber *cur;  /* the live fiber — every interpreter access goes here */
 } wo_vm;
 
 /* heap_cap = arena byte capacity (the CLI's WO_HEAP_MB feeds this) */

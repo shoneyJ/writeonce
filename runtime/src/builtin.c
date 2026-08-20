@@ -328,22 +328,22 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "error record is not a 4-field class";
             return WO_T_BOUNDS;
         }
-        wo_str *meth = wo_str_new(rt, vm->caught.method,
-                                  (uint32_t)strlen(vm->caught.method));
+        wo_str *meth = wo_str_new(rt, vm->cur->caught.method,
+                                  (uint32_t)strlen(vm->cur->caught.method));
         if (!meth) {
             *msg = "out of memory";
             return WO_T_OOM;
         }
-        wo_str *text = wo_str_new(rt, vm->caught.msg,
-                                  (uint32_t)strlen(vm->caught.msg));
+        wo_str *text = wo_str_new(rt, vm->cur->caught.msg,
+                                  (uint32_t)strlen(vm->cur->caught.msg));
         if (!text) {
             wo_str_free(rt, meth);
             *msg = "out of memory";
             return WO_T_OOM;
         }
         uint64_t *fs = wo_fields(o);
-        fs[0] = vm->caught.code;
-        fs[1] = vm->caught.line;
+        fs[0] = vm->cur->caught.code;
+        fs[1] = vm->cur->caught.line;
         fs[2] = (uint64_t)(uintptr_t)meth;
         fs[3] = (uint64_t)(uintptr_t)text;
         R[A] = R[B];
