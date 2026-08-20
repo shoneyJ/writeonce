@@ -8,7 +8,10 @@ The single place to learn where this project stands. Organised in six buckets:
 **stories** (the narrative arc), **in progress**, **done**, **pending**,
 **discarded**, **learnings**. The buckets are **sections of this board, not
 folders** — a doc stays where it was authored when its work lands; only its
-banner and this board change. Every plan and phase doc opens with a
+banner and this board change. ONE exception by directive (2026-08-20):
+story iteration files move physically — landed ones into
+`stories/language-runtime-database/done/`, brainstorm-needing ones into
+`refine/`; in-flight/parked stay at the root. Every plan and phase doc opens with a
 `> **Status:**` banner linking back here; normative contracts
 (`plan/oop-vm/`), exploration studies, reference docs and the
 discarded/learnings registers carry none by design.
