@@ -62,10 +62,10 @@ routing/security gaps is **framework v1**, tracked item-by-item in the
 (✅/🔶/⬜/⏸/🔧 per feature — timeouts and Unix sockets need `net` runtime
 seams, crypto hashes need C builtins since the language has no bitwise
 operators, streaming/cancellation park behind 8/11). The memory-rich
-features are **framework v2** = iteration 18 (spec written, awaiting
-review): TTL cache, @table flags, durable job queue with drain-on-request,
-`transaction { }` over the WAL's staged batch. After 18, the order resumes
-at 9c/9d.
+features are **framework v2** = iteration 18 (spec APPROVED 2026-08-20,
+plan next): TTL cache, @table flags, durable job queue with
+drain-on-request, `transaction { }` over the WAL's staged batch. After 18,
+the order resumes at 9c/9d. Edges: [00-dependency-graph.md](00-dependency-graph.md).
 
 ---
 
