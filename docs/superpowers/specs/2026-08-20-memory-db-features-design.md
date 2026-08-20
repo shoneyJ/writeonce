@@ -4,7 +4,8 @@
 > the framework README's status ledger; this spec is what the embedded
 > store adds on top of it.
 >
-> **Status: spec, awaiting review (2026-08-20).** Decisions were settled in
+> **Status: APPROVED 2026-08-20** (developer review). Plan next.
+> Decisions were settled in
 > [the iteration](../../stories/language-runtime-database/18-memory-db-features.md);
 > this spec makes them buildable. The plan follows after review.
 > Board: [docs/00-status.md](../../00-status.md).
