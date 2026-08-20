@@ -1,4 +1,10 @@
-# Iteration 18 — memory-rich framework features over the embedded database
+# Iteration 18 — framework v2: memory-rich features over the embedded database
+
+> **Scope label (2026-08-20): this iteration is FRAMEWORK V2.** Framework
+> v1 is the transport/routing/body/security surface tracked in the
+> [framework README's status ledger](../../examples/writeonce-framework/README.md);
+> v2 is what the embedded store adds on top. v1 gaps land before or
+> alongside v2 as slices, per the ledger.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).

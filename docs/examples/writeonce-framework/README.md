@@ -63,22 +63,85 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   fibers/shards) with `part_named` for fields; `media_type(req)` names
   the body's media type for content negotiation.
 
-## The core checklist (what a framework core owes, and where this one is)
+## The v1 surface — status ledger (2026-08-20)
 
-| Core concern | State |
+The target surface of **framework v1**, tracked per item. The memory-rich
+features (TTL cache, feature flags, durable job queue, `transaction { }`)
+are **framework v2** — iteration 18, spec written, NOT part of v1.
+Legend: ✅ shipped · 🔶 partial (gap named) · ⬜ candidate slice ·
+⏸ parked behind a runtime iteration · 🔧 needs a runtime/compiler seam
+first (pure `.wo` cannot express it yet).
+
+### Transport
+
+| Item | State |
 | --- | --- |
-| HTTP parsing + connection lifecycle | ✅ `http/parse.wo`, `http/serve.wo` (keep-alive, 400-and-survive, fd-clean, SIGTERM) |
-| Routing: path params, method dispatch, precedence | ✅ `:param` captures, first-match-wins, wrong-method = 405 + `Allow` |
-| Middleware chain, ordering guarantee | ✅ registration order, `?Resp` short-circuits |
-| Request/response types | ✅ `Req`/`Resp` + builders + `set_header` |
-| Bearer/Basic auth mechanism + principal | ✅ `http/auth.wo`, `req.principal` |
-| Body parsing hooks: JSON | ✅ the language's checked `json.decode` |
-| Body parsing hooks: form-encoded | ✅ `form_values(req)` — nil unless the content-type says form; `media_type(req)` exposed for content negotiation |
-| Body parsing hooks: multipart | ✅ `multipart_parts(req)` (RFC 7578: fields + file parts, filename/mime kept) + `part_named` |
-| Error handling → status mapping | 🔶 trap = 500, builders per status; a per-error mapping hook is a candidate slice |
-| Body streaming, backpressure | ⏸ needs fibers/shards (iterations 8/11) — whole bodies until then, by design |
-| Cancellation propagation | ⏸ process-level only (`env.stopping()`); per-request cancel needs fibers (11) |
-| Configuration + graceful shutdown | 🔶 SIGTERM drains and closes clean; config is ctor fields — a config record is a candidate slice |
+| HTTP/1.1 parsing | 🔶 parses + 400-and-survive; STRICT ambiguity rejection (duplicate/conflicting `Content-Length`, oversize checks beyond BODY_MAX) not audited — hardening slice |
+| Keep-alive | ✅ pipelined-serve / close-when-idle (starvation-honest until 8/11) |
+| Read/write/idle timeouts | 🔧 `net` has no timeout surface — runtime seam, then a framework knob |
+| Request size limits | ✅ BODY_MAX bounds headers AND body |
+| Unix socket binding | 🔧 `net.listen` is TCP-only — runtime seam |
+| Graceful SIGTERM | ✅ in-flight request completes (blocking model), listener + fds closed, storage is per-commit durable (WAL fdatasync — nothing to checkpoint) |
+
+### Routing
+
+| Item | State |
+| --- | --- |
+| Path matching | 🔶 linear scan, first-match-wins; a radix tree is a performance slice that waits for iteration 9e to MEASURE it first |
+| Method dispatch · path params · 404 · 405+`Allow` | ✅ |
+| Wildcards | ⬜ only `:param` today; `*rest` capture is a candidate slice |
+| Precedence rules | 🔶 registration order IS the rule (documented); specificity-based precedence unneeded until wildcards exist |
+| Route groups | ⬜ candidate slice (prefix + per-group middleware) |
+
+### Request/response
+
+| Item | State |
+| --- | --- |
+| Case-insensitive headers · query parsing | ✅ (names lowercased on read) |
+| JSON · form-urlencoded · multipart | ✅ all three hooks (`json.decode`, `form_values`, `multipart_parts`) |
+| Content negotiation | 🔶 `media_type(req)` covers the request side; `Accept`-driven response negotiation ⬜ |
+| Trusted-proxy client IP | 🔶 `X-Forwarded-For/-Proto` parsing is expressible (candidate slice); VERIFYING the peer is the trusted proxy needs a peer-address runtime seam 🔧 |
+| Status/header setting · redirects | ✅ builders + `set_header` |
+| Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ 8/11 — whole bodies, one write, by design |
+| ETag + conditional requests | ⬜ candidate; wants the crypto slice's hashing |
+
+### Context & middleware
+
+| Item | State |
+| --- | --- |
+| Ordered middleware chain | ✅ registration order, `?Resp` short-circuits |
+| Request-scoped context | 🔶 `req.params` + `req.principal` are the context today; a general `req.ctx` bag is a candidate slice |
+| Guaranteed teardown | 🔶 every fd closes on every path (gate-proven); no user teardown hooks yet |
+| Cancellation into pending storage ops | ⏸ fibers (11) |
+| Panic recovery | 🔶 trap = 500 and the server survives ✅; "rolls back the transaction" is framework v2 (needs `transaction { }`, iteration 18) |
+
+### Storage integration (the differentiator — framework v2 territory)
+
+| Item | State |
+| --- | --- |
+| Transaction-per-request middleware (commit on 2xx, roll back otherwise) | ⏸ **v2** — needs iteration 18's `transaction { }` |
+| Cancellation → rollback | ⏸ fibers (11) + v2 |
+| Migration generation + review workflow | ⬜ recorded future story (script-based destructive migrations) |
+| Eager-loading API (N+1) | ⬜ query-surface work (9-series), not framework code |
+| Tenant-scoped query roots | ⬜ future; wants the query surface to grow scoped roots first |
+
+### Security
+
+| Item | State |
+| --- | --- |
+| Constant-time comparison · Authorization parsing · Basic auth · principal | ✅ `http/auth.wo`, `req.principal` |
+| CORS | ⬜ candidate slice (middleware + preflight answers) |
+| Security headers | ⬜ candidate slice (one middleware, a header set) |
+| Host validation | ⬜ candidate slice (middleware against a host allowlist) |
+| Strict parsing | 🔶 same item as Transport's hardening slice |
+
+### Crypto (self-written, hard-stop after JWT HS256)
+
+| Item | State |
+| --- | --- |
+| base64 | ✅ pure `.wo` (`http/auth.wo`) |
+| SHA-256 · SHA-512 · HMAC · CRC32 | 🔧 the language has NO bitwise operators — these are C runtime builtins (libc-only doctrine permits hand-rolled crypto in the runtime) or the language grows bit ops first; the fork goes to a brainstorm before the slice |
+| Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT HS256) | ⬜ framework slices AFTER the hash primitives exist; **hard stop there** — no RS256, no JOSE zoo |
 
 ## The consuming sample
 

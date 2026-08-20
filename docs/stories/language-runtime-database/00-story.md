@@ -66,7 +66,7 @@ iterations); no commits by agents — drafts go to `.dev/commit.md`.
 | 15 | [deps: `wo.toml [deps]`](15-deps-package-manager.md) | exact-rev git dependencies + `wo.lock` + `.wo-deps` cache; `use <dep>` resolves a fetched project as a module root; flat-only, network-free when locked |
 | 16 | [web framework](16-web-framework.md) | a `.wo`-library framework (HTTP/1.1 keep-alive behind a TLS-terminating proxy): router, `Handler`/`Middleware` structural interfaces, `@table` data layer; `docs/examples/web-app` consumes it via `[deps]`; h2c parked behind 8/9f/11 |
 | 17 | [library projects + `internal/`](17-library-projects-internal.md) | first-class library projects (`wo.toml` kind = "library", checkable without an entry, dual lib+bin) and dependency privacy (Go's `internal/` rule at the [deps] boundary) — forks settled 2026-08-20, spec/plan next |
-| 18 | [memory-rich framework features](18-memory-db-features.md) | what the embedded store + one process buy for free: TTL cache class, @table feature flags with cached reads, a durable @table job queue with drain-on-request, and `transaction { }` exposing the WAL's staged batch (enqueue + write, one commit — no outbox) — forks settled 2026-08-20, spec/plan next |
+| 18 | [framework v2: memory-rich features](18-memory-db-features.md) | what the embedded store + one process buy for free: TTL cache class, @table feature flags with cached reads, a durable @table job queue with drain-on-request, and `transaction { }` exposing the WAL's staged batch (enqueue + write, one commit — no outbox) — forks settled 2026-08-20, spec/plan next |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable

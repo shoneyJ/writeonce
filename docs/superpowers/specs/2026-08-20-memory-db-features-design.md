@@ -1,5 +1,9 @@
-# Iteration 18 — memory-rich features over the embedded database: design
+# Iteration 18 — framework v2: memory-rich features over the embedded database (design)
 
+> **Scope label: FRAMEWORK V2** — framework v1 is the surface tracked in
+> the framework README's status ledger; this spec is what the embedded
+> store adds on top of it.
+>
 > **Status: spec, awaiting review (2026-08-20).** Decisions were settled in
 > [the iteration](../../stories/language-runtime-database/18-memory-db-features.md);
 > this spec makes them buildable. The plan follows after review.
