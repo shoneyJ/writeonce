@@ -52,10 +52,11 @@ takes multipart/form/JSON; `just web-app` **21/0**. Surfaced + fixed the
 RETURN flavor of the interp-of-borrowed-place emitter bug (emit_return now
 sees through Interp; same corpus pin). Body-parsing hooks: all three ✅.
 
-Next per the implementation order (17 parked): finish the half-done
-database branches — 9c (ipc-attach: manifest + binding) and 9d
-(keypair-auth: manifest) — both need their forks brainstormed before
-planning.
+Next: **iteration 18** (memory-rich framework features — TTL cache,
+@table flags, durable job queue with drain-on-request, `transaction { }`
+over the WAL's staged batch; forks settled 2026-08-20, brainstormed the
+same day) — spec, then plan, then implementation on approval. After 18,
+the order resumes at 9c/9d.
 
 ---
 
@@ -171,6 +172,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
 | 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
 | 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
+| 18  | [memory-rich framework features](stories/language-runtime-database/18-memory-db-features.md) | ⬜ **forks settled 2026-08-20, awaiting spec/plan**: TTL cache + @table flags + durable job queue (drain-on-request, idle-drains-nothing disclosed) + `transaction { }` over the WAL's existing staged batch; pub/sub REJECTED until 8/11 |
 
 ---
 
