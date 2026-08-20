@@ -121,8 +121,8 @@ Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](s
 
 The **language track**'s first goal — iterations 3 → 4 → 5 → 6 → 7, _compile
 and run log-watcher_ — is met; the database engine (9/9b), deps (15), and the
-web framework (16) landed on top of it. The goal is now the framework line:
-iteration 17 first, then the runtime iterations that mature it (see
+web framework (16) landed on top of it. The goal is now the framework as a
+polished micro-framework (17 parked; see the NEXT PLAN above and
 "Implementation order" under Pending). (The prior Rust `wo` runtime was
 removed from the repo 2026-08-18 — see [`discarded.md`](plan/discarded.md).)
 
