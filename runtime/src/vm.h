@@ -96,6 +96,11 @@ typedef struct wo_actor {
 typedef struct wo_vm {
     const wo_module *mod;
     wo_rt rt;
+    /* the arc's stage 2: which shard this vm IS. Shard 0 is the primary
+     * (runs the entry, owns the database); workers run wo_vm_serve. */
+    uint32_t shard_id;
+    int is_primary;
+    int wake_efd; /* wakes an idle worker (inbox arrivals, shutdown) */
     wo_fiber f0;    /* fiber 0: main — embedded; spawned fibers are calloc'd */
     wo_fiber *cur;  /* the live fiber — every interpreter access goes here */
     wo_fiber *qhead, *qtail; /* RUNNABLE fibers awaiting the interpreter */
@@ -116,6 +121,24 @@ typedef struct wo_vm {
 int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
                       uint64_t *out_addr, const char **msg);
 int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **msg);
+
+/* ---- the shard engine (arc stage 2) ------------------------------------
+ * One pinned thread per shard, each a full wo_vm (own arena, GC, I/O
+ * plane). Shard 0 is the caller's (main's); workers idle on their wake
+ * eventfd until fibers arrive (stage 2 T6) or shutdown. Count: WO_SHARDS
+ * or all cores (the arc's default). */
+typedef struct wo_engine {
+    wo_vm *shards; /* [nshards]; index 0 = primary */
+    void *threads; /* pthread_t[nshards-1], opaque here (libc-only header) */
+    uint32_t nshards;
+} wo_engine;
+
+extern wo_engine wo_eng; /* the process's one engine (vm.c) */
+
+/* Start shards 1..n-1 (0 is the caller's, already init'ed in shards[0]).
+ * 0 ok. Stop joins every worker and destroys their vms. */
+int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards);
+void wo_engine_stop(void);
 
 /* Spawn a fiber that will run method_idx(args) — the runtime half the
  * `spawn` expression lowers onto (stage 1 Task 3); Task 2's tests drive it

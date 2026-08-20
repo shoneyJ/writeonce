@@ -1,3 +1,4 @@
+#define _GNU_SOURCE /* pthread_setaffinity_np, CPU_SET */
 #include "vm.h"
 
 #include <stdarg.h>
@@ -11,7 +12,79 @@
 #include "gc.h"
 #include "park.h"
 
+#include <pthread.h>
+#include <sched.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+
 uint32_t wo_vm_depth(const wo_vm *vm) { return vm->cur->depth; }
+
+/* ---- the shard engine (arc stage 2, T5: threads exist and idle) -------- */
+
+wo_engine wo_eng = {0};
+
+static _Atomic int eng_shutdown = 0;
+
+/* A worker's whole life in T5: pinned, parked on its wake eventfd until
+ * shutdown. T6 gives it an inbox to adopt fibers from and the serve loop
+ * that runs them. */
+static void *shard_main(void *arg) {
+    wo_vm *vm = (wo_vm *)arg;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET((int)vm->shard_id, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+    while (!eng_shutdown) {
+        uint64_t v = 0;
+        ssize_t n = read(vm->wake_efd, &v, sizeof v); /* blocks until woken */
+        (void)n;
+    }
+    return NULL;
+}
+
+int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
+    wo_eng.nshards = nshards;
+    if (nshards <= 1) return 0; /* the one-shard degenerate case: no threads */
+    pthread_t *ts = calloc(nshards - 1, sizeof(pthread_t));
+    if (!ts) return -1;
+    wo_eng.threads = ts;
+    for (uint32_t i = 1; i < nshards; i++) {
+        wo_vm *sv = &wo_eng.shards[i];
+        /* LAZY: a worker's full vm (64 MiB arena and all) is not paid for
+         * until its first fiber arrives (T6 adopts). T5 workers only need
+         * an identity and a wake fd — 20 idle shards must not cost 1.25 GiB
+         * (they did: the web-app gate flaked on exactly that). */
+        memset(sv, 0, sizeof *sv);
+        sv->mod = mod;
+        sv->shard_id = i;
+        sv->is_primary = 0;
+        sv->wake_efd = eventfd(0, 0);
+        if (sv->wake_efd < 0) return -1;
+        if (pthread_create(&ts[i - 1], NULL, shard_main, sv) != 0) return -1;
+    }
+    (void)heap_cap; /* consumed at lazy init (T6) */
+    return 0;
+}
+
+void wo_engine_stop(void) {
+    if (wo_eng.nshards <= 1) return;
+    eng_shutdown = 1;
+    pthread_t *ts = (pthread_t *)wo_eng.threads;
+    for (uint32_t i = 1; i < wo_eng.nshards; i++) {
+        uint64_t one = 1;
+        ssize_t n = write(wo_eng.shards[i].wake_efd, &one, sizeof one);
+        (void)n;
+    }
+    for (uint32_t i = 1; i < wo_eng.nshards; i++) pthread_join(ts[i - 1], NULL);
+    for (uint32_t i = 1; i < wo_eng.nshards; i++) {
+        close(wo_eng.shards[i].wake_efd);
+        if (wo_eng.shards[i].rt.arena.base) /* lazily init'ed only */
+            wo_vm_destroy(&wo_eng.shards[i]);
+    }
+    free(ts);
+    wo_eng.threads = NULL;
+    wo_eng.nshards = 1;
+}
 
 int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
     memset(vm, 0, sizeof(*vm));

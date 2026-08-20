@@ -23,7 +23,13 @@
 #define WO_VERSION "0.0.0-dev"
 #endif
 
-static wo_vm VM; /* 32K value stack: keep it off the C stack */
+/* The shard array: index 0 is the primary (runs the entry, owns the
+ * database); the arc's default is ONE VM PER CORE (WO_SHARDS overrides,
+ * =1 is the serial escape hatch). Static: each wo_vm carries its 32K
+ * value stack, kept off the C stack. */
+#define WO_MAX_SHARDS 64u
+static wo_vm SHARDS[WO_MAX_SHARDS];
+#define VM (SHARDS[0])
 static wo_db DB;  /* the per-shard engine (one shard until iteration 8) */
 static wo_wal WAL;
 
@@ -159,6 +165,28 @@ int main(int argc, char **argv) {
         wo_module_free(&mod);
         return 2;
     }
+    VM.shard_id = 0;
+    VM.is_primary = 1;
+    /* the arc's stage 2: all cores by default (the brave landing), one
+     * pinned worker vm per extra core; WO_SHARDS caps or forces it */
+    {
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        uint32_t nshards = cores > 0 ? (uint32_t)cores : 1;
+        const char *se = getenv("WO_SHARDS");
+        if (se && se[0]) {
+            unsigned long v = strtoul(se, NULL, 10);
+            if (v >= 1 && v <= WO_MAX_SHARDS) nshards = (uint32_t)v;
+        }
+        if (nshards > WO_MAX_SHARDS) nshards = WO_MAX_SHARDS;
+        wo_eng.shards = SHARDS;
+        if (wo_engine_start(&mod, heap_mb << 20, nshards) != 0) {
+            fprintf(stderr, "wovm: cannot start %u shards\n", nshards);
+            wo_engine_stop();
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+    }
     /* The database engine boots with the VM: every class IS a table.
      * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
      * replays it before the entry runs (boot-before-listeners doctrine),
@@ -242,6 +270,7 @@ int main(int argc, char **argv) {
      * heap is torn down, and after a trap too: the container outlives the
      * unwind. */
     if (argv_val) wo_drop_kind(&VM.rt, WO_K_MULTI, argv_val);
+    wo_engine_stop(); /* join + destroy the worker shards before the primary */
     if (VM.rt.wal) wo_wal_close(&WAL);
     wo_db_destroy(&DB);
     gc_pump(&VM);
