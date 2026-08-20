@@ -14,6 +14,12 @@
  * `kill -9` ends it. Negative so it cannot collide with a WO_T_* code, and
  * deliberately NOT catchable: `try` must not be able to swallow a stop. */
 #define WO_SYS_STOPPED (-2)
+/* arc T4: the builtin parked the calling fiber against the shard's I/O
+ * plane (fb->park_* filled); the interpreter schedules another fiber. */
+#define WO_SYS_PARKED (-3)
+
+/* the stop flag, readable by the I/O plane's wait loop (park.c) */
+int wo_sys_stop_pending(void);
 
 int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 

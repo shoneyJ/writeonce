@@ -1,0 +1,296 @@
+/* park.c — the per-shard I/O plane (arc stage 1 Task 4). See park.h.
+ *
+ * The uring structs below mirror include/uapi/linux/io_uring.h exactly
+ * (the fields this file touches; trailing space is padded to the kernel's
+ * sizes). The layout is part of the kernel ABI — stable by contract. */
+#define _GNU_SOURCE /* syscall(), struct layouts */
+#include "park.h"
+
+#include <errno.h>
+#include <poll.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "builtin.h"
+
+/* ---- raw io_uring ABI (uapi mirror, the subset used) ------------------ */
+
+struct io_sqring_offsets {
+    uint32_t head, tail, ring_mask, ring_entries, flags, dropped, array;
+    uint32_t resv1;
+    uint64_t user_addr;
+};
+struct io_cqring_offsets {
+    uint32_t head, tail, ring_mask, ring_entries, overflow, cqes, flags;
+    uint32_t resv1;
+    uint64_t user_addr;
+};
+struct io_uring_params {
+    uint32_t sq_entries, cq_entries, flags, sq_thread_cpu, sq_thread_idle;
+    uint32_t features, wq_fd, resv[3];
+    struct io_sqring_offsets sq_off;
+    struct io_cqring_offsets cq_off;
+};
+struct io_uring_sqe {
+    uint8_t opcode, flags;
+    uint16_t ioprio;
+    int32_t fd;
+    uint64_t off, addr;
+    uint32_t len;
+    union {
+        uint32_t poll32_events; /* POLL_ADD (little-endian u32 of poll mask) */
+        uint32_t timeout_flags; /* TIMEOUT */
+        uint32_t rw_flags;
+    };
+    uint64_t user_data;
+    uint64_t pad2[3];
+};
+struct io_uring_cqe {
+    uint64_t user_data;
+    int32_t res;
+    uint32_t flags;
+};
+
+#define IORING_OP_POLL_ADD 6
+#define IORING_OP_TIMEOUT 11
+#define IORING_ENTER_GETEVENTS 1u
+#define IORING_OFF_SQ_RING 0ULL
+#define IORING_OFF_CQ_RING 0x8000000ULL
+#define IORING_OFF_SQES 0x10000000ULL
+
+/* the sq/cq ring pointers, resolved once from the params offsets */
+typedef struct {
+    uint32_t *sq_head, *sq_tail, *sq_mask, *sq_array;
+    uint32_t *cq_head, *cq_tail, *cq_mask;
+    struct io_uring_cqe *cqes;
+    struct io_uring_sqe *sqes;
+} rings;
+
+static struct io_uring_params g_params; /* offsets survive init */
+
+static rings ring_ptrs(const wo_vm *vm) {
+    rings r;
+    uint8_t *sq = (uint8_t *)vm->io_sq, *cq = (uint8_t *)vm->io_cq;
+    r.sq_head = (uint32_t *)(sq + g_params.sq_off.head);
+    r.sq_tail = (uint32_t *)(sq + g_params.sq_off.tail);
+    r.sq_mask = (uint32_t *)(sq + g_params.sq_off.ring_mask);
+    r.sq_array = (uint32_t *)(sq + g_params.sq_off.array);
+    r.cq_head = (uint32_t *)(cq + g_params.cq_off.head);
+    r.cq_tail = (uint32_t *)(cq + g_params.cq_off.tail);
+    r.cq_mask = (uint32_t *)(cq + g_params.cq_off.ring_mask);
+    r.cqes = (struct io_uring_cqe *)(cq + g_params.cq_off.cqes);
+    r.sqes = (struct io_uring_sqe *)vm->io_sqes;
+    return r;
+}
+
+static int uring_init(wo_vm *vm) {
+    memset(&g_params, 0, sizeof g_params);
+    long fd = syscall(SYS_io_uring_setup, 64u, &g_params);
+    if (fd < 0) return -1;
+    size_t sq_len = g_params.sq_off.array + g_params.sq_entries * sizeof(uint32_t);
+    size_t cq_len = g_params.cq_off.cqes + g_params.cq_entries * sizeof(struct io_uring_cqe);
+    size_t sqes_len = g_params.sq_entries * sizeof(struct io_uring_sqe);
+    void *sq = mmap(NULL, sq_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd,
+                    IORING_OFF_SQ_RING);
+    void *cq = mmap(NULL, cq_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd,
+                    IORING_OFF_CQ_RING);
+    void *sqes = mmap(NULL, sqes_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd,
+                      IORING_OFF_SQES);
+    if (sq == MAP_FAILED || cq == MAP_FAILED || sqes == MAP_FAILED) {
+        if (sq != MAP_FAILED) munmap(sq, sq_len);
+        if (cq != MAP_FAILED) munmap(cq, cq_len);
+        if (sqes != MAP_FAILED) munmap(sqes, sqes_len);
+        close((int)fd);
+        return -1;
+    }
+    vm->io_kind = 0;
+    vm->io_fd = (int)fd;
+    vm->io_sq = sq;
+    vm->io_cq = cq;
+    vm->io_sqes = sqes;
+    vm->io_sq_len = sq_len;
+    vm->io_cq_len = cq_len;
+    vm->io_sqes_len = sqes_len;
+    return 0;
+}
+
+static int uring_submit(wo_vm *vm, const struct io_uring_sqe *sqe) {
+    rings r = ring_ptrs(vm);
+    uint32_t tail = *r.sq_tail;
+    uint32_t idx = tail & *r.sq_mask;
+    r.sqes[idx] = *sqe;
+    r.sq_array[idx] = idx;
+    __atomic_store_n(r.sq_tail, tail + 1, __ATOMIC_RELEASE);
+    long rc = syscall(SYS_io_uring_enter, vm->io_fd, 1u, 0u, 0u, NULL, 0);
+    return rc < 0 ? -1 : 0;
+}
+
+/* ---- backend-neutral helpers ------------------------------------------ */
+
+static int64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void parked_unlink(wo_vm *vm, wo_fiber *fb) {
+    wo_fiber **pp = &vm->parked;
+    while (*pp && *pp != fb) pp = &(*pp)->pnext;
+    if (*pp) {
+        *pp = fb->pnext;
+        fb->pnext = NULL;
+        vm->nparked--;
+    }
+}
+
+/* wake: parked -> run queue (fib_enqueue lives in vm.c; the tiny mirror
+ * here keeps park.c free of vm.c internals) */
+static void wake(wo_vm *vm, wo_fiber *fb) {
+    parked_unlink(vm, fb);
+    fb->state = WO_FIB_RUNNABLE;
+    fb->next = NULL;
+    if (vm->qtail) vm->qtail->next = fb;
+    else vm->qhead = fb;
+    vm->qtail = fb;
+}
+
+/* ---- API --------------------------------------------------------------- */
+
+int wo_io_init(wo_vm *vm) {
+    const char *force = getenv("WO_IO");
+    vm->io_fd = -1;
+    if (!force || strcmp(force, "epoll") != 0) {
+        if (uring_init(vm) == 0) return 0;
+        if (force && strcmp(force, "uring") == 0) return -1; /* forced, absent */
+    }
+    int ep = epoll_create1(0);
+    if (ep < 0) return -1;
+    vm->io_kind = 1;
+    vm->io_fd = ep;
+    return 0;
+}
+
+void wo_io_destroy(wo_vm *vm) {
+    if (vm->io_fd < 0) return;
+    if (vm->io_kind == 0) {
+        munmap(vm->io_sq, vm->io_sq_len);
+        munmap(vm->io_cq, vm->io_cq_len);
+        munmap(vm->io_sqes, vm->io_sqes_len);
+    }
+    close(vm->io_fd);
+    vm->io_fd = -1;
+}
+
+int wo_io_arm(wo_vm *vm, wo_fiber *fb) {
+    fb->state = WO_FIB_PARKED;
+    fb->pnext = vm->parked;
+    vm->parked = fb;
+    vm->nparked++;
+    if (vm->io_kind == 0) {
+        struct io_uring_sqe sqe;
+        memset(&sqe, 0, sizeof sqe);
+        sqe.user_data = (uint64_t)(uintptr_t)fb;
+        if (fb->park_fd >= 0) {
+            sqe.opcode = IORING_OP_POLL_ADD;
+            sqe.fd = fb->park_fd;
+            sqe.poll32_events = (uint32_t)(uint16_t)fb->park_events;
+        } else {
+            int64_t rel = fb->park_deadline - now_ms();
+            if (rel < 0) rel = 0;
+            fb->park_ts.sec = rel / 1000;
+            fb->park_ts.nsec = (rel % 1000) * 1000000LL;
+            sqe.opcode = IORING_OP_TIMEOUT;
+            sqe.fd = -1;
+            sqe.addr = (uint64_t)(uintptr_t)&fb->park_ts;
+            sqe.len = 1;
+        }
+        if (uring_submit(vm, &sqe) != 0) {
+            parked_unlink(vm, fb);
+            return -1;
+        }
+        return 0;
+    }
+    /* epoll fallback: fds registered oneshot; deadlines live on the parked
+     * list and become the wait timeout */
+    if (fb->park_fd >= 0) {
+        struct epoll_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.events = (uint32_t)(uint16_t)fb->park_events | EPOLLONESHOT;
+        ev.data.ptr = fb;
+        if (epoll_ctl(vm->io_fd, EPOLL_CTL_ADD, fb->park_fd, &ev) != 0
+            && (errno != EEXIST || epoll_ctl(vm->io_fd, EPOLL_CTL_MOD, fb->park_fd, &ev) != 0)) {
+            parked_unlink(vm, fb);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int wo_io_wait(wo_vm *vm) {
+    for (;;) {
+        if (wo_sys_stop_pending()) return WO_IO_STOP;
+        if (vm->io_kind == 0) {
+            rings r = ring_ptrs(vm);
+            uint32_t head = *r.cq_head;
+            uint32_t tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
+            if (head == tail) {
+                long rc = syscall(SYS_io_uring_enter, vm->io_fd, 0u, 1u,
+                                  IORING_ENTER_GETEVENTS, NULL, 0);
+                if (rc < 0 && errno == EINTR) continue; /* stop checked on loop */
+                if (rc < 0) return -1;
+                tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
+            }
+            int woke = 0;
+            while (head != tail) {
+                struct io_uring_cqe *cqe = &r.cqes[head & *r.cq_mask];
+                wo_fiber *fb = (wo_fiber *)(uintptr_t)cqe->user_data;
+                if (fb && fb->state == WO_FIB_PARKED) {
+                    wake(vm, fb);
+                    woke = 1;
+                }
+                head++;
+            }
+            __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
+            if (woke) return 0;
+            continue;
+        }
+        /* epoll: timeout from the nearest sleep deadline */
+        int timeout = -1;
+        int64_t now = now_ms();
+        for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
+            if (fb->park_fd < 0) {
+                int64_t rel = fb->park_deadline - now;
+                if (rel < 0) rel = 0;
+                if (timeout < 0 || rel < timeout) timeout = (int)rel;
+            }
+        struct epoll_event evs[16];
+        int n = epoll_wait(vm->io_fd, evs, 16, timeout);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return -1;
+        int woke = 0;
+        for (int i = 0; i < n; i++) {
+            wo_fiber *fb = (wo_fiber *)evs[i].data.ptr;
+            if (fb && fb->state == WO_FIB_PARKED) {
+                epoll_ctl(vm->io_fd, EPOLL_CTL_DEL, fb->park_fd, NULL);
+                wake(vm, fb);
+                woke = 1;
+            }
+        }
+        now = now_ms();
+        wo_fiber *fb = vm->parked;
+        while (fb) {
+            wo_fiber *nx = fb->pnext;
+            if (fb->park_fd < 0 && fb->park_deadline <= now) {
+                wake(vm, fb);
+                woke = 1;
+            }
+            fb = nx;
+        }
+        if (woke) return 0;
+    }
+}

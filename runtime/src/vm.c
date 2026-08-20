@@ -9,6 +9,7 @@
 #include "builtin.h"
 #include "cont.h"
 #include "gc.h"
+#include "park.h"
 
 uint32_t wo_vm_depth(const wo_vm *vm) { return vm->cur->depth; }
 
@@ -25,6 +26,7 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
         }
     }
     vm->budget = vm->budget0;
+    if (wo_io_init(vm) != 0) return -1; /* no I/O plane at all: fatal */
     return wo_rt_init(&vm->rt, heap_cap, mod->classes, mod->class_cnt);
 }
 
@@ -44,6 +46,7 @@ void wo_vm_destroy(wo_vm *vm) {
         a = nx;
     }
     vm->actors = NULL;
+    wo_io_destroy(vm);
     wo_rt_destroy(&vm->rt);
 }
 
@@ -107,10 +110,17 @@ static void fib_reap(wo_vm *vm, wo_fiber *fb) {
     }
 }
 
-/* Main finished (return or stop): every remaining fiber unwinds clean. */
+/* Main finished (return or stop): every remaining fiber — queued AND
+ * parked — unwinds clean. */
 static void fib_reap_all(wo_vm *vm) {
     wo_fiber *fb;
     while ((fb = fib_dequeue(vm)) != NULL) fib_reap(vm, fb);
+    while ((fb = vm->parked) != NULL) {
+        vm->parked = fb->pnext;
+        fb->pnext = NULL;
+        vm->nparked--;
+        fib_reap(vm, fb);
+    }
 }
 
 /* ---- actors (arc stage 1 Task 3) -------------------------------------- */
@@ -271,6 +281,8 @@ static void vm_gc_roots(wo_vm *vm) {
      * those two (parked fibers join here in stage 1 Task 4) */
     vm_gc_roots_fiber(vm, vm->cur);
     for (const wo_fiber *fb = vm->qhead; fb; fb = fb->next)
+        vm_gc_roots_fiber(vm, fb);
+    for (const wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
         vm_gc_roots_fiber(vm, fb);
     /* actors: moved-in state, queued messages, and the in-flight message
      * are runtime-owned — none sits in any frame's masks */
@@ -439,15 +451,43 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
                         "wovm: fiber trap %d at %s:%d: %s\n", \
                         err->code, err->method, err->line, err->msg); \
             wo_fiber *dead = vm->cur;                    \
-            vm->cur = fib_dequeue(vm);                   \
             vm->nfibers--;                               \
             free(dead);                                  \
-            vm->budget = vm->budget0;                    \
+            NEXT_RUNNABLE();                             \
             RELOAD();                                    \
             NEXT();                                      \
         }                                                \
         fib_reap_all(vm);                                \
         return -1;                                       \
+    } while (0)
+
+/* Pick the next runnable fiber; when the queue is empty, wait on the I/O
+ * plane for a parked one. A stop interrupting the wait unwinds EVERYTHING
+ * and returns 1 (the WO_SYS_STOPPED contract). The queue-and-parked-both-
+ * empty case cannot be reached from a live fiber (main is always one of
+ * cur/queued/parked). */
+#define NEXT_RUNNABLE()                              \
+    do {                                             \
+        vm->cur = fib_dequeue(vm);                   \
+        while (!vm->cur) {                           \
+            int iorc_ = wo_io_wait(vm);              \
+            if (iorc_ == WO_IO_STOP) {               \
+                fib_reap_all(vm);                    \
+                vm->cur = &vm->f0;                   \
+                return 1;                            \
+            }                                        \
+            if (iorc_ != 0) {                        \
+                fib_reap_all(vm);                    \
+                vm->cur = &vm->f0;                   \
+                if (err) {                           \
+                    err->code = WO_T_IO;             \
+                    snprintf(err->msg, sizeof err->msg, "I/O plane failed"); \
+                }                                    \
+                return -1;                           \
+            }                                        \
+            vm->cur = fib_dequeue(vm);               \
+        }                                            \
+        vm->budget = vm->budget0;                    \
     } while (0)
 
 /* Collector safepoint (iteration 7b): placed at allocations, calls, and
@@ -625,6 +665,7 @@ dispatch:
     while (vm->cur->ncatch && vm->cur->catches[vm->cur->ncatch - 1].depth > vm->cur->depth) \
         vm->cur->ncatch--
 
+
 /* A fiber's last frame returned. Main ending IS the program ending: every
  * other fiber unwinds through its drop maps (clean, ASan-proven) and the
  * program's value is main's. A spawned fiber ending just leaves the
@@ -661,17 +702,15 @@ dispatch:
                 memset(dead->regs + 2, 0, (size_t)(sme_->reg_cnt - 2) * 8u); \
                 dead->cur_msg = m_;                                       \
                 fib_enqueue(vm, dead);                                    \
-                vm->cur = fib_dequeue(vm);                                \
-                vm->budget = vm->budget0;                                 \
+                NEXT_RUNNABLE();                                          \
                 RELOAD();                                                 \
                 NEXT();                                                   \
             }                                                             \
             a->active = NULL;                                             \
         }                                                                 \
-        vm->cur = fib_dequeue(vm);                                        \
         vm->nfibers--;                                                    \
         free(dead);                                                       \
-        vm->budget = vm->budget0;                                         \
+        NEXT_RUNNABLE();                                                  \
         RELOAD();                                                         \
         NEXT();                                                           \
     } while (0)
@@ -815,6 +854,21 @@ dispatch:
          * The stack is unwound exactly as an uncaught trap unwinds it, so
          * every live value is still released on the way out; the CLI turns
          * this into the same exit status a clean `return 0` gives. */
+        if (brc == WO_SYS_PARKED) {
+            /* arc T4: the builtin filled cur->park_*. Resume either
+             * RE-EXECUTES it (park_done=0: fd readiness — accept/read/
+             * write retry against a now-ready fd) or continues PAST it
+             * (park_done=1: sleep — result preset before parking). */
+            vm->cur->frames[vm->cur->depth - 1].pc = vm->cur->park_done ? pc : pc - 1;
+            wo_fiber *pk = vm->cur;
+            if (wo_io_arm(vm, pk) != 0) {
+                pk->state = WO_FIB_RUNNABLE;
+                TRAPF(WO_T_IO, "%s", "cannot arm the I/O wait");
+            }
+            NEXT_RUNNABLE();
+            RELOAD();
+            NEXT();
+        }
         if (brc == WO_SYS_STOPPED) {
             vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;
             vm->cur->ncatch = 0;

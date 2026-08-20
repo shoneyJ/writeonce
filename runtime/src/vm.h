@@ -59,6 +59,21 @@ typedef struct wo_fiber {
     wo_err caught;
     wo_fib_state state;
     struct wo_fiber *next; /* intrusive FIFO link (run queue) */
+    /* parking (arc T4): what this fiber waits on while PARKED. park_done
+     * says how it resumes — 0 = re-execute the builtin (fd readiness:
+     * accept/read/write retry, now ready), 1 = continue PAST it (sleep:
+     * the result was preset before parking). park_wr_at carries a partial
+     * net.write's progress across the retry. park_ts must outlive the
+     * ring submission (TIMEOUT reads it asynchronously). */
+    struct wo_fiber *pnext; /* parked-list link */
+    int park_fd;            /* -1 = deadline-only (sleep) */
+    short park_events;      /* POLLIN / POLLOUT */
+    int park_done;
+    int64_t park_deadline;  /* wall ms, sleep only */
+    uint32_t park_wr_at;
+    struct {
+        long long sec, nsec;
+    } park_ts;
     /* arc actors: when this fiber is an actor's delivery fiber, `actor`
      * points at it and `cur_msg` is the message the current receive call
      * borrows — the RUNTIME owns it and drops it after the call returns. */
@@ -88,6 +103,13 @@ typedef struct wo_vm {
     int64_t budget0;         /* reductions per slice (WO_REDUCTIONS, default 4000) */
     int64_t budget;          /* countdown for the live fiber */
     wo_actor *actors;        /* every spawned actor (torn down at destroy) */
+    /* the I/O plane (arc T4, park.c): io_uring primary, epoll fallback */
+    wo_fiber *parked;        /* fibers waiting on the plane */
+    uint32_t nparked;
+    int io_kind;             /* 0 = uring, 1 = epoll */
+    int io_fd;               /* ring fd or epoll fd */
+    void *io_sq, *io_cq, *io_sqes; /* uring mmaps (NULL under epoll) */
+    size_t io_sq_len, io_cq_len, io_sqes_len;
 } wo_vm;
 
 /* arc: the spawn/send builtins' runtime halves (vm.c owns the scheduler). */

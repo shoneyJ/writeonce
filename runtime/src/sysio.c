@@ -14,11 +14,12 @@
  * documented beside each case below. Absence is the zero word, like
  * every other `?T`.
  */
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE /* accept4, plus everything 200809L gave */
 
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -88,6 +89,8 @@ static void on_stop(int sig) {
  * genuinely PARK consult it — accept, a socket read/write, sleep and a child
  * wait. A regular-file read is not one of them and keeps its plain retry. */
 static int stop_pending(void) { return stop_flag != 0; }
+
+int wo_sys_stop_pending(void) { return stop_flag != 0; }
 
 static void install_stop_handlers(void) {
     if (stop_installed) return;
@@ -266,16 +269,20 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     }
     /* ---- time -------------------------------------------------------- */
     case WO_B_TIME_SLEEP: {
+        /* arc T4: sleep parks against the I/O plane (deadline); with one
+         * fiber the plane's wait IS the blocking sleep — same path. The
+         * result is preset and park_done=1, so resume continues PAST the
+         * builtin (re-executing would restart the full duration). */
         int64_t ms = (int64_t)R[B];
-        if (ms > 0) {
-            struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L}, rem;
-            while (nanosleep(&ts, &rem) != 0 && errno == EINTR) {
-                if (stop_pending()) return WO_SYS_STOPPED;
-                ts = rem;
-            }
-        }
         R[A] = 0;
-        return 0;
+        if (ms <= 0) return 0;
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        vm->cur->park_fd = -1;
+        vm->cur->park_deadline =
+            (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + ms;
+        vm->cur->park_done = 1;
+        return WO_SYS_PARKED;
     }
     case WO_B_TIME_LOCAL: { /* Parts: 0 year, 1 month (1..12), 2 day, 3 hour,
                              * 4 minute, 5 second, 6 dow (0 = Sunday) */
@@ -358,6 +365,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         addr.sin_port = htons((uint16_t)port);
         addr.sin_addr.s_addr =
             !strcmp(path, "0.0.0.0") ? (in_addr_t)INADDR_ANY : inet_addr(path);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK); /* arc T4 */
         if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 64) != 0) {
             *msg = strerror(errno);
             close(fd);
@@ -369,9 +377,16 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_NET_ACCEPT: {
         int fd;
         for (;;) {
-            fd = accept((int)R[B], NULL, NULL);
+            fd = accept4((int)R[B], NULL, NULL, SOCK_NONBLOCK);
             if (fd >= 0 || errno != EINTR) break;
             if (stop_pending()) return WO_SYS_STOPPED;
+        }
+        if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            /* arc T4: park until the listener is readable, then retry */
+            vm->cur->park_fd = (int)R[B];
+            vm->cur->park_events = POLLIN;
+            vm->cur->park_done = 0;
+            return WO_SYS_PARKED;
         }
         if (fd < 0) {
             *msg = strerror(errno);
@@ -397,6 +412,15 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                 wo_str_free(rt, s);
                 return WO_SYS_STOPPED;
             }
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            /* arc T4: nothing readable yet — free the buffer (the retry
+             * re-allocates) and park until the fd is readable */
+            wo_str_free(rt, s);
+            vm->cur->park_fd = (int)R[B];
+            vm->cur->park_events = POLLIN;
+            vm->cur->park_done = 0;
+            return WO_SYS_PARKED;
         }
         if (n < 0) {
             wo_str_free(rt, s);
@@ -424,13 +448,24 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "not a text value";
             return WO_T_BOUNDS;
         }
-        uint32_t at = 0;
+        /* arc T4: a partial write's progress survives the park via
+         * park_wr_at — the retry re-executes this builtin with the same
+         * arguments and resumes at the saved offset */
+        uint32_t at = vm->cur->park_wr_at;
+        vm->cur->park_wr_at = 0;
         while (at < body->len) {
             ssize_t n = write((int)R[B], body->data + at, body->len - at);
             if (n < 0) {
                 if (errno == EINTR) {
                     if (stop_pending()) return WO_SYS_STOPPED;
                     continue;
+                }
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    vm->cur->park_wr_at = at;
+                    vm->cur->park_fd = (int)R[B];
+                    vm->cur->park_events = POLLOUT;
+                    vm->cur->park_done = 0;
+                    return WO_SYS_PARKED;
                 }
                 *msg = strerror(errno);
                 return WO_T_IO;
