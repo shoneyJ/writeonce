@@ -117,3 +117,24 @@ line on stderr, which the conformance harness parses.
 - `runtime/test/wob_build.c` is an independent image assembler. A
   builder/loader disagreement shows up as a unit-test failure, which is the
   point of having two encoders.
+
+## Fibers and actors (the 8+11 arc, stage 1 — 2026-08-20)
+
+A `wo_fiber` is the interpreter state `wo_vm` used to hold inline (register
+window, frame stack, catch stack, caught error); the vm keeps the module,
+the runtime, the current-fiber pointer, and a FIFO run queue. The reduction
+budget (`WO_REDUCTIONS`, default 4000) is checked ONLY at loop back-edges
+and AFTER the jump lands — a pre-instruction save at budget 1 re-executes
+the jump into the same decrement and livelocks (test_fiber pins budget 1
+as exact round-robin). Main returning ends the program: every other fiber
+unwinds through the drop maps (`fib_reap_all`); a spawned fiber's uncaught
+trap kills that fiber alone.
+
+An actor (`wo_actor`) is runtime-owned state + a receive method index + a
+growable FIFO mailbox + at most ONE delivery fiber (one message at a time);
+delivery re-queues per message so an actor never monopolizes the shard.
+The runtime owns each message: it is dropped after its receive call
+returns, and actor state / queued messages / the in-flight message are GC
+roots scanned beside the fiber frames. spawn = BUILTIN 68 (instance +
+receive's method index, compile-time constant); send = BUILTIN 69 (the
+message is excluded from the emitter's fresh-arg drops — ownership moved).
