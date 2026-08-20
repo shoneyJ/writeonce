@@ -369,28 +369,33 @@ parked behind 8/9f/11; the post-12 parked list stays parked by the
 
 1. ~~**17**~~ — **PARKED 2026-08-20** (developer directive: framework v1
    first); spec + plan approved, ready on branch `library-internal` for
-   whenever it unparks. The framework v1-polish slice took its place and
-   landed the same day (branch framework-v1, `just web-app` 16/0).
-2. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
+   whenever it unparks — slots anywhere after 16. The framework v1 slices
+   took its place and landed the same day (branch framework-v1,
+   `just web-app` 21/0).
+2. **18** — framework v2 (transaction{} + cache/flags/jobs); spec
+   APPROVED 2026-08-20, the only all-green spec-approved node in the
+   [dependency graph](00-dependency-graph.md) — plan next, then
+   implement.
+3. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
    binding; keypair-auth: manifest) before they rot; 9d folds into 9c's
    plan; both must precede 10.
-3. **9e** — the measurement backbone; baseline single-shard BEFORE the
+4. **9e** — the measurement backbone; baseline single-shard BEFORE the
    runtime restructure so 8/9f/11 sign against real numbers.
-4. **8** — shard-actor; the framework's multi-core serving story; unblocks
+5. **8** — shard-actor; the framework's multi-core serving story; unblocks
    9f, 11, h2c.
-5. **9f** — io_uring group-commit; explicitly after 8 + 9e.
-6. **11** — fibers; retires the framework's disclosed keep-alive limit (an
+6. **9f** — io_uring group-commit; explicitly after 8 + 9e.
+7. **11** — fibers; retires the framework's disclosed keep-alive limit (an
    idle connection starving accept forced close-when-idle in iteration 16 —
    parked fds fix it properly); with 8 + 9f done, **h2c unparks** (spec §C)
    as the framework's HTTP/2 slice.
-7. **10** — HTTP service layer; after 9c by its own precedence note;
+8. **10** — HTTP service layer; after 9c by its own precedence note;
    `service` blocks lower onto the framework instead of a parallel stack.
-8. **12** — blue-green; prerequisites 9 + 10 now exist; completes the
+9. **12** — blue-green; prerequisites 9 + 10 now exist; completes the
    framework's deploy story.
-9. **14 and 9g** — demoted with the goal shift: skillhost is no longer the
+10. **9g then 14** — demoted with the goal shift: skillhost is no longer the
    driving workload; 9g likely collapses to "confirm `len(query)` + add
    `exists`" and precedes 14 when they run.
-10. **13 + parked drain** — metaprogramming (spec first), then group-by,
+11. **13 + parked drain** — metaprogramming (spec first), then group-by,
     `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — held behind 12 by the
     scope directive.
 

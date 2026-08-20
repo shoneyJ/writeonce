@@ -38,35 +38,41 @@ parity. Constraints: OCaml stdlib only, C libc only; docs live under
 `docs/`; prose-only planning artifacts (no implementation code in stories or
 iterations); no commits by agents — drafts go to `.dev/commit.md`.
 
-## Iterations (review in this order)
+## Iterations (rows in dependency order — `#` is an immutable ID, not a rank)
 
-| # | Iteration | Delivers |
-| --- | --- | --- |
-| 1 | [Principles doc](01-principles-doc.md) | `docs/00-principles.md` — the doctrine page every later slice links back to |
-| 2 | [VM core](02-vm-core.md) | `wovm`: `.wob` loader, register interpreter, arena, borrow word, `@gc` collector |
-| 3 | [Compiler front](03-compiler-front.md) | `woc`: lexer → parser → typechecker → ownership pass, diagnostics |
-| 4 | [Single binary end-to-end](04-single-binary-e2e.md) | emitter + conformance corpus + `woc build` self-contained binary |
-| 5 | [Language surface](05-language-surface.md) | Haxe-parity adoptions: switch, records, optionals, try/catch, statics, modules… |
-| 6 | [Program mode + stdlib](06-program-mode-stdlib.md) | `fn main`, exit codes, `fs`/`proc`/`net`/`time`/`json` builtins |
-| 7 | [log-watcher proof](07-logwatcher-proof.md) | the driving workload compiled and detecting silent deaths live |
-| 7b | [Inferred GC + mark-sweep](07b-inferred-gc-mark-sweep.md) | `@gc` removed from the language; compiler infers GC-ness; RC replaced by incremental per-shard tri-color mark-sweep |
-| 8 | [Shard-actor runtime](08-shard-actor-runtime.md) | thread-per-core shards, per-shard heaps, ownership-move messaging |
-| 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
-| 9b | [`@table`, relations, query](09b-table-relations-query.md) | `@table` becomes real storage; typed `ref`/`backlink`/`multi` relations; compiler-checked LINQ-shaped queries lowered to engine ops |
-| 9c | [Cross-program tables](09c-cross-program-tables.md) | attach to a running program's database over a local IPC channel: manifest-granted read/write rights, typed statements checked against the owner's shapes, owner stays the single writer |
-| 9d | [Keypair attach auth](09d-keypair-attach-auth.md) | program identity is a keypair: mutual challenge–response at attach, grants name public keys, replay-proof, rotation is a config change |
-| 9e | [Durability, throughput, scale](09e-durability-throughput-scale.md) | restart-persistence proof, read/write benchmark, ~1M-row load; the measurement gate every optimization signs |
-| 9f | [io_uring group-commit](09f-io-uring-commit.md) | replace fsync-per-commit with io_uring batched durability, overlapped on the shard threads; fsync fallback kept |
-| 9g | [Query grammar corpus](09g-query-grammar-corpus.md) | grow the query grammar from real embedded-DB apps: `count`/existence subqueries from the skillhost corpus; add only what a corpus uses |
-| 10 | [HTTP service layer](10-http-service.md) | `service` blocks route to VM methods; REST parity with Stage 2 |
-| 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, park on I/O |
-| 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback |
-| 13 | [Compile-time metaprogramming](13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` — the compiler generates per-type code from the class-table metadata; generic capabilities within principle 13, no reflection |
-| 14 | [skillhost host workload](14-skillhost-host-workload.md) | a host-shaped driving workload (writeonce port of skillhost) that names the runtime gaps it exposes: bounded/killable subprocess, stdin/stdout transport, fs metadata, and FFI-vs-out-of-process model driver — each a candidate iteration |
-| 15 | [deps: `wo.toml [deps]`](15-deps-package-manager.md) | exact-rev git dependencies + `wo.lock` + `.wo-deps` cache; `use <dep>` resolves a fetched project as a module root; flat-only, network-free when locked |
-| 16 | [web framework](16-web-framework.md) | a `.wo`-library framework (HTTP/1.1 keep-alive behind a TLS-terminating proxy): router, `Handler`/`Middleware` structural interfaces, `@table` data layer; `docs/examples/web-app` consumes it via `[deps]`; h2c parked behind 8/9f/11 |
-| 17 | [library projects + `internal/`](17-library-projects-internal.md) | first-class library projects (`wo.toml` kind = "library", checkable without an entry, dual lib+bin) and dependency privacy (Go's `internal/` rule at the [deps] boundary) — forks settled 2026-08-20, spec/plan next |
-| 18 | [framework v2: memory-rich features](18-memory-db-features.md) | what the embedded store + one process buy for free: TTL cache class, @table feature flags with cached reads, a durable @table job queue with drain-on-request, and `transaction { }` exposing the WAL's staged batch (enqueue + write, one commit — no outbox) — forks settled 2026-08-20, spec/plan next |
+Re-sequenced 2026-08-20 from the edges in
+[`docs/00-dependency-graph.md`](../../00-dependency-graph.md): landed
+rows in landing order, then the pending rows in implementation order.
+File names keep their IDs — every board, spec, and plan references
+iterations by number, so numbers never renumber.
+
+| Seq | # | Iteration | Delivers |
+| --- | --- | --- | --- |
+| 1 | 1 | [Principles doc](01-principles-doc.md) | `docs/00-principles.md` — the doctrine page every later slice links back to |
+| 2 | 2 | [VM core](02-vm-core.md) | `wovm`: `.wob` loader, register interpreter, arena, borrow word, `@gc` collector |
+| 3 | 3 | [Compiler front](03-compiler-front.md) | `woc`: lexer → parser → typechecker → ownership pass, diagnostics |
+| 4 | 4 | [Single binary end-to-end](04-single-binary-e2e.md) | emitter + conformance corpus + `woc build` self-contained binary |
+| 5 | 5 | [Language surface](05-language-surface.md) | Haxe-parity adoptions: switch, records, optionals, try/catch, statics, modules… (`pub(read)`/`using`/`#if` remainders sit in the post-12 drain) |
+| 6 | 6 | [Program mode + stdlib](06-program-mode-stdlib.md) | `fn main`, exit codes, `fs`/`proc`/`net`/`time`/`json` builtins |
+| 7 | 7 | [log-watcher proof](07-logwatcher-proof.md) | the driving workload compiled, executable, soak-proven (landed 2026-08-15) |
+| 8 | 7b | [Inferred GC + mark-sweep](07b-inferred-gc-mark-sweep.md) | `@gc` removed from the language; compiler infers GC-ness; RC replaced by incremental per-shard tri-color mark-sweep |
+| 9 | 9 | [Database engine](09-database-engine.md) | class-shaped tables, typed WAL + recovery, `insert`/`select` execute |
+| 10 | 9b | [`@table`, relations, query](09b-table-relations-query.md) | `@table` becomes real storage; typed `ref`/`backlink`/`multi` relations; compiler-checked LINQ-shaped queries lowered to engine ops |
+| 11 | 15 | [deps: `wo.toml [deps]`](15-deps-package-manager.md) | exact-rev git dependencies + `wo.lock` + `.wo-deps` cache; `use <dep>` resolves a fetched project as a module root; flat-only, network-free when locked |
+| 12 | 16 | [web framework](16-web-framework.md) | a `.wo`-library framework (HTTP/1.1 keep-alive behind a TLS-terminating proxy): router, `Handler`/`Middleware` interfaces, auth, all three body hooks, `@table` data layer; `docs/examples/web-app` consumes it via `[deps]`; h2c parked behind 8/9f/11 |
+| **13** | **18** | [framework v2: memory-rich features](18-memory-db-features.md) | **NEXT — spec approved 2026-08-20**: TTL cache, @table feature flags with cached reads, durable @table job queue with drain-on-request, `transaction { }` exposing the WAL's staged batch (enqueue + write, one commit — no outbox) |
+| 14 | 9c | [Cross-program tables](09c-cross-program-tables.md) | attach to a running program's database over a local IPC channel: manifest-granted rights, typed statements, owner stays the single writer (channel half-built) |
+| 15 | 9d | [Keypair attach auth](09d-keypair-attach-auth.md) | program identity is a keypair: mutual challenge–response at attach, grants name public keys, replay-proof (crypto half-built; plan folds into 9c's) |
+| 16 | 9e | [Durability, throughput, scale](09e-durability-throughput-scale.md) | restart-persistence proof, read/write benchmark, ~1M-row load; the baseline 8/9f/11 sign against |
+| 17 | 8 | [Shard-actor runtime](08-shard-actor-runtime.md) | thread-per-core shards, per-shard heaps, ownership-move messaging (collector precondition met by 7b) |
+| 18 | 9f | [io_uring group-commit](09f-io-uring-commit.md) | replace fsync-per-commit with io_uring batched durability on the shard tick; fsync fallback kept (after 8 + 9e, explicit) |
+| 19 | 11 | [Fibers](11-fibers.md) | green threads on the shard scheduler: reduction-budget preemption, blocking builtins park; unparks h2c (with 8/9f), streaming, cancellation, pub/sub, fiber jobs |
+| 20 | 10 | [HTTP service layer](10-http-service.md) | `service` blocks lower onto the framework (after 9b + 9c by their own precedence notes) |
+| 21 | 12 | [Blue-green deploy](12-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 10) |
+| 22 | 9g | [Query grammar corpus](09g-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 14 |
+| 23 | 14 | [skillhost host workload](14-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) — demoted with the framework goal |
+| 24 | 13 | [Compile-time metaprogramming](13-compile-time-metaprogramming.md) | `@derive(Json/Csv/Eq/Hash/Show)` from class-table metadata; held behind 12 with the parked drain by the 2026-08-08 scope directive |
+| ⏸ | 17 | [library projects + `internal/`](17-library-projects-internal.md) | **PARKED** (spec + plan approved, branch `library-internal`) — `wo.toml` kind = "library" + Go's `internal/` rule; slots anywhere after 16 whenever directed, bringing the framework reorg with it |
 
 Review protocol: the developer reads one iteration, approves or amends;
 the next starts only after approval. Each iteration is an unsplittable
@@ -95,11 +101,13 @@ list, and a pointer to the plan document that already sequences its tasks.
   stays a polished MICRO-framework (routing, middleware, `Req`/`Resp`) —
   nothing MVC-scale — and iteration 17 (library kind + `internal/`) is
   **parked** with spec + plan ready on branch `library-internal`. The
-  v1-polish slice landed 2026-08-20 (`just web-app` 16/0). Implementation
-  order for everything still pending: 9c/9d → 9e → 8 → 9f → 11 (+ h2c
-  unparks) → 10 → 12 → 14/9g → 13 + parked drain. Rationale and forcing
-  dependencies live in [`docs/00-status.md`](../../00-status.md) under
-  "Implementation order".
+  v1 slices landed 2026-08-20 (`just web-app` 21/0 after polish, auth,
+  form, multipart). Implementation order for everything still pending:
+  **18 (spec approved)** → 9c/9d → 9e → 8 → 9f → 11 (+ h2c unparks) →
+  10 → 12 → 9g → 14 → 13 + parked drain; 17 parked, slots anywhere after
+  16 on directive. The iterations table above carries this order
+  row-by-row; edges live in
+  [`docs/00-dependency-graph.md`](../../00-dependency-graph.md).
 - **Iteration 7b (inserted 2026-08-11)** sits after the critical path
   deliberately: it delays nothing on the log-watcher line, and it must precede
   iteration 8 because the collector should be settled before shards multiply.
