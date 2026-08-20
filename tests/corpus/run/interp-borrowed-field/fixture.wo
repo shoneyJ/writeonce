@@ -1,0 +1,33 @@
+-- probe: Text interpolation of a borrowed field inside a loop.
+-- If the interpolation segment drops the field it only borrows, repeated
+-- calls corrupt the arena and the third-ish call crashes in release.
+
+class Row {
+  method: Text
+}
+
+class Tab {
+  rows: multi Row
+
+  fn scan() -> Text {
+    let out = "";
+    for r in self.rows {
+      if out == "" { out = "${r.method}"; } else { out = "${out}, ${r.method}"; }
+    }
+    return out;
+  }
+}
+
+fn main() -> Int {
+  let t = Tab { rows: [] };
+  push(t.rows, Row { method: "GET" });
+  push(t.rows, Row { method: "POST" });
+  let i = 0;
+  while i < 50 {
+    let s = t.scan();
+    if s != "GET, POST" { print("bad: ${s} at ${i}"); return 1; }
+    i = i + 1;
+  }
+  print("ok");
+  return 0;
+}

@@ -133,6 +133,16 @@ REMOVES the element — the caller owns what it then ignores). The finding tool
 was an arena size-class census plus a pointer trace, not ASan: an in-arena
 leak is invisible to LeakSanitizer, because the arena is one allocation.
 
+The framework-v1 slice (2026-08-20) found the copy-side mirror of the
+Int-segment lesson: `copy_place_text` matched only bare `Ident/Field/Index`,
+so a Text-typed SINGLE-SEGMENT interpolation of a place
+(`allow = "${r.method}"` with `r` a loop borrow) passed the place's own
+register through a `let`/assignment boundary uncopied — the binding aliased
+the row's field and its overwrite freed it (release-build crash the arena
+hid from ASan). It now asks `is_borrowed_value_t && not is_container_read`,
+exactly `drop_fresh_text`'s place test. Pinned by
+`tests/corpus/run/interp-borrowed-field`.
+
 Two rules the measurements imposed, both easy to get backwards:
 
 - **Never drop an argument register after a `CALL`.** The callee's frame

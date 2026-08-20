@@ -1487,10 +1487,12 @@ let rec is_container_read (e : Ast.expr) : bool =
    own value and the new owner gets its own. A freshly built Text is already
    nobody else's and passes through untouched. *)
 let copy_place_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
-  let is_place =
-    (match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false)
-    && not (is_container_read e)
-  in
+  (* seen through an interpolation exactly as drop_fresh_text sees it: a
+     single Text segment passes the place's own register through untouched
+     (`out = "${r.method}"` aliased the row's field and its overwrite freed
+     it — the 405 Allow-header crash), while an Int segment is already a
+     fresh int_to_text that must not be re-copied *)
+  let is_place = is_borrowed_value_t p f e && not (is_container_read e) in
   let is_text =
     match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
   in
