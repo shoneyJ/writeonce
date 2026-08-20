@@ -19,15 +19,44 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
-**Make log-watcher executable — nothing else.** The compile-and-run half of the
-language track is met (2026-08-14): the sample compiles with zero diagnostics,
-`woc build` produces a 106 KB standalone binary, and all three modes work —
-`watch` alerts on a live file, `run` schedules a cron.d entry, `mcp` answers
-JSON-RPC with all four tools returning `isError:false`. `just log-watcher`
-gates it: 6 checks, 0 failures.
+**The web framework becomes a first-class library — iteration 17.** The goal
+shifted 2026-08-20: the previous NEXT PLAN ("make log-watcher executable —
+nothing else") was met in full 2026-08-15 (milestone record below), and the
+driving workload is now `docs/examples/writeonce-framework` consumed by
+`docs/examples/web-app` through `[deps]`. Iteration 17's forks are settled
+(decisions + framework/compiler/VM/GC impact in
+[the iteration](stories/language-runtime-database/17-library-projects-internal.md));
+what remains, in order:
 
-What is left is the difference between "it runs" and "you can leave it
-running", and every item below came from a measurement on the sample itself:
+1. Merge the `web-framework` branch to master (iterations 15–17 docs + code,
+   local only).
+2. Spec + plan from the settled decisions (prose only, per convention).
+3. `kind = "library"` in `wo.toml` (default `"program"`): `woc <dir>` on a
+   library runs the FULL pipeline as a check — parse, typecheck, borrow
+   check, GC inference — with no entry required; an explicit build still
+   works when a `main` exists (dual lib+bin).
+4. The `internal/` rule at the `[deps]` boundary: a consumer `use` of a dep
+   path containing the segment `internal` is a new WO-E1xx at the `use`,
+   naming the dependency; inside the dep it stays legal.
+5. Framework reorg: request-parser and serve-loop plumbing move under
+   `internal/`; the public surface (`Handler`, `Middleware`, `App`,
+   `Req`/`Resp`, builders) does not move.
+6. Gate: `just web-app` stays 14/0, plus new checks — library check without
+   an entry succeeds, a consumer `internal` import is refused, and the
+   iteration-16 `--emit` verification workaround is deleted.
+
+The VM and GC are untouched by design — visibility is compile-time name
+resolution, libraries compile whole-program into the consumer's image, and
+GC inference stays whole-program (app usage may promote dep classes; that is
+intended).
+
+---
+
+### Landed 2026-08-15 — the executable milestone (the previous NEXT PLAN)
+
+"Make log-watcher executable" — the difference between "it runs" and "you
+can leave it running". Every item came from a measurement on the sample
+itself, and all six landed:
 
 1. ~~The ownership pass does not know what the stdlib returns~~ — **done
    2026-08-14**. The root cause was deeper than the table: `Text` was
@@ -93,10 +122,12 @@ Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](s
 - Iterations 8–12 (shard-actor runtime, database engine, `@table`/query, HTTP
   layer, fibers, blue-green): unchanged, and unblocked by this plan.
 
-The project is the **language track**: iterations 3 → 4 → 5 → 6 → 7, ending at
-_compile and run log-watcher_, then the database engine (9/9b) and beyond. (The
-prior Rust `wo` runtime was removed from the repo 2026-08-18 — see
-[`discarded.md`](plan/discarded.md).)
+The **language track**'s first goal — iterations 3 → 4 → 5 → 6 → 7, _compile
+and run log-watcher_ — is met; the database engine (9/9b), deps (15), and the
+web framework (16) landed on top of it. The goal is now the framework line:
+iteration 17 first, then the runtime iterations that mature it (see
+"Implementation order" under Pending). (The prior Rust `wo` runtime was
+removed from the repo 2026-08-18 — see [`discarded.md`](plan/discarded.md).)
 
 ---
 
@@ -115,7 +146,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 4   | [Single binary end-to-end](stories/language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
 | 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
 | 6   | [Program mode + stdlib](stories/language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
-| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | 🔄 **runs; executable in progress** |
+| 7   | [log-watcher proof](stories/language-runtime-database/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
 | 9   | [Database engine](stories/language-runtime-database/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
@@ -140,9 +171,10 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | Iteration 7 — make log-watcher executable (leaks, stop signal, fd lifetime, soak) | [executable plan](plan/compiler/2026-08-14-logwatcher-executable.md) |
+| Language | Iteration 17 — web framework as first-class library: spec/plan from the settled forks, then `kind = "library"` + `internal/` + framework reorg | [iteration 17](stories/language-runtime-database/17-library-projects-internal.md) |
 
-Off-critical-path work is parked by explicit scope directive (2026-08-08).
+Off-goal work is parked; the goal shifted 2026-08-20 from log-watcher (met)
+to the web framework as a first-class library.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 
@@ -305,40 +337,42 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 
 ## Pending
 
-### Implementation order (sequenced 2026-08-20)
+### Implementation order (re-sequenced 2026-08-20 — framework goal)
 
-Dependency-derived order for everything not yet landed. Rules that force it:
-9f explicitly after 8 + 9e; 9c "precedes iteration 10"; 9d's plan folds into
-9c's; 12 only after 9 + 10 (catalog to diff, HTTP to build on); 11 rides 8's
-shard scheduler; h2c parked behind 8/9f/11; the post-12 parked list stays
-parked by the 2026-08-08 scope directive.
+The goal is the web framework as a first-class library, so the framework
+line leads and the workload-driven extras (14, 9g) demote behind it.
+Dependency rules that force the shape: 9f explicitly after 8 + 9e; 9c
+"precedes iteration 10"; 9d's plan folds into 9c's; 12 only after 9 + 10
+(catalog to diff, HTTP to build on); 11 rides 8's shard scheduler; h2c
+parked behind 8/9f/11; the post-12 parked list stays parked by the
+2026-08-08 scope directive. (Iteration 7 dropped from this list — landed
+2026-08-15.)
 
-1. **7 finish** — in progress (executable plan: leaks, stop signal, fd
-   lifetime, soak); the locked critical path ends here.
-2. **17** — forks settled, compiler-driver-only, no runtime deps; kills the
-   framework's `--emit` wart while iteration 16 is fresh. (Merge the
-   `web-framework` branch first.)
-3. **9g** — likely collapses to "confirm `len(query)` + add `exists`"; the
-   skillhost corpus already showed no new grammar; do before 14 consumes it.
-4. **14** — skillhost port, the next driving workload (log-watcher's role for
-   host capabilities); stdlib-shaped, independent of shards;
-   bounded-subprocess gap first.
-5. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
-   binding; keypair-auth: manifest) while DB context is warm; 9d folds into
-   9c's plan; both must precede 10.
-6. **9e** — the measurement backbone; baseline single-shard BEFORE the
-   runtime restructure so 8/9f have numbers to sign against.
-7. **8** — shard-actor; the big structural move; precondition (collector
-   settled, 7b) already met; unblocks 9f, 11, h2c.
-8. **9f** — io_uring group-commit; explicitly after 8 + 9e.
-9. **11** — fibers on the shard scheduler; keeps VM-core work contiguous
-   with 8/9f (same dispatch/io seams).
-10. **10** — HTTP service layer; after 9c by its own precedence note;
-    lowers `service` blocks onto the iteration-16 framework.
-11. **12** — blue-green; prerequisites 9 + 10 now exist.
-12. **13 + parked drain** — metaprogramming (spec first), then h2c,
-    group-by, `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — all held
-    behind 12 by the scope directive.
+1. **17** — THE goal slice: `kind = "library"` + `internal/` + framework
+   reorg; forks settled, compiler-driver-only, no runtime deps. Merge the
+   `web-framework` branch first.
+2. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
+   binding; keypair-auth: manifest) before they rot; 9d folds into 9c's
+   plan; both must precede 10.
+3. **9e** — the measurement backbone; baseline single-shard BEFORE the
+   runtime restructure so 8/9f/11 sign against real numbers.
+4. **8** — shard-actor; the framework's multi-core serving story; unblocks
+   9f, 11, h2c.
+5. **9f** — io_uring group-commit; explicitly after 8 + 9e.
+6. **11** — fibers; retires the framework's disclosed keep-alive limit (an
+   idle connection starving accept forced close-when-idle in iteration 16 —
+   parked fds fix it properly); with 8 + 9f done, **h2c unparks** (spec §C)
+   as the framework's HTTP/2 slice.
+7. **10** — HTTP service layer; after 9c by its own precedence note;
+   `service` blocks lower onto the framework instead of a parallel stack.
+8. **12** — blue-green; prerequisites 9 + 10 now exist; completes the
+   framework's deploy story.
+9. **14 and 9g** — demoted with the goal shift: skillhost is no longer the
+   driving workload; 9g likely collapses to "confirm `len(query)` + add
+   `exists`" and precedes 14 when they run.
+10. **13 + parked drain** — metaprogramming (spec first), then group-by,
+    `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — held behind 12 by the
+    scope directive.
 
 ### Language track — sequenced, on the critical path
 

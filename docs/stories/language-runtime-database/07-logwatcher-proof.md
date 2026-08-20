@@ -13,14 +13,12 @@
   systems track's acceptance bar: nothing in a real daemon exceeded the
   language.
 
-> **Status (2026-08-14):** the compile-and-run half is **met** — the sample
-> compiles with zero diagnostics, `woc build` produces a 106 KB standalone
-> binary, and all three modes work (`watch` alerts, `run` schedules a cron.d
-> entry, `mcp` answers JSON-RPC with all four tools returning `isError:false`).
-> The remaining half is **executable**: under ASan both long-running modes leak
-> (watch 128 B, run >1 MB in eight seconds), the MCP server never closes an
-> accepted connection, and a server parked in `accept` ignores SIGTERM. That
-> work is sequenced in
+> **Status: ✅ landed 2026-08-15.** Compile-and-run met 2026-08-14 (zero
+> diagnostics, 106 KB standalone binary, all three modes work); the
+> executable half landed 2026-08-15 — zero ASan leaks in all three modes,
+> SIGTERM ends parked syscalls, fds flat across 200 requests, and the
+> `LW_SOAK` gate holds RSS/descriptors flat under sustained load.
+> `just log-watcher`: 7 checks, 0 failures. The work is recorded in
 > [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md)
 > and nothing else blocks this iteration.
 
