@@ -1,4 +1,4 @@
-# Iteration 14 — skillhost: a host-shaped workload, and the capability gaps it exposes
+# Iteration 28 — skillhost: a host-shaped workload, and the capability gaps it exposes
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
@@ -34,7 +34,7 @@
 ## What is already expressible (verified 2026-08-16)
 
 - **The skill catalog** — `@table` with the query surface already exceeds
-  skillhost's in-memory SQLite `skills` table; iteration 9g's
+  skillhost's in-memory SQLite `skills` table; iteration 27's
   `docs/examples/skill-catalog` is literally this table, running. (Or a plain
   `map`/`multi` would do — the catalog is a lookup cache, not persistence.)
 - **Discovery** — `fs.exists`/`fs.list` (one level) + `fs.read_all` walk
@@ -65,7 +65,7 @@ Two directions, and they are a real fork, not a detail:
 - **FFI as a language capability** — a way to declare and call C functions
   from writeonce. This is a large, doctrine-level addition (the runtime is
   libc-only by principle; the one sanctioned exception so far is the vendored
-  Ed25519, 9d). FFI would reopen the dependency-sprawl question the whole
+  Ed25519, 21). FFI would reopen the dependency-sprawl question the whole
   project is built to avoid. Likely its own spec, likely contested.
 - **Out-of-process model, no FFI** — drive a llama.cpp binary via `proc`
   (`llama-cli`) or `llama-server` over `net` + `json` (it accepts a GBNF
@@ -194,6 +194,6 @@ then B and the partials narrow the gap to skillhost's real behavior.
   exactly the open gaps (A: out-of-process model, B: socket not stdio, C:
   bounded once its iteration lands, plus the fs partials) — the list is the
   iteration's own scoreboard.
-- Reuse iteration 9g's `skill-catalog` as the catalog layer, log-watcher's
+- Reuse iteration 27's `skill-catalog` as the catalog layer, log-watcher's
   MCP mode as the transport skeleton, and the systems stdlib for discovery
   and execution.

@@ -1,4 +1,4 @@
-# Iteration 13 — compile-time metaprogramming (derive from the class table)
+# Iteration 29 — compile-time metaprogramming (derive from the class table)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
@@ -99,7 +99,7 @@ rather than against it.
 - **Monomorphized generics as a general feature.** Per-type generation here is
   specific to the derive set, not a general generics engine.
 - **Deriving across the attach channel** — a client generating an encoder over
-  the owner's types (iterations 9c/9d). Composes later; the class-table
+  the owner's types (iterations 20/21). Composes later; the class-table
   metadata already crosses the channel's schema handshake, so the pieces are
   in place, but it is not this iteration's problem.
 - **Reopening principle 13 in any form.** If a derive appears to need runtime

@@ -1,4 +1,4 @@
-# Iteration 10 — HTTP service layer
+# Iteration 25 — HTTP service layer
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).

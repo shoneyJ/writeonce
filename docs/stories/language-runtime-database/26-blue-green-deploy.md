@@ -1,4 +1,4 @@
-# Iteration 12 — blue-green in-runtime deployment
+# Iteration 26 — blue-green in-runtime deployment
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).

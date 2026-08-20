@@ -53,8 +53,8 @@ worked around.
    writes. Honest limit stated everywhere it matters: an idle server
    drains nothing until the next request arrives. Fibers (11) later
    replaces the scheduler; the queue table and job shape stay.
-   (Rejected for v1: a second worker process over 9c attach — real
-   parallelism but blocks on finishing 9c; parking jobs entirely — the
+   (Rejected for v1: a second worker process over 20 attach — real
+   parallelism but blocks on finishing 20; parking jobs entirely — the
    queue-plus-drain is useful today.)
 3. **`transaction { }` ships in this iteration.** Language block deferring
    `wal_commit` to block end; a trap unwinding out of the block aborts the

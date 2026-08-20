@@ -87,7 +87,7 @@ first (pure `.wo` cannot express it yet).
 
 | Item | State |
 | --- | --- |
-| Path matching | 🔶 linear scan, first-match-wins; a radix tree is a performance slice that waits for iteration 9e to MEASURE it first |
+| Path matching | 🔶 linear scan, first-match-wins; a radix tree is a performance slice that waits for iteration 22 to MEASURE it first |
 | Method dispatch · path params · 404 · 405+`Allow` | ✅ |
 | Wildcards | ⬜ only `:param` today; `*rest` capture is a candidate slice |
 | Precedence rules | 🔶 registration order IS the rule (documented); specificity-based precedence unneeded until wildcards exist |

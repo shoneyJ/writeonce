@@ -1,13 +1,13 @@
-# Iteration 9d — keypair authentication for cross-program attach
+# Iteration 21 — keypair authentication for cross-program attach
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
-> **Inserted 2026-08-15.** Promotes iteration 9c's identity fork (Info,
+> **Inserted 2026-08-15.** Promotes iteration 20's identity fork (Info,
 > fork 3) to its own iteration: the name + unix-uid lean is the milestone
 > bootstrap, and THIS is what replaces it — program identity is a keypair,
 > and an attachment is granted to a public key, not to a process that
-> happens to share a uid. It follows 9c (there is nothing to authenticate
+> happens to share a uid. It follows 20 (there is nothing to authenticate
 > until attach exists) and stays same-machine; the same handshake is what
 > a future remote channel would reuse, which is the point of doing it
 > properly now.
@@ -21,7 +21,7 @@
   manifest) and a public key it can print/export. Identity stops being
   "whoever reached the socket first with the right uid".
 - **Grants name public keys.** A's `[share]` registers a client by its
-  public key (fingerprint), with rights exactly as 9c defined them; B's
+  public key (fingerprint), with rights exactly as 20 defined them; B's
   `[connect.a]` **pins A's public key** beside the IPC string. Both sides
   authenticate: A proves it is A before B sends a byte of intent, B proves
   it is B before A executes a statement.
@@ -38,7 +38,7 @@
       read+write, and B's `[connect.a]` pinning A's public key,
     - **when** B attaches,
     - **then** the mutual handshake completes, the attachment carries B's
-      granted rights, and every 9c acceptance behavior (statements, traps,
+      granted rights, and every 20 acceptance behavior (statements, traps,
       refusals) holds unchanged on top of it.
 - What to achieve?
     - **Given** a client presenting a keypair A never registered,
@@ -47,7 +47,7 @@
       client sees the catchable authentication trap, and A logs the offered
       fingerprint (so granting it is a copy-paste, not an investigation).
 - What to achieve?
-    - **Given** a same-uid process (the 9c bootstrap's whole trust basis)
+    - **Given** a same-uid process (the 20 bootstrap's whole trust basis)
       presenting no key or the wrong key,
     - **when** it attempts to attach,
     - **then** it is refused — proving the uid check has been superseded,
@@ -128,11 +128,11 @@ authorization input.
 ## Proposed Solution
 
 - **Brainstorm the spec** settling the four forks, then fold the plan into
-  9c's implementation plan as its authentication tasks — one plan, because
-  9c without 9d ships a placeholder identity and 9d without 9c has nothing
-  to authenticate. The 9c milestone may still land first with the uid
-  bootstrap, flagged loudly as pre-9d.
-- **Acceptance extends the 9c workload**: the employee-A /
+  20's implementation plan as its authentication tasks — one plan, because
+  20 without 21 ships a placeholder identity and 21 without 20 has nothing
+  to authenticate. The 20 milestone may still land first with the uid
+  bootstrap, flagged loudly as pre-21.
+- **Acceptance extends the 20 workload**: the employee-A /
   employee-list-B pair (`docs/examples/employee-list`, pre-authored
   2026-08-15) carries the key exchange in both manifests — A's
   `[[share.clients]]` names B's fingerprint, B's `[connect.employee]` pins

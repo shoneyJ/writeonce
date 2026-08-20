@@ -68,7 +68,7 @@ operators, streaming/cancellation park behind 8/11). The memory-rich
 features are **framework v2** = iteration 18 (spec APPROVED 2026-08-20,
 plan next): TTL cache, @table flags, durable job queue with
 drain-on-request, `transaction { }` over the WAL's staged batch. After 18,
-the order resumes at 9c/9d. Edges: [00-dependency-graph.md](00-dependency-graph.md).
+the order resumes at 20/21. Edges: [00-dependency-graph.md](00-dependency-graph.md).
 
 ---
 
@@ -171,18 +171,18 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
 | 9   | [Database engine](stories/language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
-| 9c  | [Cross-program tables](stories/language-runtime-database/refine/09c-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
-| 9d  | [Keypair attach auth](stories/language-runtime-database/refine/09d-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
-| 9e  | [Durability, throughput, scale](stories/language-runtime-database/refine/09e-durability-throughput-scale.md) | ⬜ needs a spec first        |
-| 9f  | [io_uring group-commit](stories/language-runtime-database/refine/09f-io-uring-commit.md)            | ⬜ after 8 + 9e              |
-| 9g  | [Query grammar corpus](stories/language-runtime-database/refine/09g-query-grammar-corpus.md) | ⬜ needs a spec first        |
-| 10  | [HTTP service layer](stories/language-runtime-database/10-http-service.md)                   | ⬜                           | Hold |
+| 20  | [Cross-program tables](stories/language-runtime-database/refine/20-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
+| 21  | [Keypair attach auth](stories/language-runtime-database/refine/21-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
+| 22  | [Durability, throughput, scale](stories/language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first        |
+| 23  | [io_uring group-commit](stories/language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ after 8 + 22              |
+| 27  | [Query grammar corpus](stories/language-runtime-database/refine/27-query-grammar-corpus.md) | ⬜ needs a spec first        |
+| 10  | [HTTP service layer](stories/language-runtime-database/25-http-service.md)                   | ⬜                           | Hold |
 | 11  | [Fibers](stories/language-runtime-database/refine/11-fibers.md)                                     | ⬜                           | Hold |
-| 12  | [Blue-green deploy](stories/language-runtime-database/12-blue-green-deploy.md)               | ⬜                           | Hold |
-| 13  | [Compile-time metaprogramming](stories/language-runtime-database/refine/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
-| 14  | [skillhost host workload](stories/language-runtime-database/refine/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
+| 12  | [Blue-green deploy](stories/language-runtime-database/26-blue-green-deploy.md)               | ⬜                           | Hold |
+| 13  | [Compile-time metaprogramming](stories/language-runtime-database/refine/29-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
+| 14  | [skillhost host workload](stories/language-runtime-database/refine/28-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
 | 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/done/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
-| 16  | [web framework](stories/language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
+| 16  | [web framework](stories/language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/23/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
 | 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
 | 18  | [framework v2: memory-rich features](stories/language-runtime-database/18-memory-db-features.md) | 🔄 **spec APPROVED 2026-08-20, plan next** ([spec](superpowers/specs/2026-08-20-memory-db-features-design.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub REJECTED until 8/11 |
 
@@ -192,7 +192,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 9c/9d's forks | [order](#implementation-order-re-sequenced-2026-08-20--framework-goal) |
+| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-20--framework-goal) |
 
 Off-goal work is parked; the goal (2026-08-20) is the web framework as a
 polished micro-framework v1 — iteration 17 (library kind + `internal/`) is
@@ -362,11 +362,11 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 ### Implementation order (re-sequenced 2026-08-20 — framework goal)
 
 The goal is the web framework as a first-class library, so the framework
-line leads and the workload-driven extras (14, 9g) demote behind it.
-Dependency rules that force the shape: 9f explicitly after 8 + 9e; 9c
-"precedes iteration 10"; 9d's plan folds into 9c's; 12 only after 9 + 10
+line leads and the workload-driven extras (14, 27) demote behind it.
+Dependency rules that force the shape: 23 explicitly after 8 + 22; 20
+"precedes iteration 25"; 21's plan folds into 20's; 12 only after 9 + 10
 (catalog to diff, HTTP to build on); 11 rides 8's shard scheduler; h2c
-parked behind 8/9f/11; the post-12 parked list stays parked by the
+parked behind 8/23/11; the post-12 parked list stays parked by the
 2026-08-08 scope directive. (Iteration 7 dropped from this list — landed
 2026-08-15.)
 
@@ -379,27 +379,27 @@ parked behind 8/9f/11; the post-12 parked list stays parked by the
    APPROVED 2026-08-20, the only all-green spec-approved node in the
    [dependency graph](00-dependency-graph.md) — plan next, then
    implement.
-3. **9c then 9d** — finish the half-done branches (ipc-attach: manifest +
-   binding; keypair-auth: manifest) before they rot; 9d folds into 9c's
+3. **20 then 21** — finish the half-done branches (ipc-attach: manifest +
+   binding; keypair-auth: manifest) before they rot; 21 folds into 20's
    plan; both must precede 10.
-4. **9e** — the measurement backbone; baseline single-shard BEFORE the
-   runtime restructure so 8/9f/11 sign against real numbers.
+4. **22** — the measurement backbone; baseline single-shard BEFORE the
+   runtime restructure so 8/23/11 sign against real numbers.
 5. **8** — shard-actor; the framework's multi-core serving story; unblocks
-   9f, 11, h2c.
-6. **9f** — io_uring group-commit; explicitly after 8 + 9e.
+   23, 11, h2c.
+6. **23** — io_uring group-commit; explicitly after 8 + 22.
 7. **11** — fibers; retires the framework's disclosed keep-alive limit (an
    idle connection starving accept forced close-when-idle in iteration 16 —
-   parked fds fix it properly); with 8 + 9f done, **h2c unparks** (spec §C)
+   parked fds fix it properly); with 8 + 23 done, **h2c unparks** (spec §C)
    as the framework's HTTP/2 slice.
-8. **10** — HTTP service layer; after 9c by its own precedence note;
+8. **10** — HTTP service layer; after 20 by its own precedence note;
    `service` blocks lower onto the framework instead of a parallel stack.
 9. **12** — blue-green; prerequisites 9 + 10 now exist; completes the
    framework's deploy story.
-10. **9g then 14** — demoted with the goal shift: skillhost is no longer the
-   driving workload; 9g likely collapses to "confirm `len(query)` + add
-   `exists`" and precedes 14 when they run.
+10. **27 then 14** — demoted with the goal shift: skillhost (28) is no longer the
+   driving workload; 27 likely collapses to "confirm `len(query)` + add
+   `exists`" and precedes 28 when they run.
 11. **13 + parked drain** — metaprogramming (spec first), then group-by,
-    `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — held behind 12 by the
+    `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — held behind 26 by the
     scope directive.
 
 ### Language track — sequenced, on the critical path
@@ -412,18 +412,18 @@ parked behind 8/9f/11; the post-12 parked list stays parked by the
 | 8   | Shard-actor runtime                                                                                                                                                            | [plan 4](superpowers/plans/2026-08-01-shard-actor-vm-runtime.md)                                   |
 | 9   | Database engine binding                                                                                                                                                        | [plan 5](superpowers/plans/2026-08-01-db-engine-binding.md)                                        |
 | 9b  | `@table` + relations + language-integrated query — comprehension queries, `ref`/`backlink` navigation, GroupBy aggregates; acceptance: new `docs/examples/employee` sample     | [spec](superpowers/specs/2026-08-15-table-relations-query-design.md) · [plan](plan/compiler/2026-08-15-employee-relations-query.md) |
-| 9c  | Cross-program tables — attach to a running program's database (IPC string in wo.toml, manifest-granted rights, owner stays the single writer)                                  | **no spec yet** — four open forks recorded in the iteration; brainstorm before planning            |
-| 9d  | Keypair attach auth — mutual challenge–response, grants name public keys, uid superseded                                                                                       | **no spec yet** — four forks recorded; plan folds into 9c's                                        |
-| 9e  | Durability + throughput + scale — restart-persistence, read/write benchmark, ~1M rows; the gate every later optimization re-runs                                              | **no spec yet** — four forks recorded; the measurement backbone                                    |
-| 9f  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 9e                                               |
-| 9g  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
+| 20  | Cross-program tables — attach to a running program's database (IPC string in wo.toml, manifest-granted rights, owner stays the single writer)                                  | **no spec yet** — four open forks recorded in the iteration; brainstorm before planning            |
+| 21  | Keypair attach auth — mutual challenge–response, grants name public keys, uid superseded                                                                                       | **no spec yet** — four forks recorded; plan folds into 20's                                        |
+| 22  | Durability + throughput + scale — restart-persistence, read/write benchmark, ~1M rows; the gate every later optimization re-runs                                              | **no spec yet** — four forks recorded; the measurement backbone                                    |
+| 23  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 22                                               |
+| 27  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
 | 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | **forks settled 2026-08-20** — decisions + framework/compiler/VM/GC impact in the iteration; spec/plan next |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md)                   |
-| 12  | Blue-green deploy                                                                                                                                                              | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9–10 |
+| 12  | Blue-green deploy                                                                                                                                                              | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9 + 25 |
 
-### Language track — parked until after iteration 12
+### Language track — parked until after iteration 26
 
 Recorded 2026-08-08 by scope directive; nothing here lands before the
 log-watcher proof.

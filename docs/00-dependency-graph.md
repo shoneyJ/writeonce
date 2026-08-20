@@ -7,7 +7,7 @@
 > green is startable today. Rebuilt 2026-08-20 from a sweep of every
 > story/spec/plan markdown (the "misses" pass: iteration 17's outgoing
 > edges, the concurrency chain, the post-12 parked drain, 9b→10,
-> 14's gap fan-out, 9c's fiber caveat).
+> 14's gap fan-out, 20's fiber caveat).
 
 ## 1. Story iterations
 
@@ -30,17 +30,17 @@ flowchart TD
     FWREORG["framework internal/ reorg + check mode (kills the --emit workaround; WO-E108/E109 reserved)"]:::parked
     I18["18 framework v2: transaction{} + cache/flags/jobs (spec APPROVED — the next implementation)"]:::specd
 
-    I9c["9c cross-program tables (half-built)"]:::open
-    I9d["9d keypair attach auth (half-built; crypto+handshake already on its branch)"]:::open
-    I9e["9e durability + throughput baseline"]:::open
+    I9c["20 cross-program tables (half-built)"]:::open
+    I9d["21 keypair attach auth (half-built; crypto+handshake already on its branch)"]:::open
+    I9e["22 durability + throughput baseline"]:::open
     I8["8 shard-actor runtime"]:::open
-    I9f["9f io_uring group-commit"]:::open
+    I9f["23 io_uring group-commit"]:::open
     I10["10 HTTP service layer (lowers onto the framework)"]:::open
     I11["11 fibers"]:::open
     I12["12 blue-green deploy"]:::open
     I13["13 metaprogramming @derive"]:::open
     I14["14 skillhost workload (demoted)"]:::open
-    I9g["9g query grammar corpus (likely collapses)"]:::open
+    I9g["27 query grammar corpus (likely collapses)"]:::open
     GAPS["14's gap fan-out: bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process"]:::open
     DRAIN["post-12 parked drain: pub(read)/using/#if, WO-E225, ADT roster, group-by"]:::parked
 
@@ -75,14 +75,14 @@ flowchart TD
 ```
 
 Reading it: **18 is the only spec-approved open node with all
-prerequisites green — the next implementation.** After 18: 9c/9d and 9e
-are startable (chosen order: 9c/9d first — half-built branches rot).
+prerequisites green — the next implementation.** After 18: 20/21 and 22
+are startable (chosen order: 20/21 first — half-built branches rot).
 17 unparks on directive: its prerequisites landed, its spec+plan wait on
 branch `library-internal`, and its landing brings the framework reorg
 node with it. 13 and the parked drain sit behind 12 by the 2026-08-08
 scope directive (dashed), not by any technical edge.
 
-## 2. The concurrency chain (iterations 8 / 9f / 11 and everything they gate)
+## 2. The concurrency chain (iterations 8 / 23 / 11 and everything they gate)
 
 The runtime's concurrency work is the single biggest unlocker — every
 ⏸ row in the framework ledger and two v2 follow-ons hang off it.
@@ -95,17 +95,17 @@ flowchart TD
 
     I7b2["7b per-shard collector (done — the precondition 8 waited on)"]:::rt
     I8x["8 shard-actor runtime: thread-per-core, ownership-move messages"]:::rt
-    I9fx["9f io_uring group-commit (batch = the shard tick)"]:::rt
+    I9fx["23 io_uring group-commit (batch = the shard tick)"]:::rt
     I11x["11 fibers: reduction-budget preemption, blocking builtins park"]:::rt
-    I9ex["9e baseline (numbers 8/9f sign against)"]:::rt
+    I9ex["22 baseline (numbers 8/23 sign against)"]:::rt
 
     KEEPAL["keep-alive parking retired (close-when-idle policy dies; parked fds)"]:::gated
-    H2C2["h2c HTTP/2 cleartext (spec §C: also needs 9f)"]:::gated
+    H2C2["h2c HTTP/2 cleartext (spec §C: also needs 23)"]:::gated
     STREAM2["request body streaming + backpressure"]:::gated
     SRESP2["streaming responses + explicit commit point"]:::gated
     CANCEL2["per-request cancellation propagation"]:::gated
     PUBSUB2["pub/sub + WebSockets (rejected until here)"]:::gated
-    ASYNC9C["9c async attach statements (rejected-for-now alternative)"]:::gated
+    ASYNC9C["20 async attach statements (rejected-for-now alternative)"]:::gated
     TIMEOUTS2["idle timeouts become schedulable (net seam still needed)"]:::gated
 
     FIBJOBS2["fiber-scheduled jobs (replaces drain-on-request; queue table stays)"]:::v2
@@ -164,7 +164,7 @@ flowchart TD
     UNIX["unix socket binding"]:::blocked
     PEERV["trusted-proxy PEER verification"]:::blocked
 
-    CRYPTO["GATE: crypto fork — C builtins vs language bit ops (brainstorm); digests want iteration 20's Bytes"]:::gate
+    CRYPTO["GATE: crypto fork — C builtins vs language bit ops (brainstorm); digests want iteration 19's Bytes"]:::gate
     SHA["SHA-256/512, HMAC, CRC32"]:::blocked
     ETAG["ETag + conditional requests"]:::blocked
     COOKIE["signed cookies"]:::blocked
@@ -174,7 +174,7 @@ flowchart TD
     JWT["JWT HS256 (HARD STOP after)"]:::blocked
 
     RADIX["radix-tree routing"]:::blocked
-    I9E3["GATE: 9e measures the linear scan"]:::gate
+    I9E3["GATE: 22 measures the linear scan"]:::gate
 
     STORAGE["storage-integration rows: migrations (future story), eager loading + tenant roots (query-surface work, 9-series)"]:::blocked
 
@@ -195,7 +195,7 @@ flowchart TD
 Green nodes (CORS, security headers, host validation, strict-parsing
 audit, wildcards, route groups, `req.ctx`, XFF parsing, Accept
 negotiation) need nothing — startable in any order, gated by
-`just web-app`. Note: 9d's keypair crypto is its own C implementation
+`just web-app`. Note: 21's keypair crypto is its own C implementation
 (already on branch `keypair-auth`) — it neither waits for nor feeds the
 crypto-fork gate.
 

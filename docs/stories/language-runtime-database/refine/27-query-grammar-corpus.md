@@ -1,4 +1,4 @@
-# Iteration 9g — query grammar, driven by real embedded-DB corpora
+# Iteration 27 — query grammar, driven by real embedded-DB corpora
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).

@@ -5,7 +5,7 @@
 >
 > **Inserted 2026-08-11**, hence `9b` rather than a renumber. It follows
 > iteration 9 because a query surface needs tables that actually execute, and
-> precedes iteration 10 because `service` blocks will want to return query
+> precedes iteration 25 because `service` blocks will want to return query
 > results.
 >
 > **Spec exists (2026-08-15):**
@@ -74,7 +74,7 @@
   HTTP/UI track's; a query that pushes updates is a later composition of the
   two.
 - Migrations. Changing a `@table` class's shape is the blue-green spec's
-  additive-only differ (iteration 12), not this iteration's problem.
+  additive-only differ (iteration 26), not this iteration's problem.
 - Query optimisation beyond index selection. A cost-based planner is a
   separate, much later concern; this iteration must only prove that declared
   indexes are used.

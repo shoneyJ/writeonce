@@ -1,4 +1,4 @@
-# Iteration 20 — the missing scalar types: Float and Bytes
+# Iteration 19 — the missing scalar types: Float and Bytes
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).
@@ -30,9 +30,9 @@ work, but it blurs every json/interpolation boundary Text has.
    and `trunc(f)` are the explicit bridges.
 3. **Bytes ships alongside**: a distinct binary scalar (len/byte_at/
    slice/compare; base64 and future digests return it; net reads can
-   fill it) — Text goes back to meaning text; iteration 19 and the
+   fill it) — Text goes back to meaning text; iteration 24 and the
    crypto fork inherit a clean carrier.
-4. **Recorded as iteration 20; spec before code.**
+4. **Recorded as iteration 19; spec before code.**
 
 ## Surveyed and deliberately NOT added (the rest of the missing-type list)
 

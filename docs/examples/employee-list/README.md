@@ -2,8 +2,8 @@
 
 > **Status: target workload — does not compile on today's toolchain.**
 > Written ahead of iterations
-> [9c (cross-program tables)](../../stories/language-runtime-database/refine/09c-cross-program-tables.md)
-> and [9d (keypair attach auth)](../../stories/language-runtime-database/refine/09d-keypair-attach-auth.md),
+> [20 (cross-program tables)](../../stories/language-runtime-database/refine/20-cross-program-tables.md)
+> and [21 (keypair attach auth)](../../stories/language-runtime-database/refine/21-keypair-attach-auth.md),
 > the way every acceptance sample here precedes its features. It also leans
 > on 9/9b (the [employee sample](../employee/) it attaches to must run
 > first).
@@ -37,6 +37,6 @@ the source says `employee.Employee`.
 | `employee-list staff <dept>` | unique-name index probe + `staff` backlink scan, both in A |
 | `employee-list probe-write` | the rights matrix: registered read-only, so the insert traps with access-denied (caught, `DENIED …`, exit 4) and A's row count is unchanged |
 
-The 9d acceptance drives the rest from the outside: wrong key, no key,
+The 21 acceptance drives the rest from the outside: wrong key, no key,
 same-uid-wrong-key, impostor socket, handshake replay, key rotation — see
 the iteration's criteria; this sample is the workload they run against.

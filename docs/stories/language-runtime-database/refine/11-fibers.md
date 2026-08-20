@@ -39,7 +39,7 @@
     - **Given** a parked fiber at shard shutdown,
     - **when** the shard unwinds it,
     - **then** every drop map runs (ASan zero leaks) — parked fibers die
-      as cleanly as trapped ones. (Iteration 12's blue-green drain reuses
+      as cleanly as trapped ones. (Iteration 26's blue-green drain reuses
       exactly this unwind path.)
 - What to achieve?
     - **Given** `@gc` objects referenced only from a parked fiber's frames,

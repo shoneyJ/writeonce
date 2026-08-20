@@ -58,7 +58,7 @@
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a
 > reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the
 > framework speaks HTTP/1.1 keep-alive behind it, so no TLS exists anywhere
-> in the toolchain. h2c is the parked successor (after iterations 8/9f/11,
+> in the toolchain. h2c is the parked successor (after iterations 8/23/11,
 > when multiplexing has a scheduler to pay off on).
 >
 > **Spec exists:** [`2026-08-18-web-framework-design.md`](../../../superpowers/specs/2026-08-18-web-framework-design.md)
@@ -88,7 +88,7 @@
   (concurrency arrives underneath via iterations 8/11), no chunked encoding,
   no WebSockets, JSON-first (no templates — the removed UI track stays
   removed).
-- **Relationship to iteration 10 recorded in both**: `service` blocks later
+- **Relationship to iteration 25 recorded in both**: `service` blocks later
   *lower onto this library* — compiler sugar over the same router, never a
   rival stack.
 
@@ -111,9 +111,9 @@
 ## Out Of Scope
 
 TLS in the toolchain (proxy-terminated by decision); HTTP/2 + the
-bytes/buffer type (parked to the h2c successor, after 8/9f/11); chunked
+bytes/buffer type (parked to the h2c successor, after 8/23/11); chunked
 transfer encoding; WebSockets/SSE; templates/SSR; multipart uploads;
-performance work beyond the soak's flatness gate (benchmarks belong to 9e's
+performance work beyond the soak's flatness gate (benchmarks belong to 22's
 measurement backbone).
 
 ## Proposed Solution

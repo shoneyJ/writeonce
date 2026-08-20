@@ -7,8 +7,8 @@
 library, HTTP/1.1 behind a TLS-terminating reverse proxy, and (C) the parked
 HTTP/2 path. Three sub-projects; A and B are the fundable ones, C is a
 recorded successor.
-**Relates to:** iteration 10 (`service` blocks — this framework becomes their
-lowering target, not a rival), iterations 8/9f/11 (the concurrency work h2c
+**Relates to:** iteration 25 (`service` blocks — this framework becomes their
+lowering target, not a rival), iterations 8/23/11 (the concurrency work h2c
 waits for), `docs/plan/discarded.md` (FFI reject row — load-bearing here).
 
 ## Decisions locked during brainstorming
@@ -17,7 +17,7 @@ waits for), `docs/plan/discarded.md` (FFI reject row — load-bearing here).
 | --- | --- |
 | TLS | **Proxy-terminated** (nginx/caddy). Browsers get TLS+ALPN+h2 from the proxy; the framework speaks HTTP/1.1 (later h2c) behind it. Zero TLS in the language or runtime. Direct-serving TLS is a separate future iteration and would be judged against the FFI/libc-only doctrine then, not now. Homegrown TLS is refused outright: a decade of side-channel and certificate-validation subtleties makes it a security liability, not a milestone. |
 | Dependencies | **`wo.toml [deps]` + git fetch.** A real (mini) package manager: exact-rev git dependencies, a lockfile, a per-project cache. No registry, no semver solving. |
-| HTTP/2 | **v1 is HTTP/1.1 keep-alive.** h2's payoff is multiplexing, which a single blocking thread cannot exploit; h2c lands as its own iteration after shards (8) / io_uring (9f) / fibers (11). Behind the proxy, browsers see h2 from day one regardless. |
+| HTTP/2 | **v1 is HTTP/1.1 keep-alive.** h2's payoff is multiplexing, which a single blocking thread cannot exploit; h2c lands as its own iteration after shards (8) / io_uring (23) / fibers (11). Behind the proxy, browsers see h2 from day one regardless. |
 | Handler model | **Structural interfaces, not closures.** The language has no function values by doctrine; a route handler is a class satisfying a `Handler` interface, dispatched by ICALL — which works on today's runtime and is checked by WO-E205. |
 | Incubation | Framework is born at `docs/examples/writeonce-framework/`; the consuming app at `docs/examples/web-app/` imports it **through the `[deps]` mechanism** (a local git URL), so the whole import chain is exercised by the sample. Extraction to `github.com/shoneyj/<name>` later is a `git subtree split`, not a redesign. |
 
@@ -136,7 +136,7 @@ routes, restart-persistence check, SIGTERM.
 
 ## C. HTTP/2 (h2c) — parked successor
 
-After iterations 8 (shards) / 9f (io_uring) / 11 (fibers): h2c framing +
+After iterations 8 (shards) / 23 (io_uring) / 11 (fibers): h2c framing +
 HPACK, either natively (needs a bytes/buffer type with cheap slicing — that
 type rides with this iteration, not v1) or via nghttp2-in-runtime (a doctrine
 decision to re-argue then, with the TweetNaCl precedent and the libc-only

@@ -1,4 +1,4 @@
-# Iteration 9e — durability proof, throughput, and scale under load
+# Iteration 22 — durability proof, throughput, and scale under load
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
@@ -6,7 +6,7 @@
 > **Inserted 2026-08-15.** The measurement backbone. Everything after the
 > functional engine (9/9b) is an *optimization*, and an optimization without
 > a number is a guess — this iteration is the number. It comes before the
-> optimization iterations (7b GC, 8 shard-actor, 9f io_uring) reopen for
+> optimization iterations (7b GC, 8 shard-actor, 23 io_uring) reopen for
 > performance work, because each of those must be gated by re-running THIS
 > iteration's benchmark and showing the number moved the right way.
 >
@@ -29,7 +29,7 @@
   a stated duration, with throughput and tail latency inside a stated budget
   and RSS flat (the log-watcher soak discipline, at database scale).
 - **The benchmark is the contract every later optimization signs.** 7b (GC),
-  8 (shard-actor threads), and 9f (io_uring) each re-run this and record the
+  8 (shard-actor threads), and 23 (io_uring) each re-run this and record the
   before/after — no optimization lands without a measured delta.
 
 ## Acceptance Criteria
@@ -58,14 +58,14 @@
       a durable configuration — a kill mid-load followed by replay loses no
       acknowledged write.
 - What to achieve?
-    - **Given** any later optimization iteration (7b, 8, 9f),
+    - **Given** any later optimization iteration (7b, 8, 23),
     - **when** it claims a speedup,
     - **then** this benchmark's before/after numbers are in that iteration's
       record, and a claim with no measured delta is not accepted.
 
 ## Out Of Scope
 
-- **The optimizations themselves.** This iteration MEASURES; 7b/8/9f change.
+- **The optimizations themselves.** This iteration MEASURES; 7b/8/23 change.
   A single-thread RAM-authoritative baseline is a legitimate first number —
   the point is to have one before anyone tunes.
 - **Distributed / multi-machine load.** Same-machine, one process (or one
@@ -114,7 +114,7 @@ a bounded concurrent read/write workload here; connection scale deferred to
 the honest number for a durable workload; RAM-only (no `WO_DATA`) measures
 the engine's ceiling. Both matter and mean different things. Leaning:
 publish both, labeled — durable is the number an operator plans against, and
-the gap between them is precisely what iteration 9f (io_uring group-commit)
+the gap between them is precisely what iteration 23 (io_uring group-commit)
 exists to close.
 
 ## Proposed Solution
@@ -123,13 +123,13 @@ exists to close.
   task is the harness and the baseline file, because nothing downstream means
   anything without them.
 - **Sequence the whole performance arc around this iteration:**
-  1. 9b lands → employee compiles and runs → **9e restart-persistence** and
-     **9e baseline benchmark** (single-thread, both durable and RAM-only).
-  2. **7b** (inferred GC + mark-sweep) → re-run 9e, record the delta (does
+  1. 9b lands → employee compiles and runs → **22 restart-persistence** and
+     **22 baseline benchmark** (single-thread, both durable and RAM-only).
+  2. **7b** (inferred GC + mark-sweep) → re-run 22, record the delta (does
      tracing change the write path's tail latency?).
-  3. **8** (shard-actor, thread-per-core) → re-run 9e at the connection/
+  3. **8** (shard-actor, thread-per-core) → re-run 22 at the connection/
      concurrency scale it unlocks, record the delta.
-  4. **9f** (io_uring group-commit) → re-run 9e's durable write number, record
+  4. **23** (io_uring group-commit) → re-run 22's durable write number, record
      the delta against the fsync-per-commit baseline — the payoff.
 - The benchmark harness and its baseline live under `bench/` (or the existing
   `runtime/bench/`), and `just` gets a `db-bench` recipe kept off the fast

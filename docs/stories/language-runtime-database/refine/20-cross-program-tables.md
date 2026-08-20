@@ -1,12 +1,12 @@
-# Iteration 9c — cross-program tables: attach to a running program's database
+# Iteration 20 — cross-program tables: attach to a running program's database
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
-> **Inserted 2026-08-15**, hence `9c`. It follows 9b because a program
+> **Inserted 2026-08-15**, hence `20`. It follows 9b because a program
 > attaching to another's tables wants the same typed statements and queries
 > the owner has — a surface that must exist before it can be shared — and
-> precedes iteration 10 because HTTP is the *external* face of a program;
+> precedes iteration 25 because HTTP is the *external* face of a program;
 > this iteration is the *writeonce-native* face, program to program on the
 > same machine.
 >
@@ -72,7 +72,7 @@
 ## Out Of Scope
 
 - **Remote machines.** The IPC string names a local channel; cross-host
-  access is the HTTP/service layer's job (iteration 10) or a much later
+  access is the HTTP/service layer's job (iteration 25) or a much later
   network protocol. Same-machine is what "attach" means here.
 - **B caching A's rows.** Every read crosses the channel; a client-side
   cache (and its invalidation) is a later performance iteration, if ever.
@@ -84,7 +84,7 @@
   subscription registry later (the client-api phase doc already sketches
   the wire shape).
 - **Schema migration while attached** — a blue-green swap in A while B
-  holds an attachment is iteration 12's compatibility problem; this
+  holds an attachment is iteration 26's compatibility problem; this
   iteration may simply drop attachments on swap.
 
 ## Info
@@ -136,8 +136,8 @@ read or read+write (per-table refinement deferred until a workload needs
 it), and the registration is A's manifest so a grant is a config change +
 restart, not an API. **Superseded as the end state (2026-08-15):**
 identity is a keypair and grants name public keys — iteration
-[9d](09d-keypair-attach-auth.md) owns that; the uid check is only this
-iteration's bootstrap and must be flagged pre-9d wherever it ships.
+[21](21-keypair-attach-auth.md) owns that; the uid check is only this
+iteration's bootstrap and must be flagged pre-21 wherever it ships.
 
 **4. What does B's statement actually block on?** B's insert crosses the
 channel, executes in A (RAM + WAL + fsync), and acknowledges back — a
