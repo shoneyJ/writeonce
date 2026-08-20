@@ -140,8 +140,12 @@ so a Text-typed SINGLE-SEGMENT interpolation of a place
 register through a `let`/assignment boundary uncopied — the binding aliased
 the row's field and its overwrite freed it (release-build crash the arena
 hid from ASan). It now asks `is_borrowed_value_t && not is_container_read`,
-exactly `drop_fresh_text`'s place test. Pinned by
-`tests/corpus/run/interp-borrowed-field`.
+exactly `drop_fresh_text`'s place test. The RETURN boundary had the same
+hole (`return "${p.content}"` handed the caller the part's own string —
+the multipart slice's arena corruption, two requests removed from the
+crash): emit_return's place test now sees through `Interp` the same way,
+while bare Ident/Field/Index behavior there is unchanged. Both flavors
+pinned by `tests/corpus/run/interp-borrowed-field`.
 
 Two rules the measurements imposed, both easy to get backwards:
 

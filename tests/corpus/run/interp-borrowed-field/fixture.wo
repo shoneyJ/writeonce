@@ -16,6 +16,15 @@ class Tab {
     }
     return out;
   }
+
+  -- the RETURN flavor: an interpolation of a borrowed field handed straight
+  -- to the caller must be the caller's own copy, not the row's string
+  fn first() -> Text {
+    for r in self.rows {
+      return "${r.method}";
+    }
+    return "";
+  }
 }
 
 fn main() -> Int {
@@ -26,6 +35,8 @@ fn main() -> Int {
   while i < 50 {
     let s = t.scan();
     if s != "GET, POST" { print("bad: ${s} at ${i}"); return 1; }
+    let h = t.first();
+    if h != "GET" { print("bad first: ${h} at ${i}"); return 1; }
     i = i + 1;
   }
   print("ok");

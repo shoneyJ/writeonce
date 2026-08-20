@@ -3756,7 +3756,16 @@ and emit_return (p : pctx) (f : fstate) (v : views) (s : Ast.stmt) (opt : Ast.ex
        `return lv` inside `for lv in [...]` is WO-E304 and the workload's own
        level classifier cannot be written at all. *)
     let t =
-      let is_place = match e.Ast.kind with Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true | _ -> false in
+      (* an interpolation is seen through exactly as copy_place_text sees
+         it: `return "${p.content}"` (p a loop borrow) handed the caller the
+         part's own string — the caller's drop then freed it under the
+         container, the multipart-400 arena corruption *)
+      let is_place =
+        match e.Ast.kind with
+        | Ast.Ident _ | Ast.Field _ | Ast.Index _ -> true
+        | Ast.Interp _ -> is_borrowed_value_t p f e && not (is_container_read e)
+        | _ -> false
+      in
       let is_text = match ty_of_expr p f e with Some ty -> field_kind p ty = 3 | None -> false in
       if is_place && is_text then begin
         let w = alloc_temps p f e.pos 1 in
