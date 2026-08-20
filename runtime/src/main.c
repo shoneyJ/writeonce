@@ -171,9 +171,7 @@ int main(int argc, char **argv) {
     VM.is_primary = 1;
     VM.rt.shard_id = 0;
     VM.wake_efd = eventfd(0, EFD_NONBLOCK);
-    VM.in_mu = calloc(1, sizeof(pthread_mutex_t));
-    if (!VM.in_mu || VM.wake_efd < 0
-        || pthread_mutex_init((pthread_mutex_t *)VM.in_mu, NULL) != 0) {
+    if (VM.wake_efd < 0 || wo_engine_primary_inbox(VM.wake_efd) != 0) {
         fprintf(stderr, "wovm: cannot set up the primary shard\n");
         wo_vm_destroy(&VM);
         wo_module_free(&mod);

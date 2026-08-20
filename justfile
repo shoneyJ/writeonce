@@ -1,5 +1,10 @@
 # writeonce — task runner. `just --list` shows all recipes.
 
+# docs gate: every relative markdown link resolves, every #anchor exists.
+# Report lands in docs/00-link-audit.md; this recipe is the re-check.
+linkcheck:
+    python3 scripts/linkcheck.py .
+
 # woc compiler front (compiler/): build the executable
 woc-build:
     dune build --root compiler

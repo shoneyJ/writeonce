@@ -1,19 +1,23 @@
 # Iteration 5 — language surface (Haxe-parity adoptions)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 
 
-> **Status (2026-08-14):** the *grammar* half landed — modules, `and`/`or`,
-> interpolation, `const`, loop control, switch expressions, typedef records,
-> enum payloads, try/catch, `nil`/`?T`, statics, `pub(read)` syntax, container
-> literals, `for k, v in m`, and `as` — which is what let the driving workload
-> compile. The *strictness* half (`?T` forced handling `WO-E211`–`E213`,
-> `pub(read)` write enforcement, `using`, `#if`, reject-row diagnostics) is
-> **deliberately deferred** behind
-> [`plan/compiler/2026-08-14-logwatcher-executable.md`](../../plan/compiler/2026-08-14-logwatcher-executable.md):
-> it makes the language refuse more, not the program run. Plan 8 stays open
-> for it.
+> **Status: ✅ COMPLETE 2026-08-20.** The *grammar* half landed 2026-08-14 —
+> modules, `and`/`or`, interpolation, `const`, loop control, switch
+> expressions, typedef records, enum payloads, try/catch, `nil`/`?T`,
+> statics, `pub(read)` syntax, container literals, `for k, v in m`, `as`.
+> The *strictness* half landed in three waves: `?T` forced handling
+> (WO-E211/212/213 + narrowing) and reject rows (WO-E105) on 2026-08-18;
+> the final three on 2026-08-20 (branch `language-surface-strictness`,
+> developer directive overriding the post-12 park) — **`pub(read)` write
+> enforcement** (WO-E219, class-owned writes, corpus-pinned),
+> **`using` static extensions** (compile-time rewrite to a free-fn call,
+> WO-E220 on method collision, zero owner/emit awareness), and **`#if`
+> build flags** (`woc -D name`, token-level filter, WO-E003 misuse).
+> `is`/`throw` stay cut (0 workload uses); `abstract` is a reject row.
+> Plan 8 is closed.
 
 ## Goals
 

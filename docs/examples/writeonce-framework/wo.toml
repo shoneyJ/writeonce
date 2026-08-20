@@ -1,10 +1,12 @@
 name        = "writeonce-framework"
+kind        = "library"
 version     = "0.1.0"
 description = "A web framework written in writeonce: HTTP/1.1 keep-alive server core, router with :param captures, Handler/Middleware structural interfaces (iteration 16)"
 
 [runtime]
 wo = ">= 0.1"
 
-# A LIBRARY project: no `fn main` here — the consuming app owns the entry.
+# A LIBRARY project (declared above since iteration 17): no `fn main` here —
+# the consuming app owns the entry. `woc <dir>` typechecks the whole project.
 # Apps import this repo through `wo.toml [deps]` (iteration 15) and
 # `use writeonce-framework` / `use writeonce-framework/http` / `.../router`.

@@ -1,11 +1,31 @@
 # Iteration 19 — the missing scalar types: Float and Bytes
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-20, forks settled the same day** (developer
 > decisions below). Next: spec, then plan — a new storage kind touches
 > the `.wob`/WAL formats, so this one earns its written spec.
+>
+> **LANDED 2026-08-20.** Both scalars shipped full-stack as `.wob` v5. The
+> format decisions the story asked a spec for are recorded normatively in
+> [`docs/plan/oop-vm/00-wob-format.md`](../../../plan/oop-vm/00-wob-format.md)
+> §"v5: Float and Bytes" — written in the same change as the code, per this
+> iteration's own last acceptance criterion — with the reasoning-under-the-code
+> in `runtime/src/CODE-LOGIC.md` and `compiler/src/CODE-LOGIC.md`. No separate
+> spec document was authored; the deviation is deliberate and noted here.
+>
+> Gates: corpus **103/0** (four new fixtures — `float-arithmetic`,
+> `bytes-carrier`, `float-json-storage`, `float-table-column`),
+> `test_wal` **156/0** (bit-exact Float/Bytes replay), `just web-app`
+> **23/0** with the storefront price a real Float, `just oop-accept` ALL
+> CRITERIA MET, and every other sample gate unchanged.
+>
+> One judgment call worth flagging: the shortest-round-trip renderer prefers
+> FIXED notation over exponential across `1e-6 … 1e21`. Pure "shortest" is
+> what `%g` does, and it renders a price of `900.0` as `9e+02` — correct and
+> useless. Both forms carry the same significant digits, so round-tripping is
+> unaffected.
 
 ## Why this iteration exists
 

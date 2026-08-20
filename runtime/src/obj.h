@@ -95,4 +95,11 @@ wo_str *wo_str_concat(wo_rt *rt, const wo_str *a, const wo_str *b);
 int wo_str_eq(const wo_str *a, const wo_str *b); /* content equality */
 void wo_str_free(wo_rt *rt, wo_str *s);          /* no-op on WO_F_CONST */
 
+/* iteration 19: Bytes. Byte-for-byte the wo_str object — same struct, same
+ * allocator, same free path (gc.c handles both class ids) — differing only in
+ * the header's class_id, which is what every Text builtin checks. There is no
+ * wo_bytes_free: wo_str_free is it. NULL = OOM on both. */
+wo_str *wo_bytes_alloc(wo_rt *rt, uint32_t len); /* UNINITIALIZED bytes */
+wo_str *wo_bytes_new(wo_rt *rt, const char *bytes, uint32_t len);
+
 #endif /* WO_OBJ_H */

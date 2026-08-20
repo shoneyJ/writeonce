@@ -1,7 +1,28 @@
-# Iteration 11 — fibers (green threads on the shard scheduler)
+# Iteration 11 — fibers (the 8+11 concurrency arc, part 2)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
+>
+> **REFINED 2026-08-20** (developer decisions, no code): 8 and 11 ship as
+> **one arc** — the DB becomes an actor on an owner shard
+> ([iteration 8](08-shard-actor-runtime.md)'s decision), so serving
+> shards must PARK on cross-shard replies, which is this iteration.
+> The spawn-surface question below is SETTLED: one unified actor-address
+> surface (`spawn` returns an address, fiber or remote alike; `send`
+> moves ownership; same-heap sends take the cheap path). The arc's
+> driving workload is [iteration 24: chat](24-chat-websocket-workload.md)
+> — fiber-per-WebSocket-connection is the serving model that retires the
+> framework's close-when-idle keep-alive policy.
+>
+> **STAGE-1 SUBSTANCE LANDED 2026-08-20** (branch `concurrency-arc`):
+> reduction-budget fibers (back-edge accounting — the livelock lesson is
+> in the plan's deviations), `spawn`/`send`/`actor M`, one-message-at-a-
+> time delivery, main-return reap, fiber-trap isolation, and parked
+> `net`/`time` builtins on the io_uring-first per-shard I/O plane
+> (`WO_IO=uring|epoll`, epoll fallback proven). Demonstrated by
+> `docs/examples/fibers` (`just fibers` 8/0). The shard-context criteria
+> (TID assertions, cross-shard sends, blue-green drain reuse) close with
+> the arc's stage 2.
 
 ## Goals
 
@@ -42,10 +63,13 @@
       as cleanly as trapped ones. (Iteration 26's blue-green drain reuses
       exactly this unwind path.)
 - What to achieve?
-    - **Given** `@gc` objects referenced only from a parked fiber's frames,
-    - **when** the per-shard cycle collector scans,
-    - **then** fiber stacks are roots — nothing live is collected, nothing
-      dead survives.
+    - **Given** TRACED objects (GC-ness inferred since 7b) referenced only
+      from a parked fiber's frames,
+    - **when** the per-shard mark-sweep collector scans,
+    - **then** parked fibers' frames are roots exactly as the live frame
+      stack is (`vm_gc_roots` grows fiber awareness) — nothing live is
+      collected, nothing dead survives. (Originally said `@gc`; restated
+      2026-08-20 in inference terms.)
 
 ## Out Of Scope
 
@@ -66,9 +90,11 @@
   matches the stdlib posture).
 - Vision origin: [blue-green vision §3](../../../plan/exploration/blue-green-vm/00-vision.md);
   iteration 8's scheduler is the substrate this extends.
-- Open questions to settle in the spec: spawn surface (handle vs actor
-  address), budget size and check granularity, parked-fiber drop
-  semantics, run-queue fairness (FIFO v1).
+- Open questions to settle in the spec — REDUCED 2026-08-20: the spawn
+  surface is settled (the unified actor address, iteration 8 decision 2).
+  Still open for the arc's spec: budget size and check granularity,
+  parked-fiber drop semantics, run-queue fairness (FIFO v1), and how a
+  parked fiber's borrow state interacts with the shard's GC safepoints.
 
 ## Proposed Solution
 

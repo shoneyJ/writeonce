@@ -1,0 +1,16 @@
+-- a using extension colliding with a real method is WO-E220 — an
+-- extension never silently overrides (or loses to) a method
+using ext
+
+class Box {
+  n: Int
+  fn label() -> Text {
+    return "method";
+  }
+}
+
+fn main() -> Int {
+  let b = Box { n: 1 };
+  print(b.label());
+  return 0;
+}

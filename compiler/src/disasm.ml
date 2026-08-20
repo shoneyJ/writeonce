@@ -149,6 +149,16 @@ let ins_str (i : int) (pc : int) : string =
      jumps are — absolute, so a disassembly can be read against the pc column. *)
   | 32 -> Printf.sprintf "TRY       r%d, handler -> %04d" a target
   | 33 -> "ENDTRY"
+  (* iteration 19: the f64 world. Rendered with the same three-register shape
+     as their Int counterparts so a disassembly reads the same. *)
+  | 34 -> Printf.sprintf "FADD      r%d, r%d, r%d" a b c
+  | 35 -> Printf.sprintf "FSUB      r%d, r%d, r%d" a b c
+  | 36 -> Printf.sprintf "FMUL      r%d, r%d, r%d" a b c
+  | 37 -> Printf.sprintf "FDIV      r%d, r%d, r%d" a b c
+  | 38 -> Printf.sprintf "FNEG      r%d, r%d" a b
+  | 39 -> Printf.sprintf "FEQ       r%d, r%d, r%d" a b c
+  | 40 -> Printf.sprintf "FLT       r%d, r%d, r%d" a b c
+  | 41 -> Printf.sprintf "FLE       r%d, r%d, r%d" a b c
   | op -> Printf.sprintf "?OP%d" op
 
 (* ---- the dump ---- *)
@@ -156,13 +166,17 @@ let ins_str (i : int) (pc : int) : string =
 type kconst =
   | KInt of int64
   | KText of string
+  | KFloat of float (* iteration 19 *)
 
 let dump (img : string) : string =
   let out = Buffer.create 4096 in
   let line fmt = Buffer.add_string out (fmt ^ "\n") in
   if u32 img 0 <> magic then raise (Bad "bad magic");
   let ver = u32 img 4 in
-  if ver <> 4 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  (* iteration 19 bumped the format to v5 (Float constant tag, kinds 6/7,
+     opcodes 34-41). The disassembler tracks the emitter, not a range: an old
+     image is a different format and reading it as this one would misrender. *)
+  if ver <> 5 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
@@ -186,17 +200,29 @@ let dump (img : string) : string =
       consts.(i) <- KText (String.sub img !o n);
       o := !o + n
     end
+    else if tag = 2 then begin
+      (* iteration 19: a Float constant. Rendered as OCaml's hex-float so the
+         disassembly names the exact bits — a decimal here would make golden
+         files depend on printf rounding. *)
+      consts.(i) <- KFloat (Int64.float_of_bits (i64 img !o));
+      o := !o + 8
+    end
     else raise (Bad (Printf.sprintf "constant %d: unknown tag %d" i tag))
   done;
   let kname i =
     if i >= ccnt then Printf.sprintf "<k%d?>" i
-    else match consts.(i) with KText s -> s | KInt n -> Int64.to_string n
+    else
+      match consts.(i) with
+      | KText s -> s
+      | KInt n -> Int64.to_string n
+      | KFloat x -> Printf.sprintf "%h" x
   in
   line "== CONSTANTS ==";
   for i = 0 to ccnt - 1 do
     match consts.(i) with
     | KInt n -> line (Printf.sprintf "k%-3d INT  %Ld" i n)
     | KText s -> line (Printf.sprintf "k%-3d TEXT %s" i (quote s))
+    | KFloat x -> line (Printf.sprintf "k%-3d FLT  %h" i x) (* iteration 19 *)
   done;
   (* classes *)
   line "== CLASSES ==";

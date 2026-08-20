@@ -1,0 +1,20 @@
+-- the extension module: pub free fns whose first parameter names the
+-- receiver type become methods via `using textutil`
+pub fn shout(s: Text) -> Text {
+  return "${s}!";
+}
+
+pub fn reps(s: Text, n: Int) -> Text {
+  let out = "";
+  let i = 0;
+  while i < n {
+    out = "${out}${s}";
+    i = i + 1;
+  }
+  return out;
+}
+
+-- not pub: never a candidate
+fn hidden(s: Text) -> Text {
+  return s;
+}

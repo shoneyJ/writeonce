@@ -1,0 +1,40 @@
+-- Iteration 19, the storage half: a Float is a real @table column. It is
+-- stored, read back bit-exact, indexed (unique, on the TOTAL order — so
+-- -0.0 and +0.0 are the same key), and order-by sorts by that total order
+-- rather than by raw bits, which would put negatives backwards and drop NaN
+-- wherever the comparison sequence happened to leave it.
+@table(name: "readings", index: [at])
+class Reading {
+  at: Float
+  label: Text
+}
+
+class Priced {
+  cost: Float @unique
+}
+
+fn main() {
+  insert Reading { at: 1.5, label: "b" }
+  insert Reading { at: -2.5, label: "a" }
+  insert Reading { at: 0.25, label: "c" }
+
+  -- ascending: -2.5 < 0.25 < 1.5. Raw-bit ordering would put -2.5 last.
+  for r in from x in Reading order by x.at select x { print("${r.at} ${r.label}") }
+  print("--")
+  for r in from x in Reading order by x.at desc select x { print("${r.at} ${r.label}") }
+  print("--")
+
+  -- edge values survive storage and come back bit-exact
+  insert Reading { at: 1.0 / 0.0, label: "inf" }
+  insert Reading { at: 0.0 / 0.0, label: "nan" }
+  insert Reading { at: -0.0, label: "negzero" }
+  for r in from x in Reading order by x.at select x { print("${r.at} ${r.label}") }
+  print("--")
+
+  -- a unique Float index keys on the total order: -0.0 and +0.0 are the
+  -- SAME key, so the second insert is refused
+  print_int(insert Priced { cost: -0.0 })
+  let dup = try insert Priced { cost: 0.0 } catch (e) nil
+  if dup == nil { print("ZERO-SIGN-DUP-REFUSED") }
+  print_int(insert Priced { cost: 0.5 })
+}

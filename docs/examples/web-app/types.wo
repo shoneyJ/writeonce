@@ -6,7 +6,10 @@
 @table(name: "products", index: [name])
 class Product {
   name:  Text @unique
-  price: Int             -- cents
+  -- iteration 19: a real Float price, not cents-as-Int. This column IS the
+  -- iteration's living proof — `{"price": 9.99}` posted here used to fail the
+  -- whole checked decode because the language had no Float at all.
+  price: Float
   stock: Int
 
   orders: backlink Order.product

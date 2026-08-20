@@ -51,13 +51,33 @@ rows in landing order, then the pending rows in implementation order.
 File names keep their IDs — every board, spec, and plan references
 iterations by number, so numbers never renumber.
 
+RE-SEQUENCED 2026-08-20 (second pass) against the verified findings in
+[`docs/00-code-review.md`](../../00-code-review.md). **Seq changed; no `#`
+changed and no file moved** — that is what an immutable ID is for. The
+rule applied: measure before optimizing, close correctness holes before
+adding surface, and stop stacking features on unmeasured ground.
+
+- **22 → first.** It has never run. `bench/baseline.json` does not exist,
+  there is no `just db-bench`, and `runtime/bench/` is the retired C
+  prototype's harness plus a Go reference. Until 22 runs, no performance
+  statement about this project is sourced.
+- **The arc's stage 3 → second, reframed as correctness.** `wo_engine_start`
+  zero-initializes worker VMs, so `rt.db` is NULL off the primary and any DB
+  statement there traps `WO_T_DB "database engine not initialized"`. A
+  multi-shard program that touches the database is broken today.
+- **New 30 (observability, CI, fuzz) and new 31 (actor lifecycle).** The
+  review's two largest gaps had no iteration at all: nothing to run the
+  proof automatically, and no request/response, backpressure, supervision,
+  or timers behind `spawn`/`send`.
+- **18, 20, 21 demoted.** All three add surface; none answer a named gap.
+
 | Seq | # | Iteration | Delivers |
 | --- | --- | --- | --- |
 | 1 | 1 | [Principles doc](done/01-principles-doc.md) | `docs/00-principles.md` — the doctrine page every later slice links back to |
 | 2 | 2 | [VM core](done/02-vm-core.md) | `wovm`: `.wob` loader, register interpreter, arena, borrow word, `@gc` collector |
 | 3 | 3 | [Compiler front](done/03-compiler-front.md) | `woc`: lexer → parser → typechecker → ownership pass, diagnostics |
 | 4 | 4 | [Single binary end-to-end](done/04-single-binary-e2e.md) | emitter + conformance corpus + `woc build` self-contained binary |
-| 5 | 5 | [Language surface](05-language-surface.md) | Haxe-parity adoptions, grammar + strictness halves (landed in waves through 2026-08-20) |
+| 5 | 5 | [Language surface](done/05-language-surface.md) | Haxe-parity adoptions, grammar + strictness halves (landed in waves through 2026-08-20) |
 | 6 | 6 | [Program mode + stdlib](done/06-program-mode-stdlib.md) | `fn main`, exit codes, `fs`/`proc`/`net`/`time`/`json` builtins |
 | 7 | 7 | [log-watcher proof](done/07-logwatcher-proof.md) | the driving workload compiled, executable, soak-proven (landed 2026-08-15) |
 | 8 | 7b | [Inferred GC + mark-sweep](done/07b-inferred-gc-mark-sweep.md) | `@gc` removed; GC-ness inferred; RC replaced by incremental per-shard tri-color mark-sweep |
@@ -65,20 +85,22 @@ iterations by number, so numbers never renumber.
 | 10 | 9b | [`@table`, relations, query](done/09b-table-relations-query.md) | `@table` real storage; `ref`/`backlink`/`multi`; compiler-checked queries |
 | 11 | 15 | [deps: `wo.toml [deps]`](done/15-deps-package-manager.md) | exact-rev git deps + `wo.lock` + `.wo-deps`; flat-only, offline once locked |
 | 12 | 16 | [web framework](done/16-web-framework.md) | the `.wo` framework v1 (router, middleware, auth, all three body hooks) consumed via `[deps]` |
-| 13 | 8+11 | [Shard-actor runtime](08-shard-actor-runtime.md) · [Fibers](refine/11-fibers.md) | THE ARC (stages 1+2 landed 2026-08-20: fibers/budget/actors/io_uring plane; pinned shards, envelope sends, home-routed frees, WO-E222); stage 3 = transparent DB RPC + 22 re-run |
-| 14 | 18 | [framework v2: memory-rich features](18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch |
-| 15 | 19 | [Float + Bytes](19-missing-scalar-types.md) | the missing scalars, full stack: IEEE-quiet f64 through literals/VM/@table/WAL/json + Bytes as the binary carrier — feeds 24 (WS frames) and the crypto fork (digests). *(was 20)* |
-| 16 | 20 | [Cross-program tables](refine/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). *(was 9c)* |
-| 17 | 21 | [Keypair attach auth](refine/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). *(was 9d)* |
-| 18 | 22 | [Durability, throughput, scale](refine/22-durability-throughput-scale.md) | restart-persistence proof, benchmarks, ~1M rows — the baseline the arc and 23 sign against. *(was 9e)* |
+| 13 | 22 | [Durability, throughput, scale](refine/22-durability-throughput-scale.md) | restart-persistence proof, benchmarks, ~1M rows — the baseline the arc and 23 sign against. **Promoted to first pending (was seq 18)**: it has never run, so every performance claim on this project is currently unsourced. *(was 9e)* |
+| 14 | 8+11 | [Shard-actor runtime](refine/08-shard-actor-runtime.md) · [Fibers](refine/11-fibers.md) | THE ARC (stages 1+2 landed 2026-08-20: fibers/budget/actors/io_uring plane; pinned shards, envelope sends, home-routed frees, WO-E222); stage 3 = transparent DB RPC + 22 re-run. **Stage 3 is a correctness hole, not an optimization**: worker shards are zero-initialized, so a DB statement off the primary traps `WO_T_DB`. |
+| 15 | 30 | Observability, CI, fuzz *(no story file yet)* | **NEW** — runtime counters + a profiler hook, 22's harness wired to run per change instead of by hand, and a fuzz target on the parser and `.wob` loader. The whole proof-maturity gap had no iteration to point at. |
+| 16 | 19 | [Float + Bytes](done/19-missing-scalar-types.md) | **LANDED 2026-08-20** — `.wob` v5; the full stack: IEEE-quiet f64 through literals/VM/@table/WAL/json + Bytes as the binary carrier, no implicit mixing, total-order indexes. Unblocks 24 (WS frames) and the crypto fork (digests). *(was 20)* |
+| 17 | 31 | Actor lifecycle *(no story file yet)* | **NEW** — request/response (today `send` is one-way and callers `sleep` to await), bounded mailboxes with backpressure (today the FIFO just grows), actor death/supervision, and timers beyond `time.sleep`. 24 cannot be written honestly without these. |
+| 18 | 24 | [chat: WebSocket workload](refine/24-chat-websocket-workload.md) | the arc's acceptance: WS upgrade + frames (SHA-1 via crypto fork, Bytes via 19), rooms/broadcast, 1k clients, drain-clean. *(was 19)* |
 | 19 | 23 | [io_uring group-commit](refine/23-io-uring-commit.md) | WAL WRITE+FSYNC chains on the arc's per-shard rings; fsync fallback kept (after 22 + the arc). *(was 9f)* |
-| 20 | 24 | [chat: WebSocket workload](refine/24-chat-websocket-workload.md) | the arc's acceptance: WS upgrade + frames (SHA-1 via crypto fork, Bytes via 19), rooms/broadcast, 1k clients, drain-clean. *(was 19)* |
-| 21 | 25 | [HTTP service layer](25-http-service.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). *(was 10)* |
-| 22 | 26 | [Blue-green deploy](26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
-| 23 | 27 | [Query grammar corpus](refine/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
-| 24 | 28 | [skillhost host workload](refine/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
-| 25 | 29 | [Compile-time metaprogramming](refine/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
-| ⏸ | 17 | [library projects + `internal/`](17-library-projects-internal.md) | **PARKED** (spec + plan approved, branch `library-internal`) — `wo.toml` kind = "library" + Go's `internal/` rule; slots anywhere after 16 on directive |
+| 20 | 25 | [HTTP service layer](25-http-service.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). *(was 10)* |
+| 21 | 18 | [framework v2: memory-rich features](hold/18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch. **Demoted from seq 14**: more surface on a framework with one consumer, and the cache still stores `Text` because there are no generics |
+| 22 | 27 | [Query grammar corpus](refine/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
+| 23 | 26 | [Blue-green deploy](26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
+| 24 | 20 | [Cross-program tables](refine/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). **Demoted from seq 16**: new distribution surface while there is no TLS, no crypto, and the multi-shard DB still traps. *(was 9c)* |
+| 25 | 21 | [Keypair attach auth](refine/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). **Demoted with 20** — and it needs crypto primitives that do not exist. *(was 9d)* |
+| 26 | 28 | [skillhost host workload](refine/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
+| 27 | 29 | [Compile-time metaprogramming](refine/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
+| ✅ | 17 | [library projects + `internal/`](done/17-library-projects-internal.md) | **LANDED 2026-08-20** — `kind = "library"` + entry-less check mode (retires the `--emit` workaround) and Go's `internal/` rule as WO-E108 at the consumer's `use`; driver-only, VM/GC untouched. `just web-app` 26/0 |
 
 
 Review protocol: the developer reads one iteration, approves or amends;

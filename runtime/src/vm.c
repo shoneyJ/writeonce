@@ -35,18 +35,30 @@ static _Thread_local wo_vm *tls_vm = NULL;
 wo_vm *wo_tls_vm(void) { return tls_vm; }
 void wo_tls_set(wo_vm *vm) { tls_vm = vm; }
 
+/* The cross-shard inbox lives OUTSIDE wo_vm, in engine-owned storage a
+ * worker's lazy vm-init can never wipe: the second TSan/ASan round found
+ * senders reading vm fields (in_mu, wake_efd, shard_id) through the
+ * late-init memset's zero window. Senders touch ONLY this array; the vm's
+ * own in_* fields are dead weight kept for layout stability. */
+#define WO_ENG_MAX_SHARDS 64u
+typedef struct {
+    pthread_mutex_t mu;
+    wo_envelope *head, *tail;
+    int efd; /* duplicate of the shard's wake_efd, sender-visible, never wiped */
+} wo_inbox;
+static wo_inbox INBOX[WO_ENG_MAX_SHARDS];
+static int INBOX_READY[WO_ENG_MAX_SHARDS];
+
 /* push an envelope into a shard's inbox and wake it (any thread) */
-static void inbox_push(wo_vm *to, wo_envelope *e) {
-    pthread_mutex_t *mu = (pthread_mutex_t *)to->in_mu;
-    pthread_mutex_lock(mu);
+static void inbox_push_to(uint32_t shard, wo_envelope *e) {
+    wo_inbox *ib = &INBOX[shard % WO_ENG_MAX_SHARDS];
+    pthread_mutex_lock(&ib->mu);
     e->next = NULL;
-    if (to->in_tail) to->in_tail->next = e;
-    else to->in_head = e;
-    to->in_tail = e;
-    /* capture the wake fd UNDER the lock: worker_late_init rewrites the
-     * whole vm under this same mutex (TSan caught the unlocked read) */
-    int efd = to->wake_efd;
-    pthread_mutex_unlock(mu);
+    if (ib->tail) ib->tail->next = e;
+    else ib->head = e;
+    ib->tail = e;
+    int efd = ib->efd;
+    pthread_mutex_unlock(&ib->mu);
     if (efd >= 0) {
         uint64_t one = 1;
         ssize_t n = write(efd, &one, sizeof one);
@@ -62,10 +74,11 @@ static void fib_reap_all(wo_vm *vm);
 /* the owning thread drains its inbox: adopt actors, deliver sends,
  * execute home-routed frees. Returns how many envelopes were handled. */
 static int wo_vm_adopt(wo_vm *vm) {
-    pthread_mutex_lock((pthread_mutex_t *)vm->in_mu);
-    wo_envelope *e = vm->in_head;
-    vm->in_head = vm->in_tail = NULL;
-    pthread_mutex_unlock((pthread_mutex_t *)vm->in_mu);
+    wo_inbox *ib = &INBOX[vm->shard_id % WO_ENG_MAX_SHARDS];
+    pthread_mutex_lock(&ib->mu);
+    wo_envelope *e = ib->head;
+    ib->head = ib->tail = NULL;
+    pthread_mutex_unlock(&ib->mu);
     int n = 0;
     while (e) {
         wo_envelope *nx = e->next;
@@ -93,12 +106,11 @@ static int wo_vm_adopt(wo_vm *vm) {
  * the header's shard id is not the current thread's) */
 void wo_route_free(wo_hdr *h) {
     if (eng_teardown) return; /* arenas are torn down wholesale */
-    wo_vm *to = &wo_eng.shards[h->shard_id];
     wo_envelope *e = calloc(1, sizeof *e);
     if (!e) return; /* OOM on the free path: leak rather than crash */
     e->kind = 2;
     e->payload = (uint64_t)(uintptr_t)h;
-    inbox_push(to, e);
+    inbox_push_to(h->shard_id, e);
 }
 
 /* A worker's whole life in T5: pinned, parked on its wake eventfd until
@@ -110,28 +122,20 @@ static size_t eng_heap_cap = 0;
  * first envelope, not at boot (20 idle shards must stay ~free) */
 static int worker_late_init(wo_vm *vm) {
     if (vm->rt.arena.base) return 0;
-    /* under the inbox mutex: wo_vm_init memsets the whole vm, and a
-     * concurrent inbox_push would race the in_head/in_tail wipe (TSan
-     * caught exactly this). The mutex OBJECT is malloc'd and stable;
-     * pushers block on it while the fields are rebuilt. */
-    void *mu = vm->in_mu;
-    pthread_mutex_lock((pthread_mutex_t *)mu);
+    /* the memset here is now HARMLESS to senders: every field they touch
+     * lives in the engine-owned INBOX array, never in the vm (the second
+     * TSan/ASan round found them reading through this wipe's zero window) */
     const wo_module *mod = vm->mod;
     uint32_t id = vm->shard_id;
     int efd = vm->wake_efd;
-    wo_envelope *h = vm->in_head, *t = vm->in_tail;
     int rc = wo_vm_init(vm, mod, eng_heap_cap);
     if (rc == 0) {
         vm->shard_id = id;
         vm->rt.shard_id = (uint16_t)id;
         vm->is_primary = 0;
         vm->wake_efd = efd;
-        vm->in_mu = mu;
-        vm->in_head = h;
-        vm->in_tail = t;
         tls_vm = vm;
     }
-    pthread_mutex_unlock((pthread_mutex_t *)mu);
     return rc;
 }
 
@@ -174,6 +178,18 @@ static void *shard_main(void *arg) {
     return NULL;
 }
 
+/* register the PRIMARY's inbox row (main.c calls it once its wake fd
+ * exists); workers register theirs in wo_engine_start */
+int wo_engine_primary_inbox(int wake_efd) {
+    if (!INBOX_READY[0]) {
+        if (pthread_mutex_init(&INBOX[0].mu, NULL) != 0) return -1;
+        INBOX_READY[0] = 1;
+    }
+    INBOX[0].head = INBOX[0].tail = NULL;
+    INBOX[0].efd = wake_efd;
+    return 0;
+}
+
 int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
     wo_eng.nshards = nshards;
     eng_heap_cap = heap_cap;
@@ -193,9 +209,15 @@ int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
         sv->is_primary = 0;
         sv->wake_efd = eventfd(0, EFD_NONBLOCK);
         if (sv->wake_efd < 0) return -1;
-        sv->in_mu = calloc(1, sizeof(pthread_mutex_t));
-        if (!sv->in_mu || pthread_mutex_init((pthread_mutex_t *)sv->in_mu, NULL) != 0)
-            return -1;
+        {
+            wo_inbox *ib = &INBOX[i % WO_ENG_MAX_SHARDS];
+            if (!INBOX_READY[i % WO_ENG_MAX_SHARDS]) {
+                if (pthread_mutex_init(&ib->mu, NULL) != 0) return -1;
+                INBOX_READY[i % WO_ENG_MAX_SHARDS] = 1;
+            }
+            ib->head = ib->tail = NULL;
+            ib->efd = sv->wake_efd;
+        }
         if (pthread_create(&ts[i - 1], NULL, shard_main, sv) != 0) return -1;
     }
     (void)heap_cap; /* consumed at lazy init (T6) */
@@ -219,11 +241,12 @@ void wo_engine_stop(void) {
      * raised by the destroys below into a no-op, so no teardown ordering
      * can lock a freed mutex (the ASan SEGV this replaces). */
     eng_teardown = 1;
-    for (uint32_t i = 0; i < wo_eng.nshards; i++) {
-        wo_vm *sv = &wo_eng.shards[i];
-        if (!sv->in_mu) continue;
-        wo_envelope *e = sv->in_head;
-        sv->in_head = sv->in_tail = NULL;
+    for (uint32_t i = 0; i < wo_eng.nshards && i < WO_ENG_MAX_SHARDS; i++) {
+        if (!INBOX_READY[i]) continue;
+        wo_inbox *ib = &INBOX[i];
+        wo_envelope *e = ib->head;
+        ib->head = ib->tail = NULL;
+        ib->efd = -1;
         while (e) {
             wo_envelope *nx = e->next;
             if (e->kind == 1 && e->actor) {
@@ -238,27 +261,11 @@ void wo_engine_stop(void) {
         close(wo_eng.shards[i].wake_efd);
         if (wo_eng.shards[i].rt.arena.base) /* lazily init'ed only */
             wo_vm_destroy(&wo_eng.shards[i]);
-        free(wo_eng.shards[i].in_mu);
-        wo_eng.shards[i].in_mu = NULL;
+
     }
-    /* the primary's inbox: same discard (main destroys its vm right after) */
+    /* the primary's wake fd (its inbox row was drained in the loop above) */
     {
         wo_vm *pv = &wo_eng.shards[0];
-        if (pv->in_mu) {
-            wo_envelope *e = pv->in_head;
-            pv->in_head = pv->in_tail = NULL;
-            while (e) {
-                wo_envelope *nx = e->next;
-                if (e->kind == 1 && e->actor) {
-                    free(e->actor->msgs);
-                    free(e->actor);
-                }
-                free(e);
-                e = nx;
-            }
-            free(pv->in_mu);
-            pv->in_mu = NULL;
-        }
         if (pv->wake_efd >= 0) {
             close(pv->wake_efd);
             pv->wake_efd = -1;
@@ -455,7 +462,7 @@ int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
         }
         e->kind = 1;
         e->actor = a;
-        inbox_push(&wo_eng.shards[home], e);
+        inbox_push_to(home, e);
     }
     *out_addr = (uint64_t)(uintptr_t)a;
     return 0;
@@ -483,7 +490,7 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         e->kind = 0;
         e->actor = a;
         e->payload = msg_val;
-        inbox_push(&wo_eng.shards[a->home], e);
+        inbox_push_to(a->home, e);
         return 0;
     }
     if (actor_push(a, msg_val) != 0) {
@@ -758,7 +765,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
  * cur/queued/parked). */
 #define NEXT_RUNNABLE()                              \
     do {                                             \
-        if (vm->in_mu) (void)wo_vm_adopt(vm);        \
+        if (INBOX_READY[vm->shard_id % WO_ENG_MAX_SHARDS]) (void)wo_vm_adopt(vm); \
         vm->cur = fib_dequeue(vm);                   \
         while (!vm->cur) {                           \
             if (!vm->is_primary && !vm->parked) {    \
@@ -785,7 +792,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
                 }                                    \
                 return -1;                           \
             }                                        \
-            if (vm->in_mu) (void)wo_vm_adopt(vm);    \
+            if (INBOX_READY[vm->shard_id % WO_ENG_MAX_SHARDS]) (void)wo_vm_adopt(vm); \
             vm->cur = fib_dequeue(vm);               \
         }                                            \
         vm->budget = vm->budget0;                    \
@@ -847,6 +854,11 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
         [WOP_RELEASE_X] = &&L_RELEASE_X, [WOP_BUILTIN] = &&L_BUILTIN,
         [WOP_DB_STUB] = &&L_DB_STUB,   [WOP_TRAP] = &&L_TRAP,
         [WOP_TRY] = &&L_TRY,           [WOP_ENDTRY] = &&L_ENDTRY,
+        /* iteration 19: the f64 world */
+        [WOP_FADD] = &&L_FADD,         [WOP_FSUB] = &&L_FSUB,
+        [WOP_FMUL] = &&L_FMUL,         [WOP_FDIV] = &&L_FDIV,
+        [WOP_FNEG] = &&L_FNEG,         [WOP_FEQ] = &&L_FEQ,
+        [WOP_FLT] = &&L_FLT,           [WOP_FLE] = &&L_FLE,
     };
 #define CASE(name) L_##name
 #define NEXT()                        \
@@ -867,8 +879,11 @@ dispatch:
 
     CASE(LOADK) : {
         const wo_const *k = &mod->consts[wo_ins_bx(ins)];
-        R[wo_ins_a(ins)] = k->tag == WOB_K_INT ? (uint64_t)k->i
-                                               : (uint64_t)(uintptr_t)k->s;
+        /* WOB_K_TEXT is the only pointer-shaped constant; INT and (iteration
+         * 19) FLOAT both live in the same word, differing only in how the
+         * ops that read them interpret it. */
+        R[wo_ins_a(ins)] = k->tag == WOB_K_TEXT ? (uint64_t)(uintptr_t)k->s
+                                                : (uint64_t)k->i;
         NEXT();
     }
 
@@ -917,6 +932,50 @@ dispatch:
     CASE(LE) : {
         R[wo_ins_a(ins)] =
             (int64_t)R[wo_ins_b(ins)] <= (int64_t)R[wo_ins_c(ins)] ? 1 : 0;
+        NEXT();
+    }
+
+    /* iteration 19: f64 arithmetic. Registers are u64, so each op bitcasts in
+     * and out (wo_f64/wo_bits — memcpy-based, the only strict-aliasing-clean
+     * way). Nothing here traps: IEEE 754 quiet semantics are the contract, so
+     * x/0.0 yields ±Inf and 0.0/0.0 yields NaN instead of raising. The FPU's
+     * own exception flags are left alone — the language never reads them. */
+    CASE(FADD) : {
+        R[wo_ins_a(ins)] = wo_bits(wo_f64(R[wo_ins_b(ins)]) + wo_f64(R[wo_ins_c(ins)]));
+        NEXT();
+    }
+    CASE(FSUB) : {
+        R[wo_ins_a(ins)] = wo_bits(wo_f64(R[wo_ins_b(ins)]) - wo_f64(R[wo_ins_c(ins)]));
+        NEXT();
+    }
+    CASE(FMUL) : {
+        R[wo_ins_a(ins)] = wo_bits(wo_f64(R[wo_ins_b(ins)]) * wo_f64(R[wo_ins_c(ins)]));
+        NEXT();
+    }
+    CASE(FDIV) : {
+        R[wo_ins_a(ins)] = wo_bits(wo_f64(R[wo_ins_b(ins)]) / wo_f64(R[wo_ins_c(ins)]));
+        NEXT();
+    }
+    CASE(FNEG) : {
+        /* sign flip, not 0.0 - x: only this reaches -0.0 from +0.0, and the
+         * iteration's edge-case gate stores -0.0 and reads it back. */
+        R[wo_ins_a(ins)] = wo_bits(-wo_f64(R[wo_ins_b(ins)]));
+        NEXT();
+    }
+    /* IEEE comparisons, NOT the total order: every one of these is false when
+     * either side is NaN, which is what makes `NaN != NaN` true in the
+     * language. Indexes and order-by need a total order instead and call
+     * WO_B_FLOAT_CMP for it. */
+    CASE(FEQ) : {
+        R[wo_ins_a(ins)] = wo_f64(R[wo_ins_b(ins)]) == wo_f64(R[wo_ins_c(ins)]) ? 1 : 0;
+        NEXT();
+    }
+    CASE(FLT) : {
+        R[wo_ins_a(ins)] = wo_f64(R[wo_ins_b(ins)]) < wo_f64(R[wo_ins_c(ins)]) ? 1 : 0;
+        NEXT();
+    }
+    CASE(FLE) : {
+        R[wo_ins_a(ins)] = wo_f64(R[wo_ins_b(ins)]) <= wo_f64(R[wo_ins_c(ins)]) ? 1 : 0;
         NEXT();
     }
 

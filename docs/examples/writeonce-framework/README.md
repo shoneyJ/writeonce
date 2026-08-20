@@ -10,7 +10,7 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 
 ## What it is
 
-- **HTTP/1.1** server core (`http/`): request parsing (`Content-Length`
+- **HTTP/1.1** server core: request parsing (`Content-Length`
   bodies, %-decoded paths and query strings), response serialization, a
   blocking serve loop that answers 400 to malformed requests, 500 to
   trapping handlers (and survives), closes every fd, and honors SIGTERM.
@@ -142,6 +142,30 @@ first (pure `.wo` cannot express it yet).
 | base64 | ✅ pure `.wo` (`http/auth.wo`) |
 | SHA-256 · SHA-512 · HMAC · CRC32 | 🔧 the language has NO bitwise operators — these are C runtime builtins (libc-only doctrine permits hand-rolled crypto in the runtime) or the language grows bit ops first; the fork goes to a brainstorm before the slice |
 | Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT HS256) | ⬜ framework slices AFTER the hash primitives exist; **hard stop there** — no RS256, no JOSE zoo |
+
+## Layout and privacy (iteration 17)
+
+This project declares `kind = "library"` in `wo.toml`, so `woc <dir>` runs the
+FULL pipeline over it — parse, typecheck, interface satisfaction, ownership, GC
+inference — with no `fn main` required, and writes nothing. That retired
+iteration 16's `woc --emit` verification workaround. `woc build` on it fails
+naming the kind, unless a demo `main` is added (lib+bin is allowed).
+
+- `http/` — the public surface: `Req`/`Resp` and the response builders
+  (`types.wo`), auth (`auth.wo`), multipart (`multipart.wo`), and the
+  body-inspection pair `media_type`/`form_values` (`form.wo`).
+- `router/` — the route table and `Logging`.
+- `app.wo` — `App`, the registration helpers, the dispatch loop.
+- **`internal/` — not importable by a consumer.** The connection-level request
+  parser and carry-state record (`parse.wo`) and the serve loop, status text,
+  and response serializer (`serve.wo`) live here. A consuming app that writes
+  `use writeonce-framework/internal` gets **WO-E108** at that `use`. The rule
+  is Go's: a path segment named `internal` is refused across the `[deps]`
+  boundary only — the framework's own modules import it freely.
+
+One honest disclosure: privacy restricts NAMING, not code size. `internal/`
+modules still compile into the consumer's single image (there is no dead-code
+elimination); a consumer simply cannot name them.
 
 ## The consuming sample
 

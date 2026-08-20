@@ -1,0 +1,65 @@
+-- Iteration 19, the forcing function: `{"price": 9.99}` used to fail the
+-- whole checked decode because the language had no Float. Now a Float field
+-- decodes fractions and exponents, encodes shortest-round-trip, and an Int
+-- field's strictness is UNCHANGED (a fraction there is still malformed).
+-- A ?Float carries its own nil sentinel, and a Bytes field crosses the JSON
+-- boundary as base64.
+use json
+
+class Item {
+  name: Text
+  price: Float
+  discount: ?Float
+  blob: Bytes
+}
+
+class Counted {
+  n: Int
+}
+
+fn main() -> Int {
+  -- encode: shortest form, a nil ?Float is null, Bytes is base64
+  print(json.encode(Item {
+    name: "mug",
+    price: 9.99,
+    discount: nil,
+    blob: bytes_of_text("hi")
+  }))
+
+  -- decode a fraction into a Float field: the hole this iteration closes
+  let a = json.decode("{\"name\":\"mug\",\"price\":9.99,\"discount\":0.25,\"blob\":\"aGk=\"}") as Item
+  if a != nil {
+    print("${a.price}")
+    let d = a.discount
+    if d != nil { print("${d}") }
+    print(text_of_bytes(a.blob))
+    print(json.encode(a))
+  }
+
+  -- exponent and integer-shaped forms both land in a Float field
+  let b = json.decode("{\"name\":\"x\",\"price\":2.5e-3,\"discount\":null,\"blob\":\"\"}") as Item
+  if b != nil {
+    print("${b.price} ${bytes_len(b.blob)}")
+    -- a JSON null in a ?Float field must read back as nil, which is the whole
+    -- job of the reserved-NaN sentinel: the zero word would be +0.0
+    let bd = b.discount
+    if bd == nil { print("null discount read back as nil") }
+  }
+  let c = json.decode("{\"name\":\"x\",\"price\":42,\"discount\":null,\"blob\":\"\"}") as Item
+  if c != nil { print("${c.price}") }
+
+  -- Int strictness is untouched: a fraction in an Int field is still
+  -- malformed, so the checked decode fails whole
+  let bad = json.decode("{\"n\":3.7}") as Counted
+  if bad == nil { print("int fraction still rejected") }
+
+  -- a non-finite Float has no JSON literal, so it encodes as null rather
+  -- than as invalid JSON
+  print(json.encode(Item {
+    name: "inf",
+    price: 1.0 / 0.0,
+    discount: 0.0 / 0.0,
+    blob: bytes_of_text("")
+  }))
+  return 0
+}

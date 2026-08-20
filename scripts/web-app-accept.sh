@@ -3,7 +3,8 @@
 # chain at run time, network-free: a temp git remote is built from
 # docs/examples/writeonce-framework, its file:// URL is substituted into a
 # temp copy of docs/examples/web-app, then: fetch -> lock -> build -> serve ->
-# the storefront matrix -> SIGTERM -> restart persistence. The repo itself
+# the storefront matrix -> SIGTERM -> restart persistence, plus iteration 17's
+# library-kind and internal/-boundary checks. The repo itself
 # never carries .wo-deps/wo.lock artifacts.
 set -uo pipefail
 
@@ -47,6 +48,37 @@ else
   bad "build" "$(head -1 "$W/build.out")"
   printf 'web-app-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
   exit 1
+fi
+
+# ---- iteration 17: library kind + the internal/ dep boundary ----
+# The framework copy at $W/fw carries `kind = "library"` and has no `fn main`.
+# Checking it entry-less is what retired iteration 16's `--emit` workaround.
+if out="$("$WOC" "$W/fw" 2>&1)" && [[ -z "$out" ]]; then
+  ok "library check mode: the framework typechecks entry-less"
+else
+  bad "library-check" "exit=$? out=$(printf '%s' "$out" | head -1)"
+fi
+
+# A consumer reaching past the privacy line is WO-E108 at its own `use`.
+cp -r "$W/app" "$W/app-internal"
+rm -rf "$W/app-internal/target" "$W/app-internal/wo.lock" "$W/app-internal/.wo-deps"
+sed -i '1i use framework/internal' "$W/app-internal/main.wo"
+out="$("$WOC" "$W/app-internal" 2>&1)"; rc=$?
+if [[ "$rc" == "1" ]] && printf '%s' "$out" | grep -q 'WO-E108'; then
+  ok "dep boundary: importing framework/internal is WO-E108"
+else
+  bad "internal-boundary" "exit=$rc out=$(printf '%s' "$out" | head -1)"
+fi
+
+# An unknown `kind` is a manifest error (exit 2), not a silent default.
+cp -r "$W/app" "$W/app-badkind"
+rm -rf "$W/app-badkind/target" "$W/app-badkind/wo.lock" "$W/app-badkind/.wo-deps"
+sed -i '1i kind = "junk"' "$W/app-badkind/wo.toml"
+out="$("$WOC" "$W/app-badkind" 2>&1)"; rc=$?
+if [[ "$rc" == "2" ]] && printf '%s' "$out" | grep -q 'WO-E109'; then
+  ok "manifest: an unknown kind is WO-E109 at exit 2"
+else
+  bad "kind-validation" "exit=$rc out=$(printf '%s' "$out" | head -1)"
 fi
 
 DATA="$W/data"; mkdir -p "$DATA"
@@ -105,19 +137,27 @@ PYEOF
 [[ "$wt" == "401" ]] && ok "401 on a wrong bearer token (ct_eq)" \
                      || bad "wrong-token" "got $wt"
 expect "empty list"                   "$(hit GET /products)" 200 "[]"
-expect "create product (201)"         "$(hit POST /products '{"name":"mug","price":900,"stock":5}')" 201 '"name":"mug"'
-expect "duplicate name is 409 (@unique)" "$(hit POST /products '{"name":"mug","price":1,"stock":1}')" 409
+# iteration 19: a REAL decimal price. `{"price": 9.99}` is the acceptance
+# criterion — before Float existed this body failed the whole checked decode.
+expect "create product (201, fractional price)" \
+  "$(hit POST /products '{"name":"mug","price":9.99,"stock":5}')" 201 '"price":9.99'
+expect "duplicate name is 409 (@unique)" "$(hit POST /products '{"name":"mug","price":1.0,"stock":1}')" 409
+# an integer-shaped JSON number is a legal Float too, and comes back as one
+expect "integer-shaped price decodes as Float" \
+  "$(hit POST /products '{"name":"plate","price":12,"stock":1}')" 201 '"price":12.0'
 expect "malformed json is 400"        "$(hit POST /products '{oops')" 400
 expect "form-encoded create (201, + and %XX decoded)" \
-  "$(hit POST /products 'name=form+kettle&price=1250&stock=2' yes 'application/x-www-form-urlencoded; charset=UTF-8')" 201 '"name":"form kettle"'
+  "$(hit POST /products 'name=form+kettle&price=12.50&stock=2' yes 'application/x-www-form-urlencoded; charset=UTF-8')" 201 '"name":"form kettle"'
 expect "form with a non-numeric price is 400" \
   "$(hit POST /products 'name=x&price=abc&stock=1' yes 'application/x-www-form-urlencoded')" 400
-MP=$'--BXB\r\ncontent-disposition: form-data; name="name"\r\n\r\nmp teapot\r\n--BXB\r\ncontent-disposition: form-data; name="price"\r\n\r\n700\r\n--BXB\r\ncontent-disposition: form-data; name="stock"\r\n\r\n3\r\n--BXB--\r\n'
+MP=$'--BXB\r\ncontent-disposition: form-data; name="name"\r\n\r\nmp teapot\r\n--BXB\r\ncontent-disposition: form-data; name="price"\r\n\r\n7.05\r\n--BXB\r\ncontent-disposition: form-data; name="stock"\r\n\r\n3\r\n--BXB--\r\n'
 expect "multipart create (201, curl -F shape)" \
   "$(hit POST /products "$MP" yes 'multipart/form-data; boundary=BXB')" 201 '"name":"mp teapot"'
 expect "multipart without the closing marker is 400" \
   "$(hit POST /products $'--BXB\r\ncontent-disposition: form-data; name="name"\r\n\r\nx\r\n' yes 'multipart/form-data; boundary=BXB')" 400
-expect "list shows the product"       "$(hit GET /products)" 200 '"price":900'
+# the fractional price survives storage and comes back byte-identical
+expect "list shows the fractional price" "$(hit GET /products)" 200 '"price":9.99'
+expect "list shows the form price"       "$(hit GET /products)" 200 '"price":12.5'
 expect "show by :name capture"        "$(hit GET /products/mug)" 200 '"stock":5'
 expect "unknown product is 404"       "$(hit GET /products/none)" 404
 expect "create order (FK)"            "$(hit POST /orders '{"product":"mug","qty":2}')" 201

@@ -1,0 +1,27 @@
+-- pub(read) golden: the declaring class writes (its own instance AND a
+-- sibling instance — class-owned, not instance-owned), everyone reads.
+
+class Counter {
+  pub(read) count: Int
+
+  fn bump() {
+    self.count = self.count + 1;
+  }
+
+  fn reset(mut other: Counter) {
+    other.count = 0;
+  }
+}
+
+fn main() -> Int {
+  let a = Counter { count: 0 };
+  let b = Counter { count: 5 };
+  a.bump();
+  a.bump();
+  print("a=${a.count} b=${b.count}");
+  a.reset(b);
+  print("after reset b=${b.count}");
+  if a.count != 2 { return 1; }
+  if b.count != 0 { return 1; }
+  return 0;
+}

@@ -25,8 +25,12 @@ static const wo_classdesc *g_classes;
 static void db_val_free(uint8_t kind, uint64_t v) {
     if (!v) return;
     switch (kind) {
-    case WO_K_SCALAR: return;
-    case WO_K_TEXT: free((db_text *)(uintptr_t)v); return;
+    /* iteration 19: FLOAT is a word in the slot, nothing to free. BYTES is
+       stored in the same db_text blob a Text is, so the same free serves. */
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: return;
+    case WO_K_TEXT:
+    case WO_K_BYTES: free((db_text *)(uintptr_t)v); return;
     case WO_K_OWNED: db_rec_free((db_rec *)(uintptr_t)v, g_classes); return;
     case WO_K_MULTI: {
         db_multi *m = (db_multi *)(uintptr_t)v;
@@ -53,8 +57,14 @@ static uint64_t db_val_encode(const wo_classdesc *classes, uint8_t kind, uint64_
                               int *ok, const char **msg) {
     *ok = 1;
     switch (kind) {
-    case WO_K_SCALAR: return v;
-    case WO_K_TEXT: {
+    /* iteration 19: the f64's bits go in the slot unexamined. NaN, the
+       infinities, and -0.0 all store and read back bit-exact because nothing
+       here interprets the word — the kind byte is what tells json and the WAL
+       how to read it later. */
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: return v;
+    case WO_K_TEXT:
+    case WO_K_BYTES: {
         if (!v) return 0;
         const wo_str *s = (const wo_str *)(uintptr_t)v;
         db_text *t = malloc(sizeof(db_text) + s->len);
@@ -140,11 +150,17 @@ static uint64_t db_val_decode(wo_rt *rt, uint8_t kind, uint64_t v, int *ok,
                               const char **msg) {
     *ok = 1;
     switch (kind) {
-    case WO_K_SCALAR: return v;
-    case WO_K_TEXT: {
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: return v; /* iteration 19: bits back out unchanged */
+    case WO_K_TEXT:
+    case WO_K_BYTES: {
         if (!v) return 0;
         const db_text *t = (const db_text *)(uintptr_t)v;
-        wo_str *s = wo_str_new(rt, t->bytes, t->len);
+        /* the out-gate decides the KIND: a Bytes column must hand back a
+           Bytes, or a Text builtin would happily accept the row's value and
+           the distinct type would be a fiction at the storage boundary */
+        wo_str *s = kind == WO_K_BYTES ? wo_bytes_new(rt, t->bytes, t->len)
+                                       : wo_str_new(rt, t->bytes, t->len);
         if (!s) goto oom;
         return (uint64_t)(uintptr_t)s;
     }
@@ -268,6 +284,20 @@ static void hdel(db_table *t, uint64_t id) {
 
 /* ---- secondary indexes (Task 4) ---------------------------------------- */
 
+/* iteration 19: an index key for a FLOAT column is the value's CANONICAL
+ * bits, not its raw bits. Two values that the total order calls equal must
+ * hash and compare equal, and raw bits break that twice: -0.0 and +0.0 are
+ * equal but differ in the sign bit, and two NaNs with different payloads are
+ * equal (both "last") but differ everywhere. Without this a `unique` Float
+ * column would accept both -0.0 and 0.0, and a probe for one would miss a row
+ * stored as the other. */
+static uint64_t idx_float_key(uint64_t bits) {
+    double d = wo_f64(bits);
+    if (d != d) return 0x7FF8000000000000ull; /* every NaN -> the canonical one */
+    if (d == 0.0) return 0;                   /* -0.0 -> +0.0 */
+    return bits;
+}
+
 /* hash of one row's index columns: kind-driven, never trusted for equality */
 static uint64_t idx_hash(const wo_classdesc *c, const db_index *ix, const db_row *r) {
     uint64_t h = 0x9e3779b97f4a7c15ull;
@@ -282,6 +312,8 @@ static uint64_t idx_hash(const wo_classdesc *c, const db_index *ix, const db_row
             else th = 0;
             v = th;
         }
+        else if (c->kinds[col] == WO_K_FLOAT)
+            v = idx_float_key(v); /* iteration 19 */
         h ^= hmix(v + i);
     }
     return h ? h : 1; /* 0 marks an empty bucket */
@@ -298,6 +330,9 @@ static int idx_cols_equal(const wo_classdesc *c, const db_index *ix, const db_ro
                 if (x != y) return 0;
             } else if (x->len != y->len || memcmp(x->bytes, y->bytes, x->len) != 0)
                 return 0;
+        } else if (c->kinds[col] == WO_K_FLOAT) {
+            /* iteration 19: compare canonicalized, matching idx_hash */
+            if (idx_float_key(a->slots[col]) != idx_float_key(b->slots[col])) return 0;
         } else if (a->slots[col] != b->slots[col])
             return 0;
     }

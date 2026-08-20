@@ -73,6 +73,36 @@ static void jb_int(jbuf *b, int64_t v) {
     jb_put(b, tmp, (size_t)n);
 }
 
+/* iteration 19: base64 body for a Bytes field, standard alphabet with '='
+ * padding — the same encoding WO_B_BASE64_ENCODE produces, so a Bytes column
+ * that leaves through json.encode comes back through base64_decode bit-exact.
+ * Written out here rather than shared with builtin.c because that one
+ * allocates a wo_str and this one appends to a growing buffer; the alphabet is
+ * the contract, and the corpus fixture compares both against it. */
+static void jb_b64(jbuf *b, const uint8_t *p, uint32_t len) {
+    static const char A[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint32_t i = 0;
+    char q[4];
+    for (; i + 3u <= len; i += 3u) {
+        uint32_t v = ((uint32_t)p[i] << 16) | ((uint32_t)p[i + 1] << 8) | p[i + 2];
+        q[0] = A[(v >> 18) & 63];
+        q[1] = A[(v >> 12) & 63];
+        q[2] = A[(v >> 6) & 63];
+        q[3] = A[v & 63];
+        jb_put(b, q, 4);
+    }
+    if (i < len) {
+        uint32_t rem = len - i;
+        uint32_t v = (uint32_t)p[i] << 16;
+        if (rem == 2u) v |= (uint32_t)p[i + 1] << 8;
+        q[0] = A[(v >> 18) & 63];
+        q[1] = A[(v >> 12) & 63];
+        q[2] = rem == 2u ? A[(v >> 6) & 63] : '=';
+        q[3] = '=';
+        jb_put(b, q, 4);
+    }
+}
+
 /* JSON string body: quotes, backslashes and control bytes escaped; every
  * other byte passes through, so UTF-8 stays UTF-8. */
 static void jb_text(jbuf *b, const wo_str *s) {
@@ -121,7 +151,10 @@ static void enc_object(jbuf *b, const wo_module *mod, const wo_hdr *o) {
 }
 
 static void enc_value(jbuf *b, const wo_module *mod, uint64_t v, uint8_t kind, uint32_t fclass) {
-    if (!v && kind != WO_K_SCALAR) {
+    /* iteration 19: FLOAT joins SCALAR in being exempt here — a zero word is
+       +0.0, a perfectly good value, not absence. A `?Float` spells nil as
+       WO_NIL_FLOAT and is handled in the FLOAT arm below. */
+    if (!v && kind != WO_K_SCALAR && kind != WO_K_FLOAT) {
         jb_put(b, "null", 4);
         return;
     }
@@ -136,6 +169,38 @@ static void enc_value(jbuf *b, const wo_module *mod, uint64_t v, uint8_t kind, u
         else
             jb_int(b, (int64_t)v);
         return;
+    case WO_K_FLOAT: {
+        /* iteration 19. Three cases, in order: a `?Float` holding its nil
+           sentinel is JSON null; a non-finite value has NO JSON literal (the
+           grammar has no nan/inf), so it is null too — the same choice every
+           mainstream encoder makes, and the alternative is emitting invalid
+           JSON; anything else is the shortest round-trip rendering, the SAME
+           renderer interpolation uses so the two can never disagree. */
+        if (fclass == WOB_FIELD_NIL_FLOAT && v == WO_NIL_FLOAT) {
+            jb_put(b, "null", 4);
+            return;
+        }
+        double d = wo_f64(v);
+        if (d != d || d > 1.7976931348623157e308 || d < -1.7976931348623157e308) {
+            jb_put(b, "null", 4);
+            return;
+        }
+        char buf[WO_FLOAT_TEXT_CAP];
+        size_t n = wo_float_text(d, buf, sizeof buf);
+        jb_put(b, buf, n);
+        return;
+    }
+    case WO_K_BYTES: {
+        /* iteration 19: JSON has no binary type, so the boundary is base64 —
+           spelled out here as the convention, matching base64_encode's
+           alphabet exactly so a value that goes out through json comes back
+           in through base64_decode unchanged. */
+        const wo_str *s = (const wo_str *)(uintptr_t)v;
+        jb_ch(b, '"');
+        jb_b64(b, (const uint8_t *)s->data, s->len);
+        jb_ch(b, '"');
+        return;
+    }
     case WO_K_TEXT: {
         const wo_str *s = (const wo_str *)(uintptr_t)v;
         if (fclass == WOB_FIELD_JSON_RAW) jb_put(b, s->data, s->len); /* already JSON */
@@ -329,10 +394,16 @@ static int jparse_object(jp *j, uint32_t class_id, uint64_t *out) {
     /* NEW zeroes every slot, which is nil for a heap-shaped field but a real
        `0` for a scalar one — so a nullable scalar starts at its own nil word
        (wob.h's WO_NIL_SCALAR) and stays there if the object omits the key. */
-    for (uint32_t i = 0; i < c->field_cnt; i++)
-        if (c->field_class && (c->field_class[i] == WOB_FIELD_NIL_SCALAR ||
-                               c->field_class[i] == WOB_FIELD_NIL_BOOL))
+    for (uint32_t i = 0; i < c->field_cnt; i++) {
+        if (!c->field_class) break;
+        if (c->field_class[i] == WOB_FIELD_NIL_SCALAR || c->field_class[i] == WOB_FIELD_NIL_BOOL)
             fs[i] = WO_NIL_SCALAR;
+        /* iteration 19: a `?Float`'s nil is its own reserved NaN — the zero
+           word is +0.0, so an omitted key would read back as a real price of
+           zero rather than as absence. */
+        else if (c->field_class[i] == WOB_FIELD_NIL_FLOAT)
+            fs[i] = WO_NIL_FLOAT;
+    }
     jskip_ws(j);
     if (j->p >= j->end || *j->p != '{') {
         wo_drop_obj(j->rt, o);
@@ -414,10 +485,10 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
     }
     char c = *j->p;
     if (c == 'n') { /* null: this field's own nil word */
-        uint64_t nilw =
-            (fclass == WOB_FIELD_NIL_SCALAR || fclass == WOB_FIELD_NIL_BOOL)
-                ? WO_NIL_SCALAR
-                : 0;
+        uint64_t nilw = fclass == WOB_FIELD_NIL_FLOAT ? WO_NIL_FLOAT /* iteration 19 */
+                        : (fclass == WOB_FIELD_NIL_SCALAR || fclass == WOB_FIELD_NIL_BOOL)
+                            ? WO_NIL_SCALAR
+                            : 0;
         return jskip_value(j) == 0 ? (*out = nilw, 0) : -1;
     }
     if (c == '{') {
@@ -520,6 +591,17 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
             *out = (uint64_t)(uintptr_t)s;
             return 0;
         }
+        if (kind == WO_K_BYTES) {
+            /* iteration 19: the Bytes boundary is a base64 STRING (the same
+               convention encode writes). Malformed base64 decodes to nil, not
+               a whole-decode failure, matching base64_decode's own contract —
+               a bad body from the network is expected input. */
+            uint64_t bytes = 0;
+            if (wo_base64_to_bytes(j->rt, s->data, s->len, &bytes) != 0) bytes = 0;
+            wo_str_free(j->rt, s);
+            *out = bytes;
+            return 0;
+        }
         wo_str_free(j->rt, s); /* a string where a number was declared: nil */
         *out = 0;
         return 0;
@@ -530,7 +612,47 @@ static int jparse_value(jp *j, uint8_t kind, uint32_t fclass, uint32_t felem, ui
         *out = kind == WO_K_SCALAR ? (uint64_t)truth : 0;
         return 0;
     }
-    /* number: i64 by truncation — the language has no float */
+    /* iteration 19: a FLOAT field takes the whole JSON number grammar —
+       fractions and exponents included. This is the hole the iteration exists
+       to close: `{"price": 9.99}` used to fail the entire decode. strtod does
+       the conversion (correctly rounded), and the span is bounded by the JSON
+       number grammar so a NUL-terminated scratch copy is always enough. */
+    if (kind == WO_K_FLOAT) {
+        const char *start = j->p;
+        if (j->p < j->end && (*j->p == '-' || *j->p == '+')) j->p++;
+        int digits = 0;
+        while (j->p < j->end && *j->p >= '0' && *j->p <= '9') {
+            j->p++;
+            digits++;
+        }
+        if (j->p < j->end && *j->p == '.') {
+            j->p++;
+            while (j->p < j->end && *j->p >= '0' && *j->p <= '9') {
+                j->p++;
+                digits++;
+            }
+        }
+        if (!digits) return -1;
+        if (j->p < j->end && (*j->p == 'e' || *j->p == 'E')) {
+            const char *save = j->p;
+            j->p++;
+            if (j->p < j->end && (*j->p == '-' || *j->p == '+')) j->p++;
+            int edigits = 0;
+            while (j->p < j->end && *j->p >= '0' && *j->p <= '9') {
+                j->p++;
+                edigits++;
+            }
+            if (!edigits) j->p = save; /* `1e` is not an exponent; stop before it */
+        }
+        size_t n = (size_t)(j->p - start);
+        char tmp[64];
+        if (n >= sizeof tmp) return -1; /* no real JSON number is this long */
+        memcpy(tmp, start, n);
+        tmp[n] = '\0';
+        *out = wo_bits(strtod(tmp, NULL));
+        return 0;
+    }
+    /* number: i64 by truncation — the language has no float in an Int slot */
     {
         int neg = 0;
         if (*j->p == '-') {

@@ -5,6 +5,7 @@
 #include "db.h" /* database/src — the engine's statement executors */
 
 #include <stdio.h>
+#include <stdlib.h> /* strtod: the round-trip check in wo_float_text */
 #include <string.h>
 #include <time.h>
 
@@ -23,6 +24,106 @@ static void *native_check(uint64_t v, uint32_t cls, const char **msg) {
         return NULL;
     }
     return o;
+}
+
+/* ---- iteration 19: Float rendering (contract in builtin.h) ----
+ * Shortest round-trip, found by asking printf for 1..17 significant digits
+ * and stopping at the first rendering that strtod turns back into the SAME
+ * BITS. Bits, not `==`: -0.0 == 0.0 is true, so a value comparison would let
+ * "0" stand in for -0.0 and the iteration's own edge-case gate would fail.
+ *
+ * 17 digits always terminates the loop (%.17g round-trips every double), so
+ * the fallback after the loop is unreachable defensive code, not a policy. */
+size_t wo_float_text(double d, char *out, size_t cap) {
+    if (d != d) return (size_t)snprintf(out, cap, "nan");
+    if (d > 1.7976931348623157e308) return (size_t)snprintf(out, cap, "inf");
+    if (d < -1.7976931348623157e308) return (size_t)snprintf(out, cap, "-inf");
+    /* Step 1: the fewest significant digits that reparse to the same bits. */
+    char tmp[WO_FLOAT_TEXT_CAP];
+    int sig = 17;
+    for (int prec = 1; prec <= 17; prec++) {
+        int n = snprintf(tmp, sizeof tmp, "%.*g", prec, d);
+        if (n > 0 && (size_t)n < sizeof tmp && wo_bits(strtod(tmp, NULL)) == wo_bits(d)) {
+            sig = prec;
+            break;
+        }
+    }
+    /* Step 2: fixed or exponential. "Shortest" alone is the wrong rule here —
+     * %g renders 900.0 as `9e+02` because that is two bytes shorter, and a
+     * price of `9e+02` in a JSON body is nobody's idea of a good answer. So
+     * fixed notation wins across the range humans read (and the range JSON
+     * bodies live in), and the exponent is kept only where fixed would be
+     * absurd: a 21-digit integer or twenty leading zeros. Same thresholds
+     * JavaScript's own number formatting uses, for the same reason.
+     * Correctness is unaffected: both forms carry the identical `sig`
+     * significant digits, so both reparse to the same bits. */
+    int exp10;
+    {
+        char e[WO_FLOAT_TEXT_CAP];
+        snprintf(e, sizeof e, "%.*e", sig - 1, d);
+        const char *ep = strchr(e, 'e');
+        exp10 = ep ? (int)strtol(ep + 1, NULL, 10) : 0;
+    }
+    int len;
+    if (exp10 >= -6 && exp10 < 21) {
+        int decimals = sig - 1 - exp10;
+        if (decimals < 1) decimals = 1; /* always one decimal: see below */
+        len = snprintf(tmp, sizeof tmp, "%.*f", decimals, d);
+        /* A Float must not print as `1` where an Int would: the two numeric
+         * worlds never mix implicitly, so the rendering says which one this
+         * is. `900.0` reparses to the same bits as `900`, so the trailing
+         * `.0` costs the round-trip nothing. */
+    }
+    else
+        len = snprintf(tmp, sizeof tmp, "%.*e", sig - 1, d);
+    if (len < 0 || (size_t)len >= sizeof tmp) /* defensive: cannot happen */
+        len = snprintf(tmp, sizeof tmp, "%.17g", d);
+    return (size_t)snprintf(out, cap, "%s", tmp);
+}
+
+/* iteration 19: base64, standard alphabet with '=' padding (RFC 4648 §4) —
+ * the alphabet the JSON boundary and every HTTP header this project will meet
+ * uses. No URL-safe variant until a workload needs one. */
+static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static int b64_val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+int wo_base64_to_bytes(wo_rt *rt, const char *p, uint32_t len, uint64_t *out) {
+    *out = 0;
+    if (len % 4u != 0u) return -1;
+    uint32_t pad = 0;
+    if (len) {
+        if (p[len - 1] == '=') pad++;
+        if (len >= 2 && p[len - 2] == '=') pad++;
+    }
+    wo_str *o = wo_bytes_alloc(rt, len / 4u * 3u - pad);
+    if (!o) return -2;
+    char *w = o->data;
+    for (uint32_t i = 0; i < len; i += 4u) {
+        uint32_t v = 0;
+        for (uint32_t j = 0; j < 4u; j++) {
+            char c = p[i + j];
+            int d = c == '=' ? 0 : b64_val(c);
+            /* '=' is legal only in the final quad, and only where pad said */
+            if (d < 0 || (c == '=' && i + 4u < len)) {
+                wo_str_free(rt, o);
+                return -1;
+            }
+            v = (v << 6) | (uint32_t)d;
+        }
+        uint32_t have = i + 4u == len ? 3u - pad : 3u;
+        if (have > 0) *w++ = (char)(v >> 16);
+        if (have > 1) *w++ = (char)(v >> 8);
+        if (have > 2) *w++ = (char)v;
+    }
+    *out = (uint64_t)(uintptr_t)o;
+    return 0;
 }
 
 /* ---- systems-stdlib helpers ------------------------------------------
@@ -274,9 +375,21 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             R[A] = 0;
             return 0;
         }
-        const wo_str *src = native_check(R[B], WO_CLS_STR, msg);
-        if (!src) return WO_T_BOUNDS;
-        wo_str *cp = wo_str_new(rt, src->data, src->len);
+        /* iteration 19: a copy PRESERVES the kind. Bytes is a wo_str with a
+         * different class id, and every ownership boundary that copies a Text
+         * (into a container, into a field, out of a borrow) copies a Bytes for
+         * the identical reason — so this one builtin serves both rather than
+         * growing a bytes_copy that the six emitter sites would have to choose
+         * between. Copying a Bytes as a Text would silently launder it into
+         * the wrong world, which is exactly what the distinct id prevents. */
+        const wo_hdr *h = (const wo_hdr *)(uintptr_t)R[B];
+        if (h->class_id != WO_CLS_STR && h->class_id != WO_CLS_BYTES) {
+            *msg = "wrong container type";
+            return WO_T_BOUNDS;
+        }
+        const wo_str *src = (const wo_str *)h;
+        wo_str *cp = h->class_id == WO_CLS_BYTES ? wo_bytes_new(rt, src->data, src->len)
+                                                 : wo_str_new(rt, src->data, src->len);
         if (!cp) {
             *msg = "out of memory";
             return WO_T_OOM;
@@ -305,6 +418,195 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return WO_T_OOM;
         }
         R[A] = (uint64_t)(uintptr_t)s;
+        return 0;
+    }
+    /* ---- iteration 19: the Float bridges ---- */
+    case WO_B_FLOAT_OF_INT: {
+        R[A] = wo_bits((double)(int64_t)R[B]);
+        return 0;
+    }
+    case WO_B_TRUNC: {
+        double d = wo_f64(R[B]);
+        /* The Int world has no NaN, no Inf, and no 2^63. Yielding 0 or a
+         * wrapped bit pattern for those is exactly the silent-corruption
+         * class this iteration exists to remove, so it traps. Bound checked
+         * with >= 2^63 as a double (9223372036854775808.0 is exact). */
+        if (d != d || !(d > -9223372036854775808.0 && d < 9223372036854775808.0)) {
+            *msg = "trunc: float has no integer value";
+            return WO_T_BOUNDS;
+        }
+        R[A] = (uint64_t)(int64_t)d; /* C truncates toward zero, as specified */
+        return 0;
+    }
+    case WO_B_PARSE_FLOAT: {
+        const wo_str *s = native_check(R[B], WO_CLS_STR, msg);
+        if (!s) return WO_T_BOUNDS;
+        /* strtod needs a NUL and a Text has none. A number never needs more
+         * than a couple of dozen bytes; anything longer is not a number, and
+         * NaN ("not a number") is the honest answer for unparseable input —
+         * no `?Float` needed, which is why parse_float has no nullable form
+         * while parse_int leans on `?Int`'s nil. */
+        char buf[64];
+        if (s->len >= sizeof buf) {
+            R[A] = wo_bits(0.0 / 0.0);
+            return 0;
+        }
+        memcpy(buf, s->data, s->len);
+        buf[s->len] = '\0';
+        char *end = NULL;
+        double d = strtod(buf, &end);
+        /* Trailing garbage is a parse failure, not a prefix match: "1.5kg"
+         * must not silently become 1.5. Empty input fails the same way. */
+        R[A] = wo_bits(end == buf || *end != '\0' ? 0.0 / 0.0 : d);
+        return 0;
+    }
+    case WO_B_FLOAT_TO_TEXT: {
+        char buf[WO_FLOAT_TEXT_CAP];
+        size_t len = wo_float_text(wo_f64(R[B]), buf, sizeof buf);
+        wo_str *s = wo_str_new(rt, buf, (uint32_t)len);
+        if (!s) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)s;
+        return 0;
+    }
+    case WO_B_FLOAT_CMP: {
+        R[A] = (uint64_t)(int64_t)wo_float_cmp(wo_f64(R[B]), wo_f64(R[B + 1]));
+        return 0;
+    }
+    /* ---- iteration 19: Bytes ---- */
+    case WO_B_BYTES_LEN: {
+        const wo_str *b = native_check(R[B], WO_CLS_BYTES, msg);
+        if (!b) return WO_T_BOUNDS;
+        R[A] = b->len;
+        return 0;
+    }
+    case WO_B_BYTES_AT: {
+        const wo_str *b = native_check(R[B], WO_CLS_BYTES, msg);
+        if (!b) return WO_T_BOUNDS;
+        uint64_t i = R[B + 1];
+        if (i >= b->len) {
+            *msg = "bytes index out of range";
+            return WO_T_BOUNDS;
+        }
+        R[A] = (uint8_t)b->data[i];
+        return 0;
+    }
+    case WO_B_BYTES_SLICE: {
+        const wo_str *b = native_check(R[B], WO_CLS_BYTES, msg);
+        if (!b) return WO_T_BOUNDS;
+        /* Clamped, matching WO_B_SUBSTR: a slice past the end is the empty
+         * slice, not a trap. Signed reads because a computed start can be
+         * negative and must clamp to 0 rather than wrap to 2^64. */
+        int64_t start = (int64_t)R[B + 1], want = (int64_t)R[B + 2];
+        if (start < 0) start = 0;
+        if (start > (int64_t)b->len) start = b->len;
+        if (want < 0) want = 0;
+        if (want > (int64_t)b->len - start) want = (int64_t)b->len - start;
+        wo_str *out = wo_bytes_new(rt, b->data + start, (uint32_t)want);
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)out;
+        return 0;
+    }
+    case WO_B_BYTES_EQ: {
+        const wo_str *x = native_check(R[B], WO_CLS_BYTES, msg);
+        const wo_str *y = x ? native_check(R[B + 1], WO_CLS_BYTES, msg) : NULL;
+        if (!y) return WO_T_BOUNDS;
+        R[A] = x->len == y->len && !memcmp(x->data, y->data, x->len) ? 1 : 0;
+        return 0;
+    }
+    case WO_B_BYTES_CONCAT: {
+        const wo_str *x = native_check(R[B], WO_CLS_BYTES, msg);
+        const wo_str *y = x ? native_check(R[B + 1], WO_CLS_BYTES, msg) : NULL;
+        if (!y) return WO_T_BOUNDS;
+        if ((uint64_t)x->len + y->len > 0xFFFFFFFFull) {
+            *msg = "bytes concat overflows length";
+            return WO_T_OOM;
+        }
+        wo_str *out = wo_bytes_alloc(rt, x->len + y->len);
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        memcpy(out->data, x->data, x->len);
+        memcpy(out->data + x->len, y->data, y->len);
+        R[A] = (uint64_t)(uintptr_t)out;
+        return 0;
+    }
+    case WO_B_BASE64_ENCODE: {
+        const wo_str *b = native_check(R[B], WO_CLS_BYTES, msg);
+        if (!b) return WO_T_BOUNDS;
+        if ((uint64_t)b->len > 0xBFFFFFFFull) { /* 4/3 growth must not overflow u32 */
+            *msg = "base64: input too large";
+            return WO_T_OOM;
+        }
+        uint32_t olen = ((b->len + 2u) / 3u) * 4u;
+        wo_str *out = wo_str_alloc(rt, olen);
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        char *o = out->data;
+        uint32_t i = 0;
+        for (; i + 3u <= b->len; i += 3u) {
+            uint32_t v = ((uint8_t)b->data[i] << 16) | ((uint8_t)b->data[i + 1] << 8) |
+                         (uint8_t)b->data[i + 2];
+            *o++ = B64[(v >> 18) & 63];
+            *o++ = B64[(v >> 12) & 63];
+            *o++ = B64[(v >> 6) & 63];
+            *o++ = B64[v & 63];
+        }
+        if (i < b->len) { /* 1 or 2 trailing bytes, '=' padded */
+            uint32_t rem = b->len - i;
+            uint32_t v = (uint32_t)(uint8_t)b->data[i] << 16;
+            if (rem == 2u) v |= (uint32_t)(uint8_t)b->data[i + 1] << 8;
+            *o++ = B64[(v >> 18) & 63];
+            *o++ = B64[(v >> 12) & 63];
+            *o++ = rem == 2u ? B64[(v >> 6) & 63] : '=';
+            *o++ = '=';
+        }
+        R[A] = (uint64_t)(uintptr_t)out;
+        return 0;
+    }
+    case WO_B_BASE64_DECODE: {
+        const wo_str *s = native_check(R[B], WO_CLS_STR, msg);
+        if (!s) return WO_T_BOUNDS;
+        uint64_t bytes = 0;
+        int rc = wo_base64_to_bytes(rt, s->data, s->len, &bytes);
+        if (rc == -2) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        /* malformed decodes to nil, not a trap: base64 arrives from the
+           network, so a bad body is expected input — the same contract
+           json.decode keeps. rc == -1 leaves bytes at 0. */
+        R[A] = bytes;
+        return 0;
+    }
+    case WO_B_BYTES_OF_TEXT: {
+        const wo_str *s = native_check(R[B], WO_CLS_STR, msg);
+        if (!s) return WO_T_BOUNDS;
+        wo_str *out = wo_bytes_new(rt, s->data, s->len);
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)out;
+        return 0;
+    }
+    case WO_B_TEXT_OF_BYTES: {
+        const wo_str *b = native_check(R[B], WO_CLS_BYTES, msg);
+        if (!b) return WO_T_BOUNDS;
+        wo_str *out = wo_str_new(rt, b->data, b->len);
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)out;
         return 0;
     }
     case WO_B_VARIANT_TAG: { /* haxe-parity compiler Task 4: enum payload variants */

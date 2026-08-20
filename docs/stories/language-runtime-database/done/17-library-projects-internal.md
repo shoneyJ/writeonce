@@ -1,7 +1,7 @@
 # Iteration 17 — library projects and dependency privacy (`kind`, `internal/`)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-20, needs further refinement** (developer decision: keep
 > as an iteration, do not implement yet).
@@ -10,10 +10,36 @@
 > changed). See "Settled decisions" and "Impact analysis" below.
 >
 > **⏸ PARKED 2026-08-20** (developer directive: framework v1 work first).
-> The spec and plan were written and approved before parking; both sit ready
-> on branch `library-internal`
+> The spec and plan were written and approved before parking
 > (`docs/superpowers/specs/2026-08-20-library-kind-internal-design.md`,
 > `docs/superpowers/plans/2026-08-20-library-kind-internal.md`).
+>
+> **LANDED 2026-08-20** — unparked and executed against that plan, all six
+> tasks. Every change is in the driver (`compiler/bin/main.ml`); the VM,
+> `.wob`, and GC are untouched exactly as the impact analysis predicted.
+> Reasoning-under-the-code in `compiler/src/CODE-LOGIC.md`.
+>
+> Gates: `just web-app` **26/0** (three new checks — library check mode,
+> WO-E108 at the boundary, WO-E109 on a bad kind), and `just woc-test`,
+> `just oop-e2e` (103/0), `just deps-accept`, `just log-watcher`,
+> `just employee` all unchanged.
+>
+> Two deviations from the plan, both because the framework grew after the plan
+> was written:
+>
+> 1. **`http/parse.wo` was SPLIT, not moved whole.** The plan said move it
+>    under `internal/`, but the framework-v1 slices had since added
+>    `media_type` and `form_values` to that file and the web-app calls both —
+>    moving the file whole would have put public surface behind the privacy
+>    line and broken the consumer. The parsing plumbing (`Parsed`,
+>    `parse_request`, `url_decode`, `parse_query`) is now `internal/parse.wo`;
+>    the two public functions are `http/form.wo`, which does `use internal`
+>    (legal inside the library).
+> 2. **The gate is 26/0, not the plan's 17/0.** `just web-app` had grown from
+>    14 to 23 checks (framework v1 plus iteration 19's Float price) before this
+>    iteration started; the three new checks make 26. The plan's numbers were
+>    written against a 14-check gate. Acceptance criterion 3 below still holds
+>    in substance: no pre-existing check changed.
 
 ## Why this iteration exists
 

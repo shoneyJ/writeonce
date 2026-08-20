@@ -98,8 +98,15 @@ static uint64_t rd_u64(rbuf *r) {
 
 static void enc_val(wbuf *w, const wo_classdesc *classes, uint8_t kind, uint64_t v) {
     switch (kind) {
-    case WO_K_SCALAR: wput_u64(w, v); return;
-    case WO_K_TEXT: {
+    /* iteration 19: a Float is one word on the wire, its raw IEEE bits — no
+       decimal rendering anywhere in the durability path, so replay is
+       bit-exact for NaN, the infinities, and -0.0 alike. A Bytes is the same
+       length-prefixed blob a Text is; the class table's kind byte is what
+       says which one comes back out. */
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: wput_u64(w, v); return;
+    case WO_K_TEXT:
+    case WO_K_BYTES: {
         if (!v) {
             wput_u32(w, WAL_NIL_TEXT);
             return;
@@ -160,13 +167,15 @@ static void enc_val(wbuf *w, const wo_classdesc *classes, uint8_t kind, uint64_t
 static int dec_val(rbuf *r, wo_db *db, uint8_t kind, uint64_t *out) {
     *out = 0;
     switch (kind) {
-    case WO_K_SCALAR: {
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: { /* iteration 19: the same word back, uninterpreted */
         uint64_t v = rd_u64(r);
         if (r->bad) return -1;
         *out = v;
         return 0;
     }
-    case WO_K_TEXT: {
+    case WO_K_TEXT:
+    case WO_K_BYTES: {
         uint32_t len = rd_u32(r);
         if (r->bad) return -1;
         if (len == WAL_NIL_TEXT) return 0;

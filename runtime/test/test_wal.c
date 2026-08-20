@@ -264,11 +264,71 @@ static void test_crash_battery(void) {
     }
 }
 
+/* iteration 19: a Float column and a Bytes column survive a WAL round trip
+ * BIT-EXACT. Bit-exact is the whole assertion — the durability path must not
+ * render a float as decimal anywhere, or NaN, the infinities and -0.0 would
+ * each come back as something else. Bytes goes through the same length-
+ * prefixed blob a Text does and must come back as a Bytes, not a Text. */
+static const uint8_t fb_kinds[] = {WO_K_FLOAT, WO_K_BYTES};
+static const wo_classdesc FB_CLASSES[] = {
+    {.name = 0, .flags = 0, .field_cnt = 2, .kinds = fb_kinds},
+};
+
+static void test_float_bytes_replay(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/floatbytes.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, FB_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, FB_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    /* the values a decimal round trip would destroy, plus a NUL-bearing blob
+     * that a NUL-terminated string path would truncate */
+    const double vals_f[] = {9.99, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, -0.0, 1e308};
+    const char blob[] = {'a', '\0', 'b'};
+    enum { N = sizeof vals_f / sizeof vals_f[0] };
+    uint64_t ids[N];
+    for (int i = 0; i < N; i++) {
+        wo_str *b = wo_bytes_new(&rt, blob, sizeof blob);
+        T_CHECK(b != NULL);
+        uint64_t vals[2] = {wo_bits(vals_f[i]), (uint64_t)(uintptr_t)b};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        wo_str_free(&rt, b);
+    }
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, FB_CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), N);
+    for (int i = 0; i < N; i++) {
+        uint64_t out[2];
+        T_EQ(wo_row_read(&db2, &rt, 0, ids[i], out, &msg), 0);
+        /* BITS, not value: NaN != NaN and -0.0 == 0.0, so a value comparison
+         * would pass while silently having lost the payload or the sign */
+        T_EQ(out[0], wo_bits(vals_f[i]));
+        wo_str *b = (wo_str *)(uintptr_t)out[1];
+        T_CHECK(b != NULL);
+        T_EQ(b->h.class_id, WO_CLS_BYTES); /* a Bytes column yields a Bytes */
+        T_CHECK(b->len == sizeof blob && memcmp(b->data, blob, sizeof blob) == 0);
+        wo_str_free(&rt, b);
+    }
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
     test_roundtrip_replay();
     test_torn_tail();
+    test_float_bytes_replay();
     test_crash_battery();
     /* leave the dir for a failed run's forensics only */
     if (!t_fail) {

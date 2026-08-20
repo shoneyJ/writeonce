@@ -30,7 +30,12 @@ type wob_kind =
   | WO_K_TEXT     (* 3 *)
   | WO_K_MULTI    (* 4 *)
   | WO_K_MAP      (* 5 *)
-  | WO_K_NULLABLE (* 6 *)
+  | WO_K_FLOAT    (* 6 — iteration 19 *)
+  | WO_K_BYTES    (* 7 — iteration 19 *)
+  (* Not a .wob kind byte: `?T` emits T's kind (emit.ml's kind_byte unwraps
+     first). It kept the value 6 in this list until iteration 19 gave 6 a real
+     meaning; the constructor order here has never been the wire order. *)
+  | WO_K_NULLABLE
 
 (* ============================================================
    Symbol tables (Pass 1 output, Pass 2 input)
@@ -161,10 +166,35 @@ let static_method_of (syms : symbols) (cls_name : string) (m_name : string) : me
   | Some cls -> List.find_opt (fun (m : method_info) -> m.name = m_name && m.is_static) cls.methods
   | None -> None
 
-(* Builtin scalars *)
-let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"]
+(* Builtin scalars. `Float` and `Bytes` joined in iteration 19 — see
+   docs/stories/language-runtime-database/19-missing-scalar-types.md. Both are
+   real, distinct types with no implicit conversion to or from anything:
+   `float(i)` / `trunc(f)` bridge the two numeric worlds, and
+   `bytes_of_text` / `text_of_bytes` bridge the two byte carriers. *)
+let builtin_scalars = ["Int"; "Bool"; "Text"; "Timestamp"; "Id"; "Float"; "Bytes"]
 
 let is_builtin_scalar name = List.mem name builtin_scalars
+
+(* The two numeric types. Arithmetic and comparison are legal within each and
+   an error ACROSS them — the check needs one predicate, not scattered string
+   compares (`Timestamp`/`Id` are Int-shaped conveniences, so they answer
+   `Int` here: `t + 1` on a Timestamp has always been legal). *)
+(* Scalars whose VALUE is a heap object the slot owns: storing one copies, a
+   `let` holding one gets a drop, and reading one out of a container copies it
+   out. `Text` and `json.Value` were the whole list until iteration 19 added
+   `Bytes`, which is a wo_str in every respect but its class id — so every
+   ownership rule that named Text by string had to name this instead, or a
+   Bytes would silently never be dropped. Defined here so owner.ml and emit.ml
+   share one answer. (`json_value_type` is bound further down, so the
+   comparison is spelled out rather than referencing it.) *)
+let is_heap_scalar (name : string) : bool =
+  name = "Text" || name = "Bytes" || name = "json.Value"
+
+let numeric_world (t : string) : [ `Int | `Float | `Other ] =
+  match t with
+  | "Int" | "Timestamp" | "Id" -> `Int
+  | "Float" -> `Float
+  | _ -> `Other
 
 (* haxe-parity Task 1 (modules) / gap-closure amendment: six reserved
    stdlib namespaces, not the plan text's five — `use fs`/`proc`/`net`/
@@ -354,6 +384,13 @@ let wob_kind_of_typ (syms : symbols) (t : typ) : wob_kind =
            came from, which json.encode emits back verbatim. Kinding it TEXT
            is what makes it drop correctly and pass through concatenation. *)
         if name = "Text" || name = json_value_type then WO_K_TEXT
+        (* iteration 19. Float is word-shaped like a scalar but needs its own
+           kind so json, the WAL, and printing know the word is f64 bits and
+           not an integer. Bytes is heap-shaped like Text and MUST have its own
+           kind for the same reason WO_K_TEXT exists — the drop plan frees it —
+           plus the distinct id keeps a Text builtin from accepting one. *)
+        else if name = "Float" then WO_K_FLOAT
+        else if name = "Bytes" then WO_K_BYTES
         else if is_stdlib_scalar_type name then WO_K_SCALAR
         else if is_builtin_scalar name then WO_K_SCALAR
         else if StringMap.mem name syms.unions then
@@ -395,6 +432,18 @@ let nullable_used_without_check_code = Diag.types_prefix ^ "11"
 let nullable_assign_mismatch_code = Diag.types_prefix ^ "12"
 let spawn_no_receive_code = Diag.types_prefix ^ "21" (* WO-E221: spawn target lacks fn receive(msg: M); E219/E220 are taken on the language-surface-strictness branch *)
 let traced_send_code = Diag.types_prefix ^ "22" (* WO-E222: traced(-containing) type in an actor message or actor state — aliased graphs cannot cross heap boundaries *)
+let pub_read_write_code = Diag.types_prefix ^ "19" (* WO-E219: pub(read) field written outside its class *)
+let using_collision_code = Diag.types_prefix ^ "20" (* WO-E220: using extension collides with a real method *)
+
+(* haxe-parity Task 7: `using` extension-call rewrites, recorded during
+   typecheck and applied to the AST before the owner/emit passes (which
+   then see a plain free-fn call with the receiver as the first argument
+   and need no using-awareness at all). Keyed (file, call-expr id): expr
+   ids restart per parsed file, so the id alone is ambiguous. The value is
+   the bare extension fn name (the module is `use`d — `using` implies it —
+   so the emitter's unqualified cross-module resolution finds it). A
+   single-shot table for a single-shot compiler process. *)
+let using_rewrites : (string * int, string) Hashtbl.t = Hashtbl.create 64
 let missing_nil_check_code = Diag.types_prefix ^ "13"
 
 (* haxe-parity Task 1 (modules). module_not_imported_code (WO-E210,
@@ -456,7 +505,12 @@ let collect_declarations ~file (prog : program) (collector : Diag.Collector.t) :
   List.iter (function
     | Ast.Class c ->
         let fields = List.map (fun (f : Ast.field) ->
-          (f.name, f.ty, f.default, f.annotations)
+          (* pub(read) rides the annotation list as a synthetic marker so the
+             symbol shape stays put; the write check (WO-E219) reads it *)
+          ( f.name,
+            f.ty,
+            f.default,
+            if f.pub_read then "pub_read" :: f.annotations else f.annotations )
         ) c.fields in
         let methods = List.map (fun (m : Ast.method_decl) ->
           { name = m.name;
@@ -702,6 +756,11 @@ let rec typ_equal (syms : symbols) (a : typ) (b : typ) : bool =
 type builtin_arg_req =
   | ReqText
   | ReqInt
+  (* iteration 19: the two new scalars need their own requirements, because
+     "any word" would let `trunc(count)` through and silently reinterpret an
+     integer as f64 bits — the exact mixing this iteration outlaws. *)
+  | ReqFloat
+  | ReqBytes
   | ReqMulti
   | ReqMap
   | ReqContainer (* multi or map, e.g. `count`/`get` resolve on either *)
@@ -750,6 +809,27 @@ let builtin_signatures : (string * int * builtin_arg_req list) list =
     ("remove", 2, [ ReqMap; ReqAny ]);
     ("key_at", 2, [ ReqMap; ReqInt ]);
     ("val_at", 2, [ ReqMap; ReqInt ]);
+    (* iteration 19: the Float bridges and surface. `float`/`trunc` are the
+       ONLY way between the numeric worlds; `float_to_text` backs both
+       interpolation and json.encode. *)
+    ("float", 1, [ ReqInt ]);
+    ("trunc", 1, [ ReqFloat ]);
+    ("parse_float", 1, [ ReqText ]);
+    ("float_to_text", 1, [ ReqFloat ]);
+    ("float_cmp", 2, [ ReqFloat; ReqFloat ]);
+    (* iteration 19: Bytes. `bytes_len`/`bytes_at`/`bytes_slice` are spelled
+       out rather than overloading `len`/`byte_at`/`substr`, because the point
+       of a distinct Bytes type is that a Text builtin never accepts one —
+       overloading would put the two carriers back in one namespace. *)
+    ("bytes_len", 1, [ ReqBytes ]);
+    ("bytes_at", 2, [ ReqBytes; ReqInt ]);
+    ("bytes_slice", 3, [ ReqBytes; ReqInt; ReqInt ]);
+    ("bytes_eq", 2, [ ReqBytes; ReqBytes ]);
+    ("bytes_concat", 2, [ ReqBytes; ReqBytes ]);
+    ("base64_encode", 1, [ ReqBytes ]);
+    ("base64_decode", 1, [ ReqText ]);
+    ("bytes_of_text", 1, [ ReqText ]);
+    ("text_of_bytes", 1, [ ReqBytes ]);
   ]
 
 let rec unwrap_nullable (t : typ) : typ =
@@ -833,21 +913,31 @@ let unnarrow_env (names : string list) ~(orig : typ StringMap.t)
    chasing builtin return types. `Text` stays its own, narrower case:
    it is the one builtin scalar with a genuinely different
    representation. *)
-let is_scalar_shaped (name : string) : bool = is_builtin_scalar name && name <> "Text"
+(* iteration 19: `Float` and `Bytes` are builtin scalars but NOT Int-shaped.
+   Leaving them in would have let `print_int(price)` and `trunc(digest)`
+   through — the first prints f64 bits as a huge integer, the second
+   reinterprets a pointer. Both are exactly the representation mismatch this
+   predicate exists to catch, so both are excluded by name alongside Text. *)
+let is_scalar_shaped (name : string) : bool =
+  is_builtin_scalar name && name <> "Text" && name <> "Float" && name <> "Bytes"
 
 let matches_req (req : builtin_arg_req) (t : typ) : bool =
   match req, unwrap_nullable t with
   | ReqAny, _ -> true
   | ReqText, TScalar "Text" -> true
   | ReqInt, TScalar name -> is_scalar_shaped name
+  | ReqFloat, TScalar "Float" -> true
+  | ReqBytes, TScalar "Bytes" -> true
   | ReqMulti, TMulti _ -> true
   | ReqMap, TMap _ -> true
   | ReqContainer, (TMulti _ | TMap _) -> true
-  | (ReqText | ReqInt | ReqMulti | ReqMap | ReqContainer), _ -> false
+  | (ReqText | ReqInt | ReqFloat | ReqBytes | ReqMulti | ReqMap | ReqContainer), _ -> false
 
 let req_label = function
   | ReqText -> "Text"
   | ReqInt -> "Int"
+  | ReqFloat -> "Float" (* iteration 19 *)
+  | ReqBytes -> "Bytes"
   | ReqMulti -> "a `multi`"
   | ReqMap -> "a `map`"
   | ReqContainer -> "a `multi` or `map`"
@@ -936,6 +1026,17 @@ let builtin_confident_ret (name : string) (arg0 : typ option) : typ option =
   | "pop" | "shift" -> ( match arg0 with Some (TMulti e) -> Some e | _ -> None)
   | "key_at" -> ( match arg0 with Some (TMap (k, _)) -> Some k | _ -> None)
   | "val_at" -> ( match arg0 with Some (TMap (_, v)) -> Some v | _ -> None)
+  (* iteration 19. `parse_float` returns a plain Float, not a `?Float`:
+     unparseable input is NaN, which already means "not a number" and needs no
+     second absence channel — unlike `parse_int`, where every bit pattern is a
+     valid integer so nil had to be borrowed from `?Int`. *)
+  | "float" | "parse_float" -> Some (TScalar "Float")
+  | "trunc" | "float_cmp" | "bytes_len" | "bytes_at" -> Some (TScalar "Int")
+  | "float_to_text" | "base64_encode" | "text_of_bytes" -> Some (TScalar "Text")
+  | "bytes_eq" -> Some (TScalar "Bool")
+  | "bytes_slice" | "bytes_concat" | "bytes_of_text" -> Some (TScalar "Bytes")
+  (* malformed base64 is nil, not a trap: it arrives from the network *)
+  | "base64_decode" -> Some (TNullable (TScalar "Bytes"))
   | _ -> None
 
 (* `use_edge`/`uses_of_program`/`path_str` -- relocated here (hotfix)
@@ -949,6 +1050,7 @@ type use_edge = {
   ue_alias : string;
   ue_segments : string list;
   ue_is_stdlib : bool;
+  ue_is_using : bool; (* haxe-parity Task 7: `using` extension import *)
 }
 
 let uses_of_program (prog : program) : use_edge list =
@@ -959,7 +1061,12 @@ let uses_of_program (prog : program) : use_edge list =
         let is_stdlib =
           match u.segments with [ s ] -> is_stdlib_module s | _ -> false
         in
-        Some { ue_pos = u.pos; ue_alias = alias; ue_segments = u.segments; ue_is_stdlib = is_stdlib }
+        Some
+          { ue_pos = u.pos;
+            ue_alias = alias;
+            ue_segments = u.segments;
+            ue_is_stdlib = is_stdlib;
+            ue_is_using = u.is_using }
       | Class _ | Interface _ | Fn _ | Const _ | Union _ -> None)
     prog.decls
 
@@ -1060,6 +1167,25 @@ let typecheck_program ~file ~(module_of : string -> string)
         | [ fi ] -> Some fi
         | _ -> None)
   in
+  (* haxe-parity Task 7: `using` extension candidates for a method-shaped
+     call — this file's using'd modules' pub free fns named [mname] whose
+     FIRST declared parameter type equals the receiver's type exactly.
+     Compile-time only; the rewrite (using_rewrites) is what the emitter
+     sees, never a dispatch table. *)
+  let usings_resolved =
+    List.filter (fun ((u : use_edge), _) -> u.ue_is_using) uses_resolved
+  in
+  let using_candidates (mname : string) (recv : typ) : free_fn_info list =
+    List.filter_map
+      (fun (_, (msyms : symbols)) ->
+        match StringMap.find_opt mname msyms.free_fns with
+        | Some fi when fi.pub -> (
+          match fi.params with
+          | (_, pty, _) :: _ when typ_of_field_ty pty = recv -> Some fi
+          | _ -> None)
+        | _ -> None)
+      usings_resolved
+  in
 
   (* WO-E209's own type deriver -- deliberately NOT typecheck_expr's
      `.typ` below, and deliberately narrower. typecheck_expr hands back
@@ -1107,6 +1233,7 @@ let typecheck_program ~file ~(module_of : string -> string)
   let rec confident_typ (cenv : typ StringMap.t) (e : expr) : typ option =
     match e.kind with
     | IntLit _ -> Some (TScalar "Int")
+    | FloatLit _ -> Some (TScalar "Float") (* iteration 19 *)
     | StrLit _ -> Some (TScalar "Text")
     | BoolLit _ -> Some (TScalar "Bool")
     (* A non-empty list literal is confident about its element type; an
@@ -1292,6 +1419,10 @@ let typecheck_program ~file ~(module_of : string -> string)
      positive off an underivable expression. `current_ret` is the enclosing
      fn/method's declared return type, set by each body walk below. *)
   let current_ret : typ option ref = ref None in
+  (* the class whose method body is being checked — None in a free fn.
+     pub(read) writes are legal only when this names the field's declaring
+     class (Haxe's (default, null): the CLASS owns writes, not the instance) *)
+  let current_self : string option ref = ref None in
   let report_nullable ~code (pos : pos) (msg : string) : unit =
     Diag.Collector.add collector
       (Diag.error ~code ~file ~line:pos.line ~col:pos.col ~message:msg ())
@@ -1313,6 +1444,61 @@ let typecheck_program ~file ~(module_of : string -> string)
       (Printf.sprintf
          "%s is possibly nil (`?T`) — check it against `nil` before reaching through it"
          what)
+  in
+  (* iteration 19: Int and Float are two worlds with two instruction sets and
+     two failure modes. Mixing them in one operator is always an error, never
+     a promotion — the storefront that prices in cents did so because there
+     was no Float, and silently widening an Int into an f64 is how the next
+     rounding bug gets written. `float(i)` and `trunc(f)` say it out loud.
+
+     Only reports when BOTH sides have confident types: this file's standing
+     contract is to stay silent rather than guess (an underivable operand
+     means no diagnostic, not a false one). *)
+  let check_numeric_mix (cenv : typ StringMap.t) (pos : pos) (opname : string)
+      (left : expr) (right : expr) : unit =
+    let world (e : expr) =
+      match confident_typ cenv e with
+      | Some t -> ( match unwrap_nullable t with TScalar n -> numeric_world n | _ -> `Other)
+      | None -> `Other
+    in
+    match (world left, world right) with
+    | `Int, `Float | `Float, `Int ->
+        let int_side = if world left = `Int then "left" else "right" in
+        Diag.Collector.add collector
+          (Diag.error ~code:type_mismatch_code ~file ~line:pos.line ~col:pos.col
+             ~message:
+               (Printf.sprintf
+                  "`%s` mixes Int and Float — there is no implicit conversion; wrap the \
+                   %s side in `float(...)`, or `trunc(...)` the Float side to stay in Int"
+                  opname int_side)
+             ())
+    | _ -> ()
+  in
+  let mod_on_float (cenv : typ StringMap.t) (pos : pos) (left : expr) (right : expr) : unit =
+    let is_float (e : expr) =
+      match confident_typ cenv e with
+      | Some t -> ( match unwrap_nullable t with TScalar n -> numeric_world n = `Float | _ -> false)
+      | None -> false
+    in
+    if is_float left || is_float right then
+      Diag.Collector.add collector
+        (Diag.error ~code:type_mismatch_code ~file ~line:pos.line ~col:pos.col
+           ~message:
+             "`%` has no Float meaning — integer remainder is not IEEE remainder, and this \
+              language has no `fmod`; `trunc(...)` first if integer remainder is what you want"
+           ())
+  in
+  let e219 (pos : pos) (fname : string) (cls : string) : unit =
+    report_nullable ~code:pub_read_write_code pos
+      (Printf.sprintf
+         "field `%s` of class `%s` is pub(read) — readable anywhere, writable only inside `%s`"
+         fname cls cls)
+  in
+  let e220 (pos : pos) (mname : string) (recv : string) : unit =
+    report_nullable ~code:using_collision_code pos
+      (Printf.sprintf
+         "`%s` is both a real method of `%s` and a `using` extension — rename one; an extension never overrides a method"
+         mname recv)
   in
   (* the boundary test every store/return/argument shares: value flows into a
      non-nullable slot *)
@@ -1356,6 +1542,7 @@ let typecheck_program ~file ~(module_of : string -> string)
       expr_type_result =
     match e.kind with
     | IntLit _ -> { typ = TScalar "Int"; is_nil = false }
+    | FloatLit _ -> { typ = TScalar "Float"; is_nil = false } (* iteration 19 *)
     | StrLit _ -> { typ = TScalar "Text"; is_nil = false }
     | BoolLit _ -> { typ = TScalar "Bool"; is_nil = false }
     | Ident name ->
@@ -1412,11 +1599,25 @@ let typecheck_program ~file ~(module_of : string -> string)
           | Field (base, mname) -> (
             match Option.map unwrap_nullable (confident_typ cenv base) with
             | Some (TScalar cn) -> (
+              (* haxe-parity Task 7: a method-shaped call may be a `using`
+                 extension — a real method always wins AND collides loudly
+                 (WO-E220); exactly one candidate on a method-less receiver
+                 records the rewrite the emitter will see. *)
+              let cands = using_candidates mname (TScalar cn) in
+              let record_rewrite (fi : free_fn_info) =
+                Hashtbl.replace using_rewrites (file, e.id) fi.name;
+                Some (List.tl fi.params)
+              in
               match StringMap.find_opt cn syms.classes with
               | Some cls -> (
                 match List.find_opt (fun (m : method_info) -> m.name = mname) cls.methods with
-                | Some m -> Some m.params
-                | None -> None)
+                | Some m ->
+                  (match cands with
+                   | _ :: _ -> e220 callee.pos mname cn
+                   | [] -> ());
+                  Some m.params
+                | None -> (
+                  match cands with [ fi ] -> record_rewrite fi | _ -> None))
               | None -> (
                 match StringMap.find_opt cn syms.interfaces with
                 | Some iface -> (
@@ -1424,8 +1625,10 @@ let typecheck_program ~file ~(module_of : string -> string)
                     List.find_opt (fun (s : method_sig_info) -> s.name = mname) iface.methods
                   with
                   | Some sg -> Some sg.params
-                  | None -> None)
-                | None -> None))
+                  | None -> (
+                    match cands with [ fi ] -> record_rewrite fi | _ -> None))
+                | None -> (
+                  match cands with [ fi ] -> record_rewrite fi | _ -> None)))
             | _ -> (
               match base.kind with
               | Ident head -> (
@@ -1604,6 +1807,9 @@ let typecheck_program ~file ~(module_of : string -> string)
                        ul.u_name ur.u_name)
                   ())
          | _ -> ());
+        (* iteration 19: `==` across the divide is explicitly out of scope as
+           an implicit conversion, so it is an error like every other mix. *)
+        check_numeric_mix cenv e.pos "==" left right;
         { typ = TScalar "Bool"; is_nil = false }
     | Binary (((Add | Sub | Mul | Div | Mod) as op), left, right) ->
         let lres = typecheck_expr env cenv left in
@@ -1635,13 +1841,33 @@ let typecheck_program ~file ~(module_of : string -> string)
                      | Div -> "/"
                      | _ -> "%"))
                ());
+        (* iteration 19: the two numeric worlds never mix implicitly. Caught
+           here rather than left to the emitter because the emitter picks the
+           opcode from the LEFT operand's type — `1 + 2.5` would lower to
+           integer ADD over f64 bits and produce a garbage number with no
+           diagnostic at all. Reported off confident types only, the same
+           stay-silent-when-underivable contract as the Text check above.
+           `%` is rejected outright for Float: fmod is not an operator this
+           language has, and silently meaning integer remainder would be
+           worse than saying no. *)
+        let opname =
+          match op with Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/" | _ -> "%"
+        in
+        check_numeric_mix cenv e.pos opname left right;
+        if op = Mod then mod_on_float cenv e.pos left right;
         { typ = (match confident_typ cenv left with Some t -> t | None -> TScalar "Int");
           is_nil = false }
-    | Binary ((Lt | Le | Gt | Ge), left, right) ->
+    | Binary (((Lt | Le | Gt | Ge) as op), left, right) ->
         let lres = typecheck_expr env cenv left in
         let rres = typecheck_expr env cenv right in
         if is_nullable lres.typ || lres.is_nil then e211 left.pos (expr_label left);
         if is_nullable rres.typ || rres.is_nil then e211 right.pos (expr_label right);
+        (* iteration 19: ordering across the divide is the same error as
+           arithmetic across it — `cents < price` compares an integer against
+           f64 bits and answers nonsense. *)
+        check_numeric_mix cenv e.pos
+          (match op with Lt -> "<" | Le -> "<=" | Gt -> ">" | _ -> ">=")
+          left right;
         { typ = TScalar "Bool"; is_nil = false }
     | Binary (_, left, right) ->
         let _ = typecheck_expr env cenv left in
@@ -1940,10 +2166,19 @@ let typecheck_program ~file ~(module_of : string -> string)
        (`type_mismatch_code`) — the same code the arm-unification check
        below uses — per the review's own instruction ("wire through
        E201 like arm mismatch"). *)
-    let repr_kind (t : typ) : [ `Text | `Scalar | `Other ] =
+    (* iteration 19: FLOAT and BYTES get their own answers rather than folding
+       into `Scalar`/`Text`. Folding Float into `Scalar` would let a Float
+       subject switch against Int labels with no diagnostic and lower to an
+       integer compare over f64 bits; folding Bytes into `Text` would let a
+       Bytes subject match Text labels. Both are distinct representations to
+       this check, so a mismatch is reported and a same-kind switch is left
+       alone (emit.ml picks FEQ for a Float subject). *)
+    let repr_kind (t : typ) : [ `Text | `Scalar | `Float | `Bytes | `Other ] =
       match wob_kind_of_typ syms t with
       | WO_K_TEXT -> `Text
       | WO_K_SCALAR -> `Scalar
+      | WO_K_FLOAT -> `Float
+      | WO_K_BYTES -> `Bytes
       | WO_K_OWNED | WO_K_GCREF | WO_K_MULTI | WO_K_MAP | WO_K_NULLABLE -> `Other
     in
     (* haxe-parity Task 4: a union-typed subject switches the arms from
@@ -2282,7 +2517,12 @@ let typecheck_program ~file ~(module_of : string -> string)
               match StringMap.find_opt cn syms.classes with
               | Some cls -> (
                 match List.find_opt (fun (fn2, _, _, _) -> fn2 = fname) cls.fields with
-                | Some (_, fty, _, _) -> Some (resolve_field_ty fty)
+                | Some (_, fty, _, annots) ->
+                  (* WO-E219: a pub(read) field is written only from inside
+                     its declaring class's own methods *)
+                  if List.mem "pub_read" annots && !current_self <> Some cn then
+                    e219 target.pos fname cn;
+                  Some (resolve_field_ty fty)
                 | None -> None)
               | None -> None)
             | _ -> None)
@@ -2388,8 +2628,10 @@ let typecheck_program ~file ~(module_of : string -> string)
       StringMap.add name (resolve_field_ty ty) acc)
       (StringMap.singleton "self" (TScalar self_class)) m.params in
     current_ret := Option.map resolve_field_ty m.ret;
+    current_self := Some self_class;
     let _ = List.fold_left typecheck_stmt (env_with_self, cenv_with_self) m.body in
     current_ret := None;
+    current_self := None;
     false
   in
 
@@ -2565,7 +2807,7 @@ and walk_stmt (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (s : s
 and walk_expr (bound : StringSet.t) (visit : StringSet.t -> expr -> unit) (e : expr) : unit =
   visit bound e;
   match e.kind with
-  | IntLit _ | StrLit _ | BoolLit _ | Ident _ -> ()
+  | IntLit _ | FloatLit _ | StrLit _ | BoolLit _ | Ident _ -> ()
   | Field (b, _) -> walk_expr bound visit b
   | Index (b, i) ->
     walk_expr bound visit b;
@@ -2885,3 +3127,84 @@ let dump_symbols (syms : symbols) : string =
   ) syms.free_fns [] in
 
   String.concat "\n" (class_lines @ interface_lines @ fn_lines)
+
+(* haxe-parity Task 7: rewrite `recv.ext(args)` into `ext(recv, args)` for
+   every call typecheck resolved as a `using` extension (using_rewrites).
+   Runs between typecheck and the owner/emit passes (bin/main.ml), so those
+   passes see an ordinary free-fn call — borrowed receiver as the first
+   argument — and carry zero using-awareness of their own. *)
+let apply_using_rewrites ~(file : string) (prog : program) : program =
+  if Hashtbl.length using_rewrites = 0 then prog
+  else begin
+    let rec rx (e : expr) : expr =
+      let kind =
+        match e.kind with
+        | Call (({ kind = Field (base, _); _ } as callee), args)
+          when Hashtbl.mem using_rewrites (file, e.id) ->
+          let fn = Hashtbl.find using_rewrites (file, e.id) in
+          Call ({ callee with kind = Ident fn }, rx base :: List.map rx args)
+        | Call (callee, args) -> Call (rx callee, List.map rx args)
+        | Field (b, f) -> Field (rx b, f)
+        | Index (b, i) -> Index (rx b, rx i)
+        | Unary (op, o) -> Unary (op, rx o)
+        | Binary (op, l, r) -> Binary (op, rx l, rx r)
+        | Ctor (n, fs) -> Ctor (n, List.map (fun (k, v) -> (k, rx v)) fs)
+        | Spawn (n, fs) -> Spawn (n, List.map (fun (k, v) -> (k, rx v)) fs)
+        | Insert (n, fs) -> Insert (n, List.map (fun (k, v) -> (k, rx v)) fs)
+        | Delete d -> Delete (rx d)
+        | Interp inner -> Interp (rx inner)
+        | Switch (scrut, arms) ->
+          Switch
+            ( rx scrut,
+              List.map
+                (fun (a : switch_arm) ->
+                  { a with values = List.map rx a.values; body = List.map rs a.body })
+                arms )
+        | ListLit items -> ListLit (List.map rx items)
+        | As (inner, t) -> As (rx inner, t)
+        | Try { body; ename; handler } ->
+          Try { body = rx body; ename; handler = List.map rs handler }
+        | Query q ->
+          Query
+            { q with
+              q_wheres = List.map rx q.q_wheres;
+              q_group = Option.map (fun (g, k) -> (g, rx k)) q.q_group;
+              q_order = Option.map (fun (k, d) -> (rx k, d)) q.q_order;
+              q_take = Option.map rx q.q_take;
+              q_select = rx q.q_select }
+        | ( IntLit _ | FloatLit _ | StrLit _ | BoolLit _ | NilLit | Ident _ | MapLit
+          | DbStub _ ) as k ->
+          k
+      in
+      { e with kind }
+    and rs (s : stmt) : stmt =
+      let k =
+        match s.s_kind with
+        | Let l -> Let { l with value = rx l.value }
+        | Assign { target; value } -> Assign { target = rx target; value = rx value }
+        | If { cond; then_body; else_body } ->
+          If
+            { cond = rx cond;
+              then_body = List.map rs then_body;
+              else_body = Option.map (fun (p, b) -> (p, List.map rs b)) else_body }
+        | While { cond; body } -> While { cond = rx cond; body = List.map rs body }
+        | For f -> For { f with iter = rx f.iter; body = List.map rs f.body }
+        | DoWhile { cond; body } -> DoWhile { cond = rx cond; body = List.map rs body }
+        | Return e -> Return (Option.map rx e)
+        | ExprStmt e -> ExprStmt (rx e)
+        | (Break | Continue) as k -> k
+      in
+      { s with s_kind = k }
+    in
+    let rd (d : decl) : decl =
+      match d with
+      | Class c ->
+        Class
+          { c with
+            methods =
+              List.map (fun (m : method_decl) -> { m with body = List.map rs m.body }) c.methods }
+      | Fn f -> Fn { f with body = List.map rs f.body }
+      | (Interface _ | Use _ | Const _ | Union _) as d -> d
+    in
+    { decls = List.map rd prog.decls }
+  end

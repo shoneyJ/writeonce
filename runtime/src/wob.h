@@ -9,11 +9,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h> /* memcpy: the f64 <-> u64 bitcast (iteration 19) */
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 4u /* v4 (iteration 7b): opcodes 27-28 (RC_INC/RC_DEC) retired;
- * the drop table's gc mask now means "GC roots at this pc" */
+#define WOB_VERSION 5u /* v5 (iteration 19): the two missing scalars. New
+ * constant tag WOB_K_FLOAT, field kinds WO_K_FLOAT/WO_K_BYTES (WO_K_MAX 5->7),
+ * opcodes 34-41 (the f64 arithmetic/compare set), builtins 70-82.
+ * v4 (iteration 7b): opcodes 27-28 (RC_INC/RC_DEC) retired; the drop table's
+ * gc mask now means "GC roots at this pc" */
 #define WOB_HDR_SIZE 44u
 #define WOB_OFF_MAGIC 0u
 #define WOB_OFF_VERSION 4u
@@ -56,6 +60,11 @@
  * (nil spelled WO_NIL_SCALAR, exactly like NIL_SCALAR, plus bool encoding). */
 #define WOB_FIELD_BOOL 0xFFFFFFFCu
 #define WOB_FIELD_NIL_BOOL 0xFFFFFFFBu
+/* iteration 19: a `?Float` field. Marks WHICH nil sentinel the slot uses —
+ * WO_NIL_FLOAT, not WO_NIL_SCALAR. A plain `Float` needs no marker at all
+ * (WO_K_FLOAT is a real kind byte, unlike Bool). `?Bytes` needs none either:
+ * it is pointer-shaped, so the zero word is unambiguous absence. */
+#define WOB_FIELD_NIL_FLOAT 0xFFFFFFFAu
 
 /* nil for a nullable scalar: -(2^62). Not INT64_MIN, deliberately — the
  * compiler's own integers are OCaml's 63-bit native ints, so INT64_MIN is not
@@ -63,9 +72,25 @@
  * inside a `?Int`; that is the whole cost of the choice. */
 #define WO_NIL_SCALAR ((uint64_t)(int64_t)(-4611686018427387904LL))
 
+/* nil for a `?Float` (iteration 19). WO_NIL_SCALAR cannot serve: its bit
+ * pattern IS -2.0 as an f64, and -2.0 is an ordinary price delta. Nor can the
+ * zero word: that is +0.0. So nil is a quiet NaN carrying a reserved payload.
+ * Arithmetic on this platform produces the CANONICAL quiet NaN
+ * (0x7FF8000000000000), so a computed NaN never collides with it — the
+ * iteration's own edge-case gate stores NaN and reads NaN back. The whole cost
+ * of the choice is that one NaN payload out of 2^51 is unavailable inside a
+ * `?Float`, exactly as one absurd integer is unavailable inside a `?Int`. */
+#define WO_NIL_FLOAT 0x7FF8000000000EE1ull
+
 /* ---- constant pool tags ---- */
 #define WOB_K_INT 0u  /* tag byte, then i64 */
 #define WOB_K_TEXT 1u /* tag byte, then u32 len + bytes (no NUL) */
+/* iteration 19: tag byte, then the f64's IEEE 754 bit pattern as an LE u64.
+ * Bits, not a decimal rendering — a literal must reach the VM bit-exact, and
+ * the emitter is OCaml (whose float IS an f64) so no conversion happens at
+ * all. There is no Bytes constant tag: Bytes has no literal form by design
+ * (settled decision 3 — it is built from base64/net/slices). */
+#define WOB_K_FLOAT 2u
 
 /* ---- field kinds (one byte per field in the class table) ---- */
 enum {
@@ -75,8 +100,16 @@ enum {
     WO_K_TEXT = 3,
     WO_K_MULTI = 4,
     WO_K_MAP = 5,
+    /* iteration 19. FLOAT is word-shaped like SCALAR — the slot holds f64
+     * bits — but it needs its own kind for three services that cannot guess
+     * from a register: json (a Float field emits 9.99, not 4621...), the WAL
+     * (replay must not reinterpret bits), and printing. BYTES is
+     * pointer-shaped like TEXT and shares the wo_str object layout, with its
+     * own class-id sentinel so no Text builtin silently accepts one. */
+    WO_K_FLOAT = 6,
+    WO_K_BYTES = 7,
 };
-#define WO_K_MAX 5u
+#define WO_K_MAX 7u
 
 /* ---- loader-enforced limits ---- */
 #define WO_MAX_REGS 64u
@@ -118,6 +151,12 @@ _Static_assert(sizeof(wo_hdr) == 16, "object header must be exactly 16 bytes");
 #define WO_CLS_STR 0xFFFFFFFCu
 #define WO_CLS_MAP 0xFFFFFFFDu
 #define WO_CLS_MULTI 0xFFFFFFFEu
+/* iteration 19: Bytes reuses the wo_str object layout byte for byte (header,
+ * len, bytes) and differs ONLY in this header class_id. That is deliberate:
+ * every allocation, drop, and copy path already handles the shape, while the
+ * distinct id is what lets a Text builtin refuse a Bytes and vice versa —
+ * settled decision 3, "Text goes back to meaning text". */
+#define WO_CLS_BYTES 0xFFFFFFFBu
 
 /* borrow word states */
 #define WO_BORROW_FREE 0u
@@ -193,8 +232,23 @@ enum {
      * today's surface. */
     WOP_TRY = 32,    /* A sBx: push catch frame, handler at pc + sBx */
     WOP_ENDTRY = 33, /* pop the innermost catch frame */
+    /* iteration 19: the f64 world. Registers stay u64 — these ops bitcast,
+     * compute, and bitcast back, so there is no layout change anywhere. They
+     * are separate opcodes rather than a mode bit on ADD/DIV because the
+     * compiler always knows the static type and because the two worlds have
+     * different failure semantics: WOP_DIV traps DIV0, WOP_FDIV never traps
+     * (IEEE quiet — Inf and NaN flow). No opcode here mixes an Int operand
+     * with a Float one; `float(i)` and `trunc(f)` are the only bridges. */
+    WOP_FADD = 34, /* A B C: f64 */
+    WOP_FSUB = 35,
+    WOP_FMUL = 36,
+    WOP_FDIV = 37, /* never traps: x/0.0 is ±Inf, 0.0/0.0 is NaN */
+    WOP_FNEG = 38, /* A B — sign flip, so -0.0 is reachable */
+    WOP_FEQ = 39,  /* A B C: IEEE equality, so NaN == NaN is 0 */
+    WOP_FLT = 40,  /* IEEE ordered <: any comparison with NaN is 0 */
+    WOP_FLE = 41,
 };
-#define WOP_MAX 33u
+#define WOP_MAX 41u
 
 /* ---- builtin ids (WOP_BUILTIN operand C) ---- */
 enum {
@@ -341,9 +395,44 @@ enum {
                         * order-by on a Text key; scalars use the LT opcode) */
     WO_B_SPAWN = 68,  /* (instance, receive_method_idx) -> actor address (arc) */
     WO_B_SEND = 69,   /* (address, msg) — msg moves to the runtime (arc) */
+    /* ---- iteration 19: the Float bridges and surface. There is NO implicit
+     * coercion anywhere, so every crossing between the two numeric worlds is
+     * one of these calls, visible in the source. ---- */
+    WO_B_FLOAT_OF_INT = 70,   /* (i64) -> f64 bits. `float(i)`. Exact below 2^53,
+                               * round-to-nearest above — the hardware's rule */
+    WO_B_TRUNC = 71,          /* (f64) -> i64 toward zero. `trunc(f)`. NaN, ±Inf,
+                               * and anything outside i64 trap WO_T_BOUNDS: the
+                               * Int world has no value to give back, and
+                               * silently yielding 0 is how currency bugs start */
+    WO_B_PARSE_FLOAT = 72,    /* (text) -> f64 bits; unparseable is NaN, which is
+                               * exactly "not a number" and needs no ?Float */
+    WO_B_FLOAT_TO_TEXT = 73,  /* (f64) -> fresh Text, SHORTEST round-trip form
+                               * (%.17g trimmed to the shortest that reparses
+                               * equal). Drives interpolation and json.encode */
+    WO_B_FLOAT_CMP = 74,      /* (a, b) -> -1/0/1 TOTAL order: -Inf < finite <
+                               * +Inf < NaN, and -0.0 == +0.0. Not IEEE — an
+                               * index and an order-by REQUIRE a total order, so
+                               * this is the one deliberate deviation, and it
+                               * lives in its own builtin rather than bending
+                               * WOP_FLT (which stays IEEE for the language) */
+    /* ---- iteration 19: Bytes. Length-carrying, content-comparable, no
+     * literal form; every accessor refuses a Text and every Text builtin
+     * refuses a Bytes (WO_T_BOUNDS on the wrong class id). ---- */
+    WO_B_BYTES_LEN = 75,      /* (bytes) -> i64 */
+    WO_B_BYTES_AT = 76,       /* (bytes, i) -> i64 byte; out of range traps BOUNDS */
+    WO_B_BYTES_SLICE = 77,    /* (bytes, start, len) -> fresh Bytes, clamped */
+    WO_B_BYTES_EQ = 78,       /* (a, b) -> 1/0 by content */
+    WO_B_BYTES_CONCAT = 79,   /* (a, b) -> fresh Bytes */
+    WO_B_BASE64_ENCODE = 80,  /* (bytes) -> fresh Text, standard alphabet + pad */
+    WO_B_BASE64_DECODE = 81,  /* (text) -> ?Bytes; malformed is nil, not a trap,
+                               * because base64 arrives from the network */
+    WO_B_BYTES_OF_TEXT = 82,  /* (text) -> fresh Bytes, the bytes as they are */
+    WO_B_TEXT_OF_BYTES = 83,  /* (bytes) -> fresh Text, verbatim. The caller
+                               * asserts the bytes are text; no validation,
+                               * because Unicode is explicitly out of scope */
 };
 
-#define WO_B_MAX 69u
+#define WO_B_MAX 83u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 
@@ -368,6 +457,37 @@ static inline uint8_t wo_ins_b(uint32_t i) { return (uint8_t)((i >> 16) & 0xFFu)
 static inline uint8_t wo_ins_c(uint32_t i) { return (uint8_t)((i >> 24) & 0xFFu); }
 static inline uint16_t wo_ins_bx(uint32_t i) { return (uint16_t)(i >> 16); }
 static inline int32_t wo_ins_sbx(uint32_t i) { return (int32_t)wo_ins_bx(i) - 32768; }
+
+/* ---- iteration 19: the f64 <-> register bitcast, and the total order ----
+ * A register is a u64 and a Float is an f64 in it. memcpy is the only
+ * strict-aliasing-clean cast; every compiler this project targets folds these
+ * to zero instructions (the value already sits in the right register class or
+ * is one movq away). Do NOT reintroduce a union or a pointer cast here. */
+static inline double wo_f64(uint64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+static inline uint64_t wo_bits(double d) {
+    uint64_t b;
+    memcpy(&b, &d, sizeof b);
+    return b;
+}
+
+/* The TOTAL order (WO_B_FLOAT_CMP, indexes, order-by): -Inf < finite < +Inf <
+ * NaN, with -0.0 equal to +0.0. IEEE's own comparisons are not a total order —
+ * NaN is unordered against everything, which would make a sort's result depend
+ * on the comparison sequence and a B-tree walk lose rows. Sorting NaN last is
+ * therefore not a preference but a requirement, and it is the ONE place this
+ * iteration deviates from raw IEEE. The language's own `<` (WOP_FLT) keeps
+ * IEEE semantics, so `NaN < 1.0` is still false in source. */
+static inline int wo_float_cmp(double a, double b) {
+    int an = a != a, bn = b != b; /* NaN is the only value unequal to itself */
+    if (an || bn) return an && bn ? 0 : (an ? 1 : -1);
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0; /* covers -0.0 vs +0.0: they compare equal, deliberately */
+}
 
 /* ---- class descriptor shared by loader and runtime ---- */
 typedef struct wo_classdesc {

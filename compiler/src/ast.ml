@@ -201,6 +201,10 @@ type expr = {
    select)". *)
 and expr_kind =
   | IntLit of int
+  (* iteration 19: a Float literal, carried as OCaml's own f64. Separate from
+     IntLit all the way down — there is no implicit coercion anywhere, so the
+     typechecker must be able to tell `1` from `1.0` at every use site. *)
+  | FloatLit of float
   | StrLit of string
   | BoolLit of bool
   (* haxe-parity Task 6: `nil`, the absent value of a `?T`. One
@@ -553,6 +557,11 @@ type use_decl = {
   id : int;
   pos : pos;
   segments : string list;
+  (* haxe-parity Task 7: `using shared/textutil` — a use PLUS extension
+     registration: the module's pub free fns whose first parameter matches
+     a receiver's type become callable as methods on it. Compile-time only
+     (types.ml resolves and rewrites); false for a plain `use`. *)
+  is_using : bool;
 }
 
 (* haxe-parity Task 4: one variant of a union declaration

@@ -162,6 +162,7 @@ void wo_tls_set(wo_vm *vm);
 /* Start shards 1..n-1 (0 is the caller's, already init'ed in shards[0]).
  * 0 ok. Stop joins every worker and destroys their vms. */
 int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards);
+int wo_engine_primary_inbox(int wake_efd);
 void wo_engine_stop(void);
 
 /* Spawn a fiber that will run method_idx(args) — the runtime half the

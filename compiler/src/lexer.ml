@@ -53,6 +53,15 @@ let unknown_char_code = Diag.lexing_prefix ^ "01" (* WO-E001 *)
    oversight; pinned by the plain-unterminated-string-reports-nothing
    assertion in compiler/test/runner.ml. *)
 let unterminated_escape_code = Diag.lexing_prefix ^ "02" (* WO-E002 *)
+let directive_code = Diag.lexing_prefix ^ "03" (* WO-E003: #if/#else/#end misuse *)
+
+(* haxe-parity Task 8: build flags. `woc -D name` fills this before any
+   tokenize call; undefined flags are false. A module-level ref because the
+   compiler is a single-shot process — tests that care set it explicitly
+   and reset to empty. *)
+module StringSet = Set.Make (String)
+
+let defines : StringSet.t ref = ref StringSet.empty
 
 type lexer = {
   src : string;
@@ -126,6 +135,7 @@ let keyword_kind = function
   | "false" -> Some Token.KwFalse
   | "use" -> Some Token.KwUse
   | "spawn" -> Some Token.KwSpawn
+  | "using" -> Some Token.KwUsing
   | "pub" -> Some Token.KwPub
   | "break" -> Some Token.KwBreak
   | "continue" -> Some Token.KwContinue
@@ -204,6 +214,59 @@ let read_interp_expr lx =
       ignore (advance lx)
   done;
   Buffer.contents buf
+
+(* haxe-parity Task 8: the #if filter, run over the in-order token list at
+   the end of tokenize. A `#if <flag>` section is kept when the flag is
+   defined AND every enclosing section is kept; `#else` flips the section;
+   `#end` closes it. Nesting allowed; flag NAMES only (no expression
+   language — the spec's limit); undefined flags are false. Misuse is
+   WO-E003: a #if without a flag name, a second #else, a stray #else/#end,
+   or a #if left open at end of file. Eof always survives so the parser
+   still terminates after a reported error. *)
+let preprocess (collector : Diag.Collector.t) ~(file : string)
+    (toks : Token.t list) : Token.t list =
+  let err line col msg =
+    Diag.Collector.add collector
+      (Diag.error ~code:directive_code ~file ~line ~col ~message:msg ())
+  in
+  (* frame: (emitting, seen_else, opening line, opening col) *)
+  let stack : (bool * bool * int * int) list ref = ref [] in
+  let emitting () = List.for_all (fun (e, _, _, _) -> e) !stack in
+  let out = ref [] in
+  let rec go = function
+    | [] -> (
+      match !stack with
+      | (_, _, l, c) :: _ -> err l c "#if left open — missing #end"
+      | [] -> ())
+    | { Token.kind = Token.HashIf; line; col } :: rest -> (
+      match rest with
+      | { Token.kind = Token.Ident flag; _ } :: rest2 ->
+        stack := (StringSet.mem flag !defines, false, line, col) :: !stack;
+        go rest2
+      | _ ->
+        err line col "#if needs a flag name (`#if portable`)";
+        stack := (false, false, line, col) :: !stack;
+        go rest)
+    | { Token.kind = Token.HashElse; line; col } :: rest ->
+      (match !stack with
+       | (e, false, l, c) :: tl -> stack := (not e, true, l, c) :: tl
+       | (_, true, _, _) :: _ -> err line col "second #else in one #if section"
+       | [] -> err line col "#else outside any #if");
+      go rest
+    | { Token.kind = Token.HashEnd; line; col } :: rest ->
+      (match !stack with
+       | _ :: tl -> stack := tl
+       | [] -> err line col "#end outside any #if");
+      go rest
+    | ({ Token.kind = Token.Eof; _ } as t) :: rest ->
+      out := t :: !out;
+      go rest
+    | t :: rest ->
+      if emitting () then out := t :: !out;
+      go rest
+  in
+  go toks;
+  List.rev !out
 
 let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
     Token.t list =
@@ -321,16 +384,99 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
         | segs -> emit (Token.InterpStr segs) line col)
       end
       else if is_digit c then begin
+        (* iteration 19: one scanner for both numeric worlds. The integer run
+           is scanned into a buffer as well as accumulated, because a fraction
+           or an exponent turns the whole thing into a Float and OCaml's
+           float_of_string wants the original text.
+
+           A digit run stays an Int unless it is followed by:
+             - '.' AND a digit  -> `1.5`. The digit requirement is what keeps
+               `0..10` a range (Dot Dot after Int 0) and leaves any future
+               `1.method()` reachable; without it `0..10` would lex as
+               Float 0. followed by `.10`.
+             - 'e'/'E' with an optional sign AND a digit -> `2e10`. Checked
+               before consuming, so `2eggs` is still Int 2 then Ident. *)
+        (* `c` is PEEKED, not consumed — the loop below reads it. Adding it to
+           the buffer here as well would count the first digit twice. *)
+        let buf = Buffer.create 16 in
         let n = ref 0 in
         let scanning = ref true in
         while !scanning do
           match peek lx with
           | Some d when is_digit d ->
             n := (!n * 10) + (Char.code d - Char.code '0');
+            Buffer.add_char buf d;
             ignore (advance lx)
           | _ -> scanning := false
         done;
-        emit (Token.Int !n) line col
+        let is_float = ref false in
+        (match (peek lx, peek_at lx 1) with
+        | Some '.', Some d when is_digit d ->
+          is_float := true;
+          Buffer.add_char buf '.';
+          ignore (advance lx);
+          let frac = ref true in
+          while !frac do
+            match peek lx with
+            | Some d when is_digit d ->
+              Buffer.add_char buf d;
+              ignore (advance lx)
+            | _ -> frac := false
+          done
+        | _ -> ());
+        (* exponent, on an integer run (`2e10`) or after a fraction (`1.5e-3`) *)
+        (match (peek lx, peek_at lx 1, peek_at lx 2) with
+        | Some ('e' | 'E'), Some d, _ when is_digit d -> is_float := true
+        | Some ('e' | 'E'), Some ('+' | '-'), Some d when is_digit d -> is_float := true
+        | _ -> ());
+        if !is_float then begin
+          (match peek lx with
+          | Some (('e' | 'E') as e) ->
+            Buffer.add_char buf e;
+            ignore (advance lx);
+            (match peek lx with
+            | Some (('+' | '-') as s) ->
+              Buffer.add_char buf s;
+              ignore (advance lx)
+            | _ -> ());
+            let ex = ref true in
+            while !ex do
+              match peek lx with
+              | Some d when is_digit d ->
+                Buffer.add_char buf d;
+                ignore (advance lx)
+              | _ -> ex := false
+            done
+          | _ -> ());
+          (* float_of_string cannot fail here: the buffer is a well-formed
+             decimal by construction. Overflow is not an error either — it
+             yields infinity, which is a legitimate Float per IEEE quiet
+             semantics (`1e400` is `inf`, not a compile error). *)
+          emit (Token.Float (float_of_string (Buffer.contents buf))) line col
+        end
+        else emit (Token.Int !n) line col
+      end
+      else if c = '#' then begin
+        (* haxe-parity Task 8: `#if` / `#else` / `#end` build-flag
+           directives. Names only — anything else after '#' is WO-E003. *)
+        ignore (advance lx);
+        let name =
+          match peek lx with
+          | Some d when is_ident_start d -> read_ident_chars lx
+          | _ -> ""
+        in
+        match name with
+        | "if" -> emit Token.HashIf line col
+        | "else" -> emit Token.HashElse line col
+        | "end" -> emit Token.HashEnd line col
+        | other ->
+          Diag.Collector.add collector
+            (Diag.error ~code:directive_code ~file ~line ~col
+               ~message:
+                 (Printf.sprintf
+                    "unknown directive `#%s` — the build-flag directives are #if <flag>, #else, #end"
+                    other)
+               ())
       end
       else if is_ident_start c then begin
         let name = read_ident_chars lx in
@@ -446,4 +592,4 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
           report_unknown line col other)
   done;
   emit Token.Eof lx.line lx.col;
-  List.rev !out
+  preprocess collector ~file (List.rev !out)

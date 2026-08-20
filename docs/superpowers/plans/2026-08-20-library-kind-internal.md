@@ -1,8 +1,12 @@
 # Iteration 17 — library kind + `internal/`: implementation plan
 
-> **Status: ⏸ PARKED 2026-08-20** (developer directive: framework v1 work
-> proceeds instead; this plan stays ready on branch `library-internal`,
-> execution not started). Board: [docs/00-status.md](../../00-status.md).
+> **Status: ✅ LANDED 2026-08-20** — executed in full, all six tasks. Was
+> parked the same day (developer directive: framework v1 work first), then
+> unparked and run. Two disclosed deviations, both because the framework grew
+> after this plan was written: `http/parse.wo` was SPLIT rather than moved
+> whole (its `media_type`/`form_values` are public surface the web-app calls),
+> and the gate reads 26/0 rather than 17/0 (`just web-app` was already at 23
+> before this iteration). Board: [docs/00-status.md](../../00-status.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
@@ -28,7 +32,7 @@ build path grows a check branch, and the dep-use resolution walk in
 
 **Spec:** [`../specs/2026-08-20-library-kind-internal-design.md`](../specs/2026-08-20-library-kind-internal-design.md)
 (normative). Story:
-[`17-library-projects-internal.md`](../../stories/language-runtime-database/17-library-projects-internal.md).
+[`17-library-projects-internal.md`](../../stories/language-runtime-database/done/17-library-projects-internal.md).
 
 ## Global Constraints
 

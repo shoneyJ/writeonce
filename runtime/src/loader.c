@@ -76,6 +76,12 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
        id to build */
     [WO_B_JSON_ENCODE] = 2,  [WO_B_JSON_DECODE] = 2, [WO_B_MAP_GET_OPT] = 2,
     [WO_B_TEXT_COPY] = 1,
+    /* iteration 19: Float bridges, then Bytes */
+    [WO_B_FLOAT_OF_INT] = 1, [WO_B_TRUNC] = 1,       [WO_B_PARSE_FLOAT] = 1,
+    [WO_B_FLOAT_TO_TEXT] = 1, [WO_B_FLOAT_CMP] = 2,
+    [WO_B_BYTES_LEN] = 1,    [WO_B_BYTES_AT] = 2,    [WO_B_BYTES_SLICE] = 3,
+    [WO_B_BYTES_EQ] = 2,     [WO_B_BYTES_CONCAT] = 2, [WO_B_BASE64_ENCODE] = 1,
+    [WO_B_BASE64_DECODE] = 1, [WO_B_BYTES_OF_TEXT] = 1, [WO_B_TEXT_OF_BYTES] = 1,
 };
 
 static int vtab_cmp(const void *a, const void *b) {
@@ -142,6 +148,16 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             c.off += l;
             m->consts[i].tag = tag;
             m->consts[i].s = s;
+        } else if (tag == WOB_K_FLOAT) {
+            /* iteration 19: raw f64 bits. Stored in the same slot as an Int
+               constant because a register holds either as one word — the tag
+               is what says how to read it, and LOADK copies the word either
+               way. No validation is possible or wanted: every one of the 2^64
+               patterns is a legal f64 (NaN payloads included). */
+            uint64_t v;
+            if (rd_u64(&c, &v)) BAIL("constant %u: truncated", (unsigned)i);
+            m->consts[i].tag = tag;
+            m->consts[i].i = (int64_t)v;
         } else {
             BAIL("constant %u: unknown tag %u", (unsigned)i, (unsigned)tag);
         }
@@ -197,7 +213,8 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
                 BAIL("class %u field %u: bad name constant", (unsigned)i, (unsigned)j);
             uint32_t fc = m->metapool[meta_pool + fcnt + j];
             if (fc != WOB_NONE && fc != WOB_FIELD_JSON_RAW && fc != WOB_FIELD_NIL_SCALAR &&
-                fc != WOB_FIELD_BOOL && fc != WOB_FIELD_NIL_BOOL && fc >= kcnt)
+                fc != WOB_FIELD_BOOL && fc != WOB_FIELD_NIL_BOOL &&
+                fc != WOB_FIELD_NIL_FLOAT /* iteration 19 */ && fc >= kcnt)
                 BAIL("class %u field %u: field class out of range", (unsigned)i, (unsigned)j);
         }
         m->classes[i].name = name;
@@ -234,9 +251,13 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
                 if (rd_u32(&k, &col)) BAIL("class %u index %u: truncated column", (unsigned)i, (unsigned)x);
                 if (col >= fcnt) BAIL("class %u index %u: column out of range", (unsigned)i, (unsigned)x);
                 uint8_t kind = m->kindpool[(uintptr_t)m->classes[i].kinds + col];
-                if (kind != WO_K_SCALAR && kind != WO_K_TEXT)
-                    BAIL("class %u index %u: column %u is not scalar or Text", (unsigned)i,
-                         (unsigned)x, (unsigned)col);
+                /* iteration 19: FLOAT joins the indexable kinds — the engine
+                   orders it by WO_B_FLOAT_CMP's total order (NaN last), which
+                   is precisely what an index requires. BYTES stays out: its
+                   ordering beyond equality is out of scope this iteration. */
+                if (kind != WO_K_SCALAR && kind != WO_K_TEXT && kind != WO_K_FLOAT)
+                    BAIL("class %u index %u: column %u is not scalar, Text, or Float",
+                         (unsigned)i, (unsigned)x, (unsigned)col);
                 m->idxpool[idx_pool++] = col;
             }
         }
@@ -397,6 +418,7 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
                 break;
             case WOP_MOVE:
             case WOP_NEG:
+            case WOP_FNEG: /* iteration 19 */
                 RCHK(A);
                 RCHK(B);
                 break;
@@ -409,6 +431,16 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             case WOP_LT:
             case WOP_LE:
             case WOP_EQS:
+            /* iteration 19: same shape as their Int counterparts — three
+               register operands, no immediate, nothing to range-check beyond
+               the registers. Every bit pattern is a legal f64. */
+            case WOP_FADD:
+            case WOP_FSUB:
+            case WOP_FMUL:
+            case WOP_FDIV:
+            case WOP_FEQ:
+            case WOP_FLT:
+            case WOP_FLE:
                 RCHK(A);
                 RCHK(B);
                 RCHK(C);

@@ -1,0 +1,17 @@
+-- pub(read): readable anywhere, writable only inside the declaring class.
+-- A write from outside (here: main) is WO-E219.
+
+class Counter {
+  pub(read) count: Int
+  label: Text
+
+  fn bump() {
+    self.count = self.count + 1;
+  }
+}
+
+fn main() -> Int {
+  let c = Counter { count: 0, label: "hits" };
+  c.count = 99;
+  return c.count;
+}

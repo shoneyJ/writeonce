@@ -1,0 +1,43 @@
+-- Iteration 19: Bytes, the binary carrier. Length-carrying, content-
+-- comparable, no literal form — built from text or from base64, which is how
+-- it will arrive once WebSocket frames and digests exist (iteration 24 and
+-- the crypto fork). Text goes back to meaning text.
+fn main() {
+  let raw = bytes_of_text("writeonce")
+  print_int(bytes_len(raw))
+  print_int(bytes_at(raw, 0))
+
+  -- slicing is clamped like substr, and produces a fresh Bytes
+  let head = bytes_slice(raw, 0, 5)
+  print(text_of_bytes(head))
+  print(text_of_bytes(bytes_slice(raw, 5, 99)))
+  print_int(bytes_len(bytes_slice(raw, 99, 3)))
+
+  -- content equality, not identity
+  print_int(bytes_eq(raw, bytes_of_text("writeonce")))
+  print_int(bytes_eq(raw, head))
+
+  -- concat
+  print(text_of_bytes(bytes_concat(head, bytes_of_text("!"))))
+
+  -- base64 round trip, including the two padding shapes
+  print(base64_encode(raw))
+  print(base64_encode(bytes_of_text("ab")))
+  print(base64_encode(bytes_of_text("a")))
+  let back = base64_decode("d3JpdGVvbmNl")
+  if back != nil {
+    print_int(bytes_eq(back, raw))
+  }
+
+  -- binary safety: a NUL byte in the middle survives, which is the whole
+  -- reason Text-as-bytes was a hole
+  let nul = base64_decode("YQBi")
+  if nul != nil {
+    print_int(bytes_len(nul))
+    print_int(bytes_at(nul, 1))
+  }
+
+  -- malformed base64 is nil, not a trap: it arrives from the network
+  print_int(base64_decode("!!!!") == nil)
+  print_int(base64_decode("abc") == nil)
+}

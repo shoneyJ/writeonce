@@ -1,0 +1,28 @@
+-- http/form.wo — the public body-inspection surface: what media type a
+-- request carries, and form-encoded bodies as decoded pairs.
+--
+-- PUBLIC by design (iteration 17). It sits here rather than in
+-- `internal/parse.wo` with the rest of the parsing code because these two
+-- functions are exactly what a consuming app calls; the decoders they lean on
+-- stay behind the privacy line. `use internal` is legal INSIDE the library —
+-- the boundary is consumer-only.
+use internal
+
+-- The request's media type: the content-type header lowercased with any
+-- parameters ("; charset=...") stripped; "" when the header is absent.
+pub fn media_type(req: Req) -> Text {
+  let ct = req.headers["content-type"];
+  if ct == nil { return ""; }
+  let semi = index_of(ct, ";");
+  if semi >= 0 { return to_lower(trim(substr(ct, 0, semi))); }
+  return to_lower(trim("${ct}"));
+}
+
+-- Form-encoded body -> decoded pairs ('+' as space, %XX), the body-parsing
+-- hook for application/x-www-form-urlencoded. nil when the content-type
+-- says the body is something else — a JSON body is not silently misread
+-- as one giant form key.
+pub fn form_values(req: Req) -> ?map<Text, Text> {
+  if media_type(req) != "application/x-www-form-urlencoded" { return nil; }
+  return parse_query(req.body);
+}

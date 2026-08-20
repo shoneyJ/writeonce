@@ -175,6 +175,23 @@ wo_str *wo_str_new(wo_rt *rt, const char *bytes, uint32_t len) {
     return s;
 }
 
+/* iteration 19: Bytes is a wo_str wearing a different class id. Allocating
+ * through wo_str_alloc and restamping is deliberate — one allocator, one
+ * arena accounting path, one free — so a Bytes can never diverge from a Text
+ * in lifetime handling. */
+wo_str *wo_bytes_alloc(wo_rt *rt, uint32_t len) {
+    wo_str *s = wo_str_alloc(rt, len);
+    if (s) s->h.class_id = WO_CLS_BYTES;
+    return s;
+}
+
+wo_str *wo_bytes_new(wo_rt *rt, const char *bytes, uint32_t len) {
+    wo_str *s = wo_bytes_alloc(rt, len);
+    if (!s) return NULL;
+    memcpy(s->data, bytes, len);
+    return s;
+}
+
 wo_str *wo_str_concat(wo_rt *rt, const wo_str *a, const wo_str *b) {
     wo_str *s = wo_str_alloc(rt, a->len + b->len);
     if (!s) return NULL;

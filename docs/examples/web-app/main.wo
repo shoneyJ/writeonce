@@ -9,10 +9,10 @@ use framework/http
 use framework/router
 
 -- decode target for POST /products, encode shape for every product answer
-typedef ProductView = { name: Text, price: Int, stock: Int }
+typedef ProductView = { name: Text, price: Float, stock: Int }
 typedef NewOrder    = { product: Text, qty: Int }
 
-fn view_json(name: Text, price: Int, stock: Int) -> Text {
+fn view_json(name: Text, price: Float, stock: Int) -> Text {
   return json.encode(ProductView { name: name, price: price, stock: stock });
 }
 
@@ -44,7 +44,7 @@ class ShowProduct {
 
 -- Accepts THREE bodies: multipart/form-data (curl -F), a form post
 -- (application/x-www-form-urlencoded), and JSON — same insert either way.
-fn create_product(name: Text, price: Int, stock: Int) -> Resp {
+fn create_product(name: Text, price: Float, stock: Int) -> Resp {
   let made = try insert Product { name: name, price: price, stock: stock }
              catch (e) nil;
   if made == nil { return conflict("product name already exists"); }
@@ -63,8 +63,10 @@ class CreateProduct {
       if pstr == nil { return bad_request("multipart needs name, price, stock"); }
       let sstr = part_named(ps, "stock");
       if sstr == nil { return bad_request("multipart needs name, price, stock"); }
-      let price = parse_int(pstr);
-      if price == nil { return bad_request("price must be a number"); }
+      -- parse_float answers NaN for unparseable input rather than a ?Float:
+      -- "not a number" is already a Float value, and NaN != NaN is the test
+      let price = parse_float(pstr);
+      if price != price { return bad_request("price must be a number"); }
       let stock = parse_int(sstr);
       if stock == nil { return bad_request("stock must be a number"); }
       return create_product(name, price, stock);
@@ -78,8 +80,8 @@ class CreateProduct {
       if ps == nil { return bad_request("form needs name, price, stock"); }
       let ss = f["stock"];
       if ss == nil { return bad_request("form needs name, price, stock"); }
-      let price = parse_int(ps);
-      if price == nil { return bad_request("price must be a number"); }
+      let price = parse_float(ps);
+      if price != price { return bad_request("price must be a number"); }
       let stock = parse_int(ss);
       if stock == nil { return bad_request("stock must be a number"); }
       return create_product(name, price, stock);

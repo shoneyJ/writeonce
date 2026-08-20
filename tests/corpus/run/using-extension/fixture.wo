@@ -1,0 +1,18 @@
+-- `using` static extensions (iter 5, task 7): s.shout() rewrites to
+-- shout(s) at compile time — no dispatch table, receiver borrowed like
+-- any first argument. The plain call form keeps working.
+using textutil
+
+class Box {
+  n: Int
+}
+
+fn main() -> Int {
+  let s = "ha";
+  print(s.shout());
+  print(s.reps(3));
+  print(shout("plain"));
+  let b = Box { n: 7 };
+  print("box untouched ${b.n}");
+  return 0;
+}

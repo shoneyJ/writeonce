@@ -28,6 +28,12 @@ type kind =
   (* literals *)
   | Ident of string
   | Int of int
+  (* iteration 19: a Float literal. OCaml's `float` is an IEEE f64, the same
+     type the VM's registers hold, so the value is carried unchanged from
+     source to `.wob` (Int64.bits_of_float at emit time). A bare digit run is
+     still Token.Int — only a fraction or an exponent makes a Float, so every
+     pre-existing fixture lexes byte-identically. *)
+  | Float of float
   | Str of string
   (* haxe-parity Task 2: a string literal containing at least one
      `${expr}` interpolation. Alternating text/expr segments, in source
@@ -66,6 +72,7 @@ type kind =
   (* the concurrency arc (iterations 8+11): `spawn Cls { ... }`. `send`
      is deliberately NOT a keyword — it is a builtin free-fn name. *)
   | KwSpawn
+  | KwUsing
   | KwPub
   (* haxe-parity Task 2 (small control surface): break/continue/do-while,
      const values, and/or booleans, and inline-fn rejection (the haxe
@@ -141,6 +148,12 @@ type kind =
   | GtEq
   | PlusEq
   | MinusEq
+  (* haxe-parity Task 8: `#if name / #else / #end` build-flag directives.
+     They exist only between the scanner and the preprocessor filter at the
+     end of Lexer.tokenize — the parser never sees one. *)
+  | HashIf
+  | HashElse
+  | HashEnd
   (* meta *)
   | Newline
   | Eof

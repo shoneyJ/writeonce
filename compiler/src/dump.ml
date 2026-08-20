@@ -26,6 +26,9 @@ let kind_label (k : Token.kind) : string =
   match k with
   | Token.Ident s -> Printf.sprintf "IDENT(%s)" s
   | Token.Int n -> Printf.sprintf "INT(%d)" n
+  (* iteration 19: hex-float, so the golden file records the exact bits and
+     does not depend on decimal formatting *)
+  | Token.Float x -> Printf.sprintf "FLOAT(%h)" x
   | Token.Str s -> Printf.sprintf "STR(%s)" s
   | Token.InterpStr segs ->
     let part_str = function
@@ -52,6 +55,7 @@ let kind_label (k : Token.kind) : string =
   | Token.KwSelect -> "KW_SELECT"
   | Token.KwUse -> "KW_USE"
   | Token.KwSpawn -> "KW_SPAWN"
+  | Token.KwUsing -> "KW_USING"
   | Token.KwPub -> "KW_PUB"
   | Token.KwBreak -> "KW_BREAK"
   | Token.KwContinue -> "KW_CONTINUE"
@@ -99,6 +103,9 @@ let kind_label (k : Token.kind) : string =
   | Token.PlusEq -> "PLUSEQ"
   | Token.MinusEq -> "MINUSEQ"
   | Token.Newline -> "NEWLINE"
+  | Token.HashIf -> "#if"
+  | Token.HashElse -> "#else"
+  | Token.HashEnd -> "#end"
   | Token.Eof -> "EOF"
 
 (* Multi-file dump layout (Task 8, bin/main.ml). Every dump_* function
@@ -212,6 +219,10 @@ let dbstub_tokens_str (toks : Token.t list) : string =
 let rec expr_str (e : Ast.expr) : string =
   match e.Ast.kind with
   | Ast.IntLit n -> string_of_int n
+  (* iteration 19: `%h` is OCaml's hex-float — exact, short, and unambiguous
+     in a golden file. A decimal rendering here would make the golden test
+     depend on printf rounding, which is not what these fixtures check. *)
+  | Ast.FloatLit f -> Printf.sprintf "%h" f
   | Ast.StrLit s -> "\"" ^ s ^ "\""
   | Ast.BoolLit b -> if b then "true" else "false"
   | Ast.Ident s -> s

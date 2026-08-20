@@ -151,11 +151,20 @@ let stdlib_not_linked_code = Diag.emitter_prefix ^ "06"
    ============================================================ *)
 
 let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
-let wob_version = 4 (* v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
+
+(* v5 (iteration 19): the Float constant tag, field kinds 6/7, opcodes 34-41,
+   builtins 70-83. v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
+let wob_version = 5
+
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
 let k_int = 0
 let k_text = 1
+
+(* iteration 19: tag byte then the f64's IEEE bits as an LE u64. OCaml's
+   `float` IS an f64, so Int64.bits_of_float is a bit reinterpretation, not a
+   conversion — a literal reaches the VM exactly as written. *)
+let k_float = 2
 let max_regs = 64
 let classf_gc = 0x01
 
@@ -167,6 +176,16 @@ let op_sub = 4
 let op_mul = 5
 let op_div = 6
 let op_neg = 7
+
+(* iteration 19: the f64 world. Separate opcodes, not a mode bit — see wob.h. *)
+let op_fadd = 34
+let op_fsub = 35
+let op_fmul = 36
+let op_fdiv = 37
+let op_fneg = 38
+let op_feq = 39
+let op_flt = 40
+let op_fle = 41
 let op_concat = 8
 let op_eq = 9
 let op_lt = 10
@@ -241,6 +260,22 @@ let b_trim = 24
 let b_to_lower = 25
 let b_char_of = 26
 let b_parse_int = 27
+
+(* iteration 19: Float bridges then Bytes (wob.h ids 70-83) *)
+let b_float_of_int = 70
+let b_trunc = 71
+let b_parse_float = 72
+let b_float_to_text = 73
+let b_float_cmp = 74
+let b_bytes_len = 75
+let b_bytes_at = 76
+let b_bytes_slice = 77
+let b_bytes_eq = 78
+let b_bytes_concat = 79
+let b_base64_encode = 80
+let b_base64_decode = 81
+let b_bytes_of_text = 82
+let b_text_of_bytes = 83
 let b_split = 28
 let b_split_ws = 29
 let b_join = 30
@@ -432,7 +467,12 @@ type pctx = {
   (* constant pool, deduplicated *)
   p_kints : (int, int) Hashtbl.t;
   p_ktexts : (string, int) Hashtbl.t;
-  mutable p_consts : [ `Int of int | `Text of string ] list; (* rev *)
+  (* iteration 19: Float constants dedupe on BITS, not on value. Two reasons,
+     both load-bearing: 0.0 and -0.0 are `=`-equal in OCaml but must stay
+     distinct constants, and NaN is not `=`-equal to itself, so a value-keyed
+     table would grow one entry per NaN literal forever. *)
+  p_kfloats : (int64, int) Hashtbl.t;
+  mutable p_consts : [ `Int of int | `Text of string | `Float of int64 ] list; (* rev *)
   mutable p_nconsts : int;
 }
 
@@ -443,6 +483,18 @@ let const_int (p : pctx) (v : int) : int =
     let i = p.p_nconsts in
     Hashtbl.replace p.p_kints v i;
     p.p_consts <- `Int v :: p.p_consts;
+    p.p_nconsts <- i + 1;
+    i
+
+(* iteration 19 *)
+let const_float (p : pctx) (v : float) : int =
+  let bits = Int64.bits_of_float v in
+  match Hashtbl.find_opt p.p_kfloats bits with
+  | Some i -> i
+  | None ->
+    let i = p.p_nconsts in
+    Hashtbl.replace p.p_kfloats bits i;
+    p.p_consts <- `Float bits :: p.p_consts;
     p.p_nconsts <- i + 1;
     i
 
@@ -762,6 +814,8 @@ let kind_byte : Types.wob_kind -> int = function
   | Types.WO_K_TEXT -> 3
   | Types.WO_K_MULTI -> 4
   | Types.WO_K_MAP -> 5
+  | Types.WO_K_FLOAT -> 6 (* iteration 19 *)
+  | Types.WO_K_BYTES -> 7
   (* `?T` has no kind byte of its own in the v1 format (kinds run 0..5;
      the loader rejects 6). It needs none: a nullable field stores what
      T stores and spells nil as 0, and every drop plan in
@@ -772,6 +826,16 @@ let kind_byte : Types.wob_kind -> int = function
 
 let field_kind (p : pctx) (ft : Ast.field_ty) : int =
   kind_byte (Types.wob_kind_of_typ p.p_syms (Types.typ_of_field_ty (unwrap ft)))
+
+(* iteration 19: "is this a str-shaped heap value the holder owns?" — kind 3
+   (Text/json.Value) or kind 7 (Bytes). Every copy-on-boundary and drop-the-
+   fresh-temp site asks this; before Bytes existed the six sites each spelled
+   `= 3` inline, and leaving them that way would have meant a Bytes temp never
+   dropped and a Bytes stored into a container aliased instead of copied.
+   WO_B_TEXT_COPY preserves the kind, so one predicate covers both. *)
+let is_heap_kind (p : pctx) (ft : Ast.field_ty) : bool =
+  let k = field_kind p ft in
+  k = 3 || k = 7
 
 let class_of_name (p : pctx) (n : string) : int option = SM.find_opt n p.p_class_id
 
@@ -943,6 +1007,16 @@ let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty opt
     match argty with Some t -> ( match unwrap t with Map (k, _) -> Some (Scalar k) | _ -> None) | None -> None)
   | "val_at" -> (
     match argty with Some t -> ( match unwrap t with Map (_, v) -> Some (Scalar v) | _ -> None) | None -> None)
+  (* iteration 19 — mirrors Types.builtin_confident_ret. The fresh-heap
+     results (`float_to_text`, `base64_encode`, `text_of_bytes`, the three
+     that return a fresh Bytes) MUST be listed or their `let` never gets a
+     drop: a missing entry here is a leak, per this table's own contract. *)
+  | "float" | "parse_float" -> Some (Scalar "Float")
+  | "trunc" | "float_cmp" | "bytes_len" | "bytes_at" -> Some (Scalar "Int")
+  | "float_to_text" | "base64_encode" | "text_of_bytes" -> Some (Scalar "Text")
+  | "bytes_eq" -> Some (Scalar "Bool")
+  | "bytes_slice" | "bytes_concat" | "bytes_of_text" -> Some (Scalar "Bytes")
+  | "base64_decode" -> Some (Nullable (Scalar "Bytes"))
   | _ -> None
 
 let is_builtin_name (n : string) =
@@ -954,7 +1028,11 @@ let is_builtin_name (n : string) =
       "substr"; "trim"; "to_lower"; "char_of"; "parse_int"; "split"; "split_ws"; "join"; "slice";
       "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at";
       (* the concurrency arc *)
-      "send" ]
+      "send";
+      (* iteration 19: Float bridges and Bytes surface *)
+      "float"; "trunc"; "parse_float"; "float_to_text"; "float_cmp"; "bytes_len"; "bytes_at";
+      "bytes_slice"; "bytes_eq"; "bytes_concat"; "base64_encode"; "base64_decode";
+      "bytes_of_text"; "text_of_bytes" ]
 
 (* ---- unions and variants (haxe-parity Task 4) ------------------------
 
@@ -1005,6 +1083,7 @@ let query_elem_scalar (p : pctx) (q : Ast.query) ~(src : string) : string =
 let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
+  | FloatLit _ -> Some (Scalar "Float") (* iteration 19 *)
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
   (* Same rule as owner.ml's expr_ty: a non-empty list literal knows its
@@ -1209,6 +1288,26 @@ and emit_binding_ty_of_arm (p : pctx) (f : fstate) (subject : Ast.expr) (arm : A
 let is_text (p : pctx) (f : fstate) (e : Ast.expr) : bool =
   match ty_of_expr p f e with Some t -> ( match unwrap t with Scalar "Text" -> true | _ -> false) | None -> false
 
+(* iteration 19: does this expression hold f64 bits? Every operator that has
+   both an Int and a Float lowering asks this to pick the opcode. A literal is
+   answered directly because `1.5 + x` has a FloatLit on the left whose
+   `ty_of_expr` may not resolve, and picking integer ADD there would compute
+   garbage silently — the whole failure mode WO-E2xx's no-mixing rule exists to
+   prevent. The typechecker has already rejected genuinely mixed operands, so
+   one Float side is enough to select the Float opcode. *)
+let is_float (p : pctx) (f : fstate) (e : Ast.expr) : bool =
+  match e.Ast.kind with
+  | Ast.FloatLit _ -> true
+  | _ -> (
+    match ty_of_expr p f e with
+    | Some t -> ( match unwrap t with Scalar "Float" -> true | _ -> false)
+    | None -> false)
+
+let is_bytes (p : pctx) (f : fstate) (e : Ast.expr) : bool =
+  match ty_of_expr p f e with
+  | Some t -> ( match unwrap t with Scalar "Bytes" -> true | _ -> false)
+  | None -> false
+
 (* ============================================================
    Lowering
    ============================================================ *)
@@ -1387,6 +1486,16 @@ let wob_field_nil_bool = 0xFFFFFFFB (* a `?Bool` field: NIL_SCALAR nil + bool en
    WO_NIL_SCALAR exactly. *)
 let nil_scalar_word = -4611686018427387904
 
+let wob_field_nil_float = 0xFFFFFFFA (* a `?Float` field: WO_NIL_FLOAT nil *)
+
+(* iteration 19: nil for a `?Float`. It cannot be the zero word (+0.0) and it
+   cannot be nil_scalar_word (whose bits ARE -2.0), so it is a reserved quiet
+   NaN — see runtime/src/wob.h's WO_NIL_FLOAT for why that costs nothing real.
+   Carried as an Int64 and emitted as a FLOAT constant, because the bit pattern
+   is far outside OCaml's 63-bit native int and could not be written as one. *)
+let nil_float_bits = 0x7FF8000000000EE1L
+let nil_float_value = Int64.float_of_bits nil_float_bits
+
 (* is this a `?scalar` — an optional whose representation is a plain register,
    so its nil has to be the sentinel rather than the zero word? *)
 let is_nullable_scalar (p : pctx) (ty : Ast.field_ty) : bool =
@@ -1394,9 +1503,28 @@ let is_nullable_scalar (p : pctx) (ty : Ast.field_ty) : bool =
   | Ast.Nullable inner -> field_kind p inner = 0 (* WO_K_SCALAR *)
   | _ -> false
 
+(* iteration 19: a `?Float` is word-shaped like a `?scalar` but takes its own
+   sentinel, so it needs its own predicate rather than widening the one above
+   (whose callers all pair it with nil_scalar_word). *)
+let is_nullable_float (p : pctx) (ty : Ast.field_ty) : bool =
+  match ty with
+  | Ast.Nullable inner -> field_kind p inner = 6 (* WO_K_FLOAT *)
+  | _ -> false
+
+(* The constant index of the right nil for a destination type: a `?Float`'s
+   reserved NaN, a `?scalar`'s sentinel, or the zero word for everything else
+   (heap-shaped optionals, where a null pointer is unambiguous). One place, so
+   the four sites that write a nil cannot drift apart. *)
+let nil_const_for (p : pctx) (dest : Ast.field_ty option) : int =
+  match dest with
+  | Some t when is_nullable_float p t -> const_float p nil_float_value
+  | Some t when is_nullable_scalar p t -> const_int p nil_scalar_word
+  | _ -> const_int p 0
+
 let field_class_meta (p : pctx) (ty : Ast.field_ty) : int =
   let name_of t = match t with Ast.Scalar n -> Some n | _ -> None in
-  if is_nullable_scalar p ty then
+  if is_nullable_float p ty then wob_field_nil_float (* iteration 19 *)
+  else if is_nullable_scalar p ty then
     (match ty with
      | Ast.Nullable (Ast.Scalar "Bool") -> wob_field_nil_bool
      | _ -> wob_field_nil_scalar)
@@ -1510,14 +1638,14 @@ let copy_place_text (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
      fresh int_to_text that must not be re-copied *)
   let is_place = is_borrowed_value_t p f e && not (is_container_read e) in
   let is_text =
-    match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
+    match ty_of_expr p f e with Some t -> is_heap_kind p t | None -> false
   in
   if is_place && is_text then put f (ins_abc op_builtin reg reg b_text_copy)
 
 let drop_fresh_text ?keep (p : pctx) (f : fstate) (reg : int) (e : Ast.expr) : unit =
   let is_place = is_borrowed_value_t p f e && not (is_container_read e) in
   let is_text =
-    match ty_of_expr p f e with Some t -> field_kind p t = 3 (* WO_K_TEXT *) | None -> false
+    match ty_of_expr p f e with Some t -> is_heap_kind p t | None -> false
   in
   if (match keep with Some k -> k <> reg | None -> true) && (not is_place) && is_text then
     put f (ins_abc op_drop reg 0 0)
@@ -1530,6 +1658,10 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
   f.f_cur_line <- e.pos.line;
   (match e.kind with
   | IntLit n -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p n)))
+  | FloatLit x ->
+    (* iteration 19: the literal's bits go into the pool and LOADK copies the
+       word. No decimal round-trip anywhere between source and register. *)
+    put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_float p x)))
   | BoolLit b -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p (if b then 1 else 0))))
   | StrLit s -> put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_text p s)))
   (* haxe-parity Task 6: `nil` is the zero word for a heap-shaped `?T` and the
@@ -1539,10 +1671,7 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
      is the safe answer (a heap slot). *)
   | NilLit ->
     let dest = match expected with Some _ -> expected | None -> f.f_ret in
-    let word =
-      match dest with Some t when is_nullable_scalar p t -> nil_scalar_word | _ -> 0
-    in
-    put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (const_int p word)))
+    put f (ins_abx op_loadk dst (check_bx p f e.pos "constant" (nil_const_for p dest)))
   (* Container literals lower to exactly what `multi_new()`/`map_new()`
      lower to — the element kinds are the destination's, never guessed
      (docs/plan/oop-vm/08-builtin-surface.md) — plus one `multi_push` per
@@ -1739,11 +1868,14 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       drop_fresh_text ~keep:dst p f (w + 1) idx;
       (* a Text read out of a container is COPIED: the container keeps owning
          its element, the reader owns the copy (see owner.ml's copies_out) *)
-      if (match ty_of_expr p f e with Some t -> field_kind p t = 3 | None -> false) then
+      if (match ty_of_expr p f e with Some t -> is_heap_kind p t | None -> false) then
         put f (ins_abc op_builtin dst dst b_text_copy))
   | Unary (Neg, o) ->
     let b = emit_operand p f v o in
-    put f (ins_abc op_neg dst b 0)
+    (* iteration 19: FNEG flips the sign bit, so `-0.0` is reachable and
+       `-x` on an infinity gives the other infinity. Integer NEG on f64 bits
+       would produce a different number entirely. *)
+    put f (ins_abc (if is_float p f o then op_fneg else op_neg) dst b 0)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
   | Spawn (cn, fields) ->
@@ -1815,12 +1947,17 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
       match unwrap t with
       | Scalar "Text" -> emit_expr p f v ~dst inner
       | Scalar "Int" -> emit_builtin p f v ~dst e "int_to_text" [ inner ]
+      (* iteration 19: `"total: ${price}"` is the first thing anyone writes
+         after adding a Float column, so it renders here rather than forcing
+         an explicit float_to_text at every call site. Same renderer as
+         json.encode, so the two never disagree. *)
+      | Scalar "Float" -> emit_builtin p f v ~dst e "float_to_text" [ inner ]
       | other ->
         err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
           ~message:
             (Printf.sprintf
-               "cannot interpolate a value of type `%s` in \"${...}\" — only Text and Int are \
-                supported"
+               "cannot interpolate a value of type `%s` in \"${...}\" — only Text, Int, and \
+                Float are supported"
                (Dump.field_ty_str other));
         put f (ins_abx op_loadk dst (const_int p 0)))
     | None ->
@@ -1911,11 +2048,16 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     f.f_temp <- save
   in
   let nil_compare o = nil_compare_into p f v ~dst o l r in
+  (* iteration 19: one Float operand selects the Float opcode. The typechecker
+     has already rejected a genuine Int/Float mix (WO-E201), so reaching here
+     with only one Float side means the other is an underivable expression of
+     the same type — never an Int to be silently reinterpreted. *)
+  let fl = is_float p f l || is_float p f r in
   match op with
-  | Add -> simple op_add
-  | Sub -> simple op_sub
-  | Mul -> simple op_mul
-  | Div -> simple op_div
+  | Add -> simple (if fl then op_fadd else op_add)
+  | Sub -> simple (if fl then op_fsub else op_sub)
+  | Mul -> simple (if fl then op_fmul else op_mul)
+  | Div -> simple (if fl then op_fdiv else op_div)
   | Concat ->
     (* CONCAT allocates a new Text and leaves its operands untouched, so an
        operand that was itself freshly built — the partial result of a longer
@@ -1929,10 +2071,10 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     put f (ins_abc op_concat dst a b);
     drop_fresh_text ~keep:dst p f a l;
     drop_fresh_text ~keep:dst p f b r
-  | Lt -> simple op_lt
-  | Le -> simple op_le
-  | Gt -> swapped op_lt
-  | Ge -> swapped op_le
+  | Lt -> simple (if fl then op_flt else op_lt)
+  | Le -> simple (if fl then op_fle else op_le)
+  | Gt -> swapped (if fl then op_flt else op_lt)
+  | Ge -> swapped (if fl then op_fle else op_le)
   (* A comparison against `nil` is a WORD compare, never a content compare:
      EQS would dereference nil as a `wo_str*` (the VM's str_check traps on
      that, so an `x != nil` guard would trap instead of answering). The literal
@@ -1942,6 +2084,10 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
   | Eq ->
     if is_nil_lit l || is_nil_lit r then nil_compare op_eq
     else if is_text p f l || is_text p f r then simple op_eqs
+    (* iteration 19: FEQ, not EQ. A word compare would make `NaN == NaN` true
+       (identical bits) and `0.0 == -0.0` false (differing bits) — both
+       backwards from IEEE, which is the stated contract. *)
+    else if fl then simple op_feq
     else simple op_eq
   | Ne ->
     (* no NE opcode in the v1 set: `a != b` is `(a == b) == 0`. The
@@ -1956,7 +2102,12 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
      else begin
        let a = emit_operand p f v l in
        let b = emit_operand p f v r in
-       put f (ins_abc (if is_text p f l || is_text p f r then op_eqs else op_eq) t a b);
+       put f
+         (ins_abc
+            (if is_text p f l || is_text p f r then op_eqs
+             else if fl then op_feq (* iteration 19: `a != b` on Floats is IEEE *)
+             else op_eq)
+            t a b);
        (* the same reap `simple` does — `headers["authorization"] !=
           "Bearer ${key}"` abandoned both sides, once per MCP request *)
        drop_fresh_owned ~keep:t p f a l;
@@ -2647,7 +2798,15 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
          `x.name` sees x unbound, returns None, and a Text key silently falls
          to the pointer-comparing op_lt (the wrong-order bug) *)
       let key_is_text =
-        match ty_of_expr p f key with Some t -> field_kind p t = 3 | None -> false
+        match ty_of_expr p f key with Some t -> field_kind p t = 3 | None -> false (* Text keys only: order-by on Bytes is out of scope *)
+      in
+      (* iteration 19: a Float order-by key uses the TOTAL order (float_cmp),
+         not op_lt over the raw bits. Bits get negatives backwards (the sign
+         bit makes -1.0 compare greater than 1.0 as an integer) and leave NaN
+         wherever the comparison sequence happens to drop it; an order-by must
+         be a total order or the result depends on input order. *)
+      let key_is_float =
+        match ty_of_expr p f key with Some t -> field_kind p t = 6 | None -> false
       in
       let kj = alloc_temp p f e.pos in
       emit_expr p f v ~dst:kj key;
@@ -2664,6 +2823,18 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
           put f (ins_abc op_move w a 0);
           put f (ins_abc op_move (w + 1) b 0);
           put f (ins_abc op_builtin cmp w b_str_lt);
+          f.f_temp <- save
+        end
+        else if key_is_float then begin
+          (* cmp = float_cmp(a, b) < 0 *)
+          let save = f.f_temp in
+          let w = alloc_temps p f e.pos 2 in
+          put f (ins_abc op_move w a 0);
+          put f (ins_abc op_move (w + 1) b 0);
+          put f (ins_abc op_builtin cmp w b_float_cmp);
+          let z = alloc_temp p f e.pos in
+          put f (ins_abx op_loadk z (check_bx p f e.pos "constant" (const_int p 0)));
+          put f (ins_abc op_lt cmp cmp z);
           f.f_temp <- save
         end
         else put f (ins_abc op_lt cmp a b)
@@ -2783,7 +2954,8 @@ and emit_insert (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr) 
                 f.f_temp <- save
               | None ->
                 let nil_word =
-                  if is_nullable_scalar p fty then const_int p nil_scalar_word
+                  if is_nullable_float p fty then const_float p nil_float_value
+                  else if is_nullable_scalar p fty then const_int p nil_scalar_word
                   else const_int p 0
                 in
                 put f (ins_abx op_loadk (base + 1 + idx) (check_bx p f e.pos "constant" nil_word))))
@@ -2827,7 +2999,7 @@ and emit_default_value (p : pctx) (f : fstate) ~(dst : int) ~(fty : Ast.field_ty
       put f
         (ins_abx op_loadk dst
            (check_bx p f pos "constant"
-              (const_int p (if is_nullable_scalar p fty then nil_scalar_word else 0))))
+              (nil_const_for p (Some fty))))
     (* `= {}` — a fresh empty container of the field's own declared type,
        the same rule `[]` above follows *)
     | [ Token.LBrace; Token.RBrace ] -> (
@@ -3233,7 +3405,7 @@ and call_window (p : pctx) (f : fstate) (v : views) (e : Ast.expr) ~(recv : Ast.
   let fresh_borrowed_value (a : Ast.expr) : bool =
     is_fresh_owned_temp p f a
     || ((not (is_borrowed_value_t p f a) || is_container_read a)
-       && match ty_of_expr p f a with Some t -> field_kind p t = 3 | None -> false)
+       && match ty_of_expr p f a with Some t -> is_heap_kind p t | None -> false)
   in
   let owned_heap_temp (a : Ast.expr) : bool =
     (match a.kind with
@@ -3353,6 +3525,10 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       || id = b_len || id = b_print_err || id = b_trim || id = b_to_lower || id = b_char_of
       || id = b_parse_int || id = b_split_ws || id = b_pop || id = b_shift || id = b_sort
       || id = b_reverse
+      (* iteration 19, one argument *)
+      || id = b_float_of_int || id = b_trunc || id = b_parse_float || id = b_float_to_text
+      || id = b_bytes_len || id = b_base64_encode || id = b_base64_decode
+      || id = b_bytes_of_text || id = b_text_of_bytes
     then 1
     else if
       id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has
@@ -3361,8 +3537,10 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       || id = b_byte_at || id = b_starts_with || id = b_ends_with || id = b_index_of
       || id = b_last_index_of || id = b_split || id = b_join || id = b_map_remove
       || id = b_map_key_at || id = b_map_val_at
+      (* iteration 19, two arguments *)
+      || id = b_float_cmp || id = b_bytes_at || id = b_bytes_eq || id = b_bytes_concat
     then 2
-    else 3
+    else 3 (* b_bytes_slice lands here with substr's shape: (value, start, len) *)
   in
   let container_id first_arg on_multi on_map =
     match ty_of_expr p f first_arg with
@@ -3461,6 +3639,21 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   | "remove" -> fixed b_map_remove
   | "key_at" -> fixed b_map_key_at
   | "val_at" -> fixed b_map_val_at
+  (* iteration 19 *)
+  | "float" -> fixed b_float_of_int
+  | "trunc" -> fixed b_trunc
+  | "parse_float" -> fixed b_parse_float
+  | "float_to_text" -> fixed b_float_to_text
+  | "float_cmp" -> fixed b_float_cmp
+  | "bytes_len" -> fixed b_bytes_len
+  | "bytes_at" -> fixed b_bytes_at
+  | "bytes_slice" -> fixed b_bytes_slice
+  | "bytes_eq" -> fixed b_bytes_eq
+  | "bytes_concat" -> fixed b_bytes_concat
+  | "base64_encode" -> fixed b_base64_encode
+  | "base64_decode" -> fixed b_base64_decode
+  | "bytes_of_text" -> fixed b_bytes_of_text
+  | "text_of_bytes" -> fixed b_text_of_bytes
   | "multi_new" | "map_new" ->
     let is_map = name = "map_new" in
     if args <> [] then bad (Printf.sprintf "builtin `%s` takes no arguments" name)
@@ -3490,7 +3683,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       | Some id ->
         fixed id;
         if (match builtin_ret name (match args with x :: _ -> ty_of_expr p f x | [] -> None) with
-            | Some t -> field_kind p t = 3
+            | Some t -> is_heap_kind p t
             | None -> false)
         then put f (ins_abc op_builtin dst dst b_text_copy)
       | None -> bad "builtin `get` needs a `multi` or a `map` as its first argument")
@@ -4381,7 +4574,12 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
                    let col_of n = ref_index_of_name fnames n in
                    let is_indexable (fl : Ast.field) =
                      match Types.wob_kind_of_typ p_syms_for_indexes (Types.typ_of_field_ty (unwrap fl.Ast.ty)) with
-                     | Types.WO_K_SCALAR | Types.WO_K_TEXT -> true
+                     (* iteration 19: Float is indexable — the engine keys it on
+                        the TOTAL order's canonical bits (table.c's
+                        idx_float_key), so -0.0 and +0.0 are one key and all
+                        NaNs are one key. Bytes stays out: ordering it beyond
+                        equality is out of scope. Mirrors loader.c. *)
+                     | Types.WO_K_SCALAR | Types.WO_K_TEXT | Types.WO_K_FLOAT -> true
                      | _ -> false
                    in
                    let table_indexes =
@@ -4398,7 +4596,7 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
                          if List.mem "unique" fl.Ast.annotations then begin
                            if not (is_indexable fl) then
                              index_col_err := Some (c.Ast.pos, Printf.sprintf
-                               "`@unique` on `%s.%s`: only scalar and Text fields can be indexed"
+                               "`@unique` on `%s.%s`: only scalar, Text, and Float fields can be indexed"
                                c.Ast.name fl.Ast.name);
                            [ (true, [| col_of fl.Ast.name |]) ]
                          end
@@ -4419,7 +4617,7 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
                              | Some fl ->
                                if not (is_indexable fl) then
                                  index_col_err := Some (c.Ast.pos, Printf.sprintf
-                                   "`@table(index: ...)` on `%s`: `%s` is not a scalar or Text field"
+                                   "`@table(index: ...)` on `%s`: `%s` is not a scalar, Text, or Float field"
                                    c.Ast.name cn))
                            cols)
                        cfg.Ast.indexes
@@ -4600,6 +4798,7 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
       p_iface_id = !iface_id; p_method_id = !method_id; p_methods; p_uses;
       p_module_syms = module_syms; p_module_of = module_of; p_colliding = colliding;
       p_kints = Hashtbl.create 32;
+      p_kfloats = Hashtbl.create 16; (* iteration 19 *)
       p_ktexts = Hashtbl.create 32; p_consts = []; p_nconsts = 0 }
   in
   (* names are constants; interning them first keeps the pool's low
@@ -4672,7 +4871,11 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
       | `Text s ->
         Buf.u8 consts k_text;
         Buf.u32 consts (String.length s);
-        Buf.str consts s)
+        Buf.str consts s
+      | `Float bits ->
+        (* iteration 19: the bits, exactly as OCaml holds them *)
+        Buf.u8 consts k_float;
+        Buf.i64 consts bits)
     (List.rev p.p_consts);
   let cls = Buf.create () in
   Array.iteri

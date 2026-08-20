@@ -1,0 +1,54 @@
+-- Iteration 19: Float, the language half. Literal forms, f64 arithmetic,
+-- IEEE-quiet division (no DIV0 trap where Int would trap), the explicit
+-- bridges in both directions, and the shortest-round-trip rendering that
+-- interpolation and json.encode share.
+fn main() {
+  -- literal forms: fraction, leading zero, exponent (both signs)
+  let price = 9.99
+  let tiny = 0.125
+  let big = 2e10
+  let small = 1.5e-3
+  print("${price} ${tiny} ${big} ${small}")
+
+  -- arithmetic is f64, not integer: 0.1 + 0.2 is famously not 0.3, and
+  -- printing the truth here is the point of a shortest-round-trip renderer
+  print("${0.1 + 0.2}")
+  print("${price * 3.0}")
+  print("${price - 10.0}")
+
+  -- IEEE quiet division: Int would trap DIV0, Float yields infinities and
+  -- NaN and keeps running
+  print("${1.0 / 0.0} ${-1.0 / 0.0} ${0.0 / 0.0}")
+
+  -- NaN is not equal to itself; that is the contract, not a bug
+  let nan = 0.0 / 0.0
+  print_int(nan == nan)
+  print_int(nan != nan)
+
+  -- -0.0 is reachable and distinct in its bits, while IEEE equality says
+  -- it equals +0.0
+  let negzero = -0.0
+  print("${negzero}")
+  print_int(negzero == 0.0)
+
+  -- the explicit bridges: no implicit conversion exists in either direction
+  let n = 7
+  print("${float(n) / 2.0}")
+  print_int(trunc(9.99))
+  print_int(trunc(-9.99))
+
+  -- parse_float: unparseable is NaN, which is what "not a number" means,
+  -- so there is no ?Float to narrow
+  print("${parse_float("3.5")} ${parse_float("nope")}")
+
+  -- ordering uses IEEE comparisons in the language
+  print_int(1.5 < 2.5)
+  print_int(2.5 <= 2.5)
+  print_int(nan < 1.0)
+
+  -- float_cmp is the TOTAL order instead: NaN sorts last, -0.0 == +0.0.
+  -- This is what an index and an order-by use.
+  print_int(float_cmp(1.0, 2.0))
+  print_int(float_cmp(nan, 1.0))
+  print_int(float_cmp(negzero, 0.0))
+}

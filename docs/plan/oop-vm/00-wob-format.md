@@ -11,17 +11,17 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 4, then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 5 (iteration 19; see "v5: Float and Bytes" below), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
-**Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL).
+**Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL); tag 2 = f64 as its IEEE 754 bit pattern in an LE u64 (v5). There is no Bytes tag: Bytes has no literal form.
 
 **Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
 
 1. `field_names[i]` — constant index of the field's name, or all-ones for "not recorded" (what a hand-built test image writes).
-2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; `0xFFFFFFFD` a nullable scalar (`WO_NIL_SCALAR` nil); `0xFFFFFFFC` a plain `Bool` (json encodes `true`/`false`); `0xFFFFFFFB` a `?Bool` (both); all-ones for none.
+2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; `0xFFFFFFFD` a nullable scalar (`WO_NIL_SCALAR` nil); `0xFFFFFFFC` a plain `Bool` (json encodes `true`/`false`); `0xFFFFFFFB` a `?Bool` (both); `0xFFFFFFFA` a `?Float` (v5 — nil is `WO_NIL_FLOAT`, not `WO_NIL_SCALAR`); all-ones for none.
 3. `field_elem[i]` — a container field's element kinds: a MULTI's element kind, or a MAP's key kind in the low nibble and value kind in the next; 0 otherwise.
 
-Field kinds: 0 SCALAR, 1 OWNED, 2 GCREF, 3 TEXT, 4 MULTI, 5 MAP. Runtime object layout: 16-byte header then one 8-byte slot per field, in declaration order.
+Field kinds: 0 SCALAR, 1 OWNED, 2 GCREF, 3 TEXT, 4 MULTI, 5 MAP, **6 FLOAT, 7 BYTES** (v5). Runtime object layout: 16-byte header then one 8-byte slot per field, in declaration order.
 
 The metadata exists for exactly one reason: `json.encode`/`json.decode` are runtime services driven by class metadata (`runtime/src/json.c`) rather than per-type generated code, so the names a JSON object needs and the shapes a decode has to build must live in the image. Every other part of the runtime ignores it.
 
@@ -53,6 +53,8 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 | 31 | TRAP Bx | explicit trap with code Bx |
 | 32 | TRY A sBx | push a catch frame for this frame and window: handler at pc + sBx, error record register A (haxe-parity Task 5) |
 | 33 | ENDTRY | pop the innermost catch frame — the try region completed without trapping |
+| 34–38 | FADD/FSUB/FMUL/FDIV/FNEG | f64 arithmetic on the register's bits (v5). **None of these trap**: IEEE 754 quiet semantics, so `x/0.0` is ±Inf and `0.0/0.0` is NaN. FNEG flips the sign bit, so `-0.0` is reachable |
+| 39–41 | FEQ/FLT/FLE | f64 IEEE compares, result 0/1 — so any comparison involving NaN is 0, and `0.0 == -0.0` is 1. Not a total order; indexes and order-by use the `float_cmp` builtin instead |
 
 **try/catch (Task 5).** A trap raised while a catch frame is live unwinds every frame *above* the catching one exactly as an uncaught trap does (drop maps run, registers null), then releases what the try region owned in the catching frame — the difference between the drop entry at the trapping instruction and the one at the handler pc — and resumes at the handler instead of leaving the VM. A frame that returns takes its still-open catch frames with it, so a `return` out of a try region cannot leave a handler pointing at a dead window. With no catch frame live, a trap behaves byte-for-byte as it did before v2. The catch arm's error record is an ordinary compiler-allocated object filled by the `err_fill` builtin (field order: 0 code, 1 line, 2 method, 3 msg).
 
@@ -69,6 +71,72 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 `EQS` accepts a nil operand for the same reason: two `?Text` values compare with it, and the answer is "both absent is equal, one absent is not". A non-nil operand must still be a real Text.
 
 **Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT, IO (a syscall the source cannot prevent said no — errno's message rides in the error record).
+
+## v5: Float and Bytes (iteration 19)
+
+The version bump is real: an image written before this iteration is rejected,
+and so is one written after it by an older runtime. Both directions are
+deliberate — the new kind bytes and the new constant tag would be silently
+misread otherwise, and a misread f64 is a plausible-looking wrong number
+rather than a crash.
+
+**What v5 adds**
+
+- Constant tag `2` — an f64 as its raw IEEE 754 bits in an LE u64. Bits, not
+  a decimal rendering, so a literal reaches the VM exactly as written and no
+  parse/print round trip sits between source and register.
+- Field kind `6 FLOAT` — word-shaped like SCALAR (the slot holds f64 bits), but
+  its own kind because three services cannot guess from a register alone: json
+  (a Float field must emit `9.99`, not `4621...`), the WAL (replay must not
+  reinterpret the word), and printing.
+- Field kind `7 BYTES` — pointer-shaped like TEXT and sharing the `wo_str`
+  object layout byte for byte, differing only in the header's `class_id`
+  (`WO_CLS_BYTES`). That distinct id is what lets a Text builtin refuse a Bytes
+  and vice versa; `WO_B_TEXT_COPY` preserves the kind, so every
+  copy-on-ownership-boundary already handles both.
+- `field_class` marker `0xFFFFFFFA` — a `?Float`. Nil is `WO_NIL_FLOAT`, a
+  reserved quiet NaN (`0x7FF8000000000EE1`), because neither of the existing
+  sentinels works: the zero word is `+0.0`, and `WO_NIL_SCALAR`'s bit pattern
+  *is* `-2.0`. A computed NaN is the platform's canonical quiet NaN, so it never
+  collides; the cost is one NaN payload out of 2^51, exactly as `?Int` costs one
+  absurd integer.
+- Opcodes `34–41` — the f64 arithmetic and compare set (table above).
+- Builtins `70–83` — `float`/`trunc`/`parse_float`/`float_to_text`/`float_cmp`,
+  then the Bytes surface (`bytes_len`/`bytes_at`/`bytes_slice`/`bytes_eq`/
+  `bytes_concat`/`base64_encode`/`base64_decode`/`bytes_of_text`/
+  `text_of_bytes`).
+
+**Two numeric worlds, no implicit crossing.** Int keeps its DIV0 trap; Float
+never traps. There is no coercion in either direction — not in arithmetic, not
+in comparison, not in `==` — and the typechecker reports a mix as WO-E201
+rather than letting the emitter pick an opcode from one side and misread the
+other. `float(i)` and `trunc(f)` are the only bridges; `trunc` traps
+`WO_T_BOUNDS` on NaN, ±Inf, and anything outside i64, because the Int world has
+no value to hand back and returning 0 is how currency bugs start.
+
+**One deliberate deviation from IEEE: the total order.** `FLT`/`FLE`/`FEQ` are
+IEEE, so `NaN < 1.0` is false and `NaN == NaN` is false. But an index and an
+`order by` *require* a total order — otherwise a sort's result depends on the
+comparison sequence and a B-tree walk loses rows. The `float_cmp` builtin
+provides it: `-Inf < finite < +Inf < NaN`, with `-0.0` equal to `+0.0`. Index
+keys are canonicalized to match (`table.c`'s `idx_float_key`: every NaN maps to
+the canonical one, `-0.0` maps to `+0.0`), so a `unique` Float column treats
+`-0.0` and `0.0` as the same key and a probe for one finds a row stored as the
+other. FLOAT is therefore an indexable kind; BYTES is not, this iteration.
+
+**Rendering.** One renderer (`wo_float_text`) serves interpolation,
+`float_to_text`, and `json.encode`, so the three can never disagree. It picks
+the fewest significant digits that reparse to the same *bits*, then prefers
+fixed notation over exponential across the range `1e-6 … 1e21` — "shortest"
+alone would render a price of `900.0` as `9e+02`. A rendering always carries a
+`.` or an exponent, so a Float never prints as `1` where an Int would.
+
+**json boundaries.** A Float field accepts the whole JSON number grammar,
+fractions and exponents included (an Int field's strictness is unchanged — a
+fraction there still fails the decode whole). A non-finite Float encodes as
+`null`, because JSON has no `nan`/`inf` literal and emitting one would be
+invalid JSON. A Bytes field crosses as a base64 string, matching
+`base64_encode`'s alphabet exactly.
 
 ## Enum payload variants (haxe-parity compiler Task 4)
 

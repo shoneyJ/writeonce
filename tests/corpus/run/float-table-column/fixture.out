@@ -1,0 +1,18 @@
+-2.5 a
+0.25 c
+1.5 b
+--
+1.5 b
+0.25 c
+-2.5 a
+--
+-2.5 a
+-0.0 negzero
+0.25 c
+1.5 b
+inf inf
+nan nan
+--
+1
+ZERO-SIGN-DUP-REFUSED
+2

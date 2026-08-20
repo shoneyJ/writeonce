@@ -269,6 +269,13 @@ let merge_symbols (syms_list : Woc_lib.Types.symbols list) : Woc_lib.Types.symbo
 
 let duplicate_symbol_code = Woc_lib.Diag.types_prefix ^ "14" (* WO-E214 *)
 
+(* iteration 17: WO-E108 — a consumer `use` reached into a dependency's
+   `internal/`. A use-resolution diagnostic, so it lives in the E1xx band with
+   the other path/import errors and rides the normal collector path (exit 1),
+   unlike the manifest errors WO-E106/E107/E109 which print directly and
+   exit 2. *)
+let dep_internal_code = Woc_lib.Diag.parsing_prefix ^ "08"
+
 let report_collision (collector : Woc_lib.Diag.Collector.t) ~(kind : string) ~(name : string)
     ~(file : string) ~(pos : Woc_lib.Ast.pos) ~(first_file : string)
     ~(first_pos : Woc_lib.Ast.pos) : unit =
@@ -503,7 +510,48 @@ let compile_image ?(deps : (string * string) list = []) path =
               deps
           in
           match owner with
-          | None -> (f, prog)
+          | None ->
+            (* iteration 17: the dependency-privacy boundary. A CONSUMER file
+               may not `use` a dep module whose path contains the segment
+               `internal` — Go's rule, and a pure use-resolution check, which
+               is why it needs no keyword and no syntax. Consumer-only by
+               design (spec §3): the dep's own `use internal` is prefixed by
+               the Some arm below and stays legal, so a library can organize
+               its interior freely.
+
+               Matched on a whole SEGMENT, never a substring: a dep module
+               named `internals` or `my_internal_thing` is ordinary public
+               surface. The root project's own `internal/` directories never
+               fire this either — the first segment has to name a DEP.
+
+               The use is left in place rather than dropped: the collector's
+               has-error path already stops emission, and dropping it would
+               turn one clear diagnostic into a cascade of
+               unknown-type errors from the same file. *)
+            List.iter
+              (fun d ->
+                match d with
+                | Woc_lib.Ast.Use u -> (
+                  match u.Woc_lib.Ast.segments with
+                  | seg :: rest
+                    when List.exists (fun (dname, _) -> dname = seg) deps
+                         && List.exists (fun s -> s = "internal") rest ->
+                    let pos = u.Woc_lib.Ast.pos in
+                    Woc_lib.Diag.Collector.add collector
+                      (Woc_lib.Diag.error ~code:dep_internal_code ~file:f
+                         ~line:pos.Woc_lib.Ast.line ~col:pos.Woc_lib.Ast.col
+                         ~message:
+                           (Printf.sprintf
+                              "`%s` is internal to the dependency `%s` — a module under \
+                               `internal/` is the library's own business and cannot be \
+                               imported across the `[deps]` boundary"
+                              (String.concat "/" u.Woc_lib.Ast.segments)
+                              seg)
+                         ())
+                  | _ -> ())
+                | _ -> ())
+              prog.Woc_lib.Ast.decls;
+            (f, prog)
           | Some (dname, _) ->
             let redecl = function
               | Woc_lib.Ast.Use u ->
@@ -518,6 +566,12 @@ let compile_image ?(deps : (string * string) list = []) path =
         parsed
   in
   let syms, module_syms = typecheck_all collector ~root:path ~deps parsed in
+  (* haxe-parity Task 7: typecheck recorded every `using` extension call;
+     rewrite them into plain free-fn calls (receiver first) so the owner
+     and emit passes below need no using-awareness at all *)
+  let parsed =
+    List.map (fun (f, prog) -> (f, Woc_lib.Types.apply_using_rewrites ~file:f prog)) parsed
+  in
   let units =
     List.map
       (fun (f, prog) ->
@@ -629,54 +683,11 @@ let default_runtime_path () : string =
     if Sys.file_exists sibling && not (Sys.is_directory sibling) then sibling
     else "runtime/wovm"
 
-let build_mode ?(deps : (string * string) list = []) ~(runtime : string option)
-    (path : string) (out : string) : unit =
-  let collector, lookup, image = compile_image ~deps path in
-  if Woc_lib.Diag.Collector.has_error collector then finish collector lookup
-  else begin
-    if String.get_int32_le image wob_off_entry = -1l then begin
-      Printf.eprintf
-        "woc: %s: no `main` entry point found; `build` requires a zero-argument free fn named \
-         `main`\n"
-        path;
-      exit 2
-    end;
-    let rt_path = match runtime with Some p -> p | None -> default_runtime_path () in
-    if (not (Sys.file_exists rt_path)) || Sys.is_directory rt_path then begin
-      Printf.eprintf "woc: runtime binary not found at '%s' -- build it with: make -C runtime wovm\n"
-        rt_path;
-      exit 2
-    end;
-    let rt_bytes =
-      match read_source rt_path with
-      | Ok s -> strip_existing_trailer s
-      | Error msg ->
-        Printf.eprintf "woc: %s\n" msg;
-        exit 2
-    in
-    let tmp = out ^ ".woc-build.tmp" in
-    (* stale tmp from an interrupted earlier build must not survive: its
-       permission bits would leak through, since Open_creat on an
-       existing inode does not apply the requested mode *)
-    (try Sys.remove tmp with Sys_error _ -> ());
-    (try
-       let oc = open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o755 tmp in
-       output_string oc rt_bytes;
-       output_string oc image;
-       output_bytes oc
-         (trailer_bytes ~payload_off:(String.length rt_bytes) ~payload_len:(String.length image));
-       close_out oc
-     with Sys_error msg ->
-       (try Sys.remove tmp with Sys_error _ -> ());
-       Printf.eprintf "woc: %s\n" msg;
-       exit 2);
-    (try Sys.rename tmp out
-     with Sys_error msg ->
-       Printf.eprintf "woc: %s\n" msg;
-       exit 2);
-    finish collector lookup
-  end
-
+(* RELOCATED (iteration 17): manifest_parse used to sit below build_mode.
+   build_mode now reads the manifest itself, to tell "you forgot `main`"
+   from "this is a library" in the no-entry error, and OCaml has no
+   forward reference across top-level `let`s. Nothing in the block
+   changed; only its position did. *)
 (* ---- manifest build ---------------------------------------------------
    `woc <dir>` where <dir>/wo.toml exists is a BUILD, not a check: the
    manifest names the application, so pointing woc at the project is enough
@@ -807,7 +818,11 @@ let manifest_parse (path : string) : (string * string) list =
            let v = String.sub v 1 (String.length v - 2) in
            let known =
              match (!section, key) with
-             | "", ("name" | "version" | "description") -> true
+             (* iteration 17: `kind` says whether this project is a program or
+                a library. Explicit, not inferred from the presence of `main` —
+                a forgotten entry and a deliberate library must not look the
+                same in an error message. Validated in manifest_build. *)
+             | "", ("name" | "version" | "description" | "kind") -> true
              | "runtime", "wo" -> true (* minimum toolchain version; enforced in manifest_build *)
              | "build", ("runtime" | "target") -> true
              | _ -> false
@@ -815,13 +830,77 @@ let manifest_parse (path : string) : (string * string) list =
            if not known then
              fail !lineno
                (if !section = "" then
-                  Printf.sprintf "unknown key `%s` (name, version, description exist)" key
+                  Printf.sprintf "unknown key `%s` (name, version, description, kind exist)"
+                    key
                 else
                   Printf.sprintf "unknown key `%s` in [%s]" key !section);
            kvs := ((if !section = "" then key else !section ^ "." ^ key), v) :: !kvs
      done
    with End_of_file -> close_in ic);
   !kvs
+
+let build_mode ?(deps : (string * string) list = []) ~(runtime : string option)
+    (path : string) (out : string) : unit =
+  let collector, lookup, image = compile_image ~deps path in
+  if Woc_lib.Diag.Collector.has_error collector then finish collector lookup
+  else begin
+    if String.get_int32_le image wob_off_entry = -1l then begin
+      Printf.eprintf
+        "woc: %s: no `main` entry point found; `build` requires a zero-argument free fn named \
+         `main`\n"
+        path;
+      (* iteration 17: if the project DECLARES itself a library, say so — the
+         two failures are different problems and deserve different answers.
+         Read only when the manifest exists; a malformed one still fails the
+         way it does today, through manifest_parse's own path. *)
+      let mf = Filename.concat path "wo.toml" in
+      if Sys.file_exists mf then begin
+        match List.assoc_opt "kind" (manifest_parse mf) with
+        | Some "library" ->
+          Printf.eprintf
+            "woc: %s: this project declares `kind = \"library\"` — add a `main` for a demo \
+             binary, or check it with `woc %s`\n"
+            mf path
+        | _ -> ()
+      end;
+      exit 2
+    end;
+    let rt_path = match runtime with Some p -> p | None -> default_runtime_path () in
+    if (not (Sys.file_exists rt_path)) || Sys.is_directory rt_path then begin
+      Printf.eprintf "woc: runtime binary not found at '%s' -- build it with: make -C runtime wovm\n"
+        rt_path;
+      exit 2
+    end;
+    let rt_bytes =
+      match read_source rt_path with
+      | Ok s -> strip_existing_trailer s
+      | Error msg ->
+        Printf.eprintf "woc: %s\n" msg;
+        exit 2
+    in
+    let tmp = out ^ ".woc-build.tmp" in
+    (* stale tmp from an interrupted earlier build must not survive: its
+       permission bits would leak through, since Open_creat on an
+       existing inode does not apply the requested mode *)
+    (try Sys.remove tmp with Sys_error _ -> ());
+    (try
+       let oc = open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o755 tmp in
+       output_string oc rt_bytes;
+       output_string oc image;
+       output_bytes oc
+         (trailer_bytes ~payload_off:(String.length rt_bytes) ~payload_len:(String.length image));
+       close_out oc
+     with Sys_error msg ->
+       (try Sys.remove tmp with Sys_error _ -> ());
+       Printf.eprintf "woc: %s\n" msg;
+       exit 2);
+    (try Sys.rename tmp out
+     with Sys_error msg ->
+       Printf.eprintf "woc: %s\n" msg;
+       exit 2);
+    finish collector lookup
+  end
+
 
 (* [runtime] wo = ">= X.Y" — a minimum-toolchain-version constraint. Only `>=`
    and a bare version are interpreted; any other operator is accepted untouched
@@ -1036,6 +1115,32 @@ let manifest_build ?(update_deps = false) (dir : string) : unit =
       Printf.eprintf "woc: %s: `name` is required\n" mf;
       exit 2
   in
+  (* iteration 17: `kind` decides what `woc <dir>` MEANS for this project.
+     A library is checked whole with no entry required; a program builds, as
+     it always has. Absent is "program", so every existing manifest behaves
+     byte-identically. An unrecognized value is a manifest error rather than
+     a silent default — a typo'd kind would otherwise build the wrong thing,
+     the same reasoning manifest_parse's unknown-key rejection follows. *)
+  (match get "kind" with
+  | None | Some "program" -> ()
+  | Some "library" ->
+    (* Check mode. `[deps]` are resolved and the `[runtime]` constraint
+       enforced exactly as a build does — a library must be checkable
+       offline once locked, or "it checks here" means nothing. The full
+       pipeline runs (parse, typecheck, interface satisfaction, ownership,
+       GC inference) because compile_image runs it; the in-memory image is
+       simply discarded, so no target/ appears and no file is written. An
+       entry-less image is already legal on that path — the `--emit`
+       precedent. *)
+    let collector, lookup, _image = compile_image ~deps dir in
+    if Woc_lib.Diag.Collector.has_error collector then finish collector lookup;
+    exit 0
+  | Some other ->
+    Printf.eprintf
+      "woc: %s: error WO-E109: unknown `kind` value `%s` — expected \"program\" (the default) \
+       or \"library\"\n"
+      mf other;
+    exit 2);
   (* paths in the manifest are the PROJECT's, so they resolve against the
      manifest's directory — `woc .` inside the project and `woc path/to/it`
      from anywhere must build the same thing *)
@@ -1050,7 +1155,22 @@ let manifest_build ?(update_deps = false) (dir : string) : unit =
   build_mode ~deps ~runtime dir (Filename.concat target name)
 
 let () =
-  match Sys.argv with
+  (* haxe-parity Task 8: `-D name` defines a build flag (`#if name` keeps
+     its section). Accepted anywhere on the command line in every mode, so
+     it is peeled off BEFORE the fixed-shape mode match below. *)
+  let rec peel_defines acc = function
+    | "-D" :: name :: rest when name <> "" && name.[0] <> '-' ->
+      Woc_lib.Lexer.defines :=
+        Woc_lib.Lexer.StringSet.add name !Woc_lib.Lexer.defines;
+      peel_defines acc rest
+    | "-D" :: _ ->
+      Printf.eprintf "woc: -D needs a flag name (woc -D portable ...)\n";
+      exit 2
+    | a :: rest -> peel_defines (a :: acc) rest
+    | [] -> List.rev acc
+  in
+  let argv = Array.of_list (peel_defines [] (Array.to_list Sys.argv)) in
+  match argv with
   | [| _; "--dump-tokens"; path |] -> dump_tokens path
   | [| _; "--dump-ast"; path |] -> dump_ast path
   | [| _; "--dump-owner"; path |] -> dump_owner path

@@ -10,7 +10,27 @@
 > would optimize a number nobody had measured, against a runtime that
 > couldn't use it.
 >
-> **No spec exists yet.** The forks in *Info* are genuine decisions.
+> **No spec exists yet.** ~~The forks in *Info* are genuine decisions.~~
+>
+> **REFINED 2026-08-20: the four forks are SETTLED as their recorded
+> leanings** (developer confirmation, no code): (1) drop-in behind
+> `wo_wal_commit` first, an async variant only if the arc's scheduler
+> proves the blocking boundary is the bottleneck; (2) raw
+> `io_uring_setup`/`io_uring_enter` syscalls — libc-only doctrine holds,
+> ring layout documented normatively; (3) the batch boundary is the shard
+> tick (the 8+11 arc's quantum), single-writer fallback batches whatever
+> accumulated; (4) startup auto-probe + an env override so CI proves both
+> paths on one kernel — AMENDED: the override is the arc-wide
+> `WO_IO=uring|epoll` (the arc's T4 owns the probe and the per-shard
+> ring; `WO_WAL_MODE` is subsumed). Position: AFTER the 8+11 arc (order
+> settled 2026-08-20: 9e → 8+11 → 9f). AMENDED 2026-08-20 (io_uring-first
+> directive): the WAL's WRITE+FSYNC chains ride the SAME per-shard ring
+> T4 creates for fiber parking — one event loop per shard, readiness ops
+> and durability ops together, exactly the linux reference project's
+> "single event loop" card. One composition
+> note added since iteration 18: a `transaction { }` already IS a staged
+> batch — under io_uring it becomes exactly one submission, so the two
+> features compose without either knowing the other.
 
 ## Goals
 

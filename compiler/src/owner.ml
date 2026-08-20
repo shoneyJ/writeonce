@@ -406,7 +406,8 @@ let oclass_of (ctx : ctx) (ft : Ast.field_ty) : oclass =
      per rescan, which is a plain malloc and so ASan-visible). A Text read out
      of a PLACE is still a borrow — analyze_let's own place logic decides
      that, exactly as it does for a record field. *)
-  | Scalar n when n = "Text" || n = Types.json_value_type -> Owned
+  (* iteration 19: Bytes joins Text here — see Types.is_heap_scalar *)
+  | Scalar n when Types.is_heap_scalar n -> Owned
   | Scalar n ->
     if Types.is_builtin_scalar n then Copy
     else if Types.is_gc_class ctx.syms n then Gc
@@ -497,6 +498,7 @@ let variant_union_ty (ctx : ctx) (n : string) : Ast.field_ty option =
 let rec expr_ty (ctx : ctx) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
+  | FloatLit _ -> Some (Scalar "Float") (* iteration 19 *)
   | StrLit _ -> Some (Scalar "Text")
   | BoolLit _ -> Some (Scalar "Bool")
   (* A non-empty list literal knows its element type, so an unannotated
@@ -1073,7 +1075,7 @@ let escape (ctx : ctx) (l : local) ~(pos : Ast.pos) ~message
 let stores_by_copy (ctx : ctx) (p : place) : bool =
   match place_ty ctx p with
   | Some t -> ( match unwrap_nullable t with
-                | Scalar n -> n = "Text" || n = Types.json_value_type
+                | Scalar n -> Types.is_heap_scalar n
                 | _ -> false)
   | None -> false
 
@@ -1130,7 +1132,10 @@ type access = {
 
 let rec read_expr (ctx : ctx) (e : Ast.expr) : unit =
   match e.kind with
-  | IntLit _ | StrLit _ | BoolLit _ -> ()
+  (* iteration 19: a Float literal owns nothing — it is a word in a register,
+     exactly like an Int. (A Bytes value DOES own its heap object, but Bytes
+     has no literal form, so nothing new lands in this arm.) *)
+  | IntLit _ | FloatLit _ | StrLit _ | BoolLit _ -> ()
   | Ident _ | Field _ | Index _ ->
     (match place_of e with Some p -> use_place ctx p | None -> ());
     read_place_parts ctx e
@@ -1652,7 +1657,7 @@ and analyze_stmt (ctx : ctx) (s : Ast.stmt) : unit =
     let cursor (n : string) (t : Ast.field_ty) : local =
       let copied =
         match unwrap_nullable t with
-        | Scalar cn -> cn = "Text" || cn = Types.json_value_type
+        | Scalar cn -> Types.is_heap_scalar cn
         | _ -> false
       in
       if copied then
@@ -1788,7 +1793,7 @@ and analyze_let (ctx : ctx) (s : Ast.stmt) (name : string) (ty : Ast.field_ty op
     | _ -> false
   in
   let copies_out = reads_container && (match unwrap_nullable vty with
-                                       | Scalar n -> n = "Text" || n = Types.json_value_type
+                                       | Scalar n -> Types.is_heap_scalar n
                                        | _ -> false) in
   let vplace = if copies_out then None else place_of value in
   (* A `@gc` value read out of a container is neither a copy nor a new

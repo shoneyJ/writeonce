@@ -1,0 +1,31 @@
+-- #if build flags: undefined flags are false, #else flips, nesting works.
+-- The corpus runs woc with NO -D, so only the #else/undefined paths emit.
+
+fn label() -> Text {
+#if portable
+  return "portable";
+#else
+  return "native";
+#end
+}
+
+fn nested() -> Text {
+#if outer
+#if inner
+  return "both";
+#end
+  return "outer only";
+#else
+  return "neither";
+#end
+}
+
+fn main() -> Int {
+  print(label());
+  print(nested());
+#if debug
+  print("debug build");
+#end
+  print("done");
+  return 0;
+}

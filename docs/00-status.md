@@ -164,13 +164,14 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 2   | [VM core (`wovm`)](stories/language-runtime-database/done/02-vm-core.md)                          | ✅                           |
 | 3   | [Compiler front (`woc`)](stories/language-runtime-database/done/03-compiler-front.md)             | ✅ (known gaps below)        |
 | 4   | [Single binary end-to-end](stories/language-runtime-database/done/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
-| 5   | [Language surface](stories/language-runtime-database/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
+| 5   | [Language surface](stories/language-runtime-database/done/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
 | 6   | [Program mode + stdlib](stories/language-runtime-database/done/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
 | 7   | [log-watcher proof](stories/language-runtime-database/done/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/done/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
-| 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | ⬜                           |
+| 8   | [Shard-actor runtime](stories/language-runtime-database/refine/08-shard-actor-runtime.md)           | ⬜                           |
 | 9   | [Database engine](stories/language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
+| 19  | [Float + Bytes](stories/language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
 | 20  | [Cross-program tables](stories/language-runtime-database/refine/20-cross-program-tables.md)        | 🔄 channel done (branch ipc-attach); manifest+binding pending |
 | 21  | [Keypair attach auth](stories/language-runtime-database/refine/21-keypair-attach-auth.md)          | 🔄 crypto+handshake done (branch keypair-auth); manifest pending |
 | 22  | [Durability, throughput, scale](stories/language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first        |
@@ -183,8 +184,8 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 14  | [skillhost host workload](stories/language-runtime-database/refine/28-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
 | 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/done/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
 | 16  | [web framework](stories/language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/23/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
-| 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
-| 18  | [framework v2: memory-rich features](stories/language-runtime-database/18-memory-db-features.md) | 🔄 **spec APPROVED 2026-08-20, plan next** ([spec](superpowers/specs/2026-08-20-memory-db-features-design.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub REJECTED until 8/11 |
+| 17  | [library projects + `internal/`](stories/language-runtime-database/done/17-library-projects-internal.md) | ✅ **landed 2026-08-20** — `kind = "library"` in `wo.toml` (default `program`, so every existing manifest is byte-identical; unknown value = WO-E109 exit 2); `woc <dir>` on a library runs the FULL pipeline entry-less and writes nothing, retiring iteration 16's `--emit` workaround; the no-entry build error names the kind; lib+bin dual works. Go's `internal/` rule as **WO-E108** at the consumer's own `use`, dep-boundary-only — the library imports its own interior freely. Framework reorganized: `internal/{parse,serve}.wo` behind the line, `http/form.wo` split out to keep `media_type`/`form_values` public. Driver-only change; VM/`.wob`/GC untouched. `just web-app` **26/0** (3 new checks), every standing gate unchanged |
+| 18  | [framework v2: memory-rich features](stories/language-runtime-database/hold/18-memory-db-features.md) | 🔄 **spec APPROVED 2026-08-20, plan next** ([spec](superpowers/specs/2026-08-20-memory-db-features-design.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub REJECTED until 8/11 |
 
 ---
 
@@ -192,7 +193,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-20--framework-goal) |
+| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-20--code-review-pass) |
 
 Off-goal work is parked; the goal (2026-08-20) is the web framework as a
 polished micro-framework v1 — iteration 17 (library kind + `internal/`) is
@@ -359,48 +360,53 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 
 ## Pending
 
-### Implementation order (re-sequenced 2026-08-20 — framework goal)
+### Implementation order (re-sequenced 2026-08-20 — code-review pass)
 
-The goal is the web framework as a first-class library, so the framework
-line leads and the workload-driven extras (14, 27) demote behind it.
-Dependency rules that force the shape: 23 explicitly after 8 + 22; 20
-"precedes iteration 25"; 21's plan folds into 20's; 12 only after 9 + 10
-(catalog to diff, HTTP to build on); 11 rides 8's shard scheduler; h2c
-parked behind 8/23/11; the post-12 parked list stays parked by the
-2026-08-08 scope directive. (Iteration 7 dropped from this list — landed
-2026-08-15.)
+Replaces the framework-goal ordering. Basis: the verified findings in
+[`00-code-review.md`](00-code-review.md) — measure before optimizing, close
+correctness holes before adding surface, stop stacking features on
+unmeasured ground. IDs below are post-renumber; the authoritative table with
+per-row reasoning is
+[`00-story.md`](stories/language-runtime-database/00-story.md).
 
-1. ~~**17**~~ — **PARKED 2026-08-20** (developer directive: framework v1
-   first); spec + plan approved, ready on branch `library-internal` for
-   whenever it unparks — slots anywhere after 16. The framework v1 slices
-   took its place and landed the same day (branch framework-v1,
-   `just web-app` 21/0).
-2. **18** — framework v2 (transaction{} + cache/flags/jobs); spec
-   APPROVED 2026-08-20, the only all-green spec-approved node in the
-   [dependency graph](00-dependency-graph.md) — plan next, then
-   implement.
-3. **20 then 21** — finish the half-done branches (ipc-attach: manifest +
-   binding; keypair-auth: manifest) before they rot; 21 folds into 20's
-   plan; both must precede 10.
-4. **22** — the measurement backbone; baseline single-shard BEFORE the
-   runtime restructure so 8/23/11 sign against real numbers.
-5. **8** — shard-actor; the framework's multi-core serving story; unblocks
-   23, 11, h2c.
-6. **23** — io_uring group-commit; explicitly after 8 + 22.
-7. **11** — fibers; retires the framework's disclosed keep-alive limit (an
-   idle connection starving accept forced close-when-idle in iteration 16 —
-   parked fds fix it properly); with 8 + 23 done, **h2c unparks** (spec §C)
-   as the framework's HTTP/2 slice.
-8. **10** — HTTP service layer; after 20 by its own precedence note;
-   `service` blocks lower onto the framework instead of a parallel stack.
-9. **12** — blue-green; prerequisites 9 + 10 now exist; completes the
-   framework's deploy story.
-10. **27 then 14** — demoted with the goal shift: skillhost (28) is no longer the
-   driving workload; 27 likely collapses to "confirm `len(query)` + add
-   `exists`" and precedes 28 when they run.
-11. **13 + parked drain** — metaprogramming (spec first), then group-by,
-    `pub(read)`/`using`/`#if`, ADT roster, WO-E225 — held behind 26 by the
-    scope directive.
+Dependency rules that still force the shape: 23 explicitly after 8 + 22;
+21's plan folds into 20's; 26 only after 9 + 25; 11 rides 8's shard
+scheduler; h2c parked behind 8/23/11.
+
+1. **22** — the measurement backbone, and now first: it has never run, so
+   every performance claim on this project is unsourced. No
+   `bench/baseline.json`, no `just db-bench`; `runtime/bench/` is the
+   retired C prototype's harness.
+2. **8+11 stage 3** — transparent DB RPC, then 22 re-run for the
+   concurrency delta. Reframed as a correctness fix: worker VMs are
+   zero-initialized, so a DB statement off the primary traps `WO_T_DB`.
+   A multi-shard program that touches the database is broken today.
+3. **30** (new) — observability, CI, fuzz: runtime counters + a profiler
+   hook, 22's harness run per change instead of by hand, a fuzz target on
+   the parser and `.wob` loader. No iteration covered any of this.
+4. **19** — Float + Bytes; small, and it gates 24 (WS frames) and the
+   crypto fork (digests).
+5. **31** (new) — actor lifecycle: request/response (`send` is one-way and
+   callers `sleep` to await), bounded mailboxes (the FIFO only grows),
+   actor death/supervision, timers beyond `time.sleep`.
+6. **24** — chat, the arc's acceptance; honest only after 19 + 31.
+7. **23** — io_uring group-commit; explicitly after 8 + 22.
+8. **25** — HTTP service layer; `service` blocks lower onto the framework
+   instead of a parallel stack.
+9. **18** — framework v2 (transaction{} + cache/flags/jobs); spec APPROVED
+   2026-08-20 but **demoted from first**: more surface on a framework with
+   one consumer, and its cache stores `Text` because there are no generics.
+10. **27, then 26** — query grammar from corpora (likely collapses to
+    "confirm `len(query)` + add `exists`"), then blue-green.
+11. **20 then 21** — demoted hard: new distribution surface while there is
+    no TLS, no crypto primitives, and the multi-shard DB still traps. The
+    half-done branches (ipc-attach, keypair-auth) keep their manifests.
+12. **28, then 29 + parked drain** — skillhost is no longer the driving
+    workload; then metaprogramming (spec first), group-by, ADT roster,
+    WO-E225, held by the 2026-08-08 scope directive.
+
+✅ **17** — landed 2026-08-20 (unparked and executed): `kind = "library"`,
+check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 
 ### Language track — sequenced, on the critical path
 
@@ -418,7 +424,7 @@ parked behind 8/23/11; the post-12 parked list stays parked by the
 | 23  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 22                                               |
 | 27  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
-| 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | **forks settled 2026-08-20** — decisions + framework/compiler/VM/GC impact in the iteration; spec/plan next |
+| 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | ✅ **landed 2026-08-20** — [spec](superpowers/specs/2026-08-20-library-kind-internal-design.md) · [plan](superpowers/plans/2026-08-20-library-kind-internal.md) |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](plan/exploration/blue-green-vm/00-vision.md)                   |
 | 12  | Blue-green deploy                                                                                                                                                              | [spec](superpowers/specs/2026-08-03-blue-green-vm-design.md) — plan authored after iterations 9 + 25 |

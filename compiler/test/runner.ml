@@ -1221,14 +1221,21 @@ let typecheck_str ~file src =
   (syms, collector)
 
 let () =
-  (* Money/SKU/Float carry no special status -- all three are ordinary
-     unknown types now (WO-E225 fires on them as fields). Float went for
-     the same phantom-scalar reason Money/SKU did: no float-literal syntax
-     in the lexer and no float kind in wob, so no Float value could ever
-     be written or represented. Timestamp stays a real builtin. *)
+  (* Money/SKU carry no special status -- ordinary unknown types (WO-E225
+     fires on them as fields). Float was removed for the same phantom-scalar
+     reason once, and iteration 19 EARNED IT BACK: there is float-literal
+     syntax in the lexer, a WO_K_FLOAT kind in wob, f64 opcodes in the VM, and
+     a WAL slot -- so a Float value can now be written, stored, and replayed.
+     Money stays out (cents-as-Int holds until a workload proves otherwise);
+     Bytes came in with Float. Timestamp stays a real builtin. *)
   check "Money is no longer a builtin scalar" (not (Types.is_builtin_scalar "Money"));
   check "SKU is no longer a builtin scalar" (not (Types.is_builtin_scalar "SKU"));
-  check "Float is not a builtin scalar" (not (Types.is_builtin_scalar "Float"));
+  check "Float is a builtin scalar (iteration 19)" (Types.is_builtin_scalar "Float");
+  check "Bytes is a builtin scalar (iteration 19)" (Types.is_builtin_scalar "Bytes");
+  (* the no-mixing rule's own predicate: Float must NOT be Int-shaped, or
+     `print_int(price)` would print f64 bits as a huge integer *)
+  check "Float is not Int-shaped" (not (Types.is_scalar_shaped "Float"));
+  check "Bytes is not Int-shaped" (not (Types.is_scalar_shaped "Bytes"));
   check "Timestamp is a builtin scalar" (Types.is_builtin_scalar "Timestamp")
 
 let () =
@@ -2271,7 +2278,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 4 then fail "unsupported version";
+  if u32 4 <> 5 then fail "unsupported version"; (* v5: iteration 19 *)
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2287,7 +2294,10 @@ let validate_image (img : string) : string list =
     let tag = u8 !o in
     incr o;
     ctag.(i) <- tag;
-    if tag = 0 then o := !o + 8
+    (* tag 2 = WOB_K_FLOAT (iteration 19): same 8-byte payload as an Int,
+       read as f64 bits. Every bit pattern is a legal f64, so nothing to
+       validate beyond the length. *)
+    if tag = 0 || tag = 2 then o := !o + 8
     else if tag = 1 then begin
       let n = u32 !o in
       o := !o + 4;
@@ -2310,7 +2320,8 @@ let validate_image (img : string) : string list =
     class_fields.(i) <- fcnt;
     let kco = !o in (* the kind bytes' offset: the v3 index walk re-reads them *)
     for j = 0 to fcnt - 1 do
-      if u8 (!o + j) > 5 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
+      (* WO_K_MAX is 7 since iteration 19 (6 = FLOAT, 7 = BYTES) *)
+      if u8 (!o + j) > 7 then fail (Printf.sprintf "class %d field %d: bad kind" i j)
     done;
     o := !o + fcnt + ((4 - (fcnt mod 4)) mod 4);
     (* v2: three u32 arrays of per-field metadata — names (a Text constant or
@@ -2321,8 +2332,12 @@ let validate_image (img : string) : string list =
       if nmk <> 0xFFFFFFFF && not (text_const nmk) then
         fail (Printf.sprintf "class %d field %d: bad name constant" i j);
       let fc = u32 (!o + ((fcnt + j) * 4)) in
-      if fc <> 0xFFFFFFFF && fc <> 0xFFFFFFFE && fc >= kcnt then
-        fail (Printf.sprintf "class %d field %d: field class out of range" i j)
+      (* NONE, JSON_RAW, NIL_SCALAR, BOOL, NIL_BOOL, and (iteration 19)
+         NIL_FLOAT are markers, not class ids — same list as loader.c *)
+      if
+        fc <> 0xFFFFFFFF && fc <> 0xFFFFFFFE && fc <> 0xFFFFFFFD && fc <> 0xFFFFFFFC
+        && fc <> 0xFFFFFFFB && fc <> 0xFFFFFFFA && fc >= kcnt
+      then fail (Printf.sprintf "class %d field %d: field class out of range" i j)
     done;
     o := !o + (fcnt * 12);
     (* v3: the index tail — flags (bit0 only), col_cnt 1..8, columns in
@@ -2340,8 +2355,11 @@ let validate_image (img : string) : string list =
         o := !o + 4;
         if col >= fcnt then fail (Printf.sprintf "class %d index %d: column out of range" i x);
         let kind = u8 (kco + col) in
-        if kind <> 0 && kind <> 3 then
-          fail (Printf.sprintf "class %d index %d: column %d is not scalar or Text" i x c)
+        (* iteration 19: FLOAT (6) is indexable — the engine orders it by the
+           total order (NaN last). BYTES (7) is not, this iteration. *)
+        if kind <> 0 && kind <> 3 && kind <> 6 then
+          fail
+            (Printf.sprintf "class %d index %d: column %d is not scalar, Text, or Float" i x c)
       done
     done;
     if !o > len then fail (Printf.sprintf "class %d: truncated" i)
@@ -2493,13 +2511,15 @@ let validate_image (img : string) : string list =
              golden lowering suite actually emits; 61 = DB_INSERT (arity 1:
              the class-id slot — field slots are runtime-validated, same as
              the C loader) *)
-          if c > 12 && (c < 61 || c > 67) then
+          (* iteration 19 widened the accepted band to 70-83 (the Float
+             bridges and the Bytes surface) alongside 61-67 *)
+          if c > 12 && (c < 61 || c > 67) && (c < 70 || c > 83) then
             fail (Printf.sprintf "method %d pc %d: builtin out of range" i pc)
           else if c = 4 then begin
-            if b > 5 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
+            if b > 7 then fail (Printf.sprintf "method %d pc %d: bad element kind" i pc)
           end
           else if c = 9 then begin
-            if b land 0x0F > 5 || b lsr 4 > 5 then
+            if b land 0x0F > 7 || b lsr 4 > 7 then
               fail (Printf.sprintf "method %d pc %d: bad key/value kind" i pc)
           end
           else begin
@@ -2516,6 +2536,11 @@ let validate_image (img : string) : string list =
               | 65 -> 3
               | 66 -> 3
               | 67 -> 2
+              (* iteration 19: float bridges and Bytes, mirroring
+                 loader.c's b_arity table *)
+              | 70 | 71 | 72 | 73 | 75 | 80 | 81 | 82 | 83 -> 1
+              | 74 | 76 | 78 | 79 -> 2
+              | 77 -> 3
               | _ -> 0
             in
             if arity > 0 then begin
@@ -2524,6 +2549,15 @@ let validate_image (img : string) : string list =
             end
           end
         | 30 | 31 -> ()
+        (* iteration 19: FNEG is two registers, the rest are three — the same
+           shapes as their Int counterparts (opcodes 7 and 3-6/9-11) *)
+        | 38 ->
+          rchk pc a;
+          rchk pc b
+        | 34 | 35 | 36 | 37 | 39 | 40 | 41 ->
+          rchk pc a;
+          rchk pc b;
+          rchk pc c
         | _ -> fail (Printf.sprintf "method %d pc %d: unknown opcode %d" i pc op))
       code;
     if ninstr > 0 then begin

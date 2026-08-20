@@ -81,6 +81,7 @@ void wo_drop_obj(wo_rt *rt, wo_hdr *o) {
     if (!o) return;
     switch (o->class_id) {
     case WO_CLS_STR:
+    case WO_CLS_BYTES: /* iteration 19: same object shape, same free */
         wo_str_free(rt, (wo_str *)o);
         return;
     case WO_CLS_MULTI:
@@ -177,6 +178,7 @@ void wo_gc_scan_root(wo_rt *rt, wo_hdr *o) {
     }
     switch (o->class_id) {
     case WO_CLS_STR:
+    case WO_CLS_BYTES: /* iteration 19: leaf bytes, nothing to scan */
         return;
     case WO_CLS_MULTI: {
         wo_multi *m = (wo_multi *)o;

@@ -1,0 +1,6 @@
+-- a #if left open at end of file is WO-E003
+
+fn main() -> Int {
+#if portable
+  return 1;
+}

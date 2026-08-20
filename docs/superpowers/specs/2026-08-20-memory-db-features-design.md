@@ -6,7 +6,7 @@
 >
 > **Status: APPROVED 2026-08-20** (developer review). Plan next.
 > Decisions were settled in
-> [the iteration](../../stories/language-runtime-database/18-memory-db-features.md);
+> [the iteration](../../stories/language-runtime-database/hold/18-memory-db-features.md);
 > this spec makes them buildable. The plan follows after review.
 > Board: [docs/00-status.md](../../00-status.md).
 >

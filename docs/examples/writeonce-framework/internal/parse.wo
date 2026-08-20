@@ -1,4 +1,10 @@
--- http/parse.wo — HTTP/1.1 request parsing over a net connection.
+-- internal/parse.wo — HTTP/1.1 request parsing over a net connection.
+--
+-- INTERNAL (iteration 17): a consumer cannot `use` this module — the
+-- `internal/` segment makes that WO-E108. The connection-level parser, the
+-- carry-state record, and the %XX/query decoders are the framework's own
+-- business; `media_type`/`form_values` are the public half and live in
+-- `http/form.wo`.
 --
 -- Bounded reads only (`net.read`), so requests are buffered to the header
 -- terminator, then the body to exactly Content-Length. Keep-alive means
@@ -10,6 +16,7 @@
 --   ok=false               malformed request — answer 400 and close
 --   ok=true, req non-nil   one complete request
 use net
+use http -- Req lives in the public module now
 
 const BODY_MAX = 1048576
 
@@ -56,7 +63,7 @@ pub fn url_decode(t: Text, plus_space: Bool) -> Text {
 }
 
 -- "a=1&b=hello+world" -> decoded pairs; a bare key maps to ""
-fn parse_query(qs: Text) -> map<Text, Text> {
+pub fn parse_query(qs: Text) -> map<Text, Text> {
   let q: map<Text, Text> = {};
   if qs == "" { return q; }
   for pair in split(qs, "&") {
@@ -69,25 +76,6 @@ fn parse_query(qs: Text) -> map<Text, Text> {
     }
   }
   return q;
-}
-
--- The request's media type: the content-type header lowercased with any
--- parameters ("; charset=...") stripped; "" when the header is absent.
-pub fn media_type(req: Req) -> Text {
-  let ct = req.headers["content-type"];
-  if ct == nil { return ""; }
-  let semi = index_of(ct, ";");
-  if semi >= 0 { return to_lower(trim(substr(ct, 0, semi))); }
-  return to_lower(trim("${ct}"));
-}
-
--- Form-encoded body -> decoded pairs ('+' as space, %XX), the body-parsing
--- hook for application/x-www-form-urlencoded. nil when the content-type
--- says the body is something else — a JSON body is not silently misread
--- as one giant form key.
-pub fn form_values(req: Req) -> ?map<Text, Text> {
-  if media_type(req) != "application/x-www-form-urlencoded" { return nil; }
-  return parse_query(req.body);
 }
 
 fn malformed(rest: Text) -> Parsed {

@@ -138,3 +138,46 @@ returns, and actor state / queued messages / the in-flight message are GC
 roots scanned beside the fiber frames. spawn = BUILTIN 68 (instance +
 receive's method index, compile-time constant); send = BUILTIN 69 (the
 message is excluded from the emitter's fresh-arg drops — ownership moved).
+
+## Float and Bytes (iteration 19 — `.wob` v5)
+
+The registers did not change shape: a Float IS the register's 64 bits read as
+an f64, converted only by `wo_f64`/`wo_bits` in `wob.h` (memcpy, so
+strict-aliasing-clean and free at -O1). Nothing else in the runtime knows the
+difference, which is why the change is opcodes and kind bytes rather than a
+layout.
+
+- **Two failure worlds.** `WOP_DIV` traps DIV0; `WOP_FDIV` never traps. That
+  asymmetry is the contract, not an oversight — IEEE quiet semantics mean Inf
+  and NaN flow instead of raising, so a compute-bound handler cannot be killed
+  by data. `WOP_FNEG` flips the sign bit rather than subtracting from zero,
+  which is the only way `-0.0` is reachable.
+- **IEEE compares are not the index's order.** `FEQ`/`FLT`/`FLE` are IEEE
+  (`NaN == NaN` is 0, `0.0 == -0.0` is 1). Indexes and `order by` need a total
+  order instead, so `wo_float_cmp` (`wob.h`) sorts NaN last and treats the two
+  zeros as equal, and `table.c`'s `idx_float_key` canonicalizes an index
+  column's bits to match. Skip that canonicalization and a `unique` Float
+  column accepts both `-0.0` and `0.0`, and a probe for one misses a row stored
+  as the other — the bug this pairing exists to prevent.
+- **A `?Float`'s nil is a reserved quiet NaN** (`WO_NIL_FLOAT`), not the zero
+  word (`+0.0`) and not `WO_NIL_SCALAR` (whose bits are `-2.0`). Arithmetic
+  produces the platform's canonical quiet NaN, so a computed NaN never reads as
+  absence. Both json paths that write a nil word — the omitted-key prefill in
+  `jparse_object` and the explicit `null` in `jparse_value` — must know this;
+  either one alone leaves a `null` price reading back as zero.
+- **Bytes is `wo_str` with a different `class_id`.** Same struct, same
+  allocator, same free (`gc.c` handles both ids), so lifetime handling can
+  never diverge. `WO_B_TEXT_COPY` preserves the id, which is what lets every
+  existing copy-on-ownership-boundary serve both carriers; copying a Bytes as a
+  Text would launder it into the wrong world, and the distinct id exists
+  precisely to stop that.
+- **One float renderer, three callers.** `wo_float_text` backs
+  `float_to_text`, string interpolation, and `json.encode`. Shortest digits
+  that reparse to the same BITS (bits, not `==`: `-0.0 == 0.0` is true, so a
+  value comparison would let `0` stand in for `-0.0`), then fixed notation
+  preferred over exponential in `1e-6 … 1e21` — pure "shortest" renders a
+  price of 900.0 as `9e+02`.
+- **The durability path never renders.** `wal.c` writes a Float as its raw
+  word and a Bytes as the same length-prefixed blob a Text uses, so replay is
+  bit-exact for NaN, ±Inf, and `-0.0`. `test_wal`'s `test_float_bytes_replay`
+  asserts on bits for exactly that reason.

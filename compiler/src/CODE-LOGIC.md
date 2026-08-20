@@ -147,6 +147,19 @@ crash): emit_return's place test now sees through `Interp` the same way,
 while bare Ident/Field/Index behavior there is unchanged. Both flavors
 pinned by `tests/corpus/run/interp-borrowed-field`.
 
+The iteration-5 strictness closeout (2026-08-20) added three seams worth
+knowing: `pub(read)` rides the field annotation list as a synthetic
+"pub_read" marker and is enforced in the Assign case that already resolves
+the target's class (WO-E219, `current_self` names the checking class —
+class-owned writes, sibling instances included); `using` extensions are a
+TYPECHECK-TIME rewrite — `types.ml` records (file, call-id) → fn name in
+`using_rewrites` and `apply_using_rewrites` rewrites `recv.ext(a)` to
+`ext(recv, a)` before owner/emit, which therefore carry zero
+using-awareness (collision with a real method is WO-E220 — never a silent
+win either way); `#if` is a token-stream filter at the end of
+`Lexer.tokenize` (`Lexer.defines` filled by `woc -D`, WO-E003 for misuse)
+— the parser never sees a directive.
+
 Two rules the measurements imposed, both easy to get backwards:
 
 - **Never drop an argument register after a `CALL`.** The callee's frame
@@ -171,3 +184,79 @@ Two rules the measurements imposed, both easy to get backwards:
 - `./compiler/_build/default/bin/woc --emit docs/examples/log-watcher -o /tmp/lw.wob`
   — the acceptance workload. It must compile with zero diagnostics, and
   `runtime/wovm /tmp/lw.wob watch <file> 2 1` must tail a live file and alert.
+
+## Float and Bytes (iteration 19)
+
+- **A digit run is an Int unless a fraction or an exponent follows.** The
+  lexer requires a DIGIT after `.` before committing to a Float, which is what
+  keeps `0..10` a range rather than `Float 0.` followed by `.10`, and checks
+  the exponent form (`e`, optional sign, at least one digit) before consuming
+  anything, so `2eggs` is still `Int 2` then an ident. `c` in that branch is
+  PEEKED, not consumed — the scan loop reads it, and adding it to the buffer
+  first double-counts the leading digit (a real bug this went through).
+- **The no-mixing rule lives in the typechecker, not the emitter.** The
+  emitter picks the arithmetic opcode from whether EITHER side is a Float, so
+  an unreported `1 + 2.5` would lower to integer ADD over f64 bits and produce
+  a plausible wrong number with no diagnostic. `check_numeric_mix` reports the
+  mix (WO-E201) off confident types only, keeping this file's stay-silent-when-
+  underivable contract; `%` on a Float is rejected outright.
+- **`Float`/`Bytes` are builtin scalars but not Int-shaped.**
+  `is_scalar_shaped` excludes both by name alongside `Text`, or
+  `print_int(price)` prints f64 bits as a huge integer and `trunc(digest)`
+  reinterprets a pointer — the representation mismatch that predicate exists
+  for.
+- **Bytes is a heap-owned scalar, so every ownership rule that named `Text` by
+  string had to name a predicate instead.** `Types.is_heap_scalar` is that
+  predicate (owner.ml's four sites) and `is_heap_kind` is its emitter twin
+  (kind 3 or 7, six sites). Miss one and a Bytes temp never drops, or a Bytes
+  stored into a container aliases where a Text would copy.
+- **`?Float` needs its own nil constant.** `nil_const_for` picks it, and the
+  bit pattern is emitted as a FLOAT pool constant because it is far outside
+  OCaml's 63-bit native int — `const_int` cannot express it at all. Float
+  constants dedupe on BITS, since `0.0` and `-0.0` are `=`-equal in OCaml but
+  must stay distinct, and NaN is not `=`-equal to itself.
+- **A Float `order by` key uses `float_cmp`, not `op_lt`.** Raw-bit ordering
+  puts negatives backwards (the sign bit makes `-1.0` compare greater than
+  `1.0` as an integer) and leaves NaN wherever the comparison sequence drops
+  it. `float-table-column` in the corpus pins the ascending order that a
+  bit compare gets wrong.
+- **Three parallel builtin tables must agree**: `Types.builtin_signatures`
+  (arity + arg kinds), `Types.builtin_confident_ret` and its emitter twin
+  `builtin_ret` (a missing entry for a fresh-heap result is a LEAK, not just a
+  lost type), and `is_builtin_name` plus the id mapping. The loader's arity
+  table and the OCaml twin in `compiler/test/runner.ml` are a fourth and fifth.
+
+## Library kind and the `internal/` boundary (iteration 17)
+
+Every part of this lives in the driver (`compiler/bin/main.ml`). No lexer,
+parser, typechecker, VM, `.wob`, or GC change — `internal` is a path shape, not
+a keyword, and visibility is name resolution at compile time.
+
+- **`kind` is declared, not inferred.** `wo.toml`'s top-level `kind` is
+  `"program"` (the default, so every existing manifest is byte-identical) or
+  `"library"`; anything else is WO-E109 at exit 2. Go infers library-ness from
+  the absence of `main`, which makes "you forgot the entry" and "this is a
+  library" the same error — the whole reason to spend a manifest key here.
+- **Check mode reuses `compile_image` whole.** The library branch resolves
+  `[deps]`, enforces the `[runtime]` constraint, runs the full pipeline, and
+  discards the in-memory image; no `target/` is created and no file is written.
+  An entry-less image was already legal on that path (the `--emit` precedent),
+  so "checks clean" means what "builds clean" means.
+- **`manifest_parse` was RELOCATED above `build_mode`** so the no-entry error
+  can read the manifest and say "this project declares itself a library"
+  instead of only "no `main`". OCaml has no forward reference across top-level
+  `let`s; types.ml solved the same problem the same way. `woc build <dir> -o
+  <out>` never goes through `manifest_build`, so reading it inside `build_mode`
+  is the only placement that covers the explicit-build path.
+- **WO-E108 is consumer-only, and keys on the FIRST segment naming a dep.**
+  That single condition is what makes the root project's own `internal/`
+  directories immune, and the dep-owned branch (which prefixes `use internal`
+  to `<dep>/internal`) is untouched, so a library imports its own interior
+  freely. The match is on a whole path SEGMENT — a module named `internals` is
+  ordinary public surface.
+- **The offending `use` is left in the AST, not dropped.** The collector's
+  has-error path already stops emission; removing the use would replace one
+  clear diagnostic with a cascade of unknown-type errors from the same file.
+- **Exit-code bands stay split**: WO-E108 is a diagnostic through the normal
+  collector path (exit 1); WO-E106/E107/E109 are manifest errors printed
+  directly (exit 2).

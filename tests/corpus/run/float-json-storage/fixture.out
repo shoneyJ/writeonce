@@ -1,0 +1,10 @@
+{"name":"mug","price":9.99,"discount":null,"blob":"aGk="}
+9.99
+0.25
+hi
+{"name":"mug","price":9.99,"discount":0.25,"blob":"aGk="}
+0.0025 0
+null discount read back as nil
+42.0
+int fraction still rejected
+{"name":"inf","price":null,"discount":null,"blob":""}

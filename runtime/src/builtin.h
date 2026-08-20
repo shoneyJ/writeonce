@@ -31,4 +31,26 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 /* json.encode / json.decode (runtime/src/json.c), same contract again. */
 int wo_builtin_json(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
+/* iteration 19: render a Float as text, SHORTEST form that reparses to the
+ * same bits, into `out` (cap must be >= WO_FLOAT_TEXT_CAP); returns the
+ * length. One renderer for three callers — WO_B_FLOAT_TO_TEXT, string
+ * interpolation, and json.encode — because three spellings of the same
+ * number is how a round-trip test starts passing while the product lies.
+ *
+ * The rendering always carries a '.' or an exponent, so a Float never prints
+ * as `1` where an Int would: the two numeric worlds stay visibly distinct,
+ * and `1.0` reparses to exactly the same bits as `1`. Non-finite values
+ * render `nan` / `inf` / `-inf`; json.encode does NOT use those (JSON has no
+ * such literals) and emits `null` instead, which it decides for itself. */
+#define WO_FLOAT_TEXT_CAP 32u
+size_t wo_float_text(double d, char *out, size_t cap);
+
+/* iteration 19: decode base64 into a fresh Bytes. Two callers — the
+ * `base64_decode` builtin and json.decode's Bytes boundary — and they must
+ * agree byte for byte, so there is one implementation.
+ *   0 = ok (*out is the Bytes word), -1 = malformed input, -2 = OOM.
+ * Malformed is a return code rather than a trap because both callers treat
+ * bad base64 as expected input from the network. */
+int wo_base64_to_bytes(wo_rt *rt, const char *p, uint32_t len, uint64_t *out);
+
 #endif /* WO_BUILTIN_H */

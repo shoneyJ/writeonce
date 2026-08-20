@@ -1,4 +1,4 @@
--- http/serve.wo — response serialization + the blocking keep-alive serve
+-- internal/serve.wo — response serialization + the blocking keep-alive serve
 -- loop. The dispatch seam is the Dispatcher interface (the router's App
 -- satisfies it, Task 3); it is wrapped in `try`, so a trapping handler
 -- answers 500 and the loop lives — a bad request must never kill the
@@ -7,6 +7,10 @@
 -- in a blocking call already unwinds cleanly — the runtime's stop story).
 use net
 use env
+-- iteration 17: serve.wo moved under internal/, so Req/Resp and the response
+-- builders are no longer same-module — they live in the public `http` module.
+use http
+use internal
 
 pub interface Dispatcher {
   fn dispatch(mut req: Req) -> Resp

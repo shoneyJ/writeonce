@@ -1184,6 +1184,15 @@ and parse_primary (st : state) : Ast.expr =
     let id = fresh_id st in
     ignore (advance st);
     { Ast.id; pos; kind = Ast.IntLit n }
+  | Token.Float f ->
+    (* iteration 19. Negative literals are Unary(Neg, FloatLit) exactly as
+       they are for Int — and that is what makes -0.0 reachable, since the
+       emitter lowers the negation to WOP_FNEG (a sign flip), not to
+       `0.0 - x` (which would give +0.0). *)
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.FloatLit f }
   | Token.Str s ->
     let pos = peek_pos st in
     let id = fresh_id st in
@@ -1597,13 +1606,22 @@ let parse_const_literal (st : state) : Ast.expr =
   | Token.Int n ->
     ignore (advance st);
     { Ast.id; pos; kind = Ast.IntLit n }
+  | Token.Float f ->
+    ignore (advance st);
+    { Ast.id; pos; kind = Ast.FloatLit f }
   | Token.Dash -> (
     ignore (advance st);
     match peek st with
     | Token.Int n ->
       ignore (advance st);
       { Ast.id; pos; kind = Ast.IntLit (-n) }
-    | _ -> unexpected st "an integer literal after '-'")
+    | Token.Float f ->
+      (* a `const` initializer is folded here rather than emitted as a
+         negation, so -0.0 needs the sign to survive the fold: OCaml's unary
+         minus on a float flips the sign bit, which is exactly right. *)
+      ignore (advance st);
+      { Ast.id; pos; kind = Ast.FloatLit (-.f) }
+    | _ -> unexpected st "a numeric literal after '-'")
   | Token.Str s ->
     ignore (advance st);
     { Ast.id; pos; kind = Ast.StrLit s }
@@ -1854,18 +1872,18 @@ let parse_interface ?(pub = false) (st : state) : Ast.interface_decl =
    statement is (`end_of_stmt`: optional `;`, then newline/EOF — there
    is no enclosing block at top level, but end_of_stmt's RBrace arm is
    harmless dead code here, never reached). *)
-let parse_use_decl (st : state) : Ast.use_decl =
+let parse_use_decl ?(is_using = false) (st : state) : Ast.use_decl =
   let pos = peek_pos st in
   let id = fresh_id st in
   ignore (advance st);
-  (* 'use' *)
+  (* 'use' or 'using' — `using` is a use PLUS extension registration *)
   let first = expect_ident st "module name" in
   let segments = ref [ first ] in
   while accept st Token.Slash do
     segments := expect_ident st "module path segment" :: !segments
   done;
   end_of_stmt st;
-  { Ast.id; pos; segments = List.rev !segments }
+  { Ast.id; pos; segments = List.rev !segments; is_using }
 
 (* ---- top-level program ---------------------------------------------------
 
@@ -1900,6 +1918,7 @@ let parse_program (st : state) : Ast.program =
          | Token.KwInterface -> decls := Ast.Interface (parse_interface st) :: !decls
          | Token.KwFn -> decls := Ast.Fn (parse_fn_decl ~pub:false st) :: !decls
          | Token.KwUse -> decls := Ast.Use (parse_use_decl st) :: !decls
+         | Token.KwUsing -> decls := Ast.Use (parse_use_decl ~is_using:true st) :: !decls
          | Token.KwConst -> decls := Ast.Const (parse_const_decl st) :: !decls
          | Token.KwInline ->
            let ipos = peek_pos st in
@@ -1967,7 +1986,7 @@ module StringSet = Set.Make (String)
 
 let rec subst_expr (consts : Ast.expr StringMap.t) (bound : StringSet.t) (e : Ast.expr) : Ast.expr =
   match e.Ast.kind with
-  | Ast.IntLit _ | Ast.StrLit _ | Ast.BoolLit _ | Ast.DbStub _ -> e
+  | Ast.IntLit _ | Ast.FloatLit _ | Ast.StrLit _ | Ast.BoolLit _ | Ast.DbStub _ -> e
   | Ast.Ident name ->
     if StringSet.mem name bound then e
     else ( match StringMap.find_opt name consts with Some v -> { e with Ast.kind = v.Ast.kind } | None -> e)

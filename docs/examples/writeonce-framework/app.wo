@@ -1,5 +1,5 @@
 -- app.wo — the assembly: an App holds the middleware chain and the route
--- table, satisfies http's Dispatcher interface, and serves.
+-- table, satisfies internal's Dispatcher interface, and serves.
 --
 --   let app = App { middleware: [], routes: [] };
 --   app.use_mw(Mw { m: Auth { token: t } });
@@ -12,6 +12,9 @@
 -- and the server survives.
 use http
 use router
+-- iteration 17: the serve loop is library-internal now (internal/serve.wo).
+-- Legal here: the `internal/` boundary refuses CONSUMERS, not the library.
+use internal
 
 pub class App {
   middleware: multi Mw
@@ -67,6 +70,6 @@ pub class App {
   }
 
   fn serve(host: Text, port: Int) -> Int {
-    return http.serve(host, port, self);
+    return internal.serve(host, port, self);
   }
 }
