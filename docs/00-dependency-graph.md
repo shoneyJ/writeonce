@@ -1,16 +1,15 @@
 # Dependency graphs — iterations and framework features
 
 > Companion to [00-status.md](00-status.md) (states live THERE; this page
-> carries the edges). An arrow `A --> B` means **A must exist before B**.
-> Use it to pick the next implementation: anything whose incoming arrows
-> are all green is startable today. Updated 2026-08-20.
+> carries the edges). An arrow `A --> B` means **A must exist before B**;
+> a dashed arrow is a scope DIRECTIVE, not a technical dependency. Use it
+> to pick the next implementation: anything whose incoming arrows are all
+> green is startable today. Rebuilt 2026-08-20 from a sweep of every
+> story/spec/plan markdown (the "misses" pass: iteration 17's outgoing
+> edges, the concurrency chain, the post-12 parked drain, 9b→10,
+> 14's gap fan-out, 9c's fiber caveat).
 
 ## 1. Story iterations
-
-Hard dependencies only — edges that force order. The CHOSEN order among
-startable nodes (9e before 8 so the restructure has a baseline; 9c/9d
-before 10 goes 9c-first because 9d folds into 9c's plan) lives in
-00-status.md's "Implementation order".
 
 ```mermaid
 flowchart TD
@@ -19,36 +18,47 @@ flowchart TD
     classDef specd fill:#0969da,color:#fff,stroke:none
     classDef open fill:#eac54f,color:#000,stroke:none
 
+    FOUND["1–6 foundation: doctrine, VM, compiler, binary, surface, stdlib"]:::done
     I7["7 log-watcher proof"]:::done
-    I7b["7b inferred GC + mark-sweep"]:::done
+    I7b["7b inferred GC + per-shard mark-sweep"]:::done
     I9["9 database engine"]:::done
     I9b["9b @table + query"]:::done
     I15["15 deps package manager"]:::done
     I16["16 web framework v1 core"]:::done
 
-    I17["17 library kind + internal/ (PARKED, spec+plan ready)"]:::parked
-    I18["18 framework v2: transaction{} + cache/flags/jobs (spec APPROVED)"]:::specd
+    I17["17 library kind + internal/ (PARKED — spec+plan ready, branch library-internal)"]:::parked
+    FWREORG["framework internal/ reorg + check mode (kills the --emit workaround; WO-E108/E109 reserved)"]:::parked
+    I18["18 framework v2: transaction{} + cache/flags/jobs (spec APPROVED — the next implementation)"]:::specd
 
     I9c["9c cross-program tables (half-built)"]:::open
-    I9d["9d keypair attach auth (half-built)"]:::open
+    I9d["9d keypair attach auth (half-built; crypto+handshake already on its branch)"]:::open
     I9e["9e durability + throughput baseline"]:::open
     I8["8 shard-actor runtime"]:::open
     I9f["9f io_uring group-commit"]:::open
-    I10["10 HTTP service layer"]:::open
+    I10["10 HTTP service layer (lowers onto the framework)"]:::open
     I11["11 fibers"]:::open
     I12["12 blue-green deploy"]:::open
     I13["13 metaprogramming @derive"]:::open
     I14["14 skillhost workload (demoted)"]:::open
     I9g["9g query grammar corpus (likely collapses)"]:::open
-    H2C["h2c HTTP/2 cleartext (spec §C)"]:::open
+    GAPS["14's gap fan-out: bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process"]:::open
+    DRAIN["post-12 parked drain: pub(read)/using/#if, WO-E225, ADT roster, group-by"]:::parked
 
+    FOUND --> I7
+    FOUND --> I9
+    I7 --> I7b
+    I9 --> I9b
+    I9b --> I15
+    I15 --> I16
     I15 --> I17
     I16 --> I17
+    I17 --> FWREORG
     I9 --> I18
     I16 --> I18
     I9 --> I9c
     I9c --> I9d
     I9c --> I10
+    I9b --> I10
     I16 --> I10
     I9b --> I9e
     I7b --> I8
@@ -57,26 +67,80 @@ flowchart TD
     I8 --> I11
     I9 --> I12
     I10 --> I12
-    I8 --> H2C
-    I9f --> H2C
-    I11 --> H2C
     I9g --> I14
     I7 --> I14
+    I14 --> GAPS
+    I12 -.scope directive.-> I13
+    I12 -.scope directive.-> DRAIN
 ```
 
 Reading it: **18 is the only spec-approved open node with all
-prerequisites green** — it is the next implementation. After 18: 9c/9d
-and 9e are startable in parallel-in-principle (order chosen: 9c/9d
-first, half-built branches rot). 13 has no incoming edges but is
-scope-directive-parked behind 12. 17 unparks whenever directed — its
-prerequisites landed and its spec+plan sit on branch `library-internal`.
+prerequisites green — the next implementation.** After 18: 9c/9d and 9e
+are startable (chosen order: 9c/9d first — half-built branches rot).
+17 unparks on directive: its prerequisites landed, its spec+plan wait on
+branch `library-internal`, and its landing brings the framework reorg
+node with it. 13 and the parked drain sit behind 12 by the 2026-08-08
+scope directive (dashed), not by any technical edge.
 
-## 2. Framework v1 — remaining ledger items
+## 2. The concurrency chain (iterations 8 / 9f / 11 and everything they gate)
 
-What each open ledger row waits on. Three gates recur: **net seams**
-(runtime `net` builtins), the **crypto fork** (the language has no
-bitwise operators — hashes become C runtime builtins or bit ops land
-first; brainstorm before the slice), and **runtime iterations 8/11**.
+The runtime's concurrency work is the single biggest unlocker — every
+⏸ row in the framework ledger and two v2 follow-ons hang off it.
+
+```mermaid
+flowchart TD
+    classDef rt fill:#8250df,color:#fff,stroke:none
+    classDef gated fill:#eac54f,color:#000,stroke:none
+    classDef v2 fill:#0969da,color:#fff,stroke:none
+
+    I7b2["7b per-shard collector (done — the precondition 8 waited on)"]:::rt
+    I8x["8 shard-actor runtime: thread-per-core, ownership-move messages"]:::rt
+    I9fx["9f io_uring group-commit (batch = the shard tick)"]:::rt
+    I11x["11 fibers: reduction-budget preemption, blocking builtins park"]:::rt
+    I9ex["9e baseline (numbers 8/9f sign against)"]:::rt
+
+    KEEPAL["keep-alive parking retired (close-when-idle policy dies; parked fds)"]:::gated
+    H2C2["h2c HTTP/2 cleartext (spec §C: also needs 9f)"]:::gated
+    STREAM2["request body streaming + backpressure"]:::gated
+    SRESP2["streaming responses + explicit commit point"]:::gated
+    CANCEL2["per-request cancellation propagation"]:::gated
+    PUBSUB2["pub/sub + WebSockets (rejected until here)"]:::gated
+    ASYNC9C["9c async attach statements (rejected-for-now alternative)"]:::gated
+    TIMEOUTS2["idle timeouts become schedulable (net seam still needed)"]:::gated
+
+    FIBJOBS2["fiber-scheduled jobs (replaces drain-on-request; queue table stays)"]:::v2
+    CANCELRB["cancellation → transaction rollback"]:::v2
+    I18x["18 transaction{} + jobs"]:::v2
+
+    I7b2 --> I8x
+    I9ex --> I9fx
+    I8x --> I9fx
+    I8x --> I11x
+    I8x --> KEEPAL
+    I11x --> KEEPAL
+    I8x --> H2C2
+    I9fx --> H2C2
+    I11x --> H2C2
+    I11x --> STREAM2
+    I11x --> SRESP2
+    I11x --> CANCEL2
+    I8x --> PUBSUB2
+    I11x --> PUBSUB2
+    I11x --> ASYNC9C
+    I11x --> TIMEOUTS2
+    I11x --> FIBJOBS2
+    I18x --> FIBJOBS2
+    I11x --> CANCELRB
+    I18x --> CANCELRB
+    CANCEL2 --> CANCELRB
+```
+
+## 3. Framework v1 — remaining ledger items
+
+Three gates recur: **net seams** (runtime `net` builtins), the **crypto
+fork** (no bitwise operators in the language — hashes become C runtime
+builtins or bit ops land first; brainstorm before the slice), and the
+**concurrency chain above** (its gated nodes are not repeated here).
 
 ```mermaid
 flowchart TD
@@ -84,7 +148,6 @@ flowchart TD
     classDef ready fill:#1a7f37,color:#fff,stroke:none
     classDef blocked fill:#eac54f,color:#000,stroke:none
 
-    READY["startable today, pure .wo"]:::ready
     CORS["CORS middleware"]:::ready
     SECH["security-headers middleware"]:::ready
     HOSTV["host validation"]:::ready
@@ -110,14 +173,10 @@ flowchart TD
     HOOKV["webhook verification"]:::blocked
     JWT["JWT HS256 (HARD STOP after)"]:::blocked
 
-    RT811["GATE: iterations 8/11 (shards, fibers)"]:::gate
-    STREAM["body streaming + backpressure"]:::blocked
-    SRESP["streaming responses + commit point"]:::blocked
-    CANCEL["per-request cancellation"]:::blocked
-    PUBSUB["pub/sub + WebSockets"]:::blocked
-
     RADIX["radix-tree routing"]:::blocked
-    I9E2["9e measures the linear scan"]:::gate
+    I9E3["GATE: 9e measures the linear scan"]:::gate
+
+    STORAGE["storage-integration rows: migrations (future story), eager loading + tenant roots (query-surface work, 9-series)"]:::blocked
 
     WILD --> PREC
     NETSEAM --> TMOUT
@@ -130,19 +189,17 @@ flowchart TD
     SHA --> SESS
     SHA --> HOOKV
     SHA --> JWT
-    RT811 --> STREAM
-    RT811 --> SRESP
-    RT811 --> CANCEL
-    RT811 --> PUBSUB
-    I9E2 --> RADIX
+    I9E3 --> RADIX
 ```
 
-The green column (CORS, security headers, host validation, strict-parsing
+Green nodes (CORS, security headers, host validation, strict-parsing
 audit, wildcards, route groups, `req.ctx`, XFF parsing, Accept
-negotiation) needs nothing — each is a framework-v1 slice startable in
-any order, gated by `just web-app`.
+negotiation) need nothing — startable in any order, gated by
+`just web-app`. Note: 9d's keypair crypto is its own C implementation
+(already on branch `keypair-auth`) — it neither waits for nor feeds the
+crypto-fork gate.
 
-## 3. Framework v2 (iteration 18) — internal order
+## 4. Framework v2 (iteration 18) — internal order
 
 ```mermaid
 flowchart TD
@@ -155,21 +212,18 @@ flowchart TD
     DEMO["web-app demo: transactional order+confirm, GET /jobs, flags route"]:::piece
     CACHE["cache.wo: TTL + FIFO"]:::indep
     FLAGS["flags.wo: wf_flags + read-through map"]:::indep
-    TPRMW["txn-per-request middleware (v1 ledger's storage row)"]:::later
-    FIBJ["fiber-scheduled jobs"]:::later
-    I11B["iteration 11"]:::later
+    TPRMW["txn-per-request middleware (v1 ledger's storage row; single-thread OK)"]:::later
 
     TXN --> JOBS
     JOBS --> DEMO
     FLAGS --> DEMO
     TXN --> TPRMW
-    I11B --> FIBJ
-    JOBS --> FIBJ
 ```
 
-Cache and flags have no dependencies — they can land first as warm-up
-slices; `transaction { }` is the critical path (the only engine +
-language work), jobs compose on it, the demo and gate close it out.
+Cache and flags are dependency-free warm-ups; `transaction { }` is the
+critical path (the only engine + language work); jobs compose on it; the
+demo and gate close it. Fiber-scheduled jobs and cancellation→rollback
+appear in graph 2 — they need iteration 11 as well as 18.
 
 ## Maintenance rule
 
