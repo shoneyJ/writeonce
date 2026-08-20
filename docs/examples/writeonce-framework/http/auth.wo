@@ -1,0 +1,155 @@
+-- http/auth.wo — the auth MECHANISM, framework core: parse the
+-- Authorization header, split scheme from credentials, decode Basic's
+-- base64, compare secrets in constant time, and attach the authenticated
+-- principal to the request (req.principal) so downstream handlers see it.
+-- POLICY stays in the app: which routes, which users, where secrets live.
+
+-- ---- constant-time comparison -------------------------------------------
+-- No early exit on the first differing byte: the accumulator visits every
+-- byte, so a wrong secret costs the same time wherever it differs. Unequal
+-- lengths answer false up front — length is not the secret.
+
+pub fn ct_eq(a: Text, b: Text) -> Bool {
+  if len(a) != len(b) { return false; }
+  let diff = 0;
+  let i = 0;
+  while i < len(a) {
+    let d = byte_at(a, i) - byte_at(b, i);
+    diff = diff + d * d;
+    i = i + 1;
+  }
+  return diff == 0;
+}
+
+-- ---- the Authorization header, split ------------------------------------
+
+pub typedef AuthHeader = { scheme: Text, credentials: Text }
+
+-- nil: no Authorization header, or no space between scheme and credentials.
+-- The scheme comes back lowercased (schemes are case-insensitive, RFC 9110).
+pub fn auth_header(req: Req) -> ?AuthHeader {
+  let raw = req.headers["authorization"];
+  if raw == nil { return nil; }
+  let sp = index_of(raw, " ");
+  if sp < 1 { return nil; }
+  let scheme = to_lower(substr(raw, 0, sp));
+  let creds = trim(substr(raw, sp + 1, len(raw) - sp - 1));
+  if creds == "" { return nil; }
+  return AuthHeader { scheme: scheme, credentials: creds };
+}
+
+-- nil unless the request carries `Authorization: Bearer <token>`.
+pub fn bearer_token(req: Req) -> ?Text {
+  let h = auth_header(req);
+  if h == nil { return nil; }
+  if h.scheme != "bearer" { return nil; }
+  return h.credentials;
+}
+
+-- ---- base64 (RFC 4648, the Basic scheme's encoding) ----------------------
+
+fn b64_val(c: Int) -> Int {
+  if c >= 65 { if c <= 90 { return c - 65; } }        -- A-Z ->  0..25
+  if c >= 97 { if c <= 122 { return c - 97 + 26; } }  -- a-z -> 26..51
+  if c >= 48 { if c <= 57 { return c - 48 + 52; } }   -- 0-9 -> 52..61
+  if c == 43 { return 62; }                           -- +
+  if c == 47 { return 63; }                           -- /
+  return 0 - 1;                                       -- anything else: bad
+}
+
+-- nil on anything malformed: length not a multiple of 4, a character
+-- outside the alphabet, or padding anywhere but the last two positions.
+pub fn base64_decode(s: Text) -> ?Text {
+  let n = len(s);
+  if n == 0 { return ""; }
+  if n - (n / 4) * 4 != 0 { return nil; }
+  let out = "";
+  let i = 0;
+  while i < n {
+    let c0 = byte_at(s, i);
+    let c1 = byte_at(s, i + 1);
+    let c2 = byte_at(s, i + 2);
+    let c3 = byte_at(s, i + 3);
+    let last = i + 4 >= n;
+    -- '=' (61) is legal only as the last one or two characters
+    if c0 == 61 { return nil; }
+    if c1 == 61 { return nil; }
+    if c2 == 61 { if last == false { return nil; } if c3 != 61 { return nil; } }
+    if c3 == 61 { if last == false { return nil; } }
+    let v0 = b64_val(c0);
+    let v1 = b64_val(c1);
+    if v0 < 0 { return nil; }
+    if v1 < 0 { return nil; }
+    out = out .. char_of(v0 * 4 + v1 / 16);
+    if c2 != 61 {
+      let v2 = b64_val(c2);
+      if v2 < 0 { return nil; }
+      out = out .. char_of((v1 - (v1 / 16) * 16) * 16 + v2 / 4);
+      if c3 != 61 {
+        let v3 = b64_val(c3);
+        if v3 < 0 { return nil; }
+        out = out .. char_of((v2 - (v2 / 4) * 4) * 64 + v3);
+      }
+    }
+    i = i + 4;
+  }
+  return out;
+}
+
+-- ---- Basic credentials ---------------------------------------------------
+
+pub typedef BasicCreds = { user: Text, pass: Text }
+
+-- nil unless `Authorization: Basic base64(user:pass)` decodes cleanly.
+-- The password may itself contain ':' — the split is on the FIRST colon
+-- (RFC 7617: the user-id must not contain one).
+pub fn basic_credentials(req: Req) -> ?BasicCreds {
+  let h = auth_header(req);
+  if h == nil { return nil; }
+  if h.scheme != "basic" { return nil; }
+  let decoded = base64_decode(h.credentials);
+  if decoded == nil { return nil; }
+  let colon = index_of(decoded, ":");
+  if colon < 0 { return nil; }
+  return BasicCreds {
+    user: substr(decoded, 0, colon),
+    pass: substr(decoded, colon + 1, len(decoded) - colon - 1)
+  };
+}
+
+-- ---- the two middlewares -------------------------------------------------
+-- Mechanism only: one shared secret each. An app with a user table writes
+-- its own Middleware on top of basic_credentials/bearer_token + ct_eq.
+
+pub class BearerAuth {
+  token:     Text   -- the shared secret
+  principal: Text   -- attached to req.principal on success
+  fn before(mut req: Req) -> ?Resp {
+    let got = bearer_token(req);
+    if got == nil { return unauthorized(); }
+    if ct_eq(got, self.token) == false { return unauthorized(); }
+    req.principal = "${self.principal}";
+    return nil;
+  }
+}
+
+pub class BasicAuth {
+  user:  Text
+  pass:  Text
+  realm: Text   -- named in the WWW-Authenticate challenge
+  fn before(mut req: Req) -> ?Resp {
+    let c = basic_credentials(req);
+    if c == nil { return self.challenge(); }
+    let user_ok = ct_eq(c.user, self.user);
+    let pass_ok = ct_eq(c.pass, self.pass);   -- both always compared
+    if user_ok == false { return self.challenge(); }
+    if pass_ok == false { return self.challenge(); }
+    req.principal = "${c.user}";
+    return nil;
+  }
+  fn challenge() -> Resp {
+    let r = unauthorized();
+    set_header(r, "www-authenticate", "Basic realm=\"${self.realm}\"");
+    return r;
+  }
+}

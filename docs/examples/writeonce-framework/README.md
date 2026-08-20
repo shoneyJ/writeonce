@@ -36,6 +36,14 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   non-conforming handler is a compile error (WO-E205). Middleware is its own
   interface (`fn before(req: Req) -> ?Resp`; nil = continue, a `Resp`
   short-circuits).
+- **Auth mechanism in core** (`http/auth.wo`): `Authorization` header
+  parsing (scheme split, case-insensitive), pure-`.wo` base64, a
+  constant-time comparator (`ct_eq`, no early exit), and the blessed
+  principal slot — `req.principal` is `""` until an auth middleware
+  authenticates, then downstream handlers read who it is. `BearerAuth`
+  and `BasicAuth` (with the `WWW-Authenticate` challenge) ship as
+  middlewares; POLICY — which routes, which users, where secrets live —
+  stays in the app, on top of `bearer_token`/`basic_credentials`/`ct_eq`.
 - **Data layer for free**: handlers use `@table` + the query surface
   directly — durable, compiler-checked persistence in the same binary. No
   ORM, no database server.
@@ -49,6 +57,22 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   keep-alive. See the web-app sample's README for the nginx sketch.
 - `Content-Length` bodies only (no chunked encoding), no WebSockets/SSE,
   JSON-first (no templates).
+
+## The core checklist (what a framework core owes, and where this one is)
+
+| Core concern | State |
+| --- | --- |
+| HTTP parsing + connection lifecycle | ✅ `http/parse.wo`, `http/serve.wo` (keep-alive, 400-and-survive, fd-clean, SIGTERM) |
+| Routing: path params, method dispatch, precedence | ✅ `:param` captures, first-match-wins, wrong-method = 405 + `Allow` |
+| Middleware chain, ordering guarantee | ✅ registration order, `?Resp` short-circuits |
+| Request/response types | ✅ `Req`/`Resp` + builders + `set_header` |
+| Bearer/Basic auth mechanism + principal | ✅ `http/auth.wo`, `req.principal` |
+| Body parsing hooks: JSON | ✅ the language's checked `json.decode` |
+| Body parsing hooks: form-encoded, multipart | ⬜ candidate next slices (form first — `parse_query` already decodes the encoding) |
+| Error handling → status mapping | 🔶 trap = 500, builders per status; a per-error mapping hook is a candidate slice |
+| Body streaming, backpressure | ⏸ needs fibers/shards (iterations 8/11) — whole bodies until then, by design |
+| Cancellation propagation | ⏸ process-level only (`env.stopping()`); per-request cancel needs fibers (11) |
+| Configuration + graceful shutdown | 🔶 SIGTERM drains and closes clean; config is ctor fields — a config record is a candidate slice |
 
 ## The consuming sample
 

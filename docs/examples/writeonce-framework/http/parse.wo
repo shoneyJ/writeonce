@@ -143,6 +143,6 @@ pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
   }
 
   let req = Req { method: method, path: path, params: {}, query: query,
-                  headers: headers, body: body };
+                  headers: headers, body: body, principal: "" };
   return Parsed { closed: false, ok: true, req: req, rest: rest };
 }

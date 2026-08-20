@@ -86,6 +86,23 @@ expect() { # name got want-status [want-body-substring]
 
 # ---- 2..10 the storefront matrix ----
 expect "401 without the token"        "$(hit GET /products '' no)" 401
+
+# wrong bearer token: the framework's constant-time compare denies (401)
+wt="$(timeout 5 python3 - "$PORT" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.create_connection(("127.0.0.1", port), timeout=3)
+s.sendall(b"GET /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer wr0ng!\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
+d = b""
+while True:
+    got = s.recv(2000)
+    if not got: break
+    d += got
+print(d.decode().splitlines()[0].split(" ")[1])
+PYEOF
+)"
+[[ "$wt" == "401" ]] && ok "401 on a wrong bearer token (ct_eq)" \
+                     || bad "wrong-token" "got $wt"
 expect "empty list"                   "$(hit GET /products)" 200 "[]"
 expect "create product (201)"         "$(hit POST /products '{"name":"mug","price":900,"stock":5}')" 201 '"name":"mug"'
 expect "duplicate name is 409 (@unique)" "$(hit POST /products '{"name":"mug","price":1,"stock":1}')" 409

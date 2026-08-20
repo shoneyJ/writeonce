@@ -16,16 +16,6 @@ fn view_json(name: Text, price: Int, stock: Int) -> Text {
   return json.encode(ProductView { name: name, price: price, stock: stock });
 }
 
-class Auth {
-  token: Text
-  fn before(req: Req) -> ?Resp {
-    let got = req.headers["authorization"];
-    if got == nil { return unauthorized(); }
-    if got != "Bearer ${self.token}" { return unauthorized(); }
-    return nil;
-  }
-}
-
 class ListProducts {
   pad: Int
   fn handle(req: Req) -> Resp {
@@ -107,7 +97,9 @@ fn main(args: multi Text) -> Int {
   }
 
   let app = App { middleware: [], routes: [] };
-  app.use_mw(Mw { m: Auth { token: token } });
+  -- the framework's Bearer mechanism: constant-time compare, principal
+  -- attached to req.principal for handlers that want "who is this"
+  app.use_mw(Mw { m: BearerAuth { token: token, principal: "api" } });
   app.get("/products",             ListProducts { pad: 0 });
   app.get("/products/:name",       ShowProduct { pad: 0 });
   app.post("/products",            CreateProduct { pad: 0 });

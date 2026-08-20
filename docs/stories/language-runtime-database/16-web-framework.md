@@ -24,6 +24,19 @@
 > `let`/assignment boundaries uncopied — `copy_place_text` now sees through
 > `Interp` (`run/interp-borrowed-field`).
 >
+> **Auth-in-core LANDED 2026-08-20** (same branch): `http/auth.wo` — the
+> MECHANISM per the core doctrine: `Authorization` parsing, pure-`.wo`
+> base64 (RFC 4648), constant-time `ct_eq`, `req.principal` as the blessed
+> "who is this" slot (Middleware.before now takes `mut req` to write it),
+> `BearerAuth` + `BasicAuth` (WWW-Authenticate challenge) middlewares.
+> Policy stays app-side. Probe matrix 26/26 incl. RFC vectors, ASan-clean;
+> web-app dogfoods `BearerAuth` (its hand-rolled Auth deleted);
+> `just web-app` 17/0. The framework README now carries the core CHECKLIST:
+> what is ✅ (parsing, routing, middleware, types, auth, JSON), what is a
+> candidate slice (form/multipart, error-mapping hook, config record), and
+> what parks behind 8/11 by design (streaming, backpressure, per-request
+> cancellation).
+>
 > The framework is written IN writeonce and imported
 > like any dependency (iteration 15 is the prerequisite). TLS terminates at a
 > reverse proxy — browsers get TLS+ALPN+h2 from nginx/caddy while the

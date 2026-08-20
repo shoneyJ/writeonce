@@ -3,12 +3,14 @@
 -- serve loop in http/serve.wo, dispatch in router/ and app.wo.
 
 pub typedef Req = {
-  method:  Text,              -- uppercased: GET, POST, ...
-  path:    Text,              -- decoded path, query stripped
-  params:  map<Text, Text>,   -- :param captures, filled by the router
-  query:   map<Text, Text>,   -- decoded query-string pairs
-  headers: map<Text, Text>,   -- names lowercased on read
-  body:    Text               -- exactly Content-Length bytes ("" if none)
+  method:    Text,            -- uppercased: GET, POST, ...
+  path:      Text,            -- decoded path, query stripped
+  params:    map<Text, Text>, -- :param captures, filled by the router
+  query:     map<Text, Text>, -- decoded query-string pairs
+  headers:   map<Text, Text>, -- names lowercased on read
+  body:      Text,            -- exactly Content-Length bytes ("" if none)
+  principal: Text             -- who this is: "" until an auth middleware
+                              -- (http/auth.wo) authenticates the request
 }
 
 pub typedef Resp = {

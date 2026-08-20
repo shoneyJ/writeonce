@@ -34,6 +34,14 @@ crashed the release build; `copy_place_text` now sees through `Interp`
 exactly as `drop_fresh_text` does, pinned by
 `tests/corpus/run/interp-borrowed-field`.
 
+**Auth-in-core landed 2026-08-20** (same branch): `http/auth.wo` — header
+parsing, pure-`.wo` base64, constant-time `ct_eq`, `req.principal` as the
+blessed principal slot (Middleware.before takes `mut req`), `BearerAuth` +
+`BasicAuth` middlewares; policy stays app-side. Probe matrix 26/26
+ASan-clean; web-app dogfoods BearerAuth; `just web-app` **17/0**. The
+framework README carries the core checklist (✅ / candidate / parked-by-
+design rows).
+
 Next per the implementation order (17 parked): finish the half-done
 database branches — 9c (ipc-attach: manifest + binding) and 9d
 (keypair-auth: manifest) — both need their forks brainstormed before
@@ -151,7 +159,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 13  | [Compile-time metaprogramming](stories/language-runtime-database/13-compile-time-metaprogramming.md) | ⬜ needs a spec first        |
 | 14  | [skillhost host workload](stories/language-runtime-database/14-skillhost-host-workload.md) | ⬜ gaps recorded (branch query-grammar found skillhost needs no new query grammar); each gap a candidate iteration |
 | 15  | [deps: `wo.toml [deps]`](stories/language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
-| 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route |
+| 16  | [web framework](stories/language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/9f/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
 | 17  | [library projects + `internal/`](stories/language-runtime-database/17-library-projects-internal.md) | ⏸ **PARKED 2026-08-20** (developer directive; framework v1 first) — forks settled, spec + plan approved and ready on branch `library-internal`: kind = "library" key; Go internal/ rule, dep-boundary-only; lib+bin dual; VM/GC untouched by design |
 
 ---
