@@ -203,12 +203,35 @@ transitively-traced check), corpus + TSan.
 0), `database/src/` untouched (the engine never learns), `runtime/src/vm.c`
 (request/reply parking).
 
-- [ ] Non-owner DB builtins marshal statement + args to shard 0, park,
+- [x] Non-owner DB builtins marshal statement + args to shard 0, park,
   resume with materialized reply; `transaction { }` travels as one unit
-  (18's staged batch stays owner-side).
-- [ ] `just employee` + `just web-app` at default cores, answers
-  byte-identical to N=1 (iteration 8's criterion 4, the arc's headline
-  proof). Commit.
+  (18's staged batch stays owner-side — nothing to do until 18 unholds).
+  DEVIATIONS, disclosed: (1) "database/src untouched" bent to
+  "database/src gains thread-agnostic slot-level entry points"
+  (wo_db_val_encode/clone, wo_row_insert_slots, wo_row_update_field_slot,
+  wo_db_exec_req) — the owner thread must never read a requester's VM
+  heap (concurrent mark-bit writes = TSan race), so the REQUESTER encodes
+  args to engine slots and the owner executes from slots, replay-style;
+  (2) the reply park is a new plane-less park (`WO_PARK_INBOX`), woken by
+  the DB_RESP envelope (envelope kinds 3/4; `wo_io_unpark` exported);
+  resume re-executes the builtin, which consumes the reply; (3) a busy
+  shard adopts its inbox once per reduction slice, bounding a request's
+  wait on a computing primary; (4) main.c boots the engine + replay
+  BEFORE `wo_engine_start` (the replay-before-serve obligation — it also
+  publishes the engine's class table to worker threads by the spawn);
+  (5) EN ROUTE, a latent stage-1 bug fixed: io_uring ring params were ONE
+  file static, rewritten by every shard's lazy init while other shards
+  read offsets from it — submits landed at garbage offsets and parked
+  fibers lost wakes (~1/20 hangs at default cores). Params now live
+  per-vm (`io_params`), and a short `io_uring_enter` submit is a loud
+  trap, never a success.
+- [x] Verified: `just db-actor` (NEW gate, 8/0 — worker-shard actors
+  insert/scan/get through the DB actor; multi-shard set-asserted ×3 +
+  both forced backends; single-shard byte-exact; WO_DATA pair proves a
+  worker's write is ack-after-durable and replays). ASan 6/6 and TSan
+  6/6 clean on the RPC path; 60/60 hang-free at default cores.
+  `just employee` + `just web-app` at default cores green (byte-identical
+  to N=1). Commit.
 
 ### Task 8 — the arc's closeout
 

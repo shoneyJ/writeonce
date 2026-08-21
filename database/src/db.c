@@ -1,5 +1,6 @@
 #include "db.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "cont.h"
@@ -160,4 +161,177 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         *msg = "unknown db builtin";
         return WO_T_DB;
     }
+}
+
+/* ---- arc stage 3: the owner-shard executor ------------------------------
+ * Mirrors the switch above case for case, with slot inputs and plain
+ * outputs — every trap code and message a worker sees is byte-identical to
+ * what the same statement would produce on the primary. */
+void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
+    wo_db *db = (wo_db *)vm->rt.db;
+    wo_wal *w = (wo_wal *)vm->rt.wal;
+    const char *m = "db failed";
+    q->status = 0;
+    q->msg = "";
+    if (!db) {
+        q->status = WO_T_DB;
+        q->msg = "database engine not initialized";
+        goto out;
+    }
+    switch (q->op) {
+    case WO_B_DB_INSERT: {
+        int ek = 0;
+        uint64_t id = wo_row_insert_slots(db, q->cid, q->slots, &m, &ek);
+        if (!id) {
+            q->status = ek == DB_ERR_UNIQUE ? WO_T_UNIQUE
+                        : ek == DB_ERR_OOM  ? WO_T_OOM
+                                            : WO_T_DB;
+            q->msg = m;
+            break;
+        }
+        if (w) {
+            if (wo_wal_append_insert(w, db, q->cid, id) != 0 || wo_wal_commit(w) != 0) {
+                wo_row_remove(db, q->cid, id);
+                q->status = WO_T_IO;
+                q->msg = "wal commit failed";
+                break;
+            }
+        }
+        q->result = id;
+        break;
+    }
+    case WO_B_DB_UPDATE_FIELD: {
+        int ek = 0;
+        if (wo_row_update_field_slot(db, q->cid, q->id, q->field, q->slots[0], &m, &ek) != 0) {
+            q->status = ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
+            q->msg = m;
+            break;
+        }
+        if (w) {
+            if (wo_wal_append_update(w, db, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
+                q->status = WO_T_IO;
+                q->msg = "wal commit failed";
+                break;
+            }
+        }
+        break;
+    }
+    case WO_B_DB_DELETE: {
+        if (wo_row_has_referrers(db, q->cid, q->id)) {
+            q->status = WO_T_FK;
+            q->msg = "row is still referenced (restrict)";
+            break;
+        }
+        if (wo_row_remove(db, q->cid, q->id) != 0) {
+            q->status = WO_T_DB;
+            q->msg = "no such row";
+            break;
+        }
+        if (w) {
+            if (wo_wal_append_remove(w, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
+                q->status = WO_T_IO;
+                q->msg = "wal commit failed";
+                break;
+            }
+        }
+        break;
+    }
+    case WO_B_DB_SCAN:
+    case WO_B_DB_PROBE: {
+        if (q->cid >= db->class_cnt) {
+            q->status = WO_T_DB;
+            q->msg = "no such class";
+            break;
+        }
+        db_table *t = &db->tables[q->cid];
+        uint64_t *out = NULL;
+        uint32_t n = 0, cap = 0;
+        if (t->row_size && (q->op == WO_B_DB_SCAN || q->index < t->index_cnt)) {
+            uint32_t col = 0;
+            uint8_t kind = 0;
+            if (q->op == WO_B_DB_PROBE) {
+                col = t->indexes[q->index].cols[0];
+                kind = db->classes[q->cid].kinds[col];
+            }
+            uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
+            for (uint32_t g = 0; g < total; g++) {
+                if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
+                db_row *row =
+                    (db_row *)(t->slabs[g / DB_SLAB_ROWS] + (size_t)(g % DB_SLAB_ROWS) * t->row_size);
+                if (q->op == WO_B_DB_PROBE) {
+                    int eq;
+                    if (kind == WO_K_TEXT || kind == WO_K_BYTES) {
+                        /* both sides engine-encoded: the key was encoded on
+                         * the requester's thread, the slot lives here */
+                        const db_text *want = (const db_text *)(uintptr_t)q->slots[0];
+                        const db_text *have = (const db_text *)(uintptr_t)row->slots[col];
+                        eq = (!want && !have) ||
+                             (want && have && want->len == have->len &&
+                              memcmp(want->bytes, have->bytes, have->len) == 0);
+                    } else
+                        eq = row->slots[col] == q->slots[0];
+                    if (!eq) continue;
+                }
+                if (n == cap) {
+                    uint32_t ncap = cap ? cap * 2 : 16;
+                    uint64_t *no = realloc(out, (size_t)ncap * 8u);
+                    if (!no) {
+                        free(out);
+                        out = NULL;
+                        q->status = WO_T_OOM;
+                        q->msg = "out of memory";
+                        break;
+                    }
+                    out = no;
+                    cap = ncap;
+                }
+                out[n++] = row->id;
+            }
+        }
+        if (!q->status) {
+            q->ids = out;
+            q->id_cnt = n;
+        }
+        break;
+    }
+    case WO_B_DB_GET_FIELD: {
+        if (q->cid >= db->class_cnt || q->field >= db->classes[q->cid].field_cnt) {
+            q->status = WO_T_DB;
+            q->msg = "no such field";
+            break;
+        }
+        db_row *row = wo_row_ptr(db, q->cid, q->id);
+        if (!row) {
+            q->status = WO_T_DB;
+            q->msg = "no such row";
+            break;
+        }
+        int ok = 1;
+        q->val_kind = db->classes[q->cid].kinds[q->field];
+        q->val = wo_db_val_clone(db->classes, q->val_kind, row->slots[q->field], &ok);
+        if (!ok) {
+            q->status = WO_T_OOM;
+            q->msg = "out of memory";
+        }
+        break;
+    }
+    default:
+        q->status = WO_T_DB;
+        q->msg = "unknown db builtin";
+        break;
+    }
+out:
+    /* slot VALUES were consumed by the ops above (insert/update install or
+     * free them); the PROBE key is ours to free, the array always is. (The
+     * requester only encodes a key for an index its identical class table
+     * declares, so a keyed request always finds its kind here.) */
+    if (db && q->op == WO_B_DB_PROBE && q->slots && q->cid < db->class_cnt) {
+        db_table *t = &db->tables[q->cid];
+        if (t->row_size && q->index < t->index_cnt)
+            wo_db_val_free(db, db->classes[q->cid].kinds[t->indexes[q->index].cols[0]],
+                           q->slots[0]);
+    }
+    free(q->slots);
+    q->slots = NULL;
+    q->slot_cnt = 0;
 }

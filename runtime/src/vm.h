@@ -79,7 +79,15 @@ typedef struct wo_fiber {
      * borrows — the RUNTIME owns it and drops it after the call returns. */
     struct wo_actor *actor;
     uint64_t cur_msg;
+    /* arc stage 3: the in-flight DB request while parked on the DB actor's
+     * reply (a wo_db_req*, opaque here; vm.c owns the protocol) */
+    void *dbreq;
 } wo_fiber;
+
+/* arc stage 3: park_fd sentinel — PARKED with NO plane wait; the wake is
+ * an inbox envelope (the DB actor's reply). Excluded from the deadline
+ * scans, which key on park_fd == -1 exactly. */
+#define WO_PARK_INBOX (-2)
 
 /* An actor: moved-in state, its receive method, a FIFO mailbox, and at
  * most one delivery fiber at a time (one message at a time — the actor
@@ -126,6 +134,12 @@ typedef struct wo_vm {
     int io_fd;               /* ring fd or epoll fd */
     void *io_sq, *io_cq, *io_sqes; /* uring mmaps (NULL under epoll) */
     size_t io_sq_len, io_cq_len, io_sqes_len;
+    /* THIS ring's io_uring_params (opaque bytes; park.c owns the type).
+     * Arc stage 3 fix: a single file-static params was rewritten by every
+     * shard's lazy init while other shards read ring offsets out of it —
+     * submits landed at garbage offsets and parked fibers lost their
+     * wakes. Per-vm storage ends the race by construction. */
+    unsigned char io_params[256];
 } wo_vm;
 
 /* arc: the spawn/send builtins' runtime halves (vm.c owns the scheduler). */
@@ -146,13 +160,22 @@ typedef struct wo_engine {
 
 extern wo_engine wo_eng; /* the process's one engine (vm.c) */
 
-/* inbox envelope kinds (arc T6) */
+/* inbox envelope kinds (arc T6; 3/4 = stage 3's transparent DB RPC) */
 typedef struct wo_envelope {
     struct wo_envelope *next;
-    int kind; /* 0 = SEND (actor, payload), 1 = SPAWN-ADOPT (actor), 2 = FREE (payload = wo_hdr*) */
+    int kind; /* 0 = SEND (actor, payload), 1 = SPAWN-ADOPT (actor),
+               * 2 = FREE (payload = wo_hdr*),
+               * 3 = DB_REQ (payload = wo_db_req*, to shard 0),
+               * 4 = DB_RESP (payload = wo_db_req*, back to the requester) */
     struct wo_actor *actor;
     uint64_t payload;
 } wo_envelope;
+
+/* arc stage 3: the requester half of the transparent DB RPC (vm.c). Called
+ * by the builtin dispatcher on a worker shard whose rt.db is NULL: first
+ * entry marshals + parks (WO_SYS_PARKED), the re-execution after the reply
+ * consumes it. */
+int wo_db_rpc(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 /* the shard whose thread we are on (thread-local; obj.c stamps and gc.c
  * routes with it). NULL only before main's vm exists. */

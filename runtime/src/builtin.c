@@ -171,7 +171,15 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
     if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
-    if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) return wo_builtin_db(vm, R, ins, msg);
+    if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) {
+        /* arc stage 3: the database is an actor on shard 0. A worker shard
+         * has no engine by design — its statement marshals, parks, resumes
+         * with the materialized reply. The primary (and every single-shard
+         * or test build) keeps the direct path bit for bit. */
+        if (!vm->rt.db && !vm->is_primary && wo_eng.nshards > 1)
+            return wo_db_rpc(vm, R, ins, msg);
+        return wo_builtin_db(vm, R, ins, msg);
+    }
     switch (C) {
     case WO_B_SPAWN: {
         /* arc: R[B] = the moved-in instance, R[B+1] = receive's method
