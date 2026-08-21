@@ -103,3 +103,7 @@ __pycache__/
 dist/
 docs/examples/*/target/
 .wo-deps/
+
+# Obsidian vault state (developer-local)
+docs/.obsidian/
+docs/Untitled.base
