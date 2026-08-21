@@ -37,8 +37,8 @@ every standing gate green before the next begins.
 
 **Architecture:** see the spec (normative):
 [`../specs/2026-08-20-shard-fiber-arc-design.md`](../specs/2026-08-20-shard-fiber-arc-design.md).
-Stories: [8](../../stories/language-runtime-database/08-shard-actor-runtime.md) ·
-[11](../../stories/language-runtime-database/11-fibers.md).
+Stories: [8](../../stories/language-runtime-database/in-progress/08-shard-actor-runtime.md) ·
+[11](../../stories/language-runtime-database/in-progress/11-fibers.md).
 
 **Tech Stack:** C11 libc-only (`wovm`), OCaml stdlib-only (`woc`), bash
 gates; TSan added to the corpus harness at stage 2.

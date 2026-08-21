@@ -1,7 +1,7 @@
 # The 8+11 concurrency arc — shards, fibers, actors: design
 
 > **Status: spec, awaiting review (2026-08-20).** The arc's decisions were
-> settled in [iteration 8](../../stories/language-runtime-database/08-shard-actor-runtime.md)
+> settled in [iteration 8](../../stories/language-runtime-database/in-progress/08-shard-actor-runtime.md)
 > (refined) and the brainstorm of 2026-08-20 (this document's Decisions).
 > Covers iterations 8 AND 11 as one arc; iteration 24 (chat) is its
 > acceptance workload and gets its own spec after this one. The plan

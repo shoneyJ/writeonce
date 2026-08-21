@@ -1,7 +1,7 @@
 # Iteration 11 — fibers (the 8+11 concurrency arc, part 2)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **REFINED 2026-08-20** (developer decisions, no code): 8 and 11 ship as
 > **one arc** — the DB becomes an actor on an owner shard
@@ -10,7 +10,7 @@
 > The spawn-surface question below is SETTLED: one unified actor-address
 > surface (`spawn` returns an address, fiber or remote alike; `send`
 > moves ownership; same-heap sends take the cheap path). The arc's
-> driving workload is [iteration 24: chat](refine/24-chat-websocket-workload.md)
+> driving workload is [iteration 24: chat](../refine/24-chat-websocket-workload.md)
 > — fiber-per-WebSocket-connection is the serving model that retires the
 > framework's close-when-idle keep-alive policy.
 >
@@ -27,7 +27,7 @@
 > move, round-robin placement, home-routed frees, WO-E222 on EVERY
 > spawn/send (placement makes any actor potentially remote), TID-verified
 > shard context. Deviations disclosed in the plan of record
-> ([`2026-08-20-shard-fiber-arc.md`](../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
+> ([`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
 > the inbox is a mutex-guarded list + eventfd (rings arrive only if
 > iteration 22 measures the mutex as a cost), the deterministic corpus
 > pins `WO_SHARDS=1`, two TSan races and one teardown SEGV fixed.
@@ -95,12 +95,12 @@
 
 ## Info
 
-- Research note: [`docs/plan/exploration/fibers/00-fibers.md`](../../plan/exploration/fibers/00-fibers.md)
+- Research note: [`docs/plan/exploration/fibers/00-fibers.md`](../../../plan/exploration/fibers/00-fibers.md)
   — kernel's-eye evidence (task_struct costs, CFS collapse at high task
   counts) and the precedent survey (BEAM reductions adopted; Go stack
   copying and Tokio coloring rejected; Loom's park-under-blocking-API
   matches the stdlib posture).
-- Vision origin: [blue-green vision §3](../../plan/exploration/blue-green-vm/00-vision.md);
+- Vision origin: [blue-green vision §3](../../../plan/exploration/blue-green-vm/00-vision.md);
   iteration 8's scheduler is the substrate this extends.
 - Open questions — REDUCED AGAIN 2026-08-21: the spawn surface, budget
   size/granularity (back-edge accounting — see the plan's livelock
@@ -109,13 +109,13 @@
   implementation. Still open: how a parked fiber's borrow state interacts
   with the shard's GC safepoints — tracked for stage 3 / the collector's
   next pass. Lifecycle surface (request/response, backpressure,
-  supervision, timers) is [iteration 31](refine/31-actor-lifecycle.md)'s, not
+  supervision, timers) is [iteration 31](../refine/31-actor-lifecycle.md)'s, not
   this story's.
 
 ## Proposed Solution
 
 - The plan exists and its fiber stages are landed:
-  [`2026-08-20-shard-fiber-arc.md`](../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
+  [`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
   (stages 1+2 complete 2026-08-20). This story closes when the arc's
   stage 3 lands and iteration 22 records the delta; the chat workload
-  ([iteration 24](refine/24-chat-websocket-workload.md)) is the proof.
+  ([iteration 24](../refine/24-chat-websocket-workload.md)) is the proof.

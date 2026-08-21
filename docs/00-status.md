@@ -11,9 +11,11 @@ folders** — a doc stays where it was authored when its work lands; only its
 banner and this board change. ONE exception by directive (2026-08-20):
 story iteration files move physically — landed ones into
 `stories/language-runtime-database/done/`, brainstorm-needing ones into
-`refine/`, held ones into `hold/` (2026-08-21); ready/in-flight stay at
-the root. Second exception (2026-08-21): the active slice's one marker
-doc lives in `docs/in-progress/` and is deleted when the slice lands. Every plan and phase doc opens with a
+`refine/`, held ones into `hold/`, the active slice's stories into
+`stories/language-runtime-database/in-progress/` (both 2026-08-21);
+ready ones stay at the root. Second exception (2026-08-21): the active
+slice's one marker doc lives in `docs/in-progress/` and is deleted when
+the slice lands. Every plan and phase doc opens with a
 `> **Status:**` banner linking back here; normative contracts
 (`plan/oop-vm/`), exploration studies, reference docs and the
 discarded/learnings registers carry none by design.
@@ -171,11 +173,11 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 6   | [Program mode + stdlib](stories/language-runtime-database/done/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
 | 7   | [log-watcher proof](stories/language-runtime-database/done/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
 | 7b  | [Inferred GC + mark-sweep](stories/language-runtime-database/done/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
-| 8   | [Shard-actor runtime](stories/language-runtime-database/08-shard-actor-runtime.md)           | 🔄 arc stages 1+2 landed 2026-08-20 (branch concurrency-arc); stage 3 (transparent DB actor) = **first in the concurrency chain** |
+| 8   | [Shard-actor runtime](stories/language-runtime-database/in-progress/08-shard-actor-runtime.md)           | 🔄 arc stages 1+2 landed 2026-08-20 (branch concurrency-arc); stage 3 (transparent DB actor) = **first in the concurrency chain** |
 | 9   | [Database engine](stories/language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
 | 9b  | [`@table`, relations, query](stories/language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
 | 19  | [Float + Bytes](stories/language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
-| 11  | [Fibers](stories/language-runtime-database/11-fibers.md)                                     | 🔄 stages 1+2 landed 2026-08-20 with 8 (`just fibers` 8/0); closes with the arc's stage 3 |
+| 11  | [Fibers](stories/language-runtime-database/in-progress/11-fibers.md)                                     | 🔄 stages 1+2 landed 2026-08-20 with 8 (`just fibers` 8/0); closes with the arc's stage 3 |
 | 22  | [Durability, throughput, scale](stories/language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first — second in chain, after arc stage 3 |
 | 31  | [Actor lifecycle](stories/language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
 | 24  | [chat: WebSocket workload](stories/language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
