@@ -185,6 +185,18 @@ transitively-traced check), corpus + TSan.
 
 ## Stage 3 — the DB actor + closing the arc
 
+> **Guarantee obligations (2026-08-21 refinement, developer-approved)**
+> — Tasks 7–8 build against these, in addition to their own checkboxes:
+> (1) a worker write RPC is exactly ONE owner-shard commit; the ack
+> crosses shards only AFTER the owner's fsync — a kill between send and
+> commit leaves no ack and no partial state; (2) workers never open the
+> WAL or data directory (debug-build assert); replay completes on the
+> primary before any worker serves; (3) statements are serialized by the
+> DB actor — replies are materialized copies, no torn reads under the
+> concurrent multi-shard corpus (TSan). The five-property map lives in
+> [the marker doc](../../in-progress/2026-08-21-arc-stage-3.md); disk
+> space reclamation is story 32, not this stage.
+
 ### Task 7 — transparent DB RPC
 
 **Files:** `runtime/src/builtin.c` (db cases marshal when not on shard

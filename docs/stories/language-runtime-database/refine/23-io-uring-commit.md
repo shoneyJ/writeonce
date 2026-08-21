@@ -23,7 +23,8 @@
 > paths on one kernel — AMENDED: the override is the arc-wide
 > `WO_IO=uring|epoll` (the arc's T4 owns the probe and the per-shard
 > ring; `WO_WAL_MODE` is subsumed). Position — RE-SEQUENCED 2026-08-21:
-> LAST in the concurrency chain, **stage 3 → 22 → 31 → 24 → 23**
+> FIFTH in the concurrency chain (32, WAL checkpoint, follows it —
+> added 2026-08-21), **stage 3 → 22 → 31 → 24 → 23 → 32**
 > (supersedes the 2026-08-20 old-id ordering "9e → 8+11 → 9f"); the
 > per-shard ring already exists (arc T4 landed 2026-08-20,
 > `WO_IO=uring|epoll`) — this iteration adds the WAL's WRITE+FSYNC

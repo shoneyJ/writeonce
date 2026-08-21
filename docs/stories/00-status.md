@@ -30,7 +30,7 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
-**The concurrency + fiber chain — stage 3 → 22 → 31 → 24 → 23**
+**The concurrency + fiber chain — stage 3 → 22 → 31 → 24 → 23 → 32**
 (directive 2026-08-21). Active slice: the 8+11 arc's **stage 3, the
 transparent DB actor** — marker doc
 [`in-progress/2026-08-21-arc-stage-3.md`](../in-progress/2026-08-21-arc-stage-3.md),
@@ -66,7 +66,9 @@ stage 3 unblocks 22's multi-shard campaign.
 
 **Next steps:** stage 3 → 22 (baselines + mutex-inbox number) → 31
 (lifecycle) → 24 (chat, the arc's acceptance) → 23 (io_uring
-group-commit). Held tail resumes on its own precedence notes.
+group-commit) → 32 (WAL checkpoint — disk reclamation, added
+2026-08-21 by the stage-3 guarantee refinement). Held tail resumes on
+its own precedence notes.
 
 **`.dev/reference` used:** `linux` (the "single event loop" card behind
 the io_uring-first directive, arc T4). Record the ones each iteration
@@ -227,7 +229,8 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 22  | [Durability, throughput, scale](language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first — second in chain, after arc stage 3 |
 | 31  | [Actor lifecycle](language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
 | 24  | [chat: WebSocket workload](language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
-| 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ last in chain, after stage 3 + 22 |
+| 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
+| 32  | [WAL checkpoint](language-runtime-database/refine/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
 | 20  | [Cross-program tables](language-runtime-database/hold/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
 | 21  | [Keypair attach auth](language-runtime-database/hold/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
@@ -447,6 +450,11 @@ precedence notes for resumption.
    2026-08-20 — Bytes carries the frames).
 5. **23** — io_uring group-commit; the WAL's WRITE+FSYNC chains ride the
    arc's per-shard ring (T4); after 22's baseline — the payoff, measured.
+6. **32** — WAL checkpoint
+   ([story](language-runtime-database/refine/32-wal-checkpoint.md),
+   written 2026-08-21): the WAL is append-only forever — snapshot +
+   truncate reclaims disk and bounds replay; after 23 (composes with
+   group-commit), policy set by 22's aged-store numbers.
 
 **30** — observability, CI, fuzz: named 2026-08-20, still row-only (no
 story file); slots in when scheduled — nothing in the chain depends on it.

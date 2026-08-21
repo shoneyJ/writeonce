@@ -21,7 +21,7 @@
 > baseline. New measurement target since stage 2: the mutex-guarded
 > inbox + eventfd (the plan's deviation — lock-free rings arrive only if
 > this number says the mutex costs). Chain order:
-> **stage 3 → 22 → 31 → 24 → 23**.
+> **stage 3 → 22 → 31 → 24 → 23 → 32**.
 
 ## Goals
 

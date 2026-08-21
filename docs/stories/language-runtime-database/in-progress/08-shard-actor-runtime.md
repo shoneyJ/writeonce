@@ -22,7 +22,7 @@
 > scope: **stage 3, the transparent DB actor** — a correctness fix, not
 > an optimization: worker VMs are zero-initialized, so a DB statement
 > off the primary shard traps `WO_T_DB`. Concurrency-chain order:
-> **stage 3 → 22 → 31 → 24 → 23**.
+> **stage 3 → 22 → 31 → 24 → 23 → 32**.
 
 ## Settled decisions (2026-08-20)
 
@@ -47,7 +47,7 @@
 4. **Order — SUPERSEDED 2026-08-21.** Originally 22 → the 8+11 arc → 23;
    in fact the arc's stages 1+2 landed before 22 ever ran (accepted
    deviation — the before/after delta is owed and lands as 22's
-   multi-shard pass). Current order: **stage 3 → 22 → 31 → 24 → 23**.
+   multi-shard pass). Current order: **stage 3 → 22 → 31 → 24 → 23 → 32**.
    23 still waits for the arc's tick boundary and 22's baseline.
 
 ## Goals
@@ -90,6 +90,27 @@
     - **when** the employee/web-app matrices run multi-shard,
     - **then** every answer is byte-identical to the single-shard run and
       the WAL's ack-after-durable contract is unchanged.
+- What to achieve? (stage-3 refinement, 2026-08-21)
+    - **Given** a worker shard issuing a write through the DB actor,
+    - **when** the process is killed between the worker's send and the
+      owner's commit,
+    - **then** the write was never acknowledged AND replay shows no
+      partial state — a write RPC is exactly one owner-shard commit,
+      and the ack crosses shards only after the owner's fsync.
+- What to achieve? (stage-3 refinement, 2026-08-21)
+    - **Given** a multi-shard boot,
+    - **when** workers start serving,
+    - **then** WAL replay has already completed on the primary, and no
+      worker ever opens the WAL or the data directory (asserted in
+      debug builds).
+- What to achieve? (stage-3 refinement, 2026-08-21)
+    - **Given** concurrent workers hammering reads and writes at one
+      table,
+    - **when** the deterministic multi-shard corpus runs under TSan,
+    - **then** no torn read exists — every statement sees the serialized
+      moment its envelope executes on the owner shard (replies are
+      materialized copies). Full guarantee map:
+      [the marker doc](../../../in-progress/2026-08-21-arc-stage-3.md).
 
 ## Out Of Scope
 

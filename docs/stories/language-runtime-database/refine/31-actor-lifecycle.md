@@ -6,7 +6,7 @@
 > **Inserted 2026-08-21** (concurrency-chain re-sequence; the iteration
 > was named as "new 31" in the 2026-08-20 code-review re-sequence — this
 > is its story file). Third in the chain,
-> **stage 3 → 22 → 31 → 24 → 23**: chat
+> **stage 3 → 22 → 31 → 24 → 23 → 32**: chat
 > ([iteration 24](24-chat-websocket-workload.md)) cannot be written
 > honestly without these four mechanisms.
 

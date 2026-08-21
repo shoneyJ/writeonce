@@ -8,7 +8,7 @@
 > its spec AFTER the arc's — it lands at the arc's end and proves it.
 >
 > **RE-SEQUENCED 2026-08-21**: fourth in the chain,
-> **stage 3 → 22 → 31 → 24 → 23** — chat cannot be written honestly
+> **stage 3 → 22 → 31 → 24 → 23 → 32** — chat cannot be written honestly
 > before [iteration 31](31-actor-lifecycle.md) (request/response,
 > bounded mailboxes, actor death, timers). Iteration 19 LANDED
 > 2026-08-20, so Bytes is available for frame parse/serialize.

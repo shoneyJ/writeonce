@@ -34,7 +34,7 @@
 >
 > **RE-SEQUENCED 2026-08-21**: what remains for the chain is the arc's
 > stage 3 (transparent DB actor — [iteration 8](08-shard-actor-runtime.md)),
-> then measurement. Order: **stage 3 → 22 → 31 → 24 → 23**.
+> then measurement. Order: **stage 3 → 22 → 31 → 24 → 23 → 32**.
 
 ## Goals
 

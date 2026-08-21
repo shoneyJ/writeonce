@@ -73,7 +73,7 @@ adding surface, and stop stacking features on unmeasured ground.
 
 RE-SEQUENCED 2026-08-21 (third pass — the concurrency chain). Everything
 still pending IS the runtime-concurrency chain; order:
-**stage 3 → 22 → 31 → 24 → 23**. Changes from the second pass:
+**stage 3 → 22 → 31 → 24 → 23 → 32**. Changes from the second pass:
 
 - **The arc's stage 3 moves ahead of 22** — correctness before
   measurement: a multi-shard program touching the database traps
@@ -106,14 +106,15 @@ still pending IS the runtime-concurrency chain; order:
 | 17 | 31 | [Actor lifecycle](refine/31-actor-lifecycle.md) | request/response (today `send` is one-way and callers `sleep` to await), bounded mailboxes with backpressure (today the FIFO just grows), actor death/supervision, and timers beyond `time.sleep`. 24 cannot be written honestly without these. *(story written 2026-08-21)* |
 | 18 | 24 | [chat: WebSocket workload](refine/24-chat-websocket-workload.md) | the arc's acceptance: WS upgrade + frames (SHA-1 via crypto fork, Bytes via 19), rooms/broadcast, 1k clients, drain-clean. *(was 19)* |
 | 19 | 23 | [io_uring group-commit](refine/23-io-uring-commit.md) | WAL WRITE+FSYNC chains on the arc's per-shard rings; fsync fallback kept (after 22 + the arc). *(was 9f)* |
-| 20 | 25 | [HTTP service layer](../../superpowers/plans/2026-08-01-http-service-layer.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). **HELD 2026-08-21** — story file removed; the plan doc remains. *(was 10)* |
-| 21 | 18 | [framework v2: memory-rich features](hold/18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch. **Demoted from seq 14**: more surface on a framework with one consumer, and the cache still stores `Text` because there are no generics |
-| 22 | 27 | [Query grammar corpus](hold/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
-| 23 | 26 | [Blue-green deploy](hold/26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
-| 24 | 20 | [Cross-program tables](hold/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). **Demoted from seq 16**: new distribution surface while there is no TLS, no crypto, and the multi-shard DB still traps. *(was 9c)* |
-| 25 | 21 | [Keypair attach auth](hold/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). **Demoted with 20** — and it needs crypto primitives that do not exist. *(was 9d)* |
-| 26 | 28 | [skillhost host workload](hold/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
-| 27 | 29 | [Compile-time metaprogramming](hold/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
+| 20 | 32 | [WAL checkpoint](refine/32-wal-checkpoint.md) | **NEW 2026-08-21** (stage-3 guarantee refinement found the hole) — the WAL is append-only forever: snapshot + truncate reclaims disk and bounds replay time; every durability guarantee byte-identical; crash mid-checkpoint recovers from the previous snapshot + full tail. After 23 (composes with group-commit); RAM slot-reuse already contracted in `04-db-binding.md`. |
+| 21 | 25 | [HTTP service layer](../../superpowers/plans/2026-08-01-http-service-layer.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). **HELD 2026-08-21** — story file removed; the plan doc remains. *(was 10)* |
+| 22 | 18 | [framework v2: memory-rich features](hold/18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch. **Demoted from seq 14**: more surface on a framework with one consumer, and the cache still stores `Text` because there are no generics |
+| 23 | 27 | [Query grammar corpus](hold/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
+| 24 | 26 | [Blue-green deploy](hold/26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
+| 25 | 20 | [Cross-program tables](hold/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). **Demoted from seq 16**: new distribution surface while there is no TLS, no crypto, and the multi-shard DB still traps. *(was 9c)* |
+| 26 | 21 | [Keypair attach auth](hold/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). **Demoted with 20** — and it needs crypto primitives that do not exist. *(was 9d)* |
+| 27 | 28 | [skillhost host workload](hold/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
+| 28 | 29 | [Compile-time metaprogramming](hold/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
 | ✅ | 17 | [library projects + `internal/`](done/17-library-projects-internal.md) | **LANDED 2026-08-20** — `kind = "library"` + entry-less check mode (retires the `--emit` workaround) and Go's `internal/` rule as WO-E108 at the consumer's `use`; driver-only, VM/GC untouched. `just web-app` 26/0 |
 
 
