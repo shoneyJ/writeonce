@@ -1,7 +1,7 @@
 # Iteration 8 — shard-actor runtime (the 8+11 concurrency arc, part 1)
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](../00-story.md).
+> [Story — one language, one runtime, one database, one binary](00-story.md).
 >
 > **REFINED 2026-08-20** (developer decisions, no code): iterations 8 and
 > 11 are **one arc** — the scheduler, fibers on it, then serving — because
@@ -14,8 +14,8 @@
 >
 > **RE-SEQUENCED 2026-08-21** (developer decision): the brainstorm →
 > spec → plan happened. The arc's plan of record is
-> [`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
-> (spec: [`2026-08-20-shard-fiber-arc-design.md`](../../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md)),
+> [`2026-08-20-shard-fiber-arc.md`](../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
+> (spec: [`2026-08-20-shard-fiber-arc-design.md`](../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md)),
 > and **stages 1+2 LANDED 2026-08-20** on branch `concurrency-arc`
 > (T1–T6, seven disclosed deviations recorded in the plan). Remaining
 > scope: **stage 3, the transparent DB actor** — a correctness fix, not
@@ -108,19 +108,19 @@
 - The VM's object header has carried a shard id since iteration 2 — no
   relayout.
 - **Gated by the benchmark:** landing the arc means re-running
-  [22](22-durability-throughput-scale.md) at the concurrency
+  [22](refine/22-durability-throughput-scale.md) at the concurrency
   scale it unlocks and recording the before/after delta; it is also
-  where [23](23-io-uring-commit.md) gets a thread to overlap
+  where [23](refine/23-io-uring-commit.md) gets a thread to overlap
   durability against.
 
 ## Proposed Solution
 
 Execute stage 3 of the plan of record
-([`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
+([`2026-08-20-shard-fiber-arc.md`](../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
 the DB-actor migration — engine calls off the owner shard become message
 sends with parked replies, closing the `WO_T_DB` hole. Stages 1+2
 (scheduler, fibers, unified spawn/send, WO-E222 traced-send rejection,
 cross-shard envelopes with home-routed frees) landed 2026-08-20. After
 stage 3: 22 measures, then iteration 24 proves the arc. Actor lifecycle
 (request/response, backpressure, supervision, timers) is deliberately
-NOT the arc's scope — it is [iteration 31](31-actor-lifecycle.md).
+NOT the arc's scope — it is [iteration 31](refine/31-actor-lifecycle.md).
