@@ -181,3 +181,35 @@ layout.
   word and a Bytes as the same length-prefixed blob a Text uses, so replay is
   bit-exact for NaN, ±Inf, and `-0.0`. `test_wal`'s `test_float_bytes_replay`
   asserts on bits for exactly that reason.
+
+## The transparent DB actor (arc stage 3, 2026-08-21)
+
+- **The database is an actor on shard 0.** A worker shard's DB builtin
+  never touches an engine (its `rt.db` is NULL, asserted at serve entry):
+  `wo_db_rpc` (vm.c) marshals the statement, ships it in a kind-3 envelope
+  to the primary's inbox, and parks the fiber; the primary executes it
+  serialized inside its inbox drain (`wo_vm_adopt` case 3, `wo_db_exec_req`)
+  and ships the same request back as a kind-4 reply, which unparks the
+  fiber; the builtin RE-EXECUTES and consumes the answer.
+- **VM heaps never cross shards.** The requester ENCODES its argument
+  values into engine slots on its own thread (`wo_db_val_encode`) — an
+  owner-side read of a requester's Text would race that shard's collector
+  writing header mark bits. Replies come back as plain ids (scan/probe), a
+  deep-cloned engine value (get-field, decoded into the requester's arena),
+  or a bare id (insert). Traps and messages are byte-identical to the local
+  path; the ack crosses shards only after the owner's WAL commit.
+- **The reply park holds no plane wait.** `WO_PARK_INBOX` (park_fd -2)
+  joins the parked list only; the wake is `wo_io_unpark` from the envelope
+  drain. Deadline scans key on park_fd == -1 EXACTLY — a -2 must never be
+  read as a deadline. A busy shard adopts its inbox once per reduction
+  slice, so a computing primary bounds a worker's DB latency to one slice.
+- **Ring params are per-vm (`wo_vm.io_params`) — never share them.** They
+  were one file static; a worker's lazy `wo_vm_init` memset+refilled it
+  while another shard read ring offsets out of it, submits landed at
+  garbage offsets, and parked fibers lost their wakes (~1/20 hangs at
+  default cores, found by stage 3's cross-shard traffic). A short
+  `io_uring_enter` submit is a failure, never a success — that check is
+  what turns any relapse into a loud WO_T_IO instead of a silent hang.
+- Proof: `just db-actor` (docs/examples/db-actor — multi-shard set ×3,
+  both forced backends, single-shard byte-exact, WO_DATA replay pair);
+  ASan/TSan clean on the RPC path.
