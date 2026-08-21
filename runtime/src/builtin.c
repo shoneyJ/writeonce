@@ -170,7 +170,8 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
        both ranges (WO_B_MAP_GET_OPT and anything added after it) stay here */
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
-    if (C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) return wo_builtin_sys(vm, R, ins, msg);
+    if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS)
+        return wo_builtin_sys(vm, R, ins, msg);
     if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) {
         /* arc stage 3: the database is an actor on shard 0. A worker shard
          * has no engine by design — its statement marshals, parks, resumes

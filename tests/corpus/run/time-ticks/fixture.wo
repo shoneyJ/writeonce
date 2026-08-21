@@ -1,0 +1,28 @@
+use time
+
+-- time.ticks: CLOCK_MONOTONIC microseconds as Int. Values are machine
+-- noise; the fixture asserts existence and ordering — a later reading
+-- never precedes an earlier one, and a spin's elapsed is non-negative.
+fn spin(rounds: Int) {
+  let i = 0;
+  while i < rounds {
+    i = i + 1;
+  }
+}
+
+fn main() -> Int {
+  let t0 = time.ticks();
+  spin(100000);
+  let t1 = time.ticks();
+  if t1 >= t0 {
+    print("ticks: monotone");
+  } else {
+    print("ticks: BACKWARDS ${t1 - t0}");
+  }
+  if t0 > 0 {
+    print("ticks: nonzero");
+  } else {
+    print("ticks: zero start");
+  }
+  return 0;
+}

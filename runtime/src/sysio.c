@@ -284,6 +284,14 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         vm->cur->park_done = 1;
         return WO_SYS_PARKED;
     }
+    case WO_B_TIME_TICKS: { /* the bench clock: CLOCK_MONOTONIC µs as Int.
+                             * Never wall time — only differences mean
+                             * anything (iteration 22's honest percentiles) */
+        struct timespec mts;
+        clock_gettime(CLOCK_MONOTONIC, &mts);
+        R[A] = (uint64_t)((int64_t)mts.tv_sec * 1000000 + mts.tv_nsec / 1000);
+        return 0;
+    }
     case WO_B_TIME_LOCAL: { /* Parts: 0 year, 1 month (1..12), 2 day, 3 hour,
                              * 4 minute, 5 second, 6 dow (0 = Sunday) */
         time_t secs = (time_t)((int64_t)R[B] / 1000);

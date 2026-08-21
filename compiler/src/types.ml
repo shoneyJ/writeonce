@@ -290,6 +290,7 @@ let stdlib_members : stdlib_member list =
     (* time *)
     m "time" "now" 0 0 (Some (TScalar "Int")) None;
     m "time" "sleep" 1 46 None None;
+    m "time" "ticks" 0 84 (Some (TScalar "Int")) None;
     m "time" "local" 1 47 (Some (TScalar time_record_name)) (Some time_record_name);
     m "time" "iso" 1 48 (Some (TScalar "Text")) None;
     (* env *)
