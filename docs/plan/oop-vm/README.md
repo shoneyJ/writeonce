@@ -7,7 +7,7 @@ The normative contract documents both stacks cite. Landed by their named plan ta
 | `00-wob-format.md` | `.wob` bytecode format (compiler↔VM) | 1 |
 | `01-error-catalog.md` | every `WO-E###` code | 2, grows 3/8 |
 | `02-corpus.md` | how to add conformance fixtures | 3 |
-| `03-shard-actor.md` | shard ownership, mailboxes, send-as-move | 4 |
+| `03-concurrency-coroutines.md` | stackless fibers, park/resume protocols, reduction budget, the no-`async` rule | arc (was plan 4's slot; that plan ✖ discarded 2026-08-21) |
 | `04-db-binding.md` | row format, WAL records, query subset | 5 |
 | `05-http-service.md` | route section, trap→HTTP table, JSON subset | 6 |
 | `06-ui-live.md` | delta frames, subscribe protocol, wo:live | 7 |

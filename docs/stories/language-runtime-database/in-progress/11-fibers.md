@@ -95,6 +95,9 @@
 
 ## Info
 
+- Normative contract (added 2026-08-21): stackless coroutine model,
+  park/resume protocols, the no-`async` rule —
+  [`docs/plan/oop-vm/03-concurrency-coroutines.md`](../../../plan/oop-vm/03-concurrency-coroutines.md).
 - Research note: [`docs/plan/exploration/fibers/00-fibers.md`](../../../plan/exploration/fibers/00-fibers.md)
   — kernel's-eye evidence (task_struct costs, CFS collapse at high task
   counts) and the precedent survey (BEAM reductions adopted; Go stack
