@@ -1,6 +1,6 @@
 # HTTP Service Layer Implementation Plan
 
-> **Status: ⬜ pending** (story iteration 25) — `service` blocks route to VM methods; REST parity with the shipped Rust Stage 2 runtime. Board: [00-status.md](../../00-status.md)
+> **Status: ⏸ hold (2026-08-21, developer decision)** (story iteration 25) — `service` blocks route to VM methods; REST parity with the shipped Rust Stage 2 runtime. Board: [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
