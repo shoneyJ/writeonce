@@ -141,6 +141,19 @@ chain: 1
 
 ## Info
 
+**The arc's measured delta** (iteration 22's first campaign,
+2026-08-21, `bench/baseline.json` — N=20000, 4 mix actors, real-disk
+WO_DATA; single-shard column = the local path, multi-shard = the
+stage-3 RPC):
+
+| metric | WO_SHARDS=1 | default cores | reading |
+| --- | --- | --- | --- |
+| seed inserts/s (ram) | 257,416 | 297,619 | local either way (primary seeds); parity ✓ |
+| seed inserts/s (durable) | 4,492 | 4,478 | fsync-per-commit ≈220µs dominates — the 57× ram gap is iteration 23's case |
+| read ops/s (ram, primary) | 1,630 | 1,488 | point lookups are O(table): the probe walks every slab — the read-path finding |
+| mixread ops/s (actors) | 1,280 | **21** | the RPC price × O(table) probes × owner serialization — the arc's honest cost until reads index properly |
+| msgrate msgs/s | 13,424,620 | 2,445,944 | same-heap vs mutex-inbox: 5.5× — deviation 4's number; rings stay unearned until this is the bottleneck |
+
 **Guarantee contract** (stage-3 refinement 2026-08-21; moved here from
 the slice's marker doc when it landed):
 

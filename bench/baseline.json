@@ -1,0 +1,453 @@
+{
+ "_config": {
+  "N": 20000,
+  "crash_reps": 3,
+  "msg_n": 200000,
+  "note": "refresh only with a commit that says why; tolerances widened 2026-08-21 from the two-run repeatability check: mix* 50% (scheduling-dependent small counts), read/query 35% (machine jitter), everything else 15%",
+  "wal_n": 4000
+ },
+ "durable.s1.mixread.ops_sec": {
+  "dir": "higher",
+  "floor": 187,
+  "tolerance_pct": 50,
+  "value": 751
+ },
+ "durable.s1.mixread.p50us": {
+  "dir": "lower",
+  "floor": 11844,
+  "tolerance_pct": 50,
+  "value": 2961
+ },
+ "durable.s1.mixread.p99us": {
+  "dir": "lower",
+  "floor": 19044,
+  "tolerance_pct": 50,
+  "value": 4761
+ },
+ "durable.s1.mixwrite.ops_sec": {
+  "dir": "higher",
+  "floor": 20,
+  "tolerance_pct": 50,
+  "value": 83
+ },
+ "durable.s1.mixwrite.p50us": {
+  "dir": "lower",
+  "floor": 19408,
+  "tolerance_pct": 50,
+  "value": 4852
+ },
+ "durable.s1.mixwrite.p99us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "durable.s1.query.ops_sec": {
+  "dir": "higher",
+  "floor": 335,
+  "tolerance_pct": 35,
+  "value": 1341
+ },
+ "durable.s1.query.p50us": {
+  "dir": "lower",
+  "floor": 2996,
+  "tolerance_pct": 35,
+  "value": 749
+ },
+ "durable.s1.query.p99us": {
+  "dir": "lower",
+  "floor": 3204,
+  "tolerance_pct": 35,
+  "value": 801
+ },
+ "durable.s1.read.ops_sec": {
+  "dir": "higher",
+  "floor": 336,
+  "tolerance_pct": 35,
+  "value": 1346
+ },
+ "durable.s1.read.p50us": {
+  "dir": "lower",
+  "floor": 3032,
+  "tolerance_pct": 35,
+  "value": 758
+ },
+ "durable.s1.read.p99us": {
+  "dir": "lower",
+  "floor": 3324,
+  "tolerance_pct": 35,
+  "value": 831
+ },
+ "durable.s1.seed.ops_sec": {
+  "dir": "higher",
+  "floor": 1123,
+  "tolerance_pct": 15,
+  "value": 4492
+ },
+ "durable.s1.seed.p50us": {
+  "dir": "lower",
+  "floor": 840,
+  "tolerance_pct": 15,
+  "value": 210
+ },
+ "durable.s1.seed.p99us": {
+  "dir": "lower",
+  "floor": 2188,
+  "tolerance_pct": 15,
+  "value": 547
+ },
+ "durable.s1.write.ops_sec": {
+  "dir": "higher",
+  "floor": 307,
+  "tolerance_pct": 15,
+  "value": 1230
+ },
+ "durable.s1.write.p50us": {
+  "dir": "lower",
+  "floor": 3036,
+  "tolerance_pct": 15,
+  "value": 759
+ },
+ "durable.s1.write.p99us": {
+  "dir": "lower",
+  "floor": 7232,
+  "tolerance_pct": 15,
+  "value": 1808
+ },
+ "durable.sN.mixread.ops_sec": {
+  "dir": "higher",
+  "floor": 5,
+  "tolerance_pct": 50,
+  "value": 20
+ },
+ "durable.sN.mixread.p50us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "durable.sN.mixread.p99us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "durable.sN.mixwrite.ops_sec": {
+  "dir": "higher",
+  "floor": 0,
+  "tolerance_pct": 50,
+  "value": 2
+ },
+ "durable.sN.mixwrite.p50us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "durable.sN.mixwrite.p99us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "durable.sN.query.ops_sec": {
+  "dir": "higher",
+  "floor": 328,
+  "tolerance_pct": 35,
+  "value": 1312
+ },
+ "durable.sN.query.p50us": {
+  "dir": "lower",
+  "floor": 3028,
+  "tolerance_pct": 35,
+  "value": 757
+ },
+ "durable.sN.query.p99us": {
+  "dir": "lower",
+  "floor": 3392,
+  "tolerance_pct": 35,
+  "value": 848
+ },
+ "durable.sN.read.ops_sec": {
+  "dir": "higher",
+  "floor": 350,
+  "tolerance_pct": 35,
+  "value": 1403
+ },
+ "durable.sN.read.p50us": {
+  "dir": "lower",
+  "floor": 3000,
+  "tolerance_pct": 35,
+  "value": 750
+ },
+ "durable.sN.read.p99us": {
+  "dir": "lower",
+  "floor": 3420,
+  "tolerance_pct": 35,
+  "value": 855
+ },
+ "durable.sN.seed.ops_sec": {
+  "dir": "higher",
+  "floor": 1119,
+  "tolerance_pct": 15,
+  "value": 4478
+ },
+ "durable.sN.seed.p50us": {
+  "dir": "lower",
+  "floor": 836,
+  "tolerance_pct": 15,
+  "value": 209
+ },
+ "durable.sN.seed.p99us": {
+  "dir": "lower",
+  "floor": 2372,
+  "tolerance_pct": 15,
+  "value": 593
+ },
+ "durable.sN.write.ops_sec": {
+  "dir": "higher",
+  "floor": 316,
+  "tolerance_pct": 15,
+  "value": 1265
+ },
+ "durable.sN.write.p50us": {
+  "dir": "lower",
+  "floor": 3064,
+  "tolerance_pct": 15,
+  "value": 766
+ },
+ "durable.sN.write.p99us": {
+  "dir": "lower",
+  "floor": 6616,
+  "tolerance_pct": 15,
+  "value": 1654
+ },
+ "ram.s1.mixread.ops_sec": {
+  "dir": "higher",
+  "floor": 320,
+  "tolerance_pct": 50,
+  "value": 1280
+ },
+ "ram.s1.mixread.p50us": {
+  "dir": "lower",
+  "floor": 10904,
+  "tolerance_pct": 50,
+  "value": 2726
+ },
+ "ram.s1.mixread.p99us": {
+  "dir": "lower",
+  "floor": 12472,
+  "tolerance_pct": 50,
+  "value": 3118
+ },
+ "ram.s1.mixwrite.ops_sec": {
+  "dir": "higher",
+  "floor": 35,
+  "tolerance_pct": 50,
+  "value": 142
+ },
+ "ram.s1.mixwrite.p50us": {
+  "dir": "lower",
+  "floor": 11216,
+  "tolerance_pct": 50,
+  "value": 2804
+ },
+ "ram.s1.mixwrite.p99us": {
+  "dir": "lower",
+  "floor": 16368,
+  "tolerance_pct": 50,
+  "value": 4092
+ },
+ "ram.s1.msgrate.msgs_sec": {
+  "dir": "higher",
+  "floor": 3356155,
+  "tolerance_pct": 15,
+  "value": 13424620
+ },
+ "ram.s1.query.ops_sec": {
+  "dir": "higher",
+  "floor": 378,
+  "tolerance_pct": 35,
+  "value": 1512
+ },
+ "ram.s1.query.p50us": {
+  "dir": "lower",
+  "floor": 2536,
+  "tolerance_pct": 35,
+  "value": 634
+ },
+ "ram.s1.query.p99us": {
+  "dir": "lower",
+  "floor": 3196,
+  "tolerance_pct": 35,
+  "value": 799
+ },
+ "ram.s1.read.ops_sec": {
+  "dir": "higher",
+  "floor": 407,
+  "tolerance_pct": 35,
+  "value": 1630
+ },
+ "ram.s1.read.p50us": {
+  "dir": "lower",
+  "floor": 2396,
+  "tolerance_pct": 35,
+  "value": 599
+ },
+ "ram.s1.read.p99us": {
+  "dir": "lower",
+  "floor": 3124,
+  "tolerance_pct": 35,
+  "value": 781
+ },
+ "ram.s1.seed.ops_sec": {
+  "dir": "higher",
+  "floor": 64354,
+  "tolerance_pct": 15,
+  "value": 257416
+ },
+ "ram.s1.seed.p50us": {
+  "dir": "lower",
+  "floor": 16,
+  "tolerance_pct": 15,
+  "value": 4
+ },
+ "ram.s1.seed.p99us": {
+  "dir": "lower",
+  "floor": 32,
+  "tolerance_pct": 15,
+  "value": 8
+ },
+ "ram.s1.write.ops_sec": {
+  "dir": "higher",
+  "floor": 718,
+  "tolerance_pct": 15,
+  "value": 2872
+ },
+ "ram.s1.write.p50us": {
+  "dir": "lower",
+  "floor": 2320,
+  "tolerance_pct": 15,
+  "value": 580
+ },
+ "ram.s1.write.p99us": {
+  "dir": "lower",
+  "floor": 3444,
+  "tolerance_pct": 15,
+  "value": 861
+ },
+ "ram.sN.mixread.ops_sec": {
+  "dir": "higher",
+  "floor": 5,
+  "tolerance_pct": 50,
+  "value": 21
+ },
+ "ram.sN.mixread.p50us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "ram.sN.mixread.p99us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "ram.sN.mixwrite.ops_sec": {
+  "dir": "higher",
+  "floor": 0,
+  "tolerance_pct": 50,
+  "value": 2
+ },
+ "ram.sN.mixwrite.p50us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "ram.sN.mixwrite.p99us": {
+  "dir": "lower",
+  "floor": 80000,
+  "tolerance_pct": 50,
+  "value": 20000
+ },
+ "ram.sN.msgrate.msgs_sec": {
+  "dir": "higher",
+  "floor": 611486,
+  "tolerance_pct": 15,
+  "value": 2445944
+ },
+ "ram.sN.query.ops_sec": {
+  "dir": "higher",
+  "floor": 333,
+  "tolerance_pct": 35,
+  "value": 1333
+ },
+ "ram.sN.query.p50us": {
+  "dir": "lower",
+  "floor": 2968,
+  "tolerance_pct": 35,
+  "value": 742
+ },
+ "ram.sN.query.p99us": {
+  "dir": "lower",
+  "floor": 3392,
+  "tolerance_pct": 35,
+  "value": 848
+ },
+ "ram.sN.read.ops_sec": {
+  "dir": "higher",
+  "floor": 372,
+  "tolerance_pct": 35,
+  "value": 1488
+ },
+ "ram.sN.read.p50us": {
+  "dir": "lower",
+  "floor": 2504,
+  "tolerance_pct": 35,
+  "value": 626
+ },
+ "ram.sN.read.p99us": {
+  "dir": "lower",
+  "floor": 3228,
+  "tolerance_pct": 35,
+  "value": 807
+ },
+ "ram.sN.seed.ops_sec": {
+  "dir": "higher",
+  "floor": 74404,
+  "tolerance_pct": 15,
+  "value": 297619
+ },
+ "ram.sN.seed.p50us": {
+  "dir": "lower",
+  "floor": 12,
+  "tolerance_pct": 15,
+  "value": 3
+ },
+ "ram.sN.seed.p99us": {
+  "dir": "lower",
+  "floor": 28,
+  "tolerance_pct": 15,
+  "value": 7
+ },
+ "ram.sN.write.ops_sec": {
+  "dir": "higher",
+  "floor": 634,
+  "tolerance_pct": 15,
+  "value": 2537
+ },
+ "ram.sN.write.p50us": {
+  "dir": "lower",
+  "floor": 2408,
+  "tolerance_pct": 15,
+  "value": 602
+ },
+ "ram.sN.write.p99us": {
+  "dir": "lower",
+  "floor": 3552,
+  "tolerance_pct": 15,
+  "value": 888
+ }
+}

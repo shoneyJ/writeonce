@@ -40,3 +40,24 @@ compiler classifies the elements OWNED while table refs are scalar ids.
 Query-built multis are runtime-typed and safe. Worked around here
 (single ref local, bucket-major seeding); the compiler fix is its own
 slice.
+
+## Reference-machine numbers (first campaign, 2026-08-21)
+
+`bench/baseline.json` is the contract; headline readings:
+
+- ram seed 257–298k inserts/s; **durable seed ≈4.5k/s** (fsync-per-commit
+  ≈220µs each — the gap iteration 23 exists to close).
+- reads ≈1.5k/s at p50 ≈600µs on a 20k-row store: point lookups are
+  O(table) — the probe walks every slab; index selection never reaches
+  the lookup path. THE read-path finding.
+- mixread 1,280 ops/s single-shard vs **21 ops/s** multi-shard: RPC
+  round-trip × O(table) probes × owner serialization — the arc's honest
+  price until reads index properly.
+- msgrate 13.4M msgs/s same-heap vs 2.45M cross-shard (the mutex-inbox
+  number, stage-2 deviation 4).
+
+## The gate must bite (proven 2026-08-21)
+
+`scripts/db-bench.py --check <results.json>` evaluates a recorded run:
+the real results pass 74/0; a doctored copy (one ops/sec halved) FAILS
+on exactly that metric. Re-run the smoke after any gate change.

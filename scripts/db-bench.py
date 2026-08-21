@@ -219,6 +219,14 @@ def write_baseline(metrics):
     ok(f"baseline written ({len(base) - 1} metrics)")
 
 def main():
+    # --check <results.json>: gate-only evaluation of a recorded run — the
+    # gate-bites smoke doctors a copy and this mode must FAIL on it
+    if "--check" in sys.argv:
+        f = sys.argv[sys.argv.index("--check") + 1]
+        gate(json.load(open(f)))
+        print()
+        print(f"db-bench --check: {len(passed) + len(failed)} checks, {len(failed)} failures")
+        sys.exit(1 if failed else 0)
     build()
     metrics = campaign()
     durability(metrics)
