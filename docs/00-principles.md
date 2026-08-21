@@ -54,9 +54,9 @@ Cross-shard work is a message send that moves ownership. There is no
 `Arc<Mutex<…>>` anywhere and never will be.
 *Why:* sharing mutable state buys contention, locks, and heisenbugs;
 moving ownership buys linear scaling and per-shard GC.
-*Enforced by:* [plan 09](plan/09-concurrency-scaleout.md) (shipped on the
-Rust runtime), [the shard-fiber arc plan](superpowers/plans/2026-08-20-shard-fiber-arc.md)
-(stages 1+2 landed; supersedes the discarded 2026-08-01 shard-actor plan).
+*Enforced by:* [the shard-fiber arc plan](superpowers/plans/2026-08-20-shard-fiber-arc.md)
+(stages 1+2 landed; supersedes the discarded 2026-08-01 shard-actor plan
+and the Rust-era plan 09, removed with that track 2026-08-18).
 
 ## 6. The runtime never stops
 
@@ -75,8 +75,10 @@ before acknowledgment; boot replays the log. Mirrors (Postgres) are
 reconstructible backups that reads and acks never depend on.
 *Why:* one source of truth with predictable latency; durability is a
 sequential append, not a storage engine bolted to the side.
-*Enforced by:* [plan 11](plan/11-wal-and-recovery.md),
-[plan 16](plan/16-postgres-mirror.md) (mirror-is-backup doctrine).
+*Enforced by:* [the db-engine binding plan](superpowers/plans/2026-08-01-db-engine-binding.md)
+(typed WAL + boot replay, shipped); the mirror-is-backup doctrine is
+recorded in [`plan/discarded.md`](plan/discarded.md) (the Rust-era WAL
+and mirror plans 11/16 were removed with that track 2026-08-18).
 
 ## 8. Samples force the grammar
 
@@ -85,7 +87,8 @@ directory is the de facto integration suite, and new surface is proven by
 re-expressing real workloads (blog, ecommerce, pricing, log-watcher).
 *Why:* grammars designed in the abstract grow features nobody needs and
 miss the ones real programs demand.
-*Enforced by:* [the blog sample](examples/blog/README.md),
+*Enforced by:* [the web-app sample](examples/web-app/README.md)
+(the blog sample left with the Rust track),
 the sample-workload acceptance in [the systems-track spec](superpowers/specs/2026-08-01-systems-track-design.md).
 
 ## 9. Linux is the target
