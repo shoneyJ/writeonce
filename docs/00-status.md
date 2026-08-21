@@ -12,7 +12,8 @@ banner and this board change. ONE exception by directive (2026-08-20):
 story iteration files move physically — landed ones into
 `stories/language-runtime-database/done/`, brainstorm-needing ones into
 `refine/`, held ones into `hold/` (2026-08-21); ready/in-flight stay at
-the root. Every plan and phase doc opens with a
+the root. Second exception (2026-08-21): the active slice's one marker
+doc lives in `docs/in-progress/` and is deleted when the slice lands. Every plan and phase doc opens with a
 `> **Status:**` banner linking back here; normative contracts
 (`plan/oop-vm/`), exploration studies, reference docs and the
 discarded/learnings registers carry none by design.
@@ -197,11 +198,11 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | nothing active — the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-20--code-review-pass) |
+| Runtime  | **the 8+11 arc, stage 3: transparent DB actor** — first slice of the concurrency chain (2026-08-21) | [marker doc](in-progress/2026-08-21-arc-stage-3.md) · [arc plan Tasks 7–8](superpowers/plans/2026-08-20-shard-fiber-arc.md) |
 
-Off-goal work is parked; the goal (2026-08-20) is the web framework as a
-polished micro-framework v1 — iteration 17 (library kind + `internal/`) is
-parked with its spec + plan ready on branch `library-internal`.
+The active slice's marker doc lives in [`in-progress/`](in-progress/) —
+one file, deleted when the slice lands. Everything else pending is the
+concurrency chain (see *Pending* below); the held tail is in `hold/`.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 
