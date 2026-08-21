@@ -1,0 +1,24 @@
+-- The bench store: the employee shape reduced to what pricing needs —
+-- a parent with a @unique Text column (unique-index maintenance), a
+-- child with a ref parent (FK probe on insert) and two indexed columns
+-- (the equality-probe path). Meta rows carry seed expectations so
+-- `verify` checks the store against facts that survived the same WAL.
+
+@table(name: "buckets", index: [tag])
+class Bucket {
+  tag: Text @unique
+}
+
+@table(name: "items", index: [k], index: [bucket])
+class Item {
+  k: Int             -- probe key; seeded non-unique (10 rows per key),
+                     -- wal/write modes use disjoint high ranges
+  v: Int             -- payload column, checksummed by verify
+  bucket: ref Bucket -- FK: primary-index probe on every insert
+}
+
+@table(name: "meta", index: [tag])
+class Meta {
+  tag: Text @unique
+  val: Int
+}
