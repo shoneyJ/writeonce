@@ -107,3 +107,6 @@ docs/examples/*/target/
 # Obsidian vault state (developer-local)
 docs/.obsidian/
 docs/Untitled.base
+
+# bench scratch stores (driver-managed)
+bench/tmp.*
