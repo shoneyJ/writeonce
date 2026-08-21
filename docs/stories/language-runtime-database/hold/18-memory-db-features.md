@@ -1,3 +1,8 @@
+---
+iteration: "18"
+status: hold
+---
+
 # Iteration 18 — framework v2: memory-rich features over the embedded database
 
 > **Scope label (2026-08-20): this iteration is FRAMEWORK V2.** Framework

@@ -1,3 +1,9 @@
+---
+iteration: "23"
+status: refine
+chain: 5
+---
+
 # Iteration 23 — io_uring group-commit write path
 
 > Format: fiberloom `product/story-iteration-template`. Part of

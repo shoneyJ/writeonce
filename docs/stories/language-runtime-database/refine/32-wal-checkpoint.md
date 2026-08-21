@@ -1,3 +1,9 @@
+---
+iteration: "32"
+status: refine
+chain: 6
+---
+
 # Iteration 32 — WAL checkpoint: disk space reclamation and bounded replay
 
 > Format: fiberloom `product/story-iteration-template`. Part of

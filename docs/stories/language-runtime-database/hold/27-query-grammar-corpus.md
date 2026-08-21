@@ -1,3 +1,8 @@
+---
+iteration: "27"
+status: hold
+---
+
 # Iteration 27 — query grammar, driven by real embedded-DB corpora
 
 > Format: fiberloom `product/story-iteration-template`. Part of

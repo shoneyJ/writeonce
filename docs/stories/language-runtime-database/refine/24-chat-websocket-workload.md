@@ -1,3 +1,9 @@
+---
+iteration: "24"
+status: refine
+chain: 4
+---
+
 # Iteration 24 — chat: the WebSocket pub/sub driving workload
 
 > Format: fiberloom `product/story-iteration-template`. Part of

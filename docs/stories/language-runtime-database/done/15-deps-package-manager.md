@@ -1,3 +1,8 @@
+---
+iteration: "15"
+status: done
+---
+
 # Iteration 15 — dependencies: `wo.toml [deps]`, git fetch, `wo.lock`
 
 > Format: fiberloom `product/story-iteration-template`. Part of

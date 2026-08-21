@@ -1,3 +1,8 @@
+---
+iteration: "28"
+status: hold
+---
+
 # Iteration 28 — skillhost: a host-shaped workload, and the capability gaps it exposes
 
 > Format: fiberloom `product/story-iteration-template`. Part of

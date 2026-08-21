@@ -1,3 +1,8 @@
+---
+iteration: "6"
+status: done
+---
+
 # Iteration 6 — program mode + systems stdlib
 
 > Format: fiberloom `product/story-iteration-template`. Part of

@@ -1,3 +1,8 @@
+---
+iteration: "1"
+status: done
+---
+
 # Iteration 1 — the principles doc
 
 > Format: fiberloom `product/story-iteration-template`. Part of

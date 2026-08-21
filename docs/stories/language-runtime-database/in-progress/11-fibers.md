@@ -1,3 +1,9 @@
+---
+iteration: "11"
+status: in-progress
+chain: 1
+---
+
 # Iteration 11 — fibers (the 8+11 concurrency arc, part 2)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

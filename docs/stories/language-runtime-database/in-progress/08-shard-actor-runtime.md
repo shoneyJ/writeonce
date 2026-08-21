@@ -1,3 +1,9 @@
+---
+iteration: "8"
+status: in-progress
+chain: 1
+---
+
 # Iteration 8 — shard-actor runtime (the 8+11 concurrency arc, part 1)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

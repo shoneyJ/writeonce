@@ -1,3 +1,8 @@
+---
+iteration: "29"
+status: hold
+---
+
 # Iteration 29 — compile-time metaprogramming (derive from the class table)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

@@ -1,3 +1,8 @@
+---
+iteration: "16"
+status: done
+---
+
 # Iteration 16 — the web framework: a `.wo` library, HTTP/1.1 behind a proxy
 
 > Format: fiberloom `product/story-iteration-template`. Part of

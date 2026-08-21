@@ -1,3 +1,8 @@
+---
+iteration: "7"
+status: done
+---
+
 # Iteration 7 — log-watcher proof workload
 
 > Format: fiberloom `product/story-iteration-template`. Part of

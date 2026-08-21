@@ -26,6 +26,10 @@ rejection in [`discarded.md`](../plan/discarded.md) with its reason.
 
 Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold**
 
+Story files carry YAML frontmatter (`iteration`/`status`/`chain`) — the
+machine-readable truth behind this board; live Obsidian Dataview views:
+[`board-views.md`](board-views.md) (Kanban = view only, never edits status).
+
 ---
 
 ## ▶ NEXT PLAN

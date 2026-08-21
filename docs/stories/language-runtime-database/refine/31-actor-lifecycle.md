@@ -1,3 +1,9 @@
+---
+iteration: "31"
+status: refine
+chain: 3
+---
+
 # Iteration 31 — actor lifecycle: request/response, backpressure, death, timers
 
 > Format: fiberloom `product/story-iteration-template`. Part of

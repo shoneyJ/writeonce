@@ -1,3 +1,8 @@
+---
+iteration: "7b"
+status: done
+---
+
 # Iteration 7b — inferred GC + incremental mark-sweep
 
 > Format: fiberloom `product/story-iteration-template`. Part of

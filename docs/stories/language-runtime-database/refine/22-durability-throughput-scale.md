@@ -1,3 +1,9 @@
+---
+iteration: "22"
+status: refine
+chain: 2
+---
+
 # Iteration 22 — durability proof, throughput, and scale under load
 
 > Format: fiberloom `product/story-iteration-template`. Part of
