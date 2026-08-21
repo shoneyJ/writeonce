@@ -1,6 +1,6 @@
 # woc Compiler Front (OCaml) Implementation Plan
 
-> **Status: ✅ done** (story iteration 3) — Tasks 1–8 shipped: dune scaffold, `diag`, newline-significant lexer, declaration + statement/expression parser with multi-error recovery, typechecker (field kinds, `?T` plumbing, W201, E225, E214), MVS ownership pass with the four emitter tables, driver with directory discovery. `?T` semantics and eight other `WO-E2xx` codes stayed unenforced — carried as named known gaps, not silently owed. Board: [00-status.md](../../00-status.md)
+> **Status: ✅ done** (story iteration 3) — Tasks 1–8 shipped: dune scaffold, `diag`, newline-significant lexer, declaration + statement/expression parser with multi-error recovery, typechecker (field kinds, `?T` plumbing, W201, E225, E214), MVS ownership pass with the four emitter tables, driver with directory discovery. `?T` semantics and eight other `WO-E2xx` codes stayed unenforced — carried as named known gaps, not silently owed. Board: [00-status.md](../../stories/00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

@@ -5,7 +5,7 @@ exists so a settled question is not re-proposed. If you want to revisit an
 entry, argue against the reason recorded here — do not re-open it as if it were
 new.
 
-Status board: [`00-status.md`](../00-status.md) · Doctrine: [`../00-principles.md`](../00-principles.md)
+Status board: [`00-status.md`](../stories/00-status.md) · Doctrine: [`../00-principles.md`](../00-principles.md)
 
 ## Language surface
 

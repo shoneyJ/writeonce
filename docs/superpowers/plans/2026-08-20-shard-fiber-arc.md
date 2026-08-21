@@ -22,7 +22,7 @@
 > (7) two TSan-caught races fixed (late-init memset vs concurrent push;
 > wake-efd read outside the lock) and one teardown SEGV (routed frees
 > during teardown are now no-ops: arenas die wholesale).
-> Board: [docs/00-status.md](../../00-status.md).
+> Board: [docs/00-status.md](../../stories/00-status.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or

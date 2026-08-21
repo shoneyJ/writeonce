@@ -3,7 +3,7 @@
 > **Status: ⬜ pending** (story iteration 9b) — blocked on iteration 9's engine
 > plan ([`2026-08-01-db-engine-binding.md`](../../superpowers/plans/2026-08-01-db-engine-binding.md)):
 > Tasks 3–6 below consume its row storage, WAL, indexes and select subset.
-> Board: [00-status.md](../../00-status.md)
+> Board: [00-status.md](../../stories/00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

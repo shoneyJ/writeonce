@@ -5,7 +5,7 @@
 > (refined) and the brainstorm of 2026-08-20 (this document's Decisions).
 > Covers iterations 8 AND 11 as one arc; iteration 24 (chat) is its
 > acceptance workload and gets its own spec after this one. The plan
-> follows after review. Board: [docs/00-status.md](../../00-status.md).
+> follows after review. Board: [docs/00-status.md](../../stories/00-status.md).
 >
 > Per repo convention: concept, reason, and required behavior in words
 > only — no implementation code.

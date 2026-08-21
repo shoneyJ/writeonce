@@ -6,7 +6,7 @@
 > settled in
 > [the iteration](../../stories/language-runtime-database/done/17-library-projects-internal.md)
 > (four forks + impact analysis); this spec makes them buildable. The plan
-> follows after review. Board: [docs/00-status.md](../../00-status.md).
+> follows after review. Board: [docs/00-status.md](../../stories/00-status.md).
 >
 > Per repo convention this spec carries concept, reason, and required
 > behavior in words only — no implementation code.

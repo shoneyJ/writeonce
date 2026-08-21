@@ -1,6 +1,6 @@
 # Dependency graphs — iterations and framework features
 
-> Companion to [00-status.md](00-status.md) (states live THERE; this page
+> Companion to [00-status.md](stories/00-status.md) (states live THERE; this page
 > carries the edges). An arrow `A --> B` means **A must exist before B**;
 > a dashed arrow is a scope DIRECTIVE, not a technical dependency. Use it
 > to pick the next implementation: anything whose incoming arrows are all

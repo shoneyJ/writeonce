@@ -10,7 +10,7 @@
 > tree removed 2026-08-18 with the Rust track. Kept as historical
 > reference for the mailbox-ring and heap-stamping idea shapes only.
 > Recorded in [`plan/discarded.md`](../../plan/discarded.md). Board:
-> [00-status.md](../../00-status.md)
+> [00-status.md](../../stories/00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

@@ -11,7 +11,7 @@
 > this spec makes them buildable. The plan is authored
 > ([framework v2 plan](../plans/2026-08-20-framework-v2-memory-features.md))
 > and held with it.
-> Board: [docs/00-status.md](../../00-status.md).
+> Board: [docs/00-status.md](../../stories/00-status.md).
 >
 > Per repo convention: concept, reason, and required behavior in words
 > only — no implementation code.
