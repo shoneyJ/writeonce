@@ -1,8 +1,18 @@
 # The 8+11 concurrency arc — implementation plan (staged)
 
-> **Status: STAGES 1 AND 2 COMPLETE 2026-08-20** (branch `concurrency-arc`,
-> T1–T4 landed + the `docs/examples/fibers` demo and its `just fibers`
-> gate, 8/0). Stages 2–3 pending. Execution deviations, disclosed:
+> **Status: ✅ ARC COMPLETE — STAGE 3 LANDED 2026-08-21** (branch
+> `concurrency-arc-stage3`, T7 executed; T8 is this closeout). The
+> transparent DB actor is live: a worker shard's DB statement marshals to
+> shard 0, parks, resumes with the materialized reply — `WO_T_DB` off the
+> primary is gone. Proof: NEW gate `just db-actor` 8/0 (multi-shard ×3 +
+> both forced backends + single-shard byte-exact + WO_DATA replay pair),
+> ASan/TSan 6/6 on the RPC path, full battery green. Stage-3 deviations
+> are disclosed at Task 7; stage 1+2 history below stands. 22's minimal
+> precursor recorded in the stories (RAM-only: 500 remote inserts ≈4ms
+> vs local ≈0ms — real numbers are 22's).
+>
+> Stages 1+2 completed 2026-08-20 (branch `concurrency-arc`, T1–T6 + the
+> `docs/examples/fibers` demo and its gate). Execution deviations, disclosed:
 > (1) the reduction budget decrements at loop BACK-EDGES ONLY, after the
 > jump lands — the spec's "same three sites as the GC" wording had a
 > livelock at budget 1 (pre-instruction save re-executes the jump into
@@ -37,8 +47,8 @@ every standing gate green before the next begins.
 
 **Architecture:** see the spec (normative):
 [`../specs/2026-08-20-shard-fiber-arc-design.md`](../specs/2026-08-20-shard-fiber-arc-design.md).
-Stories: [8](../../stories/language-runtime-database/in-progress/08-shard-actor-runtime.md) ·
-[11](../../stories/language-runtime-database/in-progress/11-fibers.md).
+Stories: [8](../../stories/language-runtime-database/done/08-shard-actor-runtime.md) ·
+[11](../../stories/language-runtime-database/done/11-fibers.md).
 
 **Tech Stack:** C11 libc-only (`wovm`), OCaml stdlib-only (`woc`), bash
 gates; TSan added to the corpus harness at stage 2.
@@ -194,7 +204,7 @@ transitively-traced check), corpus + TSan.
 > primary before any worker serves; (3) statements are serialized by the
 > DB actor — replies are materialized copies, no torn reads under the
 > concurrent multi-shard corpus (TSan). The five-property map lives in
-> [the marker doc](../../in-progress/2026-08-21-arc-stage-3.md); disk
+> [story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md); disk
 > space reclamation is story 32, not this stage.
 
 ### Task 7 — transparent DB RPC
@@ -235,14 +245,18 @@ transitively-traced check), corpus + TSan.
 
 ### Task 8 — the arc's closeout
 
-- [ ] 22's benchmark re-run (or its minimal precursor if 22 has not
-  landed: the employee read/write loop timed) single- vs multi-shard;
-  numbers recorded in the stories.
-- [ ] Stories 8 + 11 landing banners; board rows; graph node classes;
-  framework README ledger rows that the arc unblocks (streaming etc.
-  stay ⏸ until their own slices — the arc UNBLOCKS, it does not build
-  them); CODE-LOGIC files (vm fiber model, shard/mailbox model, DB RPC).
-- [ ] Full battery once more after doc edits. Commit.
+- [x] 22's minimal precursor (22 has not landed): a timed 500-insert +
+  50-scan loop, local vs spawned-actor, RAM-only — remote inserts ≈4ms
+  for 500 (~8µs/RPC round-trip incl. park/resume), local ≈0ms; scans
+  ≈2–4ms per 50. Recorded in story 8's landing banner; honest numbers
+  with p50/p99 are 22's campaign.
+- [x] Stories 8 + 11 landed with banners (11 carries the fs-park
+  re-scope, disclosed); board standup + rows + pending list flipped;
+  graph nodes I8/I11 → done; framework README ledger rows note the arc
+  UNBLOCKED them (streaming/keep-alive retirement ride iteration 24;
+  rows stay ⏸); CODE-LOGIC: runtime/src gains the DB-actor + ring-params
+  section, database/src the slot-surface section.
+- [x] Full battery once more after doc edits. Commit.
 
 ## Success criteria
 

@@ -107,6 +107,13 @@ write, never restarts it.
 — resume **continues PAST the builtin**. `park_ts` must outlive the
 ring submission (the TIMEOUT op reads it asynchronously).
 
+**Parking on a reply** (stage 3, the DB actor): `park_fd =
+WO_PARK_INBOX` (-2) — the fiber joins the parked list with NO plane
+wait at all; the wake is `wo_io_unpark` from the shard's envelope
+drain when the reply lands. `park_done = 0`: resume re-executes the
+builtin, which consumes the answer. Deadline scans key on
+`park_fd == -1` EXACTLY — an inbox park must never read as a deadline.
+
 **The I/O plane** (`park.c`): one event loop per shard — parked fibers'
 waits and the shard's inbox eventfd on the SAME loop. io_uring FIRST
 (raw `io_uring_setup`/`io_uring_enter`, POLL_ADD + TIMEOUT at the Linux
@@ -139,7 +146,7 @@ stop is not a trap and cannot be caught.
 | --- | --- |
 | shards, envelopes, ownership-move sends, WO-E221/E222, placement | [arc spec](../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md) + [arc plan deviations](../../superpowers/plans/2026-08-20-shard-fiber-arc.md) |
 | request/response, bounded mailboxes, actor death, timers | [iteration 31](../../stories/language-runtime-database/refine/31-actor-lifecycle.md) — not built yet |
-| the DB actor (stage 3) | [in-progress marker](../../in-progress/2026-08-21-arc-stage-3.md) |
+| the DB actor (stage 3) | [story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md) — landed 2026-08-21 |
 | builtin ids and their park behavior | [`08-builtin-surface.md`](08-builtin-surface.md) |
 
 ## 7. Rejected alternatives — settled, argue against the reason

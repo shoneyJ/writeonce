@@ -34,49 +34,49 @@ machine-readable truth behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
-**The concurrency + fiber chain — stage 3 → 22 → 31 → 24 → 23 → 32**
-(directive 2026-08-21). Active slice: the 8+11 arc's **stage 3, the
-transparent DB actor** — marker doc
-[`in-progress/2026-08-21-arc-stage-3.md`](../in-progress/2026-08-21-arc-stage-3.md),
-plan of record
-[`shard-fiber-arc` Tasks 7–8](../superpowers/plans/2026-08-20-shard-fiber-arc.md),
-stories [8](language-runtime-database/in-progress/08-shard-actor-runtime.md) +
-[11](language-runtime-database/in-progress/11-fibers.md) in
-`stories/language-runtime-database/in-progress/`.
+**The concurrency + fiber chain — ✅ stage 3 → 22 → 31 → 24 → 23 → 32**
+(directive 2026-08-21). Next slice: **iteration 22, the measurement
+backbone** — its spec brainstorm is the next act (four forks recorded in
+[the story](language-runtime-database/refine/22-durability-throughput-scale.md));
+no marker doc until it starts.
 
-**Implemented last time:** framework v1 complete (polish, auth, form,
-multipart — `just web-app` 26/0); the arc's stages 1+2 (reduction-budget
-fibers, `spawn`/`send`/`actor M`, pinned shards, envelope sends with
-home-routed frees, WO-E222, io_uring-first I/O plane with `just fibers`
-8/0); iterations 19 (Float/Bytes, `.wob` v5) and 17 (library kind +
-`internal/`).
+**Implemented last time (2026-08-21):** the arc's **stage 3 — the
+transparent DB actor landed, the arc is COMPLETE** (stories
+[8](language-runtime-database/done/08-shard-actor-runtime.md) +
+[11](language-runtime-database/done/11-fibers.md) → done/). A worker
+shard's DB statement marshals to shard 0 (requester-side slot encode),
+executes serialized on the owner, and the fiber resumes with the
+materialized reply — `WO_T_DB` off the primary is gone. NEW gate
+`just db-actor` 8/0; ASan/TSan clean; WO_DATA pair proves worker writes
+are ack-after-durable and replay.
 
-**Key findings:** a multi-shard program touching the database traps
-`WO_T_DB` (`rt.db` is set on the primary only) — a correctness hole, so
-stage 3 runs BEFORE measurement; the benchmark (22) has never run, so no
-performance claim is sourced; `send` is one-way and the mailbox FIFO is
-unbounded (iteration 31 born from this); epoll approach discarded —
-io_uring is a must (2026-08-01 shard-actor plan ✖).
+**Key findings:** a latent stage-1 bug — io_uring ring params were ONE
+shared static, rewritten by every shard's lazy init while others read
+offsets from it: submits landed at garbage offsets and parked fibers
+LOST WAKES (~1/20 hangs at default cores). Per-vm params fixed it; a
+short `io_uring_enter` submit is now a loud trap. Also: single-binary
+gates embed the runtime — rebuild the SAMPLE, not just wovm, or you
+debug a stale binary.
 
-**Learned from the last iteration:** the reduction budget must decrement
-at loop back-edges only (budget-1 livelock otherwise); a mutex-guarded
-inbox + eventfd suffices until 22 measures the mutex; routed frees
-during teardown must be no-ops (arenas die wholesale) — two TSan races
-and one SEGV taught it.
+**Learned from the last iteration:** the owner thread must never read a
+requester's VM heap (concurrent mark-bit writes = TSan race) — marshal
+by ENCODING on the requester's thread, execute from slots replay-style;
+a plane-less park (`WO_PARK_INBOX`) + envelope wake is all an RPC reply
+needs; a busy shard adopting its inbox once per reduction slice bounds
+request latency.
 
-**Dependencies unblocked:** 19 unblocks 24's WS frames and the crypto
-digests; stages 1+2 unblock stage 3 itself and 23's per-shard ring;
-stage 3 unblocks 22's multi-shard campaign.
+**Dependencies unblocked:** 22's multi-shard campaign (the store is
+correct under shards now); 24's serving model (fiber-per-connection has
+a database it can touch from any shard); the framework ledger rows the
+arc gates stay ⏸ until their own slices.
 
-**Next steps:** stage 3 → 22 (baselines + mutex-inbox number) → 31
-(lifecycle) → 24 (chat, the arc's acceptance) → 23 (io_uring
-group-commit) → 32 (WAL checkpoint — disk reclamation, added
-2026-08-21 by the stage-3 guarantee refinement). Held tail resumes on
-its own precedence notes.
+**Next steps:** 22 (baselines single- AND multi-shard + the mutex-inbox
+number; precursor recorded in story 8: remote insert ≈8µs/op RAM-only)
+→ 31 (lifecycle) → 24 (chat) → 23 (io_uring group-commit) → 32 (WAL
+checkpoint). Held tail resumes on its own precedence notes.
 
-**`.dev/reference` used:** `linux` (the "single event loop" card behind
-the io_uring-first directive, arc T4). Record the ones each iteration
-touches here, per the standup convention.
+**`.dev/reference` used:** `linux` (io_uring uapi struct layouts and the
+"single event loop" card — both load-bearing in the ring-params fix).
 
 ---
 
@@ -225,11 +225,11 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 6   | [Program mode + stdlib](language-runtime-database/done/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
 | 7   | [log-watcher proof](language-runtime-database/done/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
 | 7b  | [Inferred GC + mark-sweep](language-runtime-database/done/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
-| 8   | [Shard-actor runtime](language-runtime-database/in-progress/08-shard-actor-runtime.md)           | 🔄 arc stages 1+2 landed 2026-08-20 (branch concurrency-arc); stage 3 (transparent DB actor) = **first in the concurrency chain** |
+| 8   | [Shard-actor runtime](language-runtime-database/done/08-shard-actor-runtime.md)           | ✅ **landed 2026-08-21** — the arc complete: stages 1+2 (fibers/budget/actors/io_uring plane, shards, envelopes, WO-E222) + stage 3's transparent DB actor (`just db-actor` 8/0, ASan/TSan clean, WAL replay pair) |
 | 9   | [Database engine](language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
 | 9b  | [`@table`, relations, query](language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
 | 19  | [Float + Bytes](language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
-| 11  | [Fibers](language-runtime-database/in-progress/11-fibers.md)                                     | 🔄 stages 1+2 landed 2026-08-20 with 8 (`just fibers` 8/0); closes with the arc's stage 3 |
+| 11  | [Fibers](language-runtime-database/done/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
 | 22  | [Durability, throughput, scale](language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first — second in chain, after arc stage 3 |
 | 31  | [Actor lifecycle](language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
 | 24  | [chat: WebSocket workload](language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
@@ -245,7 +245,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 15  | [deps: `wo.toml [deps]`](language-runtime-database/done/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
 | 16  | [web framework](language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/23/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
 | 17  | [library projects + `internal/`](language-runtime-database/done/17-library-projects-internal.md) | ✅ **landed 2026-08-20** — `kind = "library"` in `wo.toml` (default `program`, so every existing manifest is byte-identical; unknown value = WO-E109 exit 2); `woc <dir>` on a library runs the FULL pipeline entry-less and writes nothing, retiring iteration 16's `--emit` workaround; the no-entry build error names the kind; lib+bin dual works. Go's `internal/` rule as **WO-E108** at the consumer's own `use`, dep-boundary-only — the library imports its own interior freely. Framework reorganized: `internal/{parse,serve}.wo` behind the line, `http/form.wo` split out to keep `media_type`/`form_values` public. Driver-only change; VM/`.wob`/GC untouched. `just web-app` **26/0** (3 new checks), every standing gate unchanged |
-| 18  | [framework v2: memory-rich features](language-runtime-database/hold/18-memory-db-features.md) | ⏸ hold (2026-08-21); spec approved + plan authored, both held intact ([spec](../superpowers/specs/2026-08-20-memory-db-features-design.md), [plan](../superpowers/plans/2026-08-20-framework-v2-memory-features.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub REJECTED until 8/11 |
+| 18  | [framework v2: memory-rich features](language-runtime-database/hold/18-memory-db-features.md) | ⏸ hold (2026-08-21); spec approved + plan authored, both held intact ([spec](../superpowers/specs/2026-08-20-memory-db-features-design.md), [plan](../superpowers/plans/2026-08-20-framework-v2-memory-features.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub rejection expired with the arc (8/11 landed 2026-08-21) — revisit on unhold |
 
 ---
 
@@ -253,7 +253,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Runtime  | **the 8+11 arc, stage 3: transparent DB actor** — first slice of the concurrency chain (2026-08-21) | [marker doc](../in-progress/2026-08-21-arc-stage-3.md) · [arc plan Tasks 7–8](../superpowers/plans/2026-08-20-shard-fiber-arc.md) |
+| Runtime  | nothing active — arc stage 3 landed 2026-08-21; next per the chain: iteration 22's spec brainstorm (four forks recorded in its story) | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
 
 The active slice's marker doc lives in [`in-progress/`](../in-progress/) —
 one file, deleted when the slice lands. Everything else pending is the
@@ -434,7 +434,8 @@ the arc's, the baseline is 22's); 24 after 31 (chat is dishonest without
 lifecycle); h2c stays parked behind the chain; the held tail keeps its own
 precedence notes for resumption.
 
-1. **8+11 stage 3** — transparent DB actor. A correctness fix, not an
+1. ✅ **8+11 stage 3** — landed 2026-08-21 (`just db-actor` 8/0; arc
+   complete, stories in done/). Was: transparent DB actor. A correctness fix, not an
    optimization: worker VMs are zero-initialized, so a DB statement off
    the primary traps `WO_T_DB` — a multi-shard program touching the
    database is broken today. Plan of record:

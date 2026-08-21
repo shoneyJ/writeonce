@@ -1,6 +1,6 @@
 ---
 iteration: "8"
-status: in-progress
+status: done
 chain: 1
 ---
 
@@ -8,6 +8,18 @@ chain: 1
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
+>
+> **✅ LANDED 2026-08-21** — the arc is complete. Stage 3 closed the
+> `WO_T_DB` hole: worker-shard DB statements marshal to the owner shard
+> (requester-side slot encode, serialized owner execution, materialized
+> reply, ack-after-owner-fsync). Proof: `just db-actor` 8/0 (NEW gate,
+> `docs/examples/db-actor`), ASan/TSan clean, full battery green, WAL
+> replay pair. The three stage-3 criteria below hold; the heavier
+> concurrent-load truth is iteration 22's campaign. 22's minimal
+> precursor (RAM-only): 500 remote inserts ≈4ms (~8µs/RPC round-trip)
+> vs local ≈0ms; 50 remote scans ≈2–4ms. En route, a latent stage-1 bug
+> fell: shared io_uring params raced by lazy worker init lost park wakes
+> (~1/20 hangs) — params are per-vm now, short submits trap loud.
 >
 > **REFINED 2026-08-20** (developer decisions, no code): iterations 8 and
 > 11 are **one arc** — the scheduler, fibers on it, then serving — because
@@ -115,8 +127,8 @@ chain: 1
     - **when** the deterministic multi-shard corpus runs under TSan,
     - **then** no torn read exists — every statement sees the serialized
       moment its envelope executes on the owner shard (replies are
-      materialized copies). Full guarantee map:
-      [the marker doc](../../../in-progress/2026-08-21-arc-stage-3.md).
+      materialized copies). Full guarantee map: the contract table in
+      *Info* below.
 
 ## Out Of Scope
 
@@ -128,6 +140,17 @@ chain: 1
 - WebSocket framing — the framework's (iteration 24's) job.
 
 ## Info
+
+**Guarantee contract** (stage-3 refinement 2026-08-21; moved here from
+the slice's marker doc when it landed):
+
+| property | state |
+| --- | --- |
+| Atomicity | per-statement ✅ (WAL record replays whole-or-not-at-all); multi-statement = `transaction { }`, iteration 18, ⏸ held. Stage 3: a worker write RPC is exactly ONE owner-shard commit — a crash between send and commit leaves no ack and no partial state. |
+| Durability | ✅ fsync-per-commit, ack-after-durable; the ack crosses shards only AFTER the owner's fsync (`just db-actor`'s WAL pair). Power-loss rides fdatasync semantics; 22's kill battery is the scripted proof. |
+| Crash recovery | ✅ boot replay, torn-tail drop, index rebuild; replay completes on the primary before any worker serves (main.c boots the engine before the shards). 22 scripts the restart proof. |
+| Concurrency control | ✅ stage 3 — the DB actor serializes every statement; replies are materialized copies, no torn read by construction. Cross-statement snapshots arrive with 18. |
+| Space reclamation | RAM ✅ (deleted rows free their slot — ids never reused, slots are); disk ✖ → [story 32](../refine/32-wal-checkpoint.md), end of chain. |
 
 - The C proving ground (`docs/plan/exploration/c-runtime/`, phases A–F:
   epoll loops, eventfd mail) is the substrate this lifts into `wovm`.

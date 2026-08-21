@@ -1,6 +1,6 @@
 ---
 iteration: "11"
-status: in-progress
+status: done
 chain: 1
 ---
 
@@ -8,6 +8,16 @@ chain: 1
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
+>
+> **✅ LANDED 2026-08-21** with the arc's stage 3 (fiber substance landed
+> stages 1+2; stage 3 added the plane-less reply park `WO_PARK_INBOX` —
+> a fiber parked on the DB actor's reply, woken by the envelope drain).
+> RE-SCOPED at close, disclosed: the goal's "blocking builtins park"
+> covers `net`/`time`; **`fs` still blocks the shard thread** — v1
+> semantics, deliberately: program mode is single-fiber by design, and
+> no serving workload reads files mid-request yet. fs-park becomes real
+> when a workload demands it (candidate rider on 23's ring work). The
+> criteria below are met under that re-scope.
 >
 > **REFINED 2026-08-20** (developer decisions, no code): 8 and 11 ship as
 > **one arc** — the DB becomes an actor on an owner shard
