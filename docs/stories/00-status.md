@@ -35,10 +35,13 @@ machine-readable truth behind this board; live Obsidian Dataview views:
 ## ▶ NEXT PLAN
 
 **The concurrency + fiber chain — ✅ stage 3 → 22 → 31 → 24 → 23 → 32**
-(directive 2026-08-21). Next slice: **iteration 22, the measurement
-backbone** — its spec brainstorm is the next act (four forks recorded in
-[the story](language-runtime-database/refine/22-durability-throughput-scale.md));
-no marker doc until it starts.
+(directive 2026-08-21). Active slice: **iteration 22, the measurement
+backbone** — spec + plan approved 2026-08-21
+([spec](../superpowers/specs/2026-08-21-db-bench-design.md) ·
+[plan](../superpowers/plans/2026-08-21-db-bench.md) ·
+[marker](../in-progress/2026-08-21-db-bench.md)); the four forks settled
+as their leanings, plus `time.ticks` (µs clock) as the one runtime
+addition and a new `db-bench` sample as the vehicle.
 
 **Implemented last time (2026-08-21):** the arc's **stage 3 — the
 transparent DB actor landed, the arc is COMPLETE** (stories
@@ -230,7 +233,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 9b  | [`@table`, relations, query](language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
 | 19  | [Float + Bytes](language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
 | 11  | [Fibers](language-runtime-database/done/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
-| 22  | [Durability, throughput, scale](language-runtime-database/refine/22-durability-throughput-scale.md) | ⬜ needs a spec first — second in chain, after arc stage 3 |
+| 22  | [Durability, throughput, scale](language-runtime-database/in-progress/22-durability-throughput-scale.md) | 🔄 **spec + plan approved 2026-08-21, executing** — db-bench sample + campaign gates; forks settled |
 | 31  | [Actor lifecycle](language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
 | 24  | [chat: WebSocket workload](language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
 | 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
@@ -253,7 +256,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Runtime  | nothing active — arc stage 3 landed 2026-08-21; next per the chain: iteration 22's spec brainstorm (four forks recorded in its story) | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
+| Runtime  | **iteration 22: db-bench** — spec + plan approved 2026-08-21; executing | [marker](../in-progress/2026-08-21-db-bench.md) · [plan](../superpowers/plans/2026-08-21-db-bench.md) |
 
 The active slice's marker doc lives in [`in-progress/`](../in-progress/) —
 one file, deleted when the slice lands. Everything else pending is the
@@ -441,7 +444,8 @@ precedence notes for resumption.
    database is broken today. Plan of record:
    [`2026-08-20-shard-fiber-arc.md`](../superpowers/plans/2026-08-20-shard-fiber-arc.md)
    (stages 1+2 landed 2026-08-20, branch `concurrency-arc`).
-2. **22** — the measurement backbone: restart-persistence proof + baseline
+2. 🔄 **22** — IN PROGRESS (spec + plan approved 2026-08-21) — the
+   measurement backbone: restart-persistence proof + baseline
    benchmark (durable + RAM-only), single- AND multi-shard in one
    campaign, plus the stage-2 mutex-inbox number (rings only if the mutex
    costs). It has never run — no `bench/baseline.json`, no `just db-bench`;

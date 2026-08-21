@@ -159,7 +159,7 @@ the slice's marker doc when it landed):
 - The VM's object header has carried a shard id since iteration 2 — no
   relayout.
 - **Gated by the benchmark:** landing the arc means re-running
-  [22](../refine/22-durability-throughput-scale.md) at the concurrency
+  [22](../in-progress/22-durability-throughput-scale.md) at the concurrency
   scale it unlocks and recording the before/after delta; it is also
   where [23](../refine/23-io-uring-commit.md) gets a thread to overlap
   durability against.

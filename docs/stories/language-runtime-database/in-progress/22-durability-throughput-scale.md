@@ -1,6 +1,6 @@
 ---
 iteration: "22"
-status: refine
+status: in-progress
 chain: 2
 ---
 
@@ -16,7 +16,16 @@ chain: 2
 > performance work, because each of those must be gated by re-running THIS
 > iteration's benchmark and showing the number moved the right way.
 >
-> **No spec exists yet.** The forks in *Info* are genuine decisions.
+> ~~**No spec exists yet.** The forks in *Info* are genuine decisions.~~
+>
+> **SPEC APPROVED 2026-08-21** — the four forks below are SETTLED as
+> their recorded leanings (developer confirmation), plus two new
+> decisions: the vehicle is a NEW sample `docs/examples/db-bench`
+> (employee stays a teaching sample) and `time.ticks` (CLOCK_MONOTONIC
+> µs) is the iteration's one runtime addition. Spec:
+> [`2026-08-21-db-bench-design.md`](../../../superpowers/specs/2026-08-21-db-bench-design.md)
+> · plan: [`2026-08-21-db-bench.md`](../../../superpowers/plans/2026-08-21-db-bench.md)
+> — **in progress** (second slice of the chain).
 >
 > **RE-SEQUENCED 2026-08-21** (developer decision): runs AFTER the arc's
 > stage 3 — the transparent DB actor is a correctness hole (a multi-shard
