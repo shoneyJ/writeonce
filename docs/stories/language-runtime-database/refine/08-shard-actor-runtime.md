@@ -10,8 +10,18 @@
 > workload is **iteration 24 (chat: WebSocket pub/sub)**. The pre-existing
 > plan (`docs/superpowers/plans/2026-08-01-shard-actor-vm-runtime.md`)
 > predates inferred GC (7b), the unified surface, and the DB decision —
-> it is a source of ideas, NOT the plan of record; the arc starts with a
-> fresh brainstorm → spec → plan.
+> it is a source of ideas, NOT the plan of record.
+>
+> **RE-SEQUENCED 2026-08-21** (developer decision): the brainstorm →
+> spec → plan happened. The arc's plan of record is
+> [`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
+> (spec: [`2026-08-20-shard-fiber-arc-design.md`](../../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md)),
+> and **stages 1+2 LANDED 2026-08-20** on branch `concurrency-arc`
+> (T1–T6, seven disclosed deviations recorded in the plan). Remaining
+> scope: **stage 3, the transparent DB actor** — a correctness fix, not
+> an optimization: worker VMs are zero-initialized, so a DB statement
+> off the primary shard traps `WO_T_DB`. Concurrency-chain order:
+> **stage 3 → 22 → 31 → 24 → 23**.
 
 ## Settled decisions (2026-08-20)
 
@@ -33,8 +43,11 @@
 3. **Driving workload: chat** (iteration 24) — rooms, broadcast, N
    concurrent WebSocket clients, one binary. The arc's acceptance is the
    chat sample's, not only synthetic corpora.
-4. **Order: 22 → the 8+11 arc → 23.** The io_uring write path waits for
-   the arc (its batch boundary is the shard tick) and for 22's baseline.
+4. **Order — SUPERSEDED 2026-08-21.** Originally 22 → the 8+11 arc → 23;
+   in fact the arc's stages 1+2 landed before 22 ever ran (accepted
+   deviation — the before/after delta is owed and lands as 22's
+   multi-shard pass). Current order: **stage 3 → 22 → 31 → 24 → 23**.
+   23 still waits for the arc's tick boundary and 22's baseline.
 
 ## Goals
 
@@ -102,9 +115,12 @@
 
 ## Proposed Solution
 
-Fresh brainstorm → spec → plan for the WHOLE arc (8+11), staged: the
-pinned-worker scheduler + shard-stamped heaps + MPSC mailboxes + the
-unified spawn/send surface and the traced-send rejection; fibers on that
-scheduler (part 2's document); the DB-actor migration; then iteration 24
-proves it. The 2026-08-01 plan is reference material for the mailbox and
-heap-stamping shapes only.
+Execute stage 3 of the plan of record
+([`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
+the DB-actor migration — engine calls off the owner shard become message
+sends with parked replies, closing the `WO_T_DB` hole. Stages 1+2
+(scheduler, fibers, unified spawn/send, WO-E222 traced-send rejection,
+cross-shard envelopes with home-routed frees) landed 2026-08-20. After
+stage 3: 22 measures, then iteration 24 proves the arc. Actor lifecycle
+(request/response, backpressure, supervision, timers) is deliberately
+NOT the arc's scope — it is [iteration 31](31-actor-lifecycle.md).

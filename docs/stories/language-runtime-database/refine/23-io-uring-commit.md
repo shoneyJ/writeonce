@@ -22,8 +22,12 @@
 > accumulated; (4) startup auto-probe + an env override so CI proves both
 > paths on one kernel — AMENDED: the override is the arc-wide
 > `WO_IO=uring|epoll` (the arc's T4 owns the probe and the per-shard
-> ring; `WO_WAL_MODE` is subsumed). Position: AFTER the 8+11 arc (order
-> settled 2026-08-20: 9e → 8+11 → 9f). AMENDED 2026-08-20 (io_uring-first
+> ring; `WO_WAL_MODE` is subsumed). Position — RE-SEQUENCED 2026-08-21:
+> LAST in the concurrency chain, **stage 3 → 22 → 31 → 24 → 23**
+> (supersedes the 2026-08-20 old-id ordering "9e → 8+11 → 9f"); the
+> per-shard ring already exists (arc T4 landed 2026-08-20,
+> `WO_IO=uring|epoll`) — this iteration adds the WAL's WRITE+FSYNC
+> chains to it. AMENDED 2026-08-20 (io_uring-first
 > directive): the WAL's WRITE+FSYNC chains ride the SAME per-shard ring
 > T4 creates for fiber parking — one event loop per shard, readiness ops
 > and durability ops together, exactly the linux reference project's

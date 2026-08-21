@@ -20,9 +20,21 @@
 > time delivery, main-return reap, fiber-trap isolation, and parked
 > `net`/`time` builtins on the io_uring-first per-shard I/O plane
 > (`WO_IO=uring|epoll`, epoll fallback proven). Demonstrated by
-> `docs/examples/fibers` (`just fibers` 8/0). The shard-context criteria
-> (TID assertions, cross-shard sends, blue-green drain reuse) close with
-> the arc's stage 2.
+> `docs/examples/fibers` (`just fibers` 8/0).
+>
+> **STAGE-2 SUBSTANCE LANDED 2026-08-20** (branch `concurrency-arc`,
+> T5–T6): pinned thread-per-core shards, envelope sends with ownership
+> move, round-robin placement, home-routed frees, WO-E222 on EVERY
+> spawn/send (placement makes any actor potentially remote), TID-verified
+> shard context. Deviations disclosed in the plan of record
+> ([`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)):
+> the inbox is a mutex-guarded list + eventfd (rings arrive only if
+> iteration 22 measures the mutex as a cost), the deterministic corpus
+> pins `WO_SHARDS=1`, two TSan races and one teardown SEGV fixed.
+>
+> **RE-SEQUENCED 2026-08-21**: what remains for the chain is the arc's
+> stage 3 (transparent DB actor — [iteration 8](08-shard-actor-runtime.md)),
+> then measurement. Order: **stage 3 → 22 → 31 → 24 → 23**.
 
 ## Goals
 
@@ -90,15 +102,20 @@
   matches the stdlib posture).
 - Vision origin: [blue-green vision §3](../../../plan/exploration/blue-green-vm/00-vision.md);
   iteration 8's scheduler is the substrate this extends.
-- Open questions to settle in the spec — REDUCED 2026-08-20: the spawn
-  surface is settled (the unified actor address, iteration 8 decision 2).
-  Still open for the arc's spec: budget size and check granularity,
-  parked-fiber drop semantics, run-queue fairness (FIFO v1), and how a
-  parked fiber's borrow state interacts with the shard's GC safepoints.
+- Open questions — REDUCED AGAIN 2026-08-21: the spawn surface, budget
+  size/granularity (back-edge accounting — see the plan's livelock
+  deviation), run-queue fairness (FIFO), and parked-fiber drop semantics
+  (fiber-trap isolation + main-return reap) are all settled by the landed
+  implementation. Still open: how a parked fiber's borrow state interacts
+  with the shard's GC safepoints — tracked for stage 3 / the collector's
+  next pass. Lifecycle surface (request/response, backpressure,
+  supervision, timers) is [iteration 31](31-actor-lifecycle.md)'s, not
+  this story's.
 
 ## Proposed Solution
 
-- No implementation plan exists yet — this iteration starts with the
-  brainstorming → spec → writing-plans chain (the superpowers path every
-  prior iteration followed), then executes that plan. The research note
-  above is the brainstorm's entry material.
+- The plan exists and its fiber stages are landed:
+  [`2026-08-20-shard-fiber-arc.md`](../../../superpowers/plans/2026-08-20-shard-fiber-arc.md)
+  (stages 1+2 complete 2026-08-20). This story closes when the arc's
+  stage 3 lands and iteration 22 records the delta; the chat workload
+  ([iteration 24](24-chat-websocket-workload.md)) is the proof.

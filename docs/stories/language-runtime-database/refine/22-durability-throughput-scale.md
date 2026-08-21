@@ -11,6 +11,17 @@
 > iteration's benchmark and showing the number moved the right way.
 >
 > **No spec exists yet.** The forks in *Info* are genuine decisions.
+>
+> **RE-SEQUENCED 2026-08-21** (developer decision): runs AFTER the arc's
+> stage 3 — the transparent DB actor is a correctness hole (a multi-shard
+> program touching the database traps `WO_T_DB` today), and fixing it
+> first lets ONE benchmark campaign cover single- and multi-shard
+> honestly. The arc's stages 1+2 landed 2026-08-20 unmeasured; their
+> delta is recorded retroactively against this iteration's first
+> baseline. New measurement target since stage 2: the mutex-guarded
+> inbox + eventfd (the plan's deviation — lock-free rings arrive only if
+> this number says the mutex costs). Chain order:
+> **stage 3 → 22 → 31 → 24 → 23**.
 
 ## Goals
 
@@ -122,15 +133,18 @@ exists to close.
 - **Brainstorm the spec**, settling the four forks; then a plan whose first
   task is the harness and the baseline file, because nothing downstream means
   anything without them.
-- **Sequence the whole performance arc around this iteration:**
-  1. 9b lands → employee compiles and runs → **22 restart-persistence** and
-     **22 baseline benchmark** (single-thread, both durable and RAM-only).
-  2. **7b** (inferred GC + mark-sweep) → re-run 22, record the delta (does
-     tracing change the write path's tail latency?).
-  3. **8** (shard-actor, thread-per-core) → re-run 22 at the connection/
-     concurrency scale it unlocks, record the delta.
-  4. **23** (io_uring group-commit) → re-run 22's durable write number, record
-     the delta against the fsync-per-commit baseline — the payoff.
+- **Sequence the performance chain around this iteration** (rewritten
+  2026-08-21 — the first version predated 7b and the arc landing first):
+  1. Already landed unmeasured: 9b, **7b** (inferred GC + mark-sweep,
+     2026-08-18), the arc's **stages 1+2** (fibers + shards, 2026-08-20).
+     Their deltas are owed retroactively against the first baseline.
+  2. Arc **stage 3** (transparent DB actor) lands → **22 runs**:
+     restart-persistence proof + baseline benchmark, durable and
+     RAM-only, single- AND multi-shard, plus the mutex-inbox number.
+  3. **31** (actor lifecycle), then **24** (chat) → re-run the
+     concurrency-facing numbers at the connection scale chat unlocks.
+  4. **23** (io_uring group-commit) → re-run 22's durable write number,
+     record the delta against the fsync-per-commit baseline — the payoff.
 - The benchmark harness and its baseline live under `bench/` (or the existing
   `runtime/bench/`), and `just` gets a `db-bench` recipe kept off the fast
   path, exactly like `log-watcher::soak`.
