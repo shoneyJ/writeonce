@@ -30,6 +30,52 @@ Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold*
 
 ## ▶ NEXT PLAN
 
+**The concurrency + fiber chain — stage 3 → 22 → 31 → 24 → 23**
+(directive 2026-08-21). Active slice: the 8+11 arc's **stage 3, the
+transparent DB actor** — marker doc
+[`in-progress/2026-08-21-arc-stage-3.md`](../in-progress/2026-08-21-arc-stage-3.md),
+plan of record
+[`shard-fiber-arc` Tasks 7–8](../superpowers/plans/2026-08-20-shard-fiber-arc.md),
+stories [8](language-runtime-database/in-progress/08-shard-actor-runtime.md) +
+[11](language-runtime-database/in-progress/11-fibers.md) in
+`stories/language-runtime-database/in-progress/`.
+
+**Implemented last time:** framework v1 complete (polish, auth, form,
+multipart — `just web-app` 26/0); the arc's stages 1+2 (reduction-budget
+fibers, `spawn`/`send`/`actor M`, pinned shards, envelope sends with
+home-routed frees, WO-E222, io_uring-first I/O plane with `just fibers`
+8/0); iterations 19 (Float/Bytes, `.wob` v5) and 17 (library kind +
+`internal/`).
+
+**Key findings:** a multi-shard program touching the database traps
+`WO_T_DB` (`rt.db` is set on the primary only) — a correctness hole, so
+stage 3 runs BEFORE measurement; the benchmark (22) has never run, so no
+performance claim is sourced; `send` is one-way and the mailbox FIFO is
+unbounded (iteration 31 born from this); epoll approach discarded —
+io_uring is a must (2026-08-01 shard-actor plan ✖).
+
+**Learned from the last iteration:** the reduction budget must decrement
+at loop back-edges only (budget-1 livelock otherwise); a mutex-guarded
+inbox + eventfd suffices until 22 measures the mutex; routed frees
+during teardown must be no-ops (arenas die wholesale) — two TSan races
+and one SEGV taught it.
+
+**Dependencies unblocked:** 19 unblocks 24's WS frames and the crypto
+digests; stages 1+2 unblock stage 3 itself and 23's per-shard ring;
+stage 3 unblocks 22's multi-shard campaign.
+
+**Next steps:** stage 3 → 22 (baselines + mutex-inbox number) → 31
+(lifecycle) → 24 (chat, the arc's acceptance) → 23 (io_uring
+group-commit). Held tail resumes on its own precedence notes.
+
+**`.dev/reference` used:** `linux` (the "single event loop" card behind
+the io_uring-first directive, arc T4). Record the ones each iteration
+touches here, per the standup convention.
+
+---
+
+### Landed 2026-08-20 — framework v1 (the previous NEXT PLAN)
+
 **Framework v1 — a polished micro-framework (routing, middleware,
 `Req`/`Resp`), nothing MVC-scale.** Directive 2026-08-20: iteration 17
 (library kind + `internal/`) is **parked** — spec + plan approved and ready
