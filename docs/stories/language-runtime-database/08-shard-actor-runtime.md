@@ -10,7 +10,8 @@
 > workload is **iteration 24 (chat: WebSocket pub/sub)**. The pre-existing
 > plan (`docs/superpowers/plans/2026-08-01-shard-actor-vm-runtime.md`)
 > predates inferred GC (7b), the unified surface, and the DB decision —
-> it is a source of ideas, NOT the plan of record.
+> it is a source of ideas, NOT the plan of record (✖ DISCARDED
+> 2026-08-21: epoll-based; io_uring is a must).
 >
 > **RE-SEQUENCED 2026-08-21** (developer decision): the brainstorm →
 > spec → plan happened. The arc's plan of record is

@@ -1,6 +1,16 @@
 # Shard-Actor VM Runtime Implementation Plan
 
-> **Status: ⬜ pending** (story iteration 8) — thread-per-core shards, per-shard heaps, ownership-move messaging. Must follow story iteration 7b (inferred GC + incremental mark-sweep): the collector settles before shards multiply. Board: [00-status.md](../../00-status.md)
+> **Status: ✖ DISCARDED 2026-08-21** (developer decision) — superseded by
+> the arc plan of record,
+> [`2026-08-20-shard-fiber-arc.md`](2026-08-20-shard-fiber-arc.md), whose
+> stages 1+2 landed 2026-08-20. This plan's premise is inverted twice: it
+> builds on "epoll now / io_uring when the loop module ports phase C"
+> (the io_uring-first directive made the ring primary, and the epoll-based
+> approach is discarded), and it ports patterns from `runtime/wo-rt.c`, a
+> tree removed 2026-08-18 with the Rust track. Kept as historical
+> reference for the mailbox-ring and heap-stamping idea shapes only.
+> Recorded in [`plan/discarded.md`](../../plan/discarded.md). Board:
+> [00-status.md](../../00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

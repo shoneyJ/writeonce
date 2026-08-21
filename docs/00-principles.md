@@ -55,7 +55,8 @@ Cross-shard work is a message send that moves ownership. There is no
 *Why:* sharing mutable state buys contention, locks, and heisenbugs;
 moving ownership buys linear scaling and per-shard GC.
 *Enforced by:* [plan 09](plan/09-concurrency-scaleout.md) (shipped on the
-Rust runtime), [the shard-actor plan](superpowers/plans/2026-08-01-shard-actor-vm-runtime.md).
+Rust runtime), [the shard-fiber arc plan](superpowers/plans/2026-08-20-shard-fiber-arc.md)
+(stages 1+2 landed; supersedes the discarded 2026-08-01 shard-actor plan).
 
 ## 6. The runtime never stops
 
