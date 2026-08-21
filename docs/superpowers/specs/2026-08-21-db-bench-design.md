@@ -1,13 +1,14 @@
 # Iteration 22 — durability proof, throughput, and scale under load (design)
 
 **Date:** 2026-08-21
-**Status:** ✅ APPROVED 2026-08-21 (developer review) — plan ready:
-[`2026-08-21-db-bench.md`](../plans/2026-08-21-db-bench.md).
+**Status:** ✅ LANDED 2026-08-21 — implemented in full (plan:
+[`2026-08-21-db-bench.md`](../plans/2026-08-21-db-bench.md), all six
+tasks, deviations disclosed there); `bench/baseline.json` is live.
 Board: [docs/00-status.md](../../stories/00-status.md)
 **Scope:** the measurement backbone — a benchmark workload in `.wo`, a
 campaign driver script, a tracked baseline contract, and the durability
 proofs (restart persistence + crash battery), single- AND multi-shard.
-**Relates to:** [story 22](../../stories/language-runtime-database/in-progress/22-durability-throughput-scale.md)
+**Relates to:** [story 22](../../stories/language-runtime-database/done/22-durability-throughput-scale.md)
 (the four forks settled below), the landed arc
 ([story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md)
 — the stage-3 delta this iteration records), iteration 23 (the durable

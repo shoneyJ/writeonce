@@ -3,7 +3,7 @@
   "N": 20000,
   "crash_reps": 3,
   "msg_n": 200000,
-  "note": "refresh only with a commit that says why; tolerances widened 2026-08-21 from the two-run repeatability check: mix* 50% (scheduling-dependent small counts), read/query 35% (machine jitter), everything else 15%",
+  "note": "refresh only with a commit that says why; tolerances widened 2026-08-21 from the two-run repeatability check: mix* 50% (scheduling-dependent small counts), read/query 35% (machine jitter), everything else 15%; msgrate floors value/8 \u2014 quick-mode's small N is spawn-dominated and grazed value/4",
   "wal_n": 4000
  },
  "durable.s1.mixread.ops_sec": {
@@ -260,7 +260,7 @@
  },
  "ram.s1.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 3356155,
+  "floor": 1678077,
   "tolerance_pct": 15,
   "value": 13424620
  },
@@ -374,7 +374,7 @@
  },
  "ram.sN.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 611486,
+  "floor": 305743,
   "tolerance_pct": 15,
   "value": 2445944
  },

@@ -1,6 +1,6 @@
 ---
 iteration: "22"
-status: in-progress
+status: done
 chain: 2
 ---
 
@@ -16,7 +16,26 @@ chain: 2
 > performance work, because each of those must be gated by re-running THIS
 > iteration's benchmark and showing the number moved the right way.
 >
-> ~~**No spec exists yet.** The forks in *Info* are genuine decisions.~~
+> **✅ LANDED 2026-08-21** — the measurement backbone exists and has
+> run: `docs/examples/db-bench` (seed/read/query/write/mix/msgrate/
+> wal/verify, per-op `time.ticks` µs timing, 1µs-histogram percentiles),
+> `scripts/db-bench.py` (campaign driver + gates), `bench/baseline.json`
+> (74 metrics, the first contract — tolerances tuned by a two-run
+> repeatability check: mix* 50%, read/query 35%, rest 15%), `just
+> db-bench` / `db-bench-quick`. Proofs: restart-persistence + 3× kill -9
+> battery at BOTH shard counts, all acked rows present every time; the
+> gate BITES (doctored results fail on exactly the doctored metric).
+> Headline findings: durable seed ≈4.5k/s vs ram ≈297k/s (iteration
+> 23's case, measured); point lookups are O(table) — reads ≈1.5k/s at
+> p50 ≈600µs on 20k rows (the probe walks every slab); mixread 1,280
+> ops/s single- vs 21 ops/s multi-shard (the arc's honest price);
+> msgrate 13.4M same-heap vs 2.45M cross-shard (deviation 4's
+> mutex-inbox number). The arc's delta table lives in story 8.
+> Deviations, disclosed in the plan: histogram not reservoir; `all` +
+> `wal` modes added (RAM store dies with the process; clean acked-line
+> crash vehicle); one python driver; `time.ticks` routed via an explicit
+> dispatch arm. Standing finding: hand-built `multi <TableClass>` SEGVs
+> on drop (elements classed OWNED, refs are scalar ids) — own slice.
 >
 > **SPEC APPROVED 2026-08-21** — the four forks below are SETTLED as
 > their recorded leanings (developer confirmation), plus two new
