@@ -22,3 +22,24 @@ class Meta {
   tag: Text @unique
   val: Int
 }
+
+-- mix actors dump their per-op histograms here (kind 0 = read,
+-- 1 = write); main scans and merges — exact aggregate percentiles,
+-- and the merge itself dogfoods the store.
+@table(name: "hist")
+class Hist {
+  kind: Int
+  b: Int
+  c: Int
+}
+
+-- messages (Int-only payloads: ownership moves, nothing borrowed)
+class MixJob {
+  ops: Int
+  seed: Int
+  kmod: Int
+}
+
+class Flood {
+  n: Int
+}
