@@ -189,7 +189,13 @@ def gate(metrics):
         val, tol, floor = spec["value"], spec.get("tolerance_pct", 15), spec.get("floor")
         higher_is_better = spec.get("dir", "higher") == "higher"
         if QUICK:
-            # quick mode: floors only — counts are too small for stable deltas
+            # quick mode: floors only — counts are too small for stable
+            # deltas. mix* skipped entirely: at N=2000 the completion
+            # POLL (20ms sleeps) dominates wall time, so its ops/sec is
+            # an artifact of the poll quantum, not the store.
+            if ".mixread." in key or ".mixwrite." in key:
+                ok(f"gate.{key} (skipped: quick-mode mix is poll-bound)")
+                continue
             breach = floor is not None and ((got < floor) if higher_is_better else (got > floor))
             (ok if not breach else lambda n: bad(n, f"{got} vs floor {floor}"))(f"gate.{key} (floor)")
             continue
@@ -197,7 +203,9 @@ def gate(metrics):
             rel_bad = got < val * (100 - tol) / 100
             floor_bad = floor is not None and got < floor
         else:
-            rel_bad = got > val * (100 + tol) / 100
+            # sub-20µs latencies are histogram quantization: 2µs vs 1µs
+            # reads as "+100%" while meaning one bucket — floor-only there
+            rel_bad = val >= 20 and got > val * (100 + tol) / 100
             floor_bad = floor is not None and got > floor
         if rel_bad or floor_bad:
             bad(f"gate.{key}", f"{got} vs baseline {val} (tol {tol}%, floor {floor})")
@@ -206,14 +214,31 @@ def gate(metrics):
     if WRITE_BASELINE:
         write_baseline(metrics)
 
+def tolerance_for(key):
+    """The tuning POLICY lives here so --write-baseline refreshes keep it
+    (the first refresh silently reset hand-edits to 15% — never again).
+    mix*: scheduling-dependent small counts. read/query + all .sN.*:
+    machine jitter, and at post-index-µs scale a 1µs histogram step on a
+    7µs p50 is already 14%."""
+    if ".mixread." in key or ".mixwrite." in key: return 50
+    if ".sN." in key: return 50
+    if ".read." in key or ".query." in key: return 50
+    return 15
+
 def write_baseline(metrics):
     base = {"_config": {"N": N, "msg_n": MSG_N, "wal_n": WAL_N, "crash_reps": CRASH_REPS,
-                        "note": "refresh only with a commit that says why"}}
+                        "note": "refresh only with a commit that says why; "
+                                "tolerances come from tolerance_for() in the driver"}}
     for k, v in sorted(metrics.items()):
         if k.endswith(("rss_growth_kb", "fd_growth")): continue
         higher = k.endswith(("ops_sec", "msgs_sec"))
-        base[k] = {"value": v, "tolerance_pct": 15,
-                   "floor": (v // 4 if higher else v * 4), "dir": "higher" if higher else "lower"}
+        floor_div = 8 if k.endswith("msgs_sec") else 4
+        # latency floors never sit below 100µs: at post-index µs scale a
+        # 4×1µs "catastrophe line" is noise; the tripwire means "µs became
+        # ms" (an O(table) relapse lands at 600µs+ and is still caught)
+        base[k] = {"value": v, "tolerance_pct": tolerance_for(k),
+                   "floor": (v // floor_div if higher else max(v * 4, 100)),
+                   "dir": "higher" if higher else "lower"}
     os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
     json.dump(base, open(BASELINE, "w"), indent=1, sort_keys=True)
     ok(f"baseline written ({len(base) - 1} metrics)")

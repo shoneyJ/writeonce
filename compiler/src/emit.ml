@@ -879,6 +879,64 @@ let backlink_target (p : pctx) (base_cid : int) (fname : string) : (int * int) o
         in
         find 0 sc.cr_indexes)
 
+(* Read-path index selection (the O(1) slice): a query whose where list
+   contains `var.col == key` (either side), where col carries a single-
+   column index, lowers its SOURCE to DB_PROBE instead of DB_SCAN — the
+   guards all still run over the candidates, so semantics cannot drift.
+   Keys are deliberately just a plain identifier (not the range var) or
+   an integer literal: anything richer raises operand-ownership questions
+   this slice does not need. Float columns are excluded: the engine
+   verifies with raw-word equality while the VM's `==` folds -0.0/+0.0,
+   and a probe MISS cannot be resurrected by the recheck. *)
+let probe_key_of_where (p : pctx) (q : Ast.query) (cid : int) :
+    (int * Ast.expr) option =
+  let cr = p.p_classes.(cid) in
+  let col_of fname =
+    let col = ref (-1) in
+    Array.iteri (fun i (n, _) -> if n = fname then col := i) cr.cr_fields;
+    !col
+  in
+  let single_index_on col =
+    let rec find n = function
+      | [] -> None
+      | (_, cols) :: tl ->
+        if Array.length cols = 1 && cols.(0) = col then Some n else find (n + 1) tl
+    in
+    find 0 cr.cr_indexes
+  in
+  let simple_key (k : Ast.expr) =
+    match k.Ast.kind with
+    | Ast.Ident n -> n <> q.Ast.q_var
+    | Ast.IntLit _ -> true
+    | _ -> false
+  in
+  let try_side (fe : Ast.expr) (key : Ast.expr) =
+    match fe.Ast.kind with
+    | Ast.Field ({ Ast.kind = Ast.Ident v; _ }, fname) when v = q.Ast.q_var ->
+      let col = col_of fname in
+      if col < 0 || not (simple_key key) then None
+      else if
+        (* exclude Float (kind 6) and Bytes (kind 7) columns *)
+        (match cr.cr_fields.(col) with
+        | _, ft -> (
+          match field_kind p ft with
+          | 6 | 7 -> true
+          | _ -> false))
+      then None
+      else Option.map (fun ino -> (ino, key)) (single_index_on col)
+    | _ -> None
+  in
+  List.fold_left
+    (fun acc w ->
+      match acc with
+      | Some _ -> acc
+      | None -> (
+        match w.Ast.kind with
+        | Ast.Binary (Ast.Eq, a, b) -> (
+          match try_side a b with Some r -> Some r | None -> try_side b a)
+        | _ -> None))
+    None q.Ast.q_wheres
+
 let field_of (p : pctx) (cid : int) (fname : string) : (int * Ast.field_ty) option =
   let fs = p.p_classes.(cid).cr_fields in
   let rec go i = if i >= Array.length fs then None else
@@ -2688,9 +2746,23 @@ and emit_query (p : pctx) (f : fstate) (v : views) ~(dst : int) (e : Ast.expr)
     sync_mask p f v e.id;
     f.f_cur_line <- e.pos.line;
     (match q.Ast.q_src with
-    | Ast.QTable _ ->
-      put f (ins_abx op_loadk scan (check_bx p f e.pos "constant" (const_int p cid)));
-      put f (ins_abc op_builtin scan scan b_db_scan)
+    | Ast.QTable _ -> (
+      match probe_key_of_where p q cid with
+      | Some (ino, key_e) ->
+        (* index selection: source = DB_PROBE's candidate ids; every
+           where guard still runs below, so the guard — not the engine —
+           stays the final arbiter of membership *)
+        let save = f.f_temp in
+        let w = alloc_temps p f e.pos 3 in
+        put f (ins_abx op_loadk w (check_bx p f e.pos "constant" (const_int p cid)));
+        put f (ins_abx op_loadk (w + 1) (check_bx p f e.pos "constant" (const_int p ino)));
+        let kr = emit_operand p f v key_e in
+        put f (ins_abc op_move (w + 2) kr 0);
+        put f (ins_abc op_builtin scan w b_db_probe);
+        f.f_temp <- save
+      | None ->
+        put f (ins_abx op_loadk scan (check_bx p f e.pos "constant" (const_int p cid)));
+        put f (ins_abc op_builtin scan scan b_db_scan))
     | Ast.QNav nav ->
       (* the navigation (a backlink) already yields a multi of source ids *)
       let save = f.f_temp in

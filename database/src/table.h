@@ -187,6 +187,24 @@ void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v);
 uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
                           int *ok, const char **msg);
 
+/* Read-path index probe (the O(1) wiring): answer a SINGLE-COLUMN
+ * equality from the index's hash buckets instead of walking slabs.
+ * Key representation is caller-neutral so wo_str and db_text callers
+ * both fit: a Text key passes its bytes+len (bytes == NULL means nil;
+ * an empty text is a non-NULL pointer with len 0); any scalar/float
+ * key passes the raw word in [key_scalar] (bytes ignored). The bucket
+ * hash canonicalizes floats exactly as index maintenance does; the
+ * VERIFY step then compares exactly as the slab walk compares (raw
+ * words for scalars/floats, byte equality for text) — a hash is a
+ * hint, never an answer, so results are identical to the scan.
+ * Returns 1 = probed (*out_ids is a malloc'd id list of *out_cnt,
+ * possibly NULL/0 — the caller frees), 0 = cannot probe (unknown
+ * class/index, untouched table, or a multi-column index — the caller
+ * keeps its scan fallback), -1 = OOM. */
+int wo_idx_probe(wo_db *db, uint32_t class_id, uint32_t index, uint64_t key_scalar,
+                 const void *key_bytes, uint32_t key_len, uint64_t **out_ids,
+                 uint32_t *out_cnt);
+
 /* Engine-internal, replay only: after wal.c fills a raw row's slots, this
  * runs the index maintenance the normal insert runs inline — including the
  * unique check, whose violation during replay is corruption, not data

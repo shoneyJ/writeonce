@@ -137,6 +137,32 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             uint32_t col = ix->cols[0];
             uint8_t kind = db->classes[cid].kinds[col];
             uint64_t key = R[B + 2];
+            {
+                /* the O(1) path: single-column equality answers from the
+                 * index buckets; the slab walk below stays the composite
+                 * fallback (wo_idx_probe verifies exactly as it compares) */
+                const void *kb = NULL;
+                uint32_t kl = 0;
+                if (kind == WO_K_TEXT && key) {
+                    const wo_str *s = (const wo_str *)(uintptr_t)key;
+                    kb = s->data;
+                    kl = s->len;
+                }
+                uint64_t *hit = NULL;
+                uint32_t hn = 0;
+                int prc = wo_idx_probe(db, cid, index, key, kb, kl, &hit, &hn);
+                if (prc < 0) return WO_T_OOM;
+                if (prc == 1) {
+                    for (uint32_t i = 0; i < hn; i++)
+                        if (wo_multi_push(ids, hit[i]) != 0) {
+                            free(hit);
+                            return WO_T_OOM;
+                        }
+                    free(hit);
+                    R[A] = (uint64_t)(uintptr_t)ids;
+                    return 0;
+                }
+            }
             uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
             for (uint32_t g = 0; g < total; g++) {
                 if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
@@ -252,6 +278,24 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             if (q->op == WO_B_DB_PROBE) {
                 col = t->indexes[q->index].cols[0];
                 kind = db->classes[q->cid].kinds[col];
+                /* the O(1) path, mirroring the local executor: the key is
+                 * engine-encoded here (db_text for Text), same buckets,
+                 * same verify — worker shards get the identical speedup */
+                const void *kb = NULL;
+                uint32_t kl = 0;
+                if ((kind == WO_K_TEXT || kind == WO_K_BYTES) && q->slots[0]) {
+                    const db_text *s = (const db_text *)(uintptr_t)q->slots[0];
+                    kb = s->bytes;
+                    kl = s->len;
+                }
+                int prc = wo_idx_probe(db, q->cid, q->index, q->slots[0], kb, kl,
+                                       &q->ids, &q->id_cnt);
+                if (prc < 0) {
+                    q->status = WO_T_OOM;
+                    q->msg = "out of memory";
+                    break;
+                }
+                if (prc == 1) break; /* probed; reply fields already set */
             }
             uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
             for (uint32_t g = 0; g < total; g++) {
