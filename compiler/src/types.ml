@@ -461,6 +461,10 @@ let unused_use_code = Diag.warning_prefix ^ "202"      (* WO-W202 *)
 
 let unknown_type_name_code = Diag.types_prefix ^ "25"  (* WO-E225 *)
 
+(* iteration 36: a LITERAL shift count outside 0..63 — rejected here so
+   the WO_T_SHIFT run-time trap only ever fires on variable counts. *)
+let shift_count_code = Diag.types_prefix ^ "23"  (* WO-E223 *)
+
 (* haxe-parity Task 3, review fix (Critical 1). `default` is moved to
    the *end* of the lowering order regardless of where it sits in the
    source (Ast.switch_lowering_order) -- so a `case` arm written after
@@ -1381,6 +1385,12 @@ let typecheck_program ~file ~(module_of : string -> string)
        this arm every interpolated value looked underivable and every check
        built on confident types silently skipped it. *)
     | Binary (Concat, _, _) -> Some (TScalar "Text")
+    (* iteration 36: bitwise is confidently Int and `not` confidently
+       Bool for the same reason the comparison arm above is Bool — the
+       operator's own meaning, not a guess (Int-only/Bool-only operands
+       are enforced in typecheck_expr's own arms). *)
+    | Binary ((BAnd | BOr | BXor | Shl | Shr), _, _) -> Some (TScalar "Int")
+    | Unary (Not, _) -> Some (TScalar "Bool")
     | Interp _ ->
         (* An interpolation always *produces* Text by construction
            (emit.ml decides, per-segment, whether the embedded value
@@ -1729,6 +1739,25 @@ let typecheck_program ~file ~(module_of : string -> string)
                  check_builtin_call ~file collector name e.pos args confident_types)
          | _ -> ());
         { typ = TScalar "Int"; is_nil = false }
+    | Unary (Not, operand) ->
+        (* iteration 36: Bool-only, no truthiness — the same confident-
+           type contract the and/or arms below use, and the same WO-E201
+           wording, so `not` reads as the third member of that family. *)
+        let res = typecheck_expr env cenv operand in
+        (match confident_typ cenv operand with
+         | None -> ()
+         | Some t ->
+             (if is_nullable t || res.is_nil then e211 operand.pos (expr_label operand));
+             if unwrap_nullable t <> TScalar "Bool" then
+               Diag.Collector.add collector
+                 (Diag.error ~code:type_mismatch_code ~file ~line:operand.pos.line
+                    ~col:operand.pos.col
+                    ~message:
+                      (Printf.sprintf
+                         "`not` operand must be `Bool`, got `%s` -- no truthiness in this language"
+                         (typ_label t))
+                    ()));
+        { typ = TScalar "Bool"; is_nil = false }
     | Unary (_, operand) -> typecheck_expr env cenv operand
     | Binary ((And | Or) as op, left, right) ->
         (* haxe-parity Task 2: `Bool`-typed operands only, no truthiness
@@ -1857,6 +1886,54 @@ let typecheck_program ~file ~(module_of : string -> string)
         if op = Mod then mod_on_float cenv e.pos left right;
         { typ = (match confident_typ cenv left with Some t -> t | None -> TScalar "Int");
           is_nil = false }
+    | Binary (((BAnd | BOr | BXor | Shl | Shr) as op), left, right) ->
+        (* iteration 36: bitwise is Int-only on BOTH sides — no Float
+           twin exists (nothing like FADD to fall back to), so a Float
+           or Text operand would lower to a garbage word operation with
+           no diagnostic. Reported off confident types, the same
+           stay-silent-when-underivable contract as every check above. *)
+        let lres = typecheck_expr env cenv left in
+        let rres = typecheck_expr env cenv right in
+        if is_nullable lres.typ || lres.is_nil then e211 left.pos (expr_label left);
+        if is_nullable rres.typ || rres.is_nil then e211 right.pos (expr_label right);
+        let opname =
+          match op with BAnd -> "&" | BOr -> "|" | BXor -> "^" | Shl -> "<<" | _ -> ">>"
+        in
+        let check_int_operand (operand : expr) =
+          match confident_typ cenv operand with
+          | None -> ()
+          | Some t ->
+              if unwrap_nullable t <> TScalar "Int" then
+                Diag.Collector.add collector
+                  (Diag.error ~code:type_mismatch_code ~file ~line:operand.pos.line
+                     ~col:operand.pos.col
+                     ~message:
+                       (Printf.sprintf "`%s` operand must be `Int`, got `%s` -- bitwise is Int-only"
+                          opname (typ_label t))
+                     ())
+        in
+        check_int_operand left;
+        check_int_operand right;
+        (* a LITERAL count outside 0..63 can never be right — reject it
+           here (WO-E223) so the WO_T_SHIFT trap is variable-count-only.
+           A negative literal arrives as Unary(Neg, IntLit). *)
+        (match op with
+         | Shl | Shr ->
+             let out_of_range =
+               match right.kind with
+               | IntLit n -> n < 0 || n > 63
+               | Unary (Neg, { kind = IntLit n; _ }) -> n > 0
+               | _ -> false
+             in
+             if out_of_range then
+               Diag.Collector.add collector
+                 (Diag.error ~code:shift_count_code ~file ~line:right.pos.line
+                    ~col:right.pos.col
+                    ~message:
+                      (Printf.sprintf "shift count is out of range 0..63 for `%s`" opname)
+                    ())
+         | _ -> ());
+        { typ = TScalar "Int"; is_nil = false }
     | Binary (((Lt | Le | Gt | Ge) as op), left, right) ->
         let lres = typecheck_expr env cenv left in
         let rres = typecheck_expr env cenv right in

@@ -146,7 +146,13 @@ type field = {
    spells out the token; it is the only unclaimed binary-shaped token
    left, and Lua's `..` is the same design (concat binds looser than
    `+`/`-`, tighter than comparison — this ladder's ordering). *)
-type unop = Neg
+(* iteration 36: `Not` is boolean negation, the keyword `not` (a word
+   like and/or, never `!`). Bool-only operand (types.ml), lowered on the
+   existing WOP_EQ against a zero constant — no new opcode, the same
+   doctrine And/Or's comment below records for the short-circuit pair. *)
+type unop =
+  | Neg
+  | Not
 
 (* `And`/`Or` (haxe-parity Task 2): real keywords, spelled as words, not
    `&&`/`||` — the spec amendment's own wording. `Bool`-typed operands
@@ -170,6 +176,18 @@ type binop =
   | Ge
   | And
   | Or
+  (* iteration 36: the five Int bitwise operators (story 36's settled
+     decisions). Precedence copies Go's C-trap fix: BAnd/Shl/Shr sit on
+     the multiplicative rung, BOr/BXor on the additive rung — both above
+     comparison, so `x & mask == 0` groups the AND first. Int-only
+     operands (types.ml); Shr is arithmetic (sign-extending); a count
+     outside 0..63 traps WO_T_SHIFT at run time and a literal count is
+     rejected at compile time. *)
+  | BAnd
+  | BOr
+  | BXor
+  | Shl
+  | Shr
 
 type expr = {
   id : int;

@@ -186,6 +186,15 @@ let op_fneg = 38
 let op_feq = 39
 let op_flt = 40
 let op_fle = 41
+
+(* iteration 36: the Int bitwise ops (.wob v6). SHR is arithmetic
+   (sign-extending); a shift count outside 0..63 traps WO_T_SHIFT —
+   literal counts never get this far (types.ml rejects them). *)
+let op_band = 42
+let op_bor = 43
+let op_bxor = 44
+let op_shl = 45
+let op_shr = 46
 let op_concat = 8
 let op_eq = 9
 let op_lt = 10
@@ -1195,10 +1204,14 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
         | _ -> None))
     | _ -> None)
   | Unary (Neg, o) -> ty_of_expr p f o
+  | Unary (Not, _) -> Some (Scalar "Bool")
   | Binary (op, l, _) -> (
     match op with
     | Concat -> Some (Scalar "Text")
     | Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Some (Scalar "Bool")
+    (* iteration 36: bitwise is Int-only (types.ml enforces), so the
+       result is always Int — no Float twin to derive through `l`. *)
+    | BAnd | BOr | BXor | Shl | Shr -> Some (Scalar "Int")
     | Add | Sub | Mul | Div | Mod -> ( match ty_of_expr p f l with Some t -> Some t | None -> Some (Scalar "Int")))
   | Ctor (cn, _) -> Some (Scalar cn)
   (* arc: a spawn's value is the typed actor address (a scalar word) *)
@@ -1876,6 +1889,14 @@ let rec emit_expr (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e 
        `-x` on an infinity gives the other infinity. Integer NEG on f64 bits
        would produce a different number entirely. *)
     put f (ins_abc (if is_float p f o then op_fneg else op_neg) dst b 0)
+  | Unary (Not, o) ->
+    (* iteration 36: no NOT opcode — Bool is 0/1, so `not x` is
+       `x == 0` on the existing EQ, the same lowering `!=` already
+       uses for its final flip. *)
+    let b = emit_operand p f v o in
+    let z = alloc_temp p f e.pos in
+    put f (ins_abx op_loadk z (check_bx p f e.pos "constant" (const_int p 0)));
+    put f (ins_abc op_eq dst b z)
   | Binary (op, l, r) -> emit_binary p f v ~dst op l r
   | Ctor (cn, fields) -> emit_ctor p f v ~dst e cn fields
   | Spawn (cn, fields) ->
@@ -2154,6 +2175,14 @@ and emit_binary (p : pctx) (f : fstate) (v : views) ~(dst : int) (op : Ast.binop
     put f (ins_abc op_div q a b);
     put f (ins_abc op_mul q q b);
     put f (ins_abc op_sub dst a q)
+  (* iteration 36: Int-only (types.ml enforced), one instruction each —
+     no Float twin exists to select and no nil/text special case can
+     reach here. *)
+  | BAnd -> simple op_band
+  | BOr -> simple op_bor
+  | BXor -> simple op_bxor
+  | Shl -> simple op_shl
+  | Shr -> simple op_shr
 
 (* haxe-parity Task 3: compare-and-jump chain on the existing EQ/EQS/
    JZ/JMP opcodes — no new opcode, per the brief. The subject is

@@ -591,12 +591,22 @@ let parse_sig_head (st : state) : sig_head =
      and          and                     (haxe-parity Task 2)
      comparison   ==  !=  <  <=  >  >=
      concat       ..
-     additive     +  -
-     multiplicative  *  /  %
-     unary minus  -x
+     additive     +  -  |  ^              (| ^ iteration 36)
+     multiplicative  *  /  %  &  <<  >>   (& << >> iteration 36)
+     unary        -x  not x               (not iteration 36)
      postfix      a.b   a(b)   a[b]
      primary      literals, idents, `(expr)`, constructor literals,
                   select-as-expression (DbStub)
+
+   Iteration 36 slots the five bitwise operators into the EXISTING
+   additive/multiplicative rungs exactly where Go's table puts them
+   (token.go's Precedence: | ^ with + -, & << >> with * / %) — above
+   comparison, so `x & mask == 0` groups the AND first (C parses that
+   the other way; Go fixed the trap, this grammar copies the fix), and
+   shifts bind tighter than `+` so `1 << 4 + 1` is `(1 << 4) + 1`.
+   `not` joins the unary level (Lua's placement): `not a == b` groups
+   `(not a) == b`. Expression-position `|` is Token.Pipe reused — the
+   union-declaration use parses in the type grammar, never here.
 
    This ordering matches Lua's (concat binds looser than +/-, tighter
    than comparison) — see ast.ml's module doc for why `..`/Concat is
@@ -867,9 +877,15 @@ and parse_additive (st : state) : Ast.expr =
   let continue_ = ref true in
   while !continue_ do
     match peek st with
-    | (Token.Plus | Token.Dash) as k ->
+    | (Token.Plus | Token.Dash | Token.Pipe | Token.Caret) as k ->
       let pos = peek_pos st in
-      let op = if k = Token.Plus then Ast.Add else Ast.Sub in
+      let op =
+        match k with
+        | Token.Plus -> Ast.Add
+        | Token.Dash -> Ast.Sub
+        | Token.Pipe -> Ast.BOr
+        | _ -> Ast.BXor
+      in
       let id = fresh_id st in
       ignore (advance st);
       let rhs = parse_multiplicative st in
@@ -883,9 +899,17 @@ and parse_multiplicative (st : state) : Ast.expr =
   let continue_ = ref true in
   while !continue_ do
     match peek st with
-    | (Token.Star | Token.Slash | Token.Percent) as k ->
+    | (Token.Star | Token.Slash | Token.Percent | Token.Amp | Token.Shl | Token.Shr) as k ->
       let pos = peek_pos st in
-      let op = match k with Token.Star -> Ast.Mul | Token.Slash -> Ast.Div | _ -> Ast.Mod in
+      let op =
+        match k with
+        | Token.Star -> Ast.Mul
+        | Token.Slash -> Ast.Div
+        | Token.Percent -> Ast.Mod
+        | Token.Amp -> Ast.BAnd
+        | Token.Shl -> Ast.Shl
+        | _ -> Ast.Shr
+      in
       let id = fresh_id st in
       ignore (advance st);
       let rhs = parse_unary st in
@@ -913,6 +937,12 @@ and parse_unary (st : state) : Ast.expr =
     ignore (advance st);
     let operand = parse_unary st in
     { Ast.id; pos; kind = Ast.Unary (Ast.Neg, operand) }
+  | Token.KwNot ->
+    let pos = peek_pos st in
+    let id = fresh_id st in
+    ignore (advance st);
+    let operand = parse_unary st in
+    { Ast.id; pos; kind = Ast.Unary (Ast.Not, operand) }
   | _ -> parse_as st (parse_postfix st)
 
 and parse_postfix (st : state) : Ast.expr =
@@ -1485,6 +1515,7 @@ and parse_stmt (st : state) : Ast.stmt =
   | _ ->
     let pos = peek_pos st in
     let id = fresh_id st in
+    let start_tok = st.pos in
     let e = parse_expr st in
     if accept st Token.Eq then begin
       let value = parse_expr st in
@@ -1492,8 +1523,43 @@ and parse_stmt (st : state) : Ast.stmt =
       { Ast.s_id = id; s_pos = pos; s_kind = Ast.Assign { target = e; value } }
     end
     else begin
-      end_of_stmt st;
-      { Ast.s_id = id; s_pos = pos; s_kind = Ast.ExprStmt e }
+      (* iteration 36: compound assigns, parse-time sugar — `x += e` IS
+         `x = x + e`, including an index expression evaluating twice,
+         exactly as the written-out form would (the story's documented
+         contract). The value's left operand is the SAME place parsed a
+         second time by rewinding st.pos to the statement start: no
+         expression rung consumes a compound token, so the re-parse
+         stops exactly where the first one did, and every re-parsed
+         node draws a fresh id — the owner/emit passes see two honest
+         reads, never one node in two roles. +=/-= existed as tokens
+         since haxe-parity Task 2 but no rule ever consumed them (the
+         dead-token defect story 36 records); this claims all five. *)
+      let compound_op =
+        match peek st with
+        | Token.PlusEq -> Some Ast.Add
+        | Token.MinusEq -> Some Ast.Sub
+        | Token.StarEq -> Some Ast.Mul
+        | Token.SlashEq -> Some Ast.Div
+        | Token.PercentEq -> Some Ast.Mod
+        | _ -> None
+      in
+      match compound_op with
+      | Some op ->
+        let op_pos = peek_pos st in
+        ignore (advance st);
+        let after_op = st.pos in
+        st.pos <- start_tok;
+        let lhs_again = parse_expr st in
+        st.pos <- after_op;
+        let rhs = parse_expr st in
+        end_of_stmt st;
+        let value =
+          { Ast.id = fresh_id st; pos = op_pos; kind = Ast.Binary (op, lhs_again, rhs) }
+        in
+        { Ast.s_id = id; s_pos = pos; s_kind = Ast.Assign { target = e; value } }
+      | None ->
+        end_of_stmt st;
+        { Ast.s_id = id; s_pos = pos; s_kind = Ast.ExprStmt e }
     end
 
 (* Saves/restores state.no_brace around an if/while condition or a

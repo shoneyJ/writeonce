@@ -211,6 +211,11 @@ let binop_str : Ast.binop -> string = function
   | Ast.Ge -> ">="
   | Ast.And -> "and"
   | Ast.Or -> "or"
+  | Ast.BAnd -> "&"
+  | Ast.BOr -> "|"
+  | Ast.BXor -> "^"
+  | Ast.Shl -> "<<"
+  | Ast.Shr -> ">>"
 
 (* Raw token span shared by both DbStub renderings below: a statement-
    position DbStub (dump_stmt) and an expression-position one nested
@@ -239,6 +244,7 @@ let rec expr_str (e : Ast.expr) : string =
   | Ast.Call (callee, args) ->
     Printf.sprintf "%s(%s)" (expr_str callee) (String.concat ", " (List.map expr_str args))
   | Ast.Unary (Ast.Neg, operand) -> "-" ^ expr_str operand
+  | Ast.Unary (Ast.Not, operand) -> "not " ^ expr_str operand
   | Ast.Binary (op, l, r) -> Printf.sprintf "%s %s %s" (expr_str l) (binop_str op) (expr_str r)
   | Ast.Ctor (name, fields) ->
     Printf.sprintf "%s { %s }" name
