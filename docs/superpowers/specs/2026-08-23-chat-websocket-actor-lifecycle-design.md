@@ -1,6 +1,8 @@
 # Chat + actor lifecycle — iteration 24 (absorbing 31) design
 
-> **Status: PROPOSED 2026-08-23.** Iterations 24 (chat: WebSocket pub/sub
+> **Status: APPROVED 2026-08-23; plan ready**
+> ([`../plans/2026-08-23-chat-ws-lifecycle.md`](../plans/2026-08-23-chat-ws-lifecycle.md)).
+> Iterations 24 (chat: WebSocket pub/sub
 > workload) and 31 (actor lifecycle) ship as ONE iteration by developer
 > directive 2026-08-23 — chat builds request/response, backpressure,
 > death notices, and timers as it needs them; the recorded chain
