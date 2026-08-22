@@ -1,7 +1,7 @@
 # Blue/Green VM deployment — design spec
 
 **Date:** 2026-08-03
-**Status:** approved (2026-08-03); implementation plan deferred until plans 5 + 6 ship
+**Status:** approved (2026-08-03); ⏸ on hold (2026-08-21, developer decision — story iteration 26 moved to `stories/language-runtime-database/hold/`); implementation plan deferred until plans 5 + 6 ship
 **Scope:** the writeonce runtime's in-process deployment subsystem
 **Supersedes:** §5–§6 of [`docs/plan/exploration/blue-green-vm/00-vision.md`](../../plan/exploration/blue-green-vm/00-vision.md)
 

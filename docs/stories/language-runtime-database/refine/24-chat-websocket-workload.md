@@ -1,3 +1,9 @@
+---
+iteration: "24"
+status: refine
+chain: 4
+---
+
 # Iteration 24 — chat: the WebSocket pub/sub driving workload
 
 > Format: fiberloom `product/story-iteration-template`. Part of
@@ -6,6 +12,12 @@
 > **Inserted 2026-08-20** (concurrency-chain refinement): the 8+11 arc's
 > driving workload, the role log-watcher played for iterations 3–7. Needs
 > its spec AFTER the arc's — it lands at the arc's end and proves it.
+>
+> **RE-SEQUENCED 2026-08-21**: fourth in the chain,
+> **stage 3 → 22 → 31 → 24 → 23 → 32** — chat cannot be written honestly
+> before [iteration 31](31-actor-lifecycle.md) (request/response,
+> bounded mailboxes, actor death, timers). Iteration 19 LANDED
+> 2026-08-20, so Bytes is available for frame parse/serialize.
 
 ## Why this iteration exists
 
@@ -54,11 +66,15 @@ proxy — the proxy story extends to WS pass-through, documented).
 
 ## Info
 
-- Dependencies: the 8+11 arc (fibers + cross-shard send), the crypto
-  builtins fork (SHA-1 for the upgrade handshake — note: the ledger's
-  crypto slice lists SHA-256/512; the WS handshake specifically needs
-  SHA-1, so the builtin set must include it), and the framework's parse
-  seam (upgrade is an HTTP request until it isn't).
+- Dependencies: the 8+11 arc (fibers + cross-shard send — stages 1+2
+  landed 2026-08-20, stage 3 pending), [iteration 31](31-actor-lifecycle.md)
+  (request/response, backpressure, death, timers — the mechanisms rooms
+  and presence are made of), iteration 19 (LANDED 2026-08-20 — Bytes
+  carries the frames), the crypto builtins fork (SHA-1 for the upgrade
+  handshake — note: the ledger's crypto slice lists SHA-256/512; the WS
+  handshake specifically needs SHA-1, so the builtin set must include
+  it), and the framework's parse seam (upgrade is an HTTP request until
+  it isn't).
 - Unparks on landing: the framework ledger's WebSocket/pub-sub rows and
   the iteration-18 rejection note ("pub/sub REJECTED until 8/11").
 

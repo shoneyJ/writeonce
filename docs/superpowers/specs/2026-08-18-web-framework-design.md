@@ -7,9 +7,10 @@
 library, HTTP/1.1 behind a TLS-terminating reverse proxy, and (C) the parked
 HTTP/2 path. Three sub-projects; A and B are the fundable ones, C is a
 recorded successor.
-**Relates to:** iteration 25 (`service` blocks — this framework becomes their
-lowering target, not a rival), iterations 8/23/11 (the concurrency work h2c
-waits for), `docs/plan/discarded.md` (FFI reject row — load-bearing here).
+**Relates to:** iteration 25 (⏸ on hold since 2026-08-21; `service` blocks —
+this framework becomes their lowering target, not a rival), iterations
+8/23/11 (the concurrency work h2c waits for), `docs/plan/discarded.md` (FFI
+reject row — load-bearing here).
 
 ## Decisions locked during brainstorming
 

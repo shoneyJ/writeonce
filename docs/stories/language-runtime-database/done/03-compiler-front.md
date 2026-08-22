@@ -1,3 +1,8 @@
+---
+iteration: "3"
+status: done
+---
+
 # Iteration 3 — compiler front (`woc`)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

@@ -1,6 +1,6 @@
 # Dependency graphs — iterations and framework features
 
-> Companion to [00-status.md](00-status.md) (states live THERE; this page
+> Companion to [00-status.md](stories/00-status.md) (states live THERE; this page
 > carries the edges). An arrow `A --> B` means **A must exist before B**;
 > a dashed arrow is a scope DIRECTIVE, not a technical dependency. Use it
 > to pick the next implementation: anything whose incoming arrows are all
@@ -33,10 +33,10 @@ flowchart TD
     I9c["20 cross-program tables (half-built)"]:::open
     I9d["21 keypair attach auth (half-built; crypto+handshake already on its branch)"]:::open
     I9e["22 durability + throughput baseline"]:::open
-    I8["8 shard-actor runtime"]:::open
+    I8["8 shard-actor runtime ✅ 2026-08-21"]:::done
     I9f["23 io_uring group-commit"]:::open
     I10["10 HTTP service layer (lowers onto the framework)"]:::open
-    I11["11 fibers"]:::open
+    I11["11 fibers ✅ 2026-08-21"]:::done
     I12["12 blue-green deploy"]:::open
     I13["13 metaprogramming @derive"]:::open
     I14["14 skillhost workload (demoted)"]:::open

@@ -22,8 +22,14 @@ int wo_io_init(wo_vm *vm);
 void wo_io_destroy(wo_vm *vm);
 
 /* Register the just-parked fiber's wait (fb->park_* already filled by the
- * builtin). 0 ok; -1 = arming failed (caller traps the builtin as IO). */
+ * builtin). 0 ok; -1 = arming failed (caller traps the builtin as IO).
+ * park_fd == WO_PARK_INBOX joins the parked list with NO plane wait — the
+ * wake arrives as an inbox envelope (arc stage 3's DB reply). */
 int wo_io_arm(wo_vm *vm, wo_fiber *fb);
+
+/* Wake one parked fiber from OUTSIDE the plane (the inbox path: the DB
+ * actor's reply). parked list -> run queue. */
+void wo_io_unpark(wo_vm *vm, wo_fiber *fb);
 
 /* Block until at least one parked fiber wakes; woken fibers move to the
  * run queue. 0 = something woke; WO_IO_STOP = the stop flag interrupted

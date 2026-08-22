@@ -61,3 +61,21 @@ rather than acknowledging what disk never got.
 - `just oop-e2e`, `just log-watcher` — regression that linking the engine
   into wovm changed nothing observable (it is dead code until Task 3 wires
   the first builtin).
+
+## The slot-level surface (arc stage 3, 2026-08-21)
+
+- **Why it exists:** the transparent DB actor executes a worker's
+  statement on the owner shard, and VM heaps are never read cross-shard —
+  so the requester encodes to engine slots on its own thread and the owner
+  executes from slots, exactly the shape WAL replay already used.
+- `wo_db_val_encode` exposes the in-gate for the RPC marshaler;
+  `wo_db_val_clone` deep-copies an engine value (a get-field reply must
+  outlive the row: a later serialized statement may free the slot);
+  `wo_row_insert_slots` / `wo_row_update_field_slot` are the pre-encoded
+  twins of insert/update (slot values consumed either way — installed on
+  success, freed on failure); `wo_db_exec_req` (db.c) mirrors
+  `wo_builtin_db` case for case with slot inputs and plain outputs, so a
+  worker sees byte-identical traps and messages.
+- The update refactor extracted `row_apply_field_slot` (the post-encode
+  half: unique shadow-check, index fix-up, slot swap) shared by both
+  entry points — the VM-value path's behavior is unchanged bit for bit.

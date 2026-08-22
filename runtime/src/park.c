@@ -72,30 +72,43 @@ typedef struct {
     struct io_uring_sqe *sqes;
 } rings;
 
-static struct io_uring_params g_params; /* offsets survive init */
+/* Ring params live INSIDE each vm (vm.h io_params, opaque bytes) — arc
+ * stage 3 fix: this WAS one shared static ("offsets survive init"), and a
+ * worker's LAZY uring_init memset+refilled it on the worker thread while
+ * another shard was reading ring offsets out of it — submits landed at
+ * garbage offsets, the kernel saw no sqe (enter returned 0, treated as
+ * ok), and a parked fiber's TIMEOUT silently never existed. Per-vm storage
+ * ends the race by construction (a vm's params are only ever touched by
+ * its own thread); the short-submit check below turns any relapse into a
+ * loud trap instead of a lost wake. NOTE: not indexed by shard_id — the
+ * lazy wo_vm_init runs while the worker's shard_id is transiently 0. */
+_Static_assert(sizeof(struct io_uring_params) <= sizeof(((wo_vm *)0)->io_params),
+               "io_params too small");
 
 static rings ring_ptrs(const wo_vm *vm) {
+    const struct io_uring_params *p = (const struct io_uring_params *)vm->io_params;
     rings r;
     uint8_t *sq = (uint8_t *)vm->io_sq, *cq = (uint8_t *)vm->io_cq;
-    r.sq_head = (uint32_t *)(sq + g_params.sq_off.head);
-    r.sq_tail = (uint32_t *)(sq + g_params.sq_off.tail);
-    r.sq_mask = (uint32_t *)(sq + g_params.sq_off.ring_mask);
-    r.sq_array = (uint32_t *)(sq + g_params.sq_off.array);
-    r.cq_head = (uint32_t *)(cq + g_params.cq_off.head);
-    r.cq_tail = (uint32_t *)(cq + g_params.cq_off.tail);
-    r.cq_mask = (uint32_t *)(cq + g_params.cq_off.ring_mask);
-    r.cqes = (struct io_uring_cqe *)(cq + g_params.cq_off.cqes);
+    r.sq_head = (uint32_t *)(sq + p->sq_off.head);
+    r.sq_tail = (uint32_t *)(sq + p->sq_off.tail);
+    r.sq_mask = (uint32_t *)(sq + p->sq_off.ring_mask);
+    r.sq_array = (uint32_t *)(sq + p->sq_off.array);
+    r.cq_head = (uint32_t *)(cq + p->cq_off.head);
+    r.cq_tail = (uint32_t *)(cq + p->cq_off.tail);
+    r.cq_mask = (uint32_t *)(cq + p->cq_off.ring_mask);
+    r.cqes = (struct io_uring_cqe *)(cq + p->cq_off.cqes);
     r.sqes = (struct io_uring_sqe *)vm->io_sqes;
     return r;
 }
 
 static int uring_init(wo_vm *vm) {
-    memset(&g_params, 0, sizeof g_params);
-    long fd = syscall(SYS_io_uring_setup, 64u, &g_params);
+    struct io_uring_params *p = (struct io_uring_params *)vm->io_params;
+    memset(p, 0, sizeof *p);
+    long fd = syscall(SYS_io_uring_setup, 64u, p);
     if (fd < 0) return -1;
-    size_t sq_len = g_params.sq_off.array + g_params.sq_entries * sizeof(uint32_t);
-    size_t cq_len = g_params.cq_off.cqes + g_params.cq_entries * sizeof(struct io_uring_cqe);
-    size_t sqes_len = g_params.sq_entries * sizeof(struct io_uring_sqe);
+    size_t sq_len = p->sq_off.array + p->sq_entries * sizeof(uint32_t);
+    size_t cq_len = p->cq_off.cqes + p->cq_entries * sizeof(struct io_uring_cqe);
+    size_t sqes_len = p->sq_entries * sizeof(struct io_uring_sqe);
     void *sq = mmap(NULL, sq_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd,
                     IORING_OFF_SQ_RING);
     void *cq = mmap(NULL, cq_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd,
@@ -128,7 +141,9 @@ static int uring_submit(wo_vm *vm, const struct io_uring_sqe *sqe) {
     r.sq_array[idx] = idx;
     __atomic_store_n(r.sq_tail, tail + 1, __ATOMIC_RELEASE);
     long rc = syscall(SYS_io_uring_enter, vm->io_fd, 1u, 0u, 0u, NULL, 0);
-    return rc < 0 ? -1 : 0;
+    /* a short submit is a LOST WAKE, never a success (the g_params race
+     * above hid behind rc >= 0 for a whole debugging session) */
+    return rc == 1 ? 0 : -1;
 }
 
 /* ---- backend-neutral helpers ------------------------------------------ */
@@ -158,6 +173,10 @@ static void wake(wo_vm *vm, wo_fiber *fb) {
     if (vm->qtail) vm->qtail->next = fb;
     else vm->qhead = fb;
     vm->qtail = fb;
+}
+
+void wo_io_unpark(wo_vm *vm, wo_fiber *fb) {
+    if (fb->state == WO_FIB_PARKED) wake(vm, fb);
 }
 
 /* ---- API --------------------------------------------------------------- */
@@ -192,6 +211,9 @@ int wo_io_arm(wo_vm *vm, wo_fiber *fb) {
     fb->pnext = vm->parked;
     vm->parked = fb;
     vm->nparked++;
+    /* arc stage 3: an inbox-wait fiber holds no plane wait at all — the
+     * wake is wo_io_unpark from the envelope drain */
+    if (fb->park_fd == WO_PARK_INBOX) return 0;
     if (vm->io_kind == 0) {
         struct io_uring_sqe sqe;
         memset(&sqe, 0, sizeof sqe);
@@ -305,7 +327,7 @@ int wo_io_wait(wo_vm *vm) {
         int timeout = -1;
         int64_t now = now_ms();
         for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
-            if (fb->park_fd < 0) {
+            if (fb->park_fd == -1) { /* deadline waits only, never INBOX */
                 int64_t rel = fb->park_deadline - now;
                 if (rel < 0) rel = 0;
                 if (timeout < 0 || rel < timeout) timeout = (int)rel;
@@ -333,7 +355,7 @@ int wo_io_wait(wo_vm *vm) {
         wo_fiber *fb = vm->parked;
         while (fb) {
             wo_fiber *nx = fb->pnext;
-            if (fb->park_fd < 0 && fb->park_deadline <= now) {
+            if (fb->park_fd == -1 && fb->park_deadline <= now) {
                 wake(vm, fb);
                 woke = 1;
             }

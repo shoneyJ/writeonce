@@ -1,0 +1,62 @@
+use time
+
+-- db-actor — arc stage 3's acceptance workload: the database is an
+-- actor on the owner shard (shard 0); a spawned actor placed on ANY
+-- shard reads and writes it through transparent RPC. Before stage 3 a
+-- worker-shard insert traps WO_T_DB ("database engine not
+-- initialized"); after, this program's output is shard-placement-
+-- independent: two writer lines and one exact main line.
+
+@table(name: "notes", index: [tag])
+class Note {
+  tag: Text
+  val: Int
+}
+
+class Job {
+  n: Int
+}
+
+-- Each writer inserts one row, then scans the whole table. Placement is
+-- round-robin, so with two writers at default shards one lands off the
+-- primary — the RPC path under test.
+class Writer {
+  pad: Int
+  fn receive(msg: Job) {
+    insert Note { tag: "w", val: msg.n };
+    let total = 0;
+    for x in from n in Note select n {
+      total = total + x.val;
+    }
+    print("writer ${msg.n} sees sum ${total}");
+  }
+}
+
+fn main() -> Int {
+  let a: actor Job = spawn Writer { pad: 0 };
+  let b: actor Job = spawn Writer { pad: 1 };
+  send(a, Job { n: 1 });
+  send(b, Job { n: 2 });
+  -- no request/response surface yet (iteration 31): poll until both rows
+  -- landed, then give the writers' own prints a beat before main returns
+  -- (main-return reaps every other fiber, mid-print included)
+  let tries = 0;
+  let count = 0;
+  while count < 2 and tries < 200 {
+    time.sleep(10);
+    count = 0;
+    for x in from n in Note select n {
+      count = count + 1;
+    }
+    tries = tries + 1;
+  }
+  time.sleep(1000);
+  count = 0;
+  let total = 0;
+  for x in from n in Note select n {
+    count = count + 1;
+    total = total + x.val;
+  }
+  print("main sees ${count} rows, sum ${total}");
+  return 0;
+}

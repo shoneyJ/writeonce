@@ -193,4 +193,32 @@ uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_va
  * (0 ok, -1). */
 int wo_row_raw_commit(wo_db *db, uint32_t class_id, db_row *r);
 
+/* ---- arc stage 3: the slot-level surface the transparent DB RPC uses ----
+ * VM heaps are never read cross-shard (a worker's GC writes header mark
+ * bits concurrently), so the REQUESTER shard encodes its VM values into
+ * engine-owned slots on its own thread and ships those; the OWNER shard
+ * executes from slots. Everything here is thread-agnostic: it touches only
+ * the wo_db it is handed and engine-owned mallocs. */
+
+/* Encode one VM value into an engine slot on the caller's thread (the
+ * in-gate, split out of wo_row_insert for the RPC path). */
+uint64_t wo_db_val_encode(const wo_classdesc *classes, uint8_t kind, uint64_t vm_val,
+                          int *ok, const char **msg);
+
+/* Deep-copy one engine value — a GET_FIELD reply must outlive the row it
+ * was read from (a later statement may free the row's slot). */
+uint64_t wo_db_val_clone(const wo_classdesc *classes, uint8_t kind, uint64_t v, int *ok);
+
+/* Insert from PRE-ENCODED slots (field_cnt of them). Ownership of the slot
+ * VALUES transfers: installed on success, freed on failure. New id, or 0
+ * with *msg / *err_kind set exactly as wo_row_insert sets them. */
+uint64_t wo_row_insert_slots(wo_db *db, uint32_t class_id, const uint64_t *slots,
+                             const char **msg, int *err_kind);
+
+/* Update one field from a PRE-ENCODED slot value (consumed either way:
+ * installed on success, freed on failure). Same contract as
+ * wo_row_update_field after its encode. */
+int wo_row_update_field_slot(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
+                             uint64_t slot, const char **msg, int *err_kind);
+
 #endif /* WO_TABLE_H */

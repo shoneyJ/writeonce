@@ -6,7 +6,7 @@
 > after this plan was written: `http/parse.wo` was SPLIT rather than moved
 > whole (its `media_type`/`form_values` are public surface the web-app calls),
 > and the gate reads 26/0 rather than 17/0 (`just web-app` was already at 23
-> before this iteration). Board: [docs/00-status.md](../../00-status.md).
+> before this iteration). Board: [docs/00-status.md](../../stories/00-status.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or

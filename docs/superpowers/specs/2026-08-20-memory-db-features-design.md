@@ -4,11 +4,14 @@
 > the framework README's status ledger; this spec is what the embedded
 > store adds on top of it.
 >
-> **Status: APPROVED 2026-08-20** (developer review). Plan next.
-> Decisions were settled in
+> **Status: APPROVED 2026-08-20** (developer review); ⏸ on hold
+> (2026-08-21, developer decision — story iteration 18 sits in
+> `stories/language-runtime-database/hold/`). Decisions were settled in
 > [the iteration](../../stories/language-runtime-database/hold/18-memory-db-features.md);
-> this spec makes them buildable. The plan follows after review.
-> Board: [docs/00-status.md](../../00-status.md).
+> this spec makes them buildable. The plan is authored
+> ([framework v2 plan](../plans/2026-08-20-framework-v2-memory-features.md))
+> and held with it.
+> Board: [docs/00-status.md](../../stories/00-status.md).
 >
 > Per repo convention: concept, reason, and required behavior in words
 > only — no implementation code.

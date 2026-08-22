@@ -1,7 +1,9 @@
 # Iteration 18 — framework v2 (transaction{} + cache/flags/jobs): implementation plan
 
-> **Status: ready to execute (2026-08-20).** Board:
-> [docs/00-status.md](../../00-status.md).
+> **Status: ⏸ hold (2026-08-21, developer decision)** — story iteration 18
+> sits in `stories/language-runtime-database/hold/`; plan was ready to
+> execute (2026-08-20) and stays intact for resumption. Board:
+> [docs/00-status.md](../../stories/00-status.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or

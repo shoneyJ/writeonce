@@ -178,31 +178,17 @@ int main(int argc, char **argv) {
         return 2;
     }
     wo_tls_set(&VM);
-    /* the arc's stage 2: all cores by default (the brave landing), one
-     * pinned worker vm per extra core; WO_SHARDS caps or forces it */
-    {
-        long cores = sysconf(_SC_NPROCESSORS_ONLN);
-        uint32_t nshards = cores > 0 ? (uint32_t)cores : 1;
-        const char *se = getenv("WO_SHARDS");
-        if (se && se[0]) {
-            unsigned long v = strtoul(se, NULL, 10);
-            if (v >= 1 && v <= WO_MAX_SHARDS) nshards = (uint32_t)v;
-        }
-        if (nshards > WO_MAX_SHARDS) nshards = WO_MAX_SHARDS;
-        wo_eng.shards = SHARDS;
-        if (wo_engine_start(&mod, heap_mb << 20, nshards) != 0) {
-            fprintf(stderr, "wovm: cannot start %u shards\n", nshards);
-            wo_engine_stop();
-            wo_vm_destroy(&VM);
-            wo_module_free(&mod);
-            return 2;
-        }
-    }
     /* The database engine boots with the VM: every class IS a table.
      * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
      * replays it before the entry runs (boot-before-listeners doctrine),
      * and every insert commits before it acknowledges. Without WO_DATA
-     * the engine runs RAM-only, which is what the corpus expects. */
+     * the engine runs RAM-only, which is what the corpus expects.
+     * Arc stage 3 obligation: this whole block runs BEFORE the worker
+     * shards spawn — replay completes before anything can serve, and the
+     * engine's immutable class-table pointer is published to the worker
+     * threads by the spawn itself. The engine and WAL stay the PRIMARY's
+     * alone (rt.db/rt.wal are never set on a worker); workers reach them
+     * through the DB actor's message path. */
     if (wo_db_init(&DB, mod.classes, mod.class_cnt, 0, 1) != 0) {
         fprintf(stderr, "wovm: cannot initialize the database engine\n");
         wo_vm_destroy(&VM);
@@ -229,6 +215,28 @@ int main(int argc, char **argv) {
             return 2;
         }
         VM.rt.wal = &WAL;
+    }
+    /* the arc's stage 2: all cores by default (the brave landing), one
+     * pinned worker vm per extra core; WO_SHARDS caps or forces it */
+    {
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        uint32_t nshards = cores > 0 ? (uint32_t)cores : 1;
+        const char *se = getenv("WO_SHARDS");
+        if (se && se[0]) {
+            unsigned long v = strtoul(se, NULL, 10);
+            if (v >= 1 && v <= WO_MAX_SHARDS) nshards = (uint32_t)v;
+        }
+        if (nshards > WO_MAX_SHARDS) nshards = WO_MAX_SHARDS;
+        wo_eng.shards = SHARDS;
+        if (wo_engine_start(&mod, heap_mb << 20, nshards) != 0) {
+            fprintf(stderr, "wovm: cannot start %u shards\n", nshards);
+            wo_engine_stop();
+            if (VM.rt.wal) wo_wal_close(&WAL);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
     }
 
     /* Program mode: an entry that declares one parameter gets the program's

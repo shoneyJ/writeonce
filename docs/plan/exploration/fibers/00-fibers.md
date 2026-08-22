@@ -3,8 +3,8 @@
 > Exploration/reference note (no status banner by board convention).
 > The normative decisions live in the arc spec
 > ([`2026-08-20-shard-fiber-arc-design.md`](../../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md))
-> and iterations [8](../../../stories/language-runtime-database/refine/08-shard-actor-runtime.md) /
-> [11](../../../stories/language-runtime-database/refine/11-fibers.md); this
+> and iterations [8](../../../stories/language-runtime-database/done/08-shard-actor-runtime.md) /
+> [11](../../../stories/language-runtime-database/done/11-fibers.md); this
 > page explains the WHY at doctrine depth. Written 2026-08-20, when this
 > file was also the target of a dangling reference from iteration 11 —
 > it exists now.

@@ -71,6 +71,20 @@ adding surface, and stop stacking features on unmeasured ground.
   or timers behind `spawn`/`send`.
 - **18, 20, 21 demoted.** All three add surface; none answer a named gap.
 
+RE-SEQUENCED 2026-08-21 (third pass — the concurrency chain). Everything
+still pending IS the runtime-concurrency chain; order:
+**stage 3 → 22 → 31 → 24 → 23 → 32**. Changes from the second pass:
+
+- **The arc's stage 3 moves ahead of 22** — correctness before
+  measurement: a multi-shard program touching the database traps
+  `WO_T_DB` today, and fixing that first lets one benchmark campaign
+  cover single- and multi-shard honestly.
+- **31 has its story file** ([refine/31-actor-lifecycle.md](refine/31-actor-lifecycle.md));
+  30 stays a row until it is scheduled.
+- **Holds landed** (developer decision, 2026-08-21): 18, 20, 21, 26, 27,
+  28, 29 moved to `hold/`; 25's story file removed (its plan doc remains
+  in superpowers). 19 landed 2026-08-20.
+
 | Seq | # | Iteration | Delivers |
 | --- | --- | --- | --- |
 | 1 | 1 | [Principles doc](done/01-principles-doc.md) | `docs/00-principles.md` — the doctrine page every later slice links back to |
@@ -85,21 +99,22 @@ adding surface, and stop stacking features on unmeasured ground.
 | 10 | 9b | [`@table`, relations, query](done/09b-table-relations-query.md) | `@table` real storage; `ref`/`backlink`/`multi`; compiler-checked queries |
 | 11 | 15 | [deps: `wo.toml [deps]`](done/15-deps-package-manager.md) | exact-rev git deps + `wo.lock` + `.wo-deps`; flat-only, offline once locked |
 | 12 | 16 | [web framework](done/16-web-framework.md) | the `.wo` framework v1 (router, middleware, auth, all three body hooks) consumed via `[deps]` |
-| 13 | 22 | [Durability, throughput, scale](refine/22-durability-throughput-scale.md) | restart-persistence proof, benchmarks, ~1M rows — the baseline the arc and 23 sign against. **Promoted to first pending (was seq 18)**: it has never run, so every performance claim on this project is currently unsourced. *(was 9e)* |
-| 14 | 8+11 | [Shard-actor runtime](refine/08-shard-actor-runtime.md) · [Fibers](refine/11-fibers.md) | THE ARC (stages 1+2 landed 2026-08-20: fibers/budget/actors/io_uring plane; pinned shards, envelope sends, home-routed frees, WO-E222); stage 3 = transparent DB RPC + 22 re-run. **Stage 3 is a correctness hole, not an optimization**: worker shards are zero-initialized, so a DB statement off the primary traps `WO_T_DB`. |
+| 13 | 8+11 | [Shard-actor runtime](done/08-shard-actor-runtime.md) · [Fibers](done/11-fibers.md) | ✅ **THE ARC LANDED 2026-08-21** — stages 1+2 (fibers/budget/actors/io_uring plane; pinned shards, envelope sends, home-routed frees, WO-E222) + stage 3's transparent DB actor: worker statements marshal to shard 0, ack-after-owner-fsync, materialized replies (`just db-actor` 8/0, ASan/TSan, WAL replay pair). fs-park re-scoped out (disclosed in story 11). |
+| 14 | 22 | [Durability, throughput, scale](in-progress/22-durability-throughput-scale.md) | 🔄 **spec + plan approved 2026-08-21, executing** — db-bench sample (`time.ticks` µs clock, seed/read/query/write/mix/msgrate/verify), campaign gates vs `bench/baseline.json`, restart + kill -9 proofs at both shard counts; the arc's delta and the mutex-inbox number come out of the first run. *(was 9e)* |
 | 15 | 30 | Observability, CI, fuzz *(no story file yet)* | **NEW** — runtime counters + a profiler hook, 22's harness wired to run per change instead of by hand, and a fuzz target on the parser and `.wob` loader. The whole proof-maturity gap had no iteration to point at. |
 | 16 | 19 | [Float + Bytes](done/19-missing-scalar-types.md) | **LANDED 2026-08-20** — `.wob` v5; the full stack: IEEE-quiet f64 through literals/VM/@table/WAL/json + Bytes as the binary carrier, no implicit mixing, total-order indexes. Unblocks 24 (WS frames) and the crypto fork (digests). *(was 20)* |
-| 17 | 31 | Actor lifecycle *(no story file yet)* | **NEW** — request/response (today `send` is one-way and callers `sleep` to await), bounded mailboxes with backpressure (today the FIFO just grows), actor death/supervision, and timers beyond `time.sleep`. 24 cannot be written honestly without these. |
+| 17 | 31 | [Actor lifecycle](refine/31-actor-lifecycle.md) | request/response (today `send` is one-way and callers `sleep` to await), bounded mailboxes with backpressure (today the FIFO just grows), actor death/supervision, and timers beyond `time.sleep`. 24 cannot be written honestly without these. *(story written 2026-08-21)* |
 | 18 | 24 | [chat: WebSocket workload](refine/24-chat-websocket-workload.md) | the arc's acceptance: WS upgrade + frames (SHA-1 via crypto fork, Bytes via 19), rooms/broadcast, 1k clients, drain-clean. *(was 19)* |
 | 19 | 23 | [io_uring group-commit](refine/23-io-uring-commit.md) | WAL WRITE+FSYNC chains on the arc's per-shard rings; fsync fallback kept (after 22 + the arc). *(was 9f)* |
-| 20 | 25 | [HTTP service layer](25-http-service.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). *(was 10)* |
-| 21 | 18 | [framework v2: memory-rich features](hold/18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch. **Demoted from seq 14**: more surface on a framework with one consumer, and the cache still stores `Text` because there are no generics |
-| 22 | 27 | [Query grammar corpus](refine/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
-| 23 | 26 | [Blue-green deploy](26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
-| 24 | 20 | [Cross-program tables](refine/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). **Demoted from seq 16**: new distribution surface while there is no TLS, no crypto, and the multi-shard DB still traps. *(was 9c)* |
-| 25 | 21 | [Keypair attach auth](refine/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). **Demoted with 20** — and it needs crypto primitives that do not exist. *(was 9d)* |
-| 26 | 28 | [skillhost host workload](refine/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
-| 27 | 29 | [Compile-time metaprogramming](refine/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
+| 20 | 32 | [WAL checkpoint](refine/32-wal-checkpoint.md) | **NEW 2026-08-21** (stage-3 guarantee refinement found the hole) — the WAL is append-only forever: snapshot + truncate reclaims disk and bounds replay time; every durability guarantee byte-identical; crash mid-checkpoint recovers from the previous snapshot + full tail. After 23 (composes with group-commit); RAM slot-reuse already contracted in `04-db-binding.md`. |
+| 21 | 25 | [HTTP service layer](../../superpowers/plans/2026-08-01-http-service-layer.md) | `service` blocks lower onto the framework (after 9b + 20 by their own precedence notes). **HELD 2026-08-21** — story file removed; the plan doc remains. *(was 10)* |
+| 22 | 18 | [framework v2: memory-rich features](hold/18-memory-db-features.md) | spec+plan approved: TTL cache, @table flags, durable job queue, `transaction { }` over the WAL's staged batch. **Demoted from seq 14**: more surface on a framework with one consumer, and the cache still stores `Text` because there are no generics |
+| 23 | 27 | [Query grammar corpus](hold/27-query-grammar-corpus.md) | grow the query grammar from real corpora; likely collapses to "confirm `len(query)` + add `exists`"; precedes 28. *(was 9g)* |
+| 24 | 26 | [Blue-green deploy](hold/26-blue-green-deploy.md) | two VM slots, in-runtime compile, atomic switch, resident rollback (plan authored after 9 + 25). *(was 12)* |
+| 25 | 20 | [Cross-program tables](hold/20-cross-program-tables.md) | attach to a running program's database over local IPC; owner stays the single writer (channel half-built). **Demoted from seq 16**: new distribution surface while there is no TLS, no crypto, and the multi-shard DB still traps. *(was 9c)* |
+| 26 | 21 | [Keypair attach auth](hold/21-keypair-attach-auth.md) | program identity is a keypair; mutual challenge–response at attach (crypto half-built; plan folds into 20's). **Demoted with 20** — and it needs crypto primitives that do not exist. *(was 9d)* |
+| 27 | 28 | [skillhost host workload](hold/28-skillhost-host-workload.md) | host-shaped driving workload naming runtime gaps — demoted with the framework goal. *(was 14)* |
+| 28 | 29 | [Compile-time metaprogramming](hold/29-compile-time-metaprogramming.md) | `@derive(...)` from class-table metadata; held with the parked drain by the 2026-08-08 scope directive. *(was 13)* |
 | ✅ | 17 | [library projects + `internal/`](done/17-library-projects-internal.md) | **LANDED 2026-08-20** — `kind = "library"` + entry-less check mode (retires the `--emit` workaround) and Go's `internal/` rule as WO-E108 at the consumer's `use`; driver-only, VM/GC untouched. `just web-app` 26/0 |
 
 
@@ -131,11 +146,9 @@ list, and a pointer to the plan document that already sequences its tasks.
   nothing MVC-scale — and iteration 17 (library kind + `internal/`) is
   **parked** with spec + plan ready on branch `library-internal`. The
   v1 slices landed 2026-08-20 (`just web-app` 21/0 after polish, auth,
-  form, multipart). Implementation order for everything still pending:
-  **18 (spec approved)** → 20/21 → 22 → 8 → 23 → 11 (+ h2c unparks) →
-  10 → 12 → 27 → 14 → 13 + parked drain; 17 parked, slots anywhere after
-  16 on directive. The iterations table above carries this order
-  row-by-row; edges live in
+  form, multipart). The implementation-order list this note once carried
+  is superseded — the iterations table above is the authority
+  (re-sequenced 2026-08-20 twice, then 2026-08-21); edges live in
   [`docs/00-dependency-graph.md`](../../00-dependency-graph.md).
 - **Iteration 7b (inserted 2026-08-11)** sits after the critical path
   deliberately: it delays nothing on the log-watcher line, and it must precede

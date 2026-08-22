@@ -1,3 +1,8 @@
+---
+iteration: "19"
+status: done
+---
+
 # Iteration 19 — the missing scalar types: Float and Bytes
 
 > Format: fiberloom `product/story-iteration-template`. Part of

@@ -1,6 +1,6 @@
 # Bytecode Emit + End-to-End Corpus + Single Binary Implementation Plan
 
-> **Status: ✅ done** (story iteration 4) — Tasks 1–6 + 8 shipped: bytecode emitter, disassembler (`--dump-bc`), three-kind conformance harness (`just oop-e2e`), `woc build` single-binary output, `WO-E405`. Task 7 (parity harness against the Rust runtime) **deferred by explicit user decision** — the two stacks diverge by design. Milestone-1 acceptance: all five criteria met. Board: [00-status.md](../../00-status.md)
+> **Status: ✅ done** (story iteration 4) — Tasks 1–6 + 8 shipped: bytecode emitter, disassembler (`--dump-bc`), three-kind conformance harness (`just oop-e2e`), `woc build` single-binary output, `WO-E405`. Task 7 (parity harness against the Rust runtime) **deferred by explicit user decision** — the two stacks diverge by design. Milestone-1 acceptance: all five criteria met. Board: [00-status.md](../../stories/00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

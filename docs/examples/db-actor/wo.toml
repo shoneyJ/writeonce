@@ -1,0 +1,6 @@
+name        = "db-actor"
+version     = "0.1.0"
+description = "arc stage 3 proof: actors on worker shards read and write the database through the DB actor"
+
+[runtime]
+wo = ">= 0.1"

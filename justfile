@@ -54,6 +54,12 @@ web-app:
 fibers:
     ./scripts/fibers-accept.sh
 
+# db-actor: arc stage 3's gate (docs/examples/db-actor) — worker-shard
+# actors read/write the database through the transparent DB actor; WAL
+# replay pair included. `just db-actor` runs it.
+db-actor:
+    ./scripts/db-actor-accept.sh
+
 # install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
 # `woc version` + a from-scratch project build+run (self-located wovm) + the
 # wo-constraint refusal all work — the "tarball install actually works" gate.

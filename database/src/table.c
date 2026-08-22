@@ -591,6 +591,56 @@ uint64_t wo_row_insert(wo_db *db, uint32_t class_id, const uint64_t *vals,
     return r->id;
 }
 
+uint64_t wo_row_insert_slots(wo_db *db, uint32_t class_id, const uint64_t *slots,
+                             const char **msg, int *err_kind) {
+    if (err_kind) *err_kind = DB_ERR_MISC;
+    db_table *t = table_of(db, class_id);
+    const wo_classdesc *c = class_id < db->class_cnt ? &db->classes[class_id] : NULL;
+    if (!t || !c) {
+        /* slot kinds unknowable without the class: the values leak rather
+           than die by the wrong kind (defensive; the requester validated) */
+        *msg = "no such class";
+        return 0;
+    }
+    uint32_t g = slot_alloc(t);
+    if (g == UINT32_MAX) {
+        for (uint32_t j = 0; j < c->field_cnt; j++) db_val_free(c->kinds[j], slots[j]);
+        if (err_kind) *err_kind = DB_ERR_OOM;
+        *msg = "out of memory growing a table";
+        return 0;
+    }
+    db_row *r = slot_row(t, g);
+    r->class_id = class_id;
+    r->flags = 0;
+    memcpy(r->slots, slots, (size_t)c->field_cnt * 8u);
+    r->id = t->next_id;
+    t->next_id += db->nshards;
+    if (hput(t, r->id, (uint64_t)g + 1) != 0) {
+        for (uint32_t j = 0; j < c->field_cnt; j++) db_val_free(c->kinds[j], r->slots[j]);
+        t->next_id -= db->nshards;
+        if (t->free_cnt < t->free_cap) t->free_slots[t->free_cnt++] = g;
+        if (err_kind) *err_kind = DB_ERR_OOM;
+        *msg = "out of memory indexing a row";
+        return 0;
+    }
+    t->bitmap[g >> 6] |= 1ull << (g & 63);
+    t->count++;
+    int irc = idx_add_row(db, t, r);
+    if (irc != 0) {
+        t->bitmap[g >> 6] &= ~(1ull << (g & 63));
+        hdel(t, r->id);
+        t->count--;
+        t->next_id -= db->nshards; /* the id was never observable: reclaim it */
+        for (uint32_t j = 0; j < c->field_cnt; j++) db_val_free(c->kinds[j], r->slots[j]);
+        if (t->free_cnt < t->free_cap) t->free_slots[t->free_cnt++] = g;
+        if (err_kind) *err_kind = irc;
+        *msg = irc == DB_ERR_UNIQUE ? "unique index violation" : "out of memory indexing a row";
+        return 0;
+    }
+    if (err_kind) *err_kind = DB_ERR_NONE;
+    return r->id;
+}
+
 db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
     if (class_id >= db->class_cnt) return NULL;
     db_table *t = &db->tables[class_id];
@@ -645,11 +695,100 @@ void wo_db_val_free(wo_db *db, uint8_t kind, uint64_t v) {
     db_val_free(kind, v);
 }
 
+uint64_t wo_db_val_encode(const wo_classdesc *classes, uint8_t kind, uint64_t vm_val,
+                          int *ok, const char **msg) {
+    return db_val_encode(classes, kind, vm_val, ok, msg);
+}
+
+/* Deep engine-to-engine copy; shapes mirror db_val_free's recursion. */
+uint64_t wo_db_val_clone(const wo_classdesc *classes, uint8_t kind, uint64_t v, int *ok) {
+    *ok = 1;
+    if (!v) return 0;
+    switch (kind) {
+    case WO_K_SCALAR:
+    case WO_K_FLOAT: return v;
+    case WO_K_TEXT:
+    case WO_K_BYTES: {
+        const db_text *s = (const db_text *)(uintptr_t)v;
+        db_text *t = malloc(sizeof(db_text) + s->len);
+        if (!t) goto oom;
+        t->len = s->len;
+        memcpy(t->bytes, s->bytes, s->len);
+        return (uint64_t)(uintptr_t)t;
+    }
+    case WO_K_OWNED: {
+        const db_rec *s = (const db_rec *)(uintptr_t)v;
+        const wo_classdesc *c = &classes[s->class_id];
+        db_rec *r = malloc(sizeof(db_rec) + (size_t)c->field_cnt * 8u);
+        if (!r) goto oom;
+        r->class_id = s->class_id;
+        r->_pad = 0;
+        for (uint32_t i = 0; i < c->field_cnt; i++) {
+            r->slots[i] = wo_db_val_clone(classes, c->kinds[i], s->slots[i], ok);
+            if (!*ok) {
+                for (uint32_t j = 0; j < i; j++) db_val_free(c->kinds[j], r->slots[j]);
+                free(r);
+                return 0;
+            }
+        }
+        return (uint64_t)(uintptr_t)r;
+    }
+    case WO_K_MULTI: {
+        const db_multi *s = (const db_multi *)(uintptr_t)v;
+        db_multi *d = malloc(sizeof(db_multi) + (size_t)s->len * 8u);
+        if (!d) goto oom;
+        d->elem_kind = s->elem_kind;
+        d->len = s->len;
+        for (uint32_t i = 0; i < s->len; i++) {
+            d->items[i] = wo_db_val_clone(classes, s->elem_kind, s->items[i], ok);
+            if (!*ok) {
+                for (uint32_t j = 0; j < i; j++) db_val_free(d->elem_kind, d->items[j]);
+                free(d);
+                return 0;
+            }
+        }
+        return (uint64_t)(uintptr_t)d;
+    }
+    case WO_K_MAP: {
+        const db_map *s = (const db_map *)(uintptr_t)v;
+        db_map *d = malloc(sizeof(db_map) + (size_t)s->len * 16u);
+        if (!d) goto oom;
+        d->key_kind = s->key_kind;
+        d->val_kind = s->val_kind;
+        d->len = s->len;
+        for (uint32_t i = 0; i < s->len; i++) {
+            d->kv[2 * i] = wo_db_val_clone(classes, s->key_kind, s->kv[2 * i], ok);
+            uint64_t dv = 0;
+            if (*ok) dv = wo_db_val_clone(classes, s->val_kind, s->kv[2 * i + 1], ok);
+            d->kv[2 * i + 1] = dv;
+            if (!*ok) {
+                for (uint32_t j = 0; j <= i; j++) {
+                    db_val_free(d->key_kind, d->kv[2 * j]);
+                    db_val_free(d->val_kind, d->kv[2 * j + 1]);
+                }
+                free(d);
+                return 0;
+            }
+        }
+        return (uint64_t)(uintptr_t)d;
+    }
+    default: return v; /* GCREF never stored; nothing to clone */
+    }
+oom:
+    *ok = 0;
+    return 0;
+}
+
 uint64_t wo_val_decode_vm(wo_db *db, wo_rt *rt, uint8_t kind, uint64_t engine_val,
                           int *ok, const char **msg) {
     (void)db;
     return db_val_decode(rt, kind, engine_val, ok, msg);
 }
+
+static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
+                                db_row *r, uint32_t class_id, uint64_t id,
+                                uint32_t field, uint64_t nv, const char **msg,
+                                int *err_kind);
 
 int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                         uint64_t vm_val, const char **msg, int *err_kind) {
@@ -671,6 +810,16 @@ int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t fiel
         if (err_kind) *err_kind = DB_ERR_BADKIND;
         return -1;
     }
+    return row_apply_field_slot(db, t, c, r, class_id, id, field, nv, msg, err_kind);
+}
+
+/* The post-encode half of an update: unique shadow-check, index fix-up,
+ * slot swap. Consumes [nv] (installed on success, freed on failure) —
+ * shared by the VM-value wrapper above and the RPC slot path. */
+static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
+                                db_row *r, uint32_t class_id, uint64_t id,
+                                uint32_t field, uint64_t nv, const char **msg,
+                                int *err_kind) {
     /* indexes containing this column: unique checks against the NEW value
        run first, against a shadow of the row, before anything mutates */
     uint64_t old = r->slots[field];
@@ -736,6 +885,31 @@ int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t fiel
     db_val_free(c->kinds[field], old);
     if (err_kind) *err_kind = DB_ERR_NONE;
     return 0;
+}
+
+int wo_row_update_field_slot(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
+                             uint64_t slot, const char **msg, int *err_kind) {
+    if (err_kind) *err_kind = DB_ERR_MISC;
+    /* bounds first: the RPC requester validated cid/field to encode at all,
+       so these are defensive; the slot's kind is unknowable on a class
+       violation and the value leaks rather than dies by the wrong kind */
+    if (class_id >= db->class_cnt) {
+        *msg = "no such class";
+        return -1;
+    }
+    const wo_classdesc *c = &db->classes[class_id];
+    if (field >= c->field_cnt) {
+        *msg = "no such field";
+        return -1;
+    }
+    db_row *r = wo_row_ptr(db, class_id, id);
+    if (!r) {
+        db_val_free(c->kinds[field], slot);
+        *msg = "no such row";
+        return -1;
+    }
+    return row_apply_field_slot(db, &db->tables[class_id], c, r, class_id, id,
+                                field, slot, msg, err_kind);
 }
 
 int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id) {

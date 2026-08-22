@@ -17,7 +17,9 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   Connection policy: **pipelined requests are served on one connection;
   idle connections close after the response** — on a single-threaded server
   a parked keep-alive connection would block `accept` and starve every
-  other client, so closing is the correct shape until shards/fibers (8/11).
+  other client, so closing is the correct shape until fiber-per-connection
+  serving lands (the arc — 8/11 — landed 2026-08-21; the serve-loop slice
+  that consumes it is iteration 24's).
   A proxy in front simply reconnects.
 - **Router** (`router/`): method + path table with `:param` captures into
   `req.params`; first match wins; a known path with the wrong method is
@@ -51,7 +53,8 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 ## Honest limits (v1, all deliberate)
 
 - **Single-threaded, blocking** — one request at a time. Concurrency arrives
-  underneath this same surface with the shard/fiber iterations (8/11).
+  underneath this same surface now that the arc (8/11) has landed
+  (2026-08-21); the switch itself rides iteration 24's serving slice.
 - **TLS: none, anywhere.** Deploy behind nginx/caddy; the proxy terminates
   TLS+ALPN and gives browsers HTTP/2 while this backend speaks HTTP/1.1
   keep-alive. See the web-app sample's README for the nginx sketch.
@@ -77,7 +80,7 @@ first (pure `.wo` cannot express it yet).
 | Item | State |
 | --- | --- |
 | HTTP/1.1 parsing | 🔶 parses + 400-and-survive; STRICT ambiguity rejection (duplicate/conflicting `Content-Length`, oversize checks beyond BODY_MAX) not audited — hardening slice |
-| Keep-alive | ✅ pipelined-serve / close-when-idle (starvation-honest until 8/11) |
+| Keep-alive | ✅ pipelined-serve / close-when-idle (arc landed 2026-08-21; retirement of close-when-idle rides iteration 24's fiber-per-connection slice) |
 | Read/write/idle timeouts | 🔧 `net` has no timeout surface — runtime seam, then a framework knob |
 | Request size limits | ✅ BODY_MAX bounds headers AND body |
 | Unix socket binding | 🔧 `net.listen` is TCP-only — runtime seam |
@@ -102,7 +105,7 @@ first (pure `.wo` cannot express it yet).
 | Content negotiation | 🔶 `media_type(req)` covers the request side; `Accept`-driven response negotiation ⬜ |
 | Trusted-proxy client IP | 🔶 `X-Forwarded-For/-Proto` parsing is expressible (candidate slice); VERIFYING the peer is the trusted proxy needs a peer-address runtime seam 🔧 |
 | Status/header setting · redirects | ✅ builders + `set_header` |
-| Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ 8/11 — whole bodies, one write, by design |
+| Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
 | ETag + conditional requests | ⬜ candidate; wants the crypto slice's hashing |
 
 ### Context & middleware

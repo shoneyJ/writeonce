@@ -1,3 +1,8 @@
+---
+iteration: "17"
+status: done
+---
+
 # Iteration 17 — library projects and dependency privacy (`kind`, `internal/`)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

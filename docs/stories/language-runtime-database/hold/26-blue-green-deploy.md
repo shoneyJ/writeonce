@@ -1,3 +1,8 @@
+---
+iteration: "26"
+status: hold
+---
+
 # Iteration 26 — blue-green in-runtime deployment
 
 > Format: fiberloom `product/story-iteration-template`. Part of

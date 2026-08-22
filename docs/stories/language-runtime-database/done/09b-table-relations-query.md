@@ -1,3 +1,8 @@
+---
+iteration: "9b"
+status: done
+---
+
 # Iteration 9b — `@table`, relations, and language-integrated query
 
 > Format: fiberloom `product/story-iteration-template`. Part of

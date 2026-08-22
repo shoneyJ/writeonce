@@ -1,3 +1,8 @@
+---
+iteration: "2"
+status: done
+---
+
 # Iteration 2 — VM core (`wovm`)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

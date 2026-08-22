@@ -1,3 +1,8 @@
+---
+iteration: "5"
+status: done
+---
+
 # Iteration 5 — language surface (Haxe-parity adoptions)
 
 > Format: fiberloom `product/story-iteration-template`. Part of

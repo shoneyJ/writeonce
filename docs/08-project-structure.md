@@ -2,7 +2,7 @@
 
 Canonical map of the repository: what every root directory is and who writes to
 it. Companion to [`CLAUDE.md`](../CLAUDE.md) (working rules), the status board
-([`00-status.md`](00-status.md)), and the story arc
+([`00-status.md`](stories/00-status.md)), and the story arc
 ([`stories/language-runtime-database/00-story.md`](stories/language-runtime-database/00-story.md)).
 
 writeonce is **one compiled language, one runtime, one embedded database, one

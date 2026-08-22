@@ -12,6 +12,11 @@
 #include "gc.h"
 #include "park.h"
 
+#include <assert.h>
+
+#include "db.h"    /* arc stage 3: the transparent DB RPC (wo_db_req) */
+#include "table.h" /* slot encode/decode for the RPC marshaling */
+
 #include <pthread.h>
 #include <poll.h>
 #include <sched.h>
@@ -94,6 +99,28 @@ static int wo_vm_adopt(wo_vm *vm) {
         case 2: /* a home-routed free: this arena owns the object */
             wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
             break;
+        case 3: { /* arc stage 3: a marshaled DB statement — WE are the DB
+                   * actor (only shard 0 ever receives these). Execute
+                   * serialized, right here on the owner thread, then ship
+                   * the same request back as the reply. */
+            wo_db_req *q = (wo_db_req *)(uintptr_t)e->payload;
+            assert(vm->is_primary && "DB requests route to shard 0 only");
+            wo_db_exec_req(vm, q);
+            q->done = 1;
+            wo_envelope *re = calloc(1, sizeof *re);
+            if (re) {
+                re->kind = 4;
+                re->payload = e->payload;
+                inbox_push_to(q->from_shard, re);
+            } /* OOM: the requester stays parked until stop — leak, not UB */
+            break;
+        }
+        case 4: { /* the DB actor's reply: wake the requesting fiber; the
+                   * re-executed builtin consumes the request */
+            wo_db_req *q = (wo_db_req *)(uintptr_t)e->payload;
+            wo_io_unpark(vm, (wo_fiber *)q->fiber);
+            break;
+        }
         }
         free(e);
         n++;
@@ -111,6 +138,190 @@ void wo_route_free(wo_hdr *h) {
     e->kind = 2;
     e->payload = (uint64_t)(uintptr_t)h;
     inbox_push_to(h->shard_id, e);
+}
+
+/* ---- arc stage 3: the requester half of the transparent DB RPC ---------
+ * A worker shard's DB builtin lands here (its rt.db is NULL by design):
+ * the args are ENCODED into engine slots on THIS thread — VM heaps are
+ * never read cross-shard — the request rides an envelope to shard 0, and
+ * the fiber parks with no plane wait (WO_PARK_INBOX). The reply unparks
+ * the fiber, the builtin RE-EXECUTES, lands here again, and consumes the
+ * answer. Every status/msg pair is the one the local path would trap. */
+int wo_db_rpc(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
+    uint32_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
+    wo_fiber *fb = vm->cur;
+    wo_db_req *q = (wo_db_req *)fb->dbreq;
+    const wo_classdesc *classes = vm->mod->classes;
+
+    if (q && q->done) { /* the reply: consume it and finish the builtin */
+        fb->dbreq = NULL;
+        int rc = q->status;
+        if (rc) {
+            *msg = q->msg;
+        } else {
+            switch (C) {
+            case WO_B_DB_INSERT: R[A] = q->result; break;
+            case WO_B_DB_UPDATE_FIELD:
+            case WO_B_DB_DELETE: R[A] = 0; break;
+            case WO_B_DB_SCAN:
+            case WO_B_DB_PROBE: {
+                wo_multi *ids = wo_multi_new(&vm->rt, WO_K_SCALAR);
+                if (!ids) rc = WO_T_OOM;
+                for (uint32_t i = 0; !rc && i < q->id_cnt; i++)
+                    if (wo_multi_push(ids, q->ids[i]) != 0) rc = WO_T_OOM;
+                if (!rc) R[A] = (uint64_t)(uintptr_t)ids;
+                else *msg = "out of memory";
+                break;
+            }
+            case WO_B_DB_GET_FIELD: {
+                int ok = 1;
+                uint64_t v = wo_val_decode_vm(NULL, &vm->rt, q->val_kind, q->val, &ok, msg);
+                wo_db_val_free(NULL, q->val_kind, q->val);
+                q->val = 0;
+                if (!ok) rc = WO_T_OOM;
+                else R[A] = v;
+                break;
+            }
+            default:
+                *msg = "unknown db builtin";
+                rc = WO_T_DB;
+            }
+        }
+        if (q->val) wo_db_val_free(NULL, q->val_kind, q->val);
+        free(q->ids);
+        free(q);
+        return rc;
+    }
+
+    /* first entry: marshal on OUR thread, ship, park */
+    q = calloc(1, sizeof *q);
+    if (!q) {
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    q->op = C;
+    q->from_shard = vm->shard_id;
+    q->fiber = fb;
+    int ok = 1;
+    switch (C) {
+    case WO_B_DB_INSERT: {
+        q->cid = (uint32_t)R[B];
+        if (q->cid >= vm->mod->class_cnt) {
+            free(q);
+            *msg = "no such class";
+            return WO_T_DB;
+        }
+        const wo_classdesc *c = &classes[q->cid];
+        q->slots = calloc(c->field_cnt ? c->field_cnt : 1, 8);
+        if (!q->slots) {
+            free(q);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        q->slot_cnt = c->field_cnt;
+        for (uint32_t i = 0; i < c->field_cnt; i++) {
+            q->slots[i] = wo_db_val_encode(classes, c->kinds[i], R[B + 1 + i], &ok, msg);
+            if (!ok) { /* GCREF (the compiler's reject, defensively) or OOM */
+                for (uint32_t j = 0; j < i; j++)
+                    wo_db_val_free(NULL, c->kinds[j], q->slots[j]);
+                free(q->slots);
+                free(q);
+                return WO_T_DB;
+            }
+        }
+        break;
+    }
+    case WO_B_DB_UPDATE_FIELD: {
+        q->cid = (uint32_t)R[B];
+        q->id = R[B + 1];
+        q->field = (uint32_t)R[B + 2];
+        if (q->cid >= vm->mod->class_cnt || q->field >= classes[q->cid].field_cnt) {
+            free(q);
+            *msg = "no such field";
+            return WO_T_DB;
+        }
+        q->slots = calloc(1, 8);
+        if (!q->slots) {
+            free(q);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        q->slot_cnt = 1;
+        q->slots[0] =
+            wo_db_val_encode(classes, classes[q->cid].kinds[q->field], R[B + 3], &ok, msg);
+        if (!ok) {
+            free(q->slots);
+            free(q);
+            return WO_T_DB;
+        }
+        break;
+    }
+    case WO_B_DB_DELETE:
+        q->cid = (uint32_t)R[B];
+        q->id = R[B + 1];
+        break;
+    case WO_B_DB_SCAN:
+        q->cid = (uint32_t)R[B];
+        break;
+    case WO_B_DB_GET_FIELD:
+        q->cid = (uint32_t)R[B];
+        q->id = R[B + 1];
+        q->field = (uint32_t)R[B + 2];
+        break;
+    case WO_B_DB_PROBE: {
+        q->cid = (uint32_t)R[B];
+        q->index = (uint32_t)R[B + 1];
+        /* the key's kind comes from the class table's index metadata —
+         * identical on every shard (one module). An index the metadata
+         * does not know ships keyless; the owner answers empty, exactly
+         * as the local path does. */
+        if (q->cid < vm->mod->class_cnt && classes[q->cid].idx_meta &&
+            q->index < classes[q->cid].idx_cnt) {
+            const uint32_t *p = classes[q->cid].idx_meta;
+            for (uint32_t k = 0; k < q->index; k++) p += 2 + p[1];
+            uint8_t kind = classes[q->cid].kinds[p[2]];
+            q->slots = calloc(1, 8);
+            if (!q->slots) {
+                free(q);
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            q->slot_cnt = 1;
+            q->slots[0] = wo_db_val_encode(classes, kind, R[B + 2], &ok, msg);
+            if (!ok) {
+                free(q->slots);
+                free(q);
+                return WO_T_DB;
+            }
+        }
+        break;
+    }
+    default:
+        free(q);
+        *msg = "unknown db builtin";
+        return WO_T_DB;
+    }
+    wo_envelope *e = calloc(1, sizeof *e);
+    if (!e) {
+        if (q->slot_cnt && C == WO_B_DB_INSERT) {
+            const wo_classdesc *c = &classes[q->cid];
+            for (uint32_t j = 0; j < c->field_cnt; j++)
+                wo_db_val_free(NULL, c->kinds[j], q->slots[j]);
+        } else if (q->slot_cnt && C == WO_B_DB_UPDATE_FIELD) {
+            wo_db_val_free(NULL, classes[q->cid].kinds[q->field], q->slots[0]);
+        } /* a PROBE key leaks on this path: kind recompute not worth it */
+        free(q->slots);
+        free(q);
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    fb->dbreq = q;
+    e->kind = 3;
+    e->payload = (uint64_t)(uintptr_t)q;
+    inbox_push_to(0, e);
+    fb->park_fd = WO_PARK_INBOX;
+    fb->park_done = 0; /* resume RE-EXECUTES the builtin: the consume path */
+    return WO_SYS_PARKED;
 }
 
 /* A worker's whole life in T5: pinned, parked on its wake eventfd until
@@ -821,6 +1032,11 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
     do {                                                     \
         if (--vm->budget <= 0) {                             \
             vm->budget = vm->budget0;                        \
+            /* arc stage 3: a busy shard still serves its inbox once per  \
+             * slice — bounds a DB request's wait on a computing primary  \
+             * to one reduction budget */                    \
+            if (INBOX_READY[vm->shard_id % WO_ENG_MAX_SHARDS]) \
+                (void)wo_vm_adopt(vm);                       \
             if (vm->qhead) {                                 \
                 vm->cur->frames[vm->cur->depth - 1].pc = pc; \
                 fib_enqueue(vm, vm->cur);                    \
@@ -1385,6 +1601,10 @@ dispatch:
  * stopped (1), or a fatal error (-1). */
 int wo_vm_serve(wo_vm *vm) {
     tls_vm = vm;
+    /* arc stage 3 obligation: a worker NEVER holds the engine or the WAL —
+     * its DB statements marshal to shard 0 (wo_db_rpc). Replay finished on
+     * the primary before wo_engine_start spawned this thread. */
+    assert(!vm->rt.db && !vm->rt.wal);
     if (!vm->qhead) return 2;
     vm->cur = fib_dequeue(vm);
     vm->budget = vm->budget0;

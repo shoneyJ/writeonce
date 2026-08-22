@@ -166,7 +166,7 @@ against the sample.
 | [plan 3](../../plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md) | Unchanged. |
 | [plan 10](../plans/2026-08-01-log-watcher-sample.md) | Acceptance gains the diagnostic-count gate: 307 → 0. |
 | [`01-error-catalog.md`](../../plan/oop-vm/01-error-catalog.md) | `WO-E205` re-filed as **reachable but unenforced** — corrected 2026-08-11, see § 5 — with its repro; `WO-E208`/`E210`/`E211`–`E213` keep their existing reserved entries. |
-| [`docs/00-status.md`](../../00-status.md) | NEXT PLAN gains the milestone-grammar-only note; pending list gains the three cuts under the parked section. |
+| [`docs/00-status.md`](../../stories/00-status.md) | NEXT PLAN gains the milestone-grammar-only note; pending list gains the three cuts under the parked section. |
 | `docs/00-code-review.md` | Reduced to a stub: one paragraph saying its findings landed here and in the plans, pointing at `docs/00-status.md`. |
 
 ## Error handling

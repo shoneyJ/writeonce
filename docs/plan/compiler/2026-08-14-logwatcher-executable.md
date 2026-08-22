@@ -3,7 +3,7 @@
 > **Status: ✅ done 2026-08-15** (story iteration 7) — all six tasks landed:
 > the sample compiles, runs, stops on SIGTERM, holds RSS and descriptors flat
 > under sustained load in all three modes, and the soak that proves it is in
-> the acceptance script. Board: [00-status.md](../../00-status.md)
+> the acceptance script. Board: [00-status.md](../../stories/00-status.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
