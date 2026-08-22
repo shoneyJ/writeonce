@@ -160,12 +160,12 @@ flowchart TD
     XFF["X-Forwarded-For/-Proto parsing"]:::ready
     ACCEPT["Accept-driven negotiation"]:::ready
 
-    NETSEAM["GATE: net runtime seams (timeouts, unix socket, peer address)"]:::gate
+    NETSEAM["GATE: net runtime seams (timeouts, unix socket, peer address) — story 35 owns"]:::gate
     TMOUT["read/write/idle timeouts"]:::blocked
     UNIX["unix socket binding"]:::blocked
     PEERV["trusted-proxy PEER verification"]:::blocked
 
-    CRYPTO["GATE: crypto fork — C builtins vs language bit ops (brainstorm); digests want iteration 19's Bytes"]:::gate
+    CRYPTO["GATE: story 34 crypto — C builtins vs pure-.wo (bitwise landed with 36, both possible; brainstorm decides); carriers (Bytes, base64) landed with 19"]:::gate
     SHA["SHA-256/512, HMAC, CRC32"]:::blocked
     ETAG["ETag + conditional requests"]:::blocked
     COOKIE["signed cookies"]:::blocked
@@ -175,7 +175,7 @@ flowchart TD
     JWT["JWT HS256 (HARD STOP after)"]:::blocked
 
     RADIX["radix-tree routing"]:::blocked
-    I9E3["GATE: 22 measures the linear scan"]:::gate
+    I9E3["GATE: router scan unmeasured — 22's harness landed but benched the DB, not the router; perf-targets entry first"]:::gate
 
     STORAGE["storage-integration rows: migrations (future story), eager loading + tenant roots (query-surface work, 9-series)"]:::blocked
 

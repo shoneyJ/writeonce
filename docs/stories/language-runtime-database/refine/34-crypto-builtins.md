@@ -9,13 +9,14 @@ status: refine
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
 >
 > **Inserted 2026-08-22** — the framework ledger's oldest unowned gap
-> gets an owner. The language has NO bitwise operators (a settled
-> surface decision), so digests cannot be written in `.wo`; the
-> ledger's recorded resolution stands: hand-rolled C builtins in the
-> runtime — the libc-only doctrine permits hand-rolled crypto, and the
-> code is bounded and well-specified. Off the concurrency chain but
-> **gates chain position 4**: iteration 24's WebSocket handshake needs
-> SHA-1 before chat can land.
+> gets an owner. PREMISE UPDATE (same day, post-merge): iteration 36
+> landed bitwise `& | ^ << >>` + hex literals, so digests ARE now
+> expressible in pure `.wo` — the original "no bitwise" impossibility
+> is gone. The fork is now a real choice for this story's brainstorm:
+> hand-rolled C builtins (bounded, fast, libc-only doctrine permits) vs
+> pure-`.wo` (no runtime surface growth; interpreter-speed hashing).
+> Off the concurrency chain but **gates chain position 4**: iteration
+> 24's WebSocket handshake needs SHA-1 before chat can land.
 
 ## Why this iteration exists
 
@@ -37,7 +38,8 @@ only the digests are missing.
   existing builtin).
 - **HMAC-SHA256** (`key: Bytes, msg: Bytes -> Bytes`) — the one
   composition real services need (signed tokens, webhook signatures);
-  writing HMAC in `.wo` is impossible for the same no-bitwise reason.
+  expressible in `.wo` since iteration 36's bitwise set — C-builtin vs
+  pure-`.wo` is this story's brainstorm call.
 - **Test vectors are the acceptance**: FIPS 180 / RFC 2202 / RFC 4231
   vectors in a corpus fixture — a digest that "looks right" is worth
   nothing.

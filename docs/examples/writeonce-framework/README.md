@@ -82,16 +82,16 @@ first (pure `.wo` cannot express it yet).
 | --- | --- |
 | HTTP/1.1 parsing | 🔶 parses + 400-and-survive; STRICT ambiguity rejection (duplicate/conflicting `Content-Length`, oversize checks beyond BODY_MAX) not audited — hardening slice |
 | Keep-alive | ✅ pipelined-serve / close-when-idle (arc landed 2026-08-21; retirement of close-when-idle rides iteration 24's fiber-per-connection slice) |
-| Read/write/idle timeouts | 🔧 `net` has no timeout surface — runtime seam, then a framework knob |
+| Read/write/idle timeouts | 🔧 `net` has no timeout surface — story 35 owns the seam (park_deadline infra already exists for sleeps), then a framework knob |
 | Request size limits | ✅ BODY_MAX bounds headers AND body |
-| Unix socket binding | 🔧 `net.listen` is TCP-only — runtime seam |
+| Unix socket binding | 🔧 `net.listen` is TCP-only — story 35 owns the seam |
 | Graceful SIGTERM | ✅ in-flight request completes (blocking model), listener + fds closed, storage is per-commit durable (WAL fdatasync — nothing to checkpoint) |
 
 ### Routing
 
 | Item | State |
 | --- | --- |
-| Path matching | 🔶 linear scan, first-match-wins; a radix tree is a performance slice that waits for iteration 22 to MEASURE it first |
+| Path matching | 🔶 linear scan, first-match-wins; a radix tree waits on a MEASUREMENT first — 22's harness landed (benched the DB, not the router); needs a perf-targets register entry |
 | Method dispatch · path params · 404 · 405+`Allow` | ✅ |
 | Wildcards | ⬜ only `:param` today; `*rest` capture is a candidate slice |
 | Precedence rules | 🔶 registration order IS the rule (documented); specificity-based precedence unneeded until wildcards exist |
@@ -104,10 +104,10 @@ first (pure `.wo` cannot express it yet).
 | Case-insensitive headers · query parsing | ✅ (names lowercased on read) |
 | JSON · form-urlencoded · multipart | ✅ all three hooks (`json.decode`, `form_values`, `multipart_parts`) |
 | Content negotiation | 🔶 `media_type(req)` covers the request side; `Accept`-driven response negotiation ⬜ |
-| Trusted-proxy client IP | 🔶 `X-Forwarded-For/-Proto` parsing is expressible (candidate slice); VERIFYING the peer is the trusted proxy needs a peer-address runtime seam 🔧 |
+| Trusted-proxy client IP | 🔶 `X-Forwarded-For/-Proto` parsing is expressible (candidate slice); VERIFYING the peer is the trusted proxy needs a peer-address seam 🔧 — story 35 owns it |
 | Status/header setting · redirects | ✅ builders + `set_header` |
 | Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
-| ETag + conditional requests | ⬜ candidate; wants the crypto slice's hashing |
+| ETag + conditional requests | ⬜ candidate; wants story 34's digests (bitwise landed with 36 — pure-`.wo` vs C-builtin is 34's brainstorm) |
 
 ### Context & middleware
 
