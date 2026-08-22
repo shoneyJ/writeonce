@@ -447,9 +447,13 @@ enum {
     WO_B_TEXT_OF_BYTES = 83,  /* (bytes) -> fresh Text, verbatim. The caller
                                * asserts the bytes are text; no validation,
                                * because Unicode is explicitly out of scope */
+    WO_B_TIME_TICKS = 84,     /* () -> Int, CLOCK_MONOTONIC microseconds —
+                               * the bench clock (iteration 22). Monotone,
+                               * never wall time: immune to NTP steps; only
+                               * differences mean anything. */
 };
 
-#define WO_B_MAX 83u
+#define WO_B_MAX 84u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

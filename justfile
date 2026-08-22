@@ -60,6 +60,15 @@ fibers:
 db-actor:
     ./scripts/db-actor-accept.sh
 
+# db-bench: iteration 22's campaign (docs/examples/db-bench) — OFF the
+# fast path, minutes long: ram+durable x 1/N shards, durability legs,
+# gates vs bench/baseline.json. quick = seconds, floors only.
+db-bench:
+    ./scripts/db-bench.py
+
+db-bench-quick:
+    ./scripts/db-bench.py --quick
+
 # install-accept: extract the dist tarball to a temp prefix, PATH it, and prove
 # `woc version` + a from-scratch project build+run (self-located wovm) + the
 # wo-constraint refusal all work — the "tarball install actually works" gate.

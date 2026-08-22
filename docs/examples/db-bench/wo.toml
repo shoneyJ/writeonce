@@ -1,0 +1,6 @@
+name        = "db-bench"
+version     = "0.1.0"
+description = "iteration 22: the measurement backbone — timed DB workloads, single- and multi-shard"
+
+[runtime]
+wo = ">= 0.1"

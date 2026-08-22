@@ -63,4 +63,4 @@ Same effect as Postgres' group-commit fence (one `fsync` flushes many commits) w
 
 ## Used by
 
-[`docs/plan/11-wal-and-recovery.md`](../../11-wal-and-recovery.md) — WAL framing, group commit, control file, replay loop. Pair with [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md) for syscall details.
+`docs/plan/11-wal-and-recovery.md` (Rust-era, removed 2026-08-18) — WAL framing, group commit, control file, replay loop. Pair with [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md) for syscall details.

@@ -34,52 +34,49 @@ machine-readable truth behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
-**The concurrency + fiber chain — ✅ stage 3 → 22 → 31 → 24 → 23 → 32**
-(directive 2026-08-21). Active slice: **iteration 22, the measurement
-backbone** — spec + plan approved 2026-08-21
-([spec](../superpowers/specs/2026-08-21-db-bench-design.md) ·
-[plan](../superpowers/plans/2026-08-21-db-bench.md) ·
-[marker](../in-progress/2026-08-21-db-bench.md)); the four forks settled
-as their leanings, plus `time.ticks` (µs clock) as the one runtime
-addition and a new `db-bench` sample as the vehicle.
+**The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 31 → 24 → 23 → 32**
+(directive 2026-08-21). Next slice: **iteration 31, actor lifecycle** —
+its spec brainstorm is the next act (four forks in
+[the story](language-runtime-database/refine/31-actor-lifecycle.md);
+the mailbox-cap/ring decisions now HAVE their mutex-inbox number).
 
-**Implemented last time (2026-08-21):** the arc's **stage 3 — the
-transparent DB actor landed, the arc is COMPLETE** (stories
-[8](language-runtime-database/done/08-shard-actor-runtime.md) +
-[11](language-runtime-database/done/11-fibers.md) → done/). A worker
-shard's DB statement marshals to shard 0 (requester-side slot encode),
-executes serialized on the owner, and the fiber resumes with the
-materialized reply — `WO_T_DB` off the primary is gone. NEW gate
-`just db-actor` 8/0; ASan/TSan clean; WO_DATA pair proves worker writes
-are ack-after-durable and replay.
+**Implemented last time (2026-08-21):** **iteration 22 landed — the
+measurement backbone exists and every performance claim is now
+sourced.** `docs/examples/db-bench` + `scripts/db-bench.py` +
+`bench/baseline.json` (74 metrics, tolerance-tuned by a two-run
+repeatability check) + `just db-bench`/`db-bench-quick`; `time.ticks`
+(µs monotonic clock, builtin 84) as the one runtime addition. Restart
+proof + 3× kill -9 battery per shard count all green; the gate bites
+(doctored results fail on exactly the doctored metric).
 
-**Key findings:** a latent stage-1 bug — io_uring ring params were ONE
-shared static, rewritten by every shard's lazy init while others read
-offsets from it: submits landed at garbage offsets and parked fibers
-LOST WAKES (~1/20 hangs at default cores). Per-vm params fixed it; a
-short `io_uring_enter` submit is now a loud trap. Also: single-binary
-gates embed the runtime — rebuild the SAMPLE, not just wovm, or you
-debug a stale binary.
+**Key findings (measured, not asserted):** durable seed ≈4.5k
+inserts/s vs ram ≈297k/s — the 66× fsync gap IS iteration 23's case;
+point lookups are O(table) (the probe walks every slab — reads ≈1.5k/s
+at p50 ≈600µs on 20k rows): the read path never uses the index for
+lookup, a new candidate slice; mixread 1,280 ops/s single-shard vs 21
+ops/s multi-shard — the DB-actor price under O(table) probes and owner
+serialization; msgrate 13.4M msgs/s same-heap vs 2.45M cross-shard —
+deviation 4's mutex-inbox number (rings stay unearned until this is
+the bottleneck). Standing bug found: hand-built `multi <TableClass>`
+SEGVs on drop (elements classed OWNED; refs are scalar ids).
 
-**Learned from the last iteration:** the owner thread must never read a
-requester's VM heap (concurrent mark-bit writes = TSan race) — marshal
-by ENCODING on the requester's thread, execute from slots replay-style;
-a plane-less park (`WO_PARK_INBOX`) + envelope wake is all an RPC reply
-needs; a busy shard adopting its inbox once per reduction slice bounds
-request latency.
+**Learned:** benchmark tolerances must be per-class — mix* spreads 50%
+run-to-run (scheduling), read/query jitter ~25%, seed/write/msgrate
+hold at 15%; a RAM store dies with its process, so throughput modes
+share one run (`all`); WO_DATA on tmpfs makes fsync free — durable
+numbers need a real disk.
 
-**Dependencies unblocked:** 22's multi-shard campaign (the store is
-correct under shards now); 24's serving model (fiber-per-connection has
-a database it can touch from any shard); the framework ledger rows the
-arc gates stay ⏸ until their own slices.
+**Dependencies unblocked:** 23 (has its fsync baseline to beat), 31
+(has the mutex-inbox number), 32 (has the restart/replay timing
+machinery), and every future optimization (the gate that catches
+regressions is live).
 
-**Next steps:** 22 (baselines single- AND multi-shard + the mutex-inbox
-number; precursor recorded in story 8: remote insert ≈8µs/op RAM-only)
-→ 31 (lifecycle) → 24 (chat) → 23 (io_uring group-commit) → 32 (WAL
-checkpoint). Held tail resumes on its own precedence notes.
+**Next steps:** 31 (lifecycle spec brainstorm) → 24 (chat) → 23
+(io_uring group-commit — target: close the 4.5k→297k durable gap) →
+32 (WAL checkpoint). Held tail resumes on its own precedence notes.
 
-**`.dev/reference` used:** `linux` (io_uring uapi struct layouts and the
-"single event loop" card — both load-bearing in the ring-params fix).
+**`.dev/reference` used:** none this slice (the LW_SOAK discipline and
+linkcheck.py precedent came from in-repo scripts).
 
 ---
 
@@ -233,7 +230,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 9b  | [`@table`, relations, query](language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
 | 19  | [Float + Bytes](language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
 | 11  | [Fibers](language-runtime-database/done/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
-| 22  | [Durability, throughput, scale](language-runtime-database/in-progress/22-durability-throughput-scale.md) | 🔄 **spec + plan approved 2026-08-21, executing** — db-bench sample + campaign gates; forks settled |
+| 22  | [Durability, throughput, scale](language-runtime-database/done/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
 | 31  | [Actor lifecycle](language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
 | 24  | [chat: WebSocket workload](language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
 | 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
@@ -257,8 +254,8 @@ that sequences its tasks. Read one, approve, then the next starts.
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Language | 🔄 [iteration 36 — operator parity](language-runtime-database/in-progress/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
-| Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-20--code-review-pass) |
-| Runtime  | **iteration 22: db-bench** — spec + plan approved 2026-08-21; executing | [marker](../in-progress/2026-08-21-db-bench.md) · [plan](../superpowers/plans/2026-08-21-db-bench.md) |
+| Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
+| Runtime  | nothing active — 22 landed 2026-08-21; next per the chain: iteration 31's spec brainstorm | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
 
 The active slice's marker doc lives in [`in-progress/`](../in-progress/) —
 one file, deleted when the slice lands. Everything else pending is the
@@ -446,8 +443,10 @@ precedence notes for resumption.
    database is broken today. Plan of record:
    [`2026-08-20-shard-fiber-arc.md`](../superpowers/plans/2026-08-20-shard-fiber-arc.md)
    (stages 1+2 landed 2026-08-20, branch `concurrency-arc`).
-2. 🔄 **22** — IN PROGRESS (spec + plan approved 2026-08-21) — the
-   measurement backbone: restart-persistence proof + baseline
+2. ✅ **22** — LANDED 2026-08-21 (`just db-bench`, baseline committed,
+   gate bites; headline: durable 4.5k vs ram 297k inserts/s, reads
+   O(table), mixread 21 ops/s multi-shard, msgrate 2.45M cross-shard).
+   Was: the measurement backbone: restart-persistence proof + baseline
    benchmark (durable + RAM-only), single- AND multi-shard in one
    campaign, plus the stage-2 mutex-inbox number (rings only if the mutex
    costs). It has never run — no `bench/baseline.json`, no `just db-bench`;
