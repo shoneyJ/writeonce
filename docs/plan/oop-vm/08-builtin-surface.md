@@ -274,6 +274,9 @@ unset `env.get` are nil.
 | `time.local(ms)` | `-> TimeParts` | `{ year, month, day, hour, minute, second, dow }`, dow 0 = Sunday |
 | `time.iso(ms)` | `-> Text` | UTC, second precision |
 | `time.ticks()` | `-> Int` | CLOCK_MONOTONIC microseconds (id 84, iteration 22's bench clock) — monotone, never wall time; only differences mean anything |
+| `sha1(bytes)` | `-> Bytes` | 20-byte digest (id 85, iteration 34) — exists because RFC 6455's Sec-WebSocket-Accept demands SHA-1 |
+| `sha256(bytes)` | `-> Bytes` | 32-byte digest (id 86, iteration 34) |
+| `hmac_sha256(key, msg)` | `-> Bytes` | RFC 2104 over SHA-256, both args Bytes (id 87, iteration 34); key > 64 bytes hashed first |
 | `env.get(name)` | `-> ?Text` | unset is nil |
 | `env.stopping()` | `-> Bool` | SIGTERM/SIGINT latch, handlers installed on first use |
 | `net.listen(host, port)` | `-> Int` | IPv4, SO_REUSEADDR, backlog 64; returns an fd |

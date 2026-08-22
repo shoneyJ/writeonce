@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "cont.h"
+#include "crypto.h"
 #include "gc.h"
 
 /* type checks on receiver headers: wrong native class traps BOUNDS */
@@ -172,6 +173,8 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         return wo_builtin_json(vm, R, ins, msg);
     if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS)
         return wo_builtin_sys(vm, R, ins, msg);
+    if (C >= WO_B_SHA1 && C <= WO_B_HMAC_SHA256)
+        return wo_builtin_crypto(vm, R, ins, msg);
     if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) {
         /* arc stage 3: the database is an actor on shard 0. A worker shard
          * has no engine by design — its statement marshals, parks, resumes

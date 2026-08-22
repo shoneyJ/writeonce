@@ -451,9 +451,15 @@ enum {
                                * the bench clock (iteration 22). Monotone,
                                * never wall time: immune to NTP steps; only
                                * differences mean anything. */
+    /* ---- iteration 34: digests (crypto.c). Whole-value over Bytes; SHA-1
+     * exists because RFC 6455's Sec-WebSocket-Accept demands it. ---- */
+    WO_B_SHA1 = 85,           /* (bytes) -> fresh 20-byte Bytes */
+    WO_B_SHA256 = 86,         /* (bytes) -> fresh 32-byte Bytes */
+    WO_B_HMAC_SHA256 = 87,    /* (key bytes, msg bytes) -> fresh 32-byte Bytes,
+                               * RFC 2104 (key > 64 bytes hashed first) */
 };
 
-#define WO_B_MAX 84u
+#define WO_B_MAX 87u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

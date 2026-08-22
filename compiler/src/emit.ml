@@ -285,6 +285,9 @@ let b_base64_encode = 80
 let b_base64_decode = 81
 let b_bytes_of_text = 82
 let b_text_of_bytes = 83
+let b_sha1 = 85
+let b_sha256 = 86
+let b_hmac_sha256 = 87
 let b_split = 28
 let b_split_ws = 29
 let b_join = 30
@@ -1083,6 +1086,7 @@ let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty opt
   | "float_to_text" | "base64_encode" | "text_of_bytes" -> Some (Scalar "Text")
   | "bytes_eq" -> Some (Scalar "Bool")
   | "bytes_slice" | "bytes_concat" | "bytes_of_text" -> Some (Scalar "Bytes")
+  | "sha1" | "sha256" | "hmac_sha256" -> Some (Scalar "Bytes")
   | "base64_decode" -> Some (Nullable (Scalar "Bytes"))
   | _ -> None
 
@@ -1099,7 +1103,9 @@ let is_builtin_name (n : string) =
       (* iteration 19: Float bridges and Bytes surface *)
       "float"; "trunc"; "parse_float"; "float_to_text"; "float_cmp"; "bytes_len"; "bytes_at";
       "bytes_slice"; "bytes_eq"; "bytes_concat"; "base64_encode"; "base64_decode";
-      "bytes_of_text"; "text_of_bytes" ]
+      "bytes_of_text"; "text_of_bytes";
+      (* iteration 34: digests *)
+      "sha1"; "sha256"; "hmac_sha256" ]
 
 (* ---- unions and variants (haxe-parity Task 4) ------------------------
 
@@ -3630,6 +3636,8 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       || id = b_float_of_int || id = b_trunc || id = b_parse_float || id = b_float_to_text
       || id = b_bytes_len || id = b_base64_encode || id = b_base64_decode
       || id = b_bytes_of_text || id = b_text_of_bytes
+      (* iteration 34, one argument *)
+      || id = b_sha1 || id = b_sha256
     then 1
     else if
       id = b_multi_push || id = b_multi_get || id = b_map_get || id = b_map_has
@@ -3640,6 +3648,8 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       || id = b_map_key_at || id = b_map_val_at
       (* iteration 19, two arguments *)
       || id = b_float_cmp || id = b_bytes_at || id = b_bytes_eq || id = b_bytes_concat
+      (* iteration 34, two arguments *)
+      || id = b_hmac_sha256
     then 2
     else 3 (* b_bytes_slice lands here with substr's shape: (value, start, len) *)
   in
@@ -3755,6 +3765,9 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   | "base64_decode" -> fixed b_base64_decode
   | "bytes_of_text" -> fixed b_bytes_of_text
   | "text_of_bytes" -> fixed b_text_of_bytes
+  | "sha1" -> fixed b_sha1
+  | "sha256" -> fixed b_sha256
+  | "hmac_sha256" -> fixed b_hmac_sha256
   | "multi_new" | "map_new" ->
     let is_map = name = "map_new" in
     if args <> [] then bad (Printf.sprintf "builtin `%s` takes no arguments" name)

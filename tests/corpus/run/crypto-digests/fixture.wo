@@ -1,0 +1,13 @@
+-- iteration 34: digests end to end from .wo — sha1/sha256/hmac_sha256
+-- over Bytes, printed through base64_encode (iteration 19). Expected
+-- values are the RFC vectors: SHA-1("abc"), SHA-256("abc"), and
+-- HMAC-SHA256 key "Jefe" / RFC 4231 case 2's message.
+fn main() -> Int {
+  let abc = bytes_of_text("abc");
+  print("sha1: ${base64_encode(sha1(abc))}");
+  print("sha256: ${base64_encode(sha256(abc))}");
+  let key = bytes_of_text("Jefe");
+  let msg = bytes_of_text("what do ya want for nothing?");
+  print("hmac: ${base64_encode(hmac_sha256(key, msg))}");
+  return 0;
+}

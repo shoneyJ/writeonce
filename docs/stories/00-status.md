@@ -265,7 +265,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Language | 🔄 [iteration 36 — operator parity](language-runtime-database/in-progress/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
 | Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
-| Runtime  | nothing active — 22 landed 2026-08-21; next per the chain: iteration 31's spec brainstorm | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
+| Runtime  | 🔄 **iteration 24 (absorbing 31 + 34): chat + actor lifecycle** — spec + plan approved 2026-08-23 (24 absorbs 31 by directive; 34 resolved C-builtins); executing on branch `chat-ws-lifecycle` | [marker](../in-progress/2026-08-23-chat-ws-lifecycle.md) · [plan](../superpowers/plans/2026-08-23-chat-ws-lifecycle.md) |
 
 The active slice's marker doc lives in [`in-progress/`](../in-progress/) —
 one file, deleted when the slice lands. Everything else pending is the

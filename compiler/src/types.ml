@@ -835,6 +835,10 @@ let builtin_signatures : (string * int * builtin_arg_req list) list =
     ("base64_decode", 1, [ ReqText ]);
     ("bytes_of_text", 1, [ ReqText ]);
     ("text_of_bytes", 1, [ ReqBytes ]);
+    (* iteration 34: digests. Bytes in, Bytes out; HMAC is key-then-message. *)
+    ("sha1", 1, [ ReqBytes ]);
+    ("sha256", 1, [ ReqBytes ]);
+    ("hmac_sha256", 2, [ ReqBytes; ReqBytes ]);
   ]
 
 let rec unwrap_nullable (t : typ) : typ =
@@ -1040,6 +1044,7 @@ let builtin_confident_ret (name : string) (arg0 : typ option) : typ option =
   | "float_to_text" | "base64_encode" | "text_of_bytes" -> Some (TScalar "Text")
   | "bytes_eq" -> Some (TScalar "Bool")
   | "bytes_slice" | "bytes_concat" | "bytes_of_text" -> Some (TScalar "Bytes")
+  | "sha1" | "sha256" | "hmac_sha256" -> Some (TScalar "Bytes")
   (* malformed base64 is nil, not a trap: it arrives from the network *)
   | "base64_decode" -> Some (TNullable (TScalar "Bytes"))
   | _ -> None
