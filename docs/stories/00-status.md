@@ -49,11 +49,18 @@ repeatability check) + `just db-bench`/`db-bench-quick`; `time.ticks`
 proof + 3× kill -9 battery per shard count all green; the gate bites
 (doctored results fail on exactly the doctored metric).
 
+**Landed 2026-08-22 — the read-path index slice** (born from the
+postgres study + 22's numbers, commit 6a306a7): engine `wo_idx_probe`
+(bucket lookup, scan-identical verify) + emitter index selection
+(`where var.col == key` lowers to DB_PROBE; guards stay the arbiter).
+Reads 1.3k → **1.3M ops/s**, p50 600µs → 1µs (~×850); mixread 21 →
+~1.9k ops/s multi-shard. Baseline refreshed; tolerance policy moved
+into the driver (refresh-proof); gate proven to bite on both classes.
+Pinned by corpus `query-index-probe` + a `wo_idx_probe` unit suite.
+
 **Key findings (measured, not asserted):** durable seed ≈4.5k
 inserts/s vs ram ≈297k/s — the 66× fsync gap IS iteration 23's case;
-point lookups are O(table) (the probe walks every slab — reads ≈1.5k/s
-at p50 ≈600µs on 20k rows): the read path never uses the index for
-lookup, a new candidate slice; mixread 1,280 ops/s single-shard vs 21
+point lookups WERE O(table) (fixed 2026-08-22, above); mixread was 1,280 ops/s single-shard vs 21
 ops/s multi-shard — the DB-actor price under O(table) probes and owner
 serialization; msgrate 13.4M msgs/s same-heap vs 2.45M cross-shard —
 deviation 4's mutex-inbox number (rings stay unearned until this is
