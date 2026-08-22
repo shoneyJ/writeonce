@@ -1,0 +1,13 @@
+name        = "site"
+version     = "0.1.0"
+description = "writeonce.de — the language tutorial served by the language: framework + wo-html [deps], @table chapters, server-rendered pages"
+
+[runtime]
+wo = ">= 0.1"
+
+# Two real dependencies (the gate substitutes file:// remotes built from
+# docs/examples/writeonce-framework and docs/examples/wo-html, so CI never
+# touches the network). The [deps] KEY is the module name `use` imports.
+[deps]
+framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+html      = { git = "https://github.com/shoneyj/wo-html", rev = "v0.1.0" }
