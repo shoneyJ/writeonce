@@ -2,6 +2,7 @@
  * Round-trips across kinds, nil encodings, id interleave across shards,
  * slab growth past one slab, slot reuse after removal, and the out-gate
  * invariant (a read hands back FRESH VM values, never slab pointers). */
+#include <stdlib.h>
 #include <string.h>
 
 #include "cont.h"
@@ -221,6 +222,79 @@ static void test_update_field(void) {
     wo_rt_destroy(&rt);
 }
 
+/* read-path index slice: wo_idx_probe answers a single-column equality
+ * from the index buckets (expected O(1)) with the SAME id set the slab
+ * walk yields — duplicates, nil text, and removed rows included; a
+ * multi-column index refuses (0) so callers keep the scan fallback.
+ * Class: Kv { k: Text, n: scalar } with a non-unique index on each,
+ * plus one multi-column index over both. */
+static const uint8_t kv_kinds[] = {WO_K_TEXT, WO_K_SCALAR};
+static const uint32_t kv_idx_meta[] = {0, 1, 0,   /* [k]    */
+                                       0, 1, 1,   /* [n]    */
+                                       0, 2, 0, 1 /* [k, n] */};
+static const wo_classdesc KVCLASSES[] = {
+    {.name = 0, .flags = 0, .field_cnt = 2, .kinds = kv_kinds, .idx_cnt = 3,
+     .idx_meta = kv_idx_meta},
+};
+
+static int ids_contain(const uint64_t *ids, uint32_t n, uint64_t id) {
+    for (uint32_t i = 0; i < n; i++)
+        if (ids[i] == id) return 1;
+    return 0;
+}
+
+static void test_idx_probe(void) {
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KVCLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KVCLASSES, 1, 0, 1), 0);
+    const char *msg = "";
+    /* rows: ("a",1) ("a",2) (nil,1) ("b",2) ("a",3); then remove the
+     * second "a" so the bucket's removal path is exercised */
+    wo_str *sa = wo_str_new(&rt, "a", 1);
+    wo_str *sb = wo_str_new(&rt, "b", 1);
+    uint64_t r1[2] = {(uint64_t)(uintptr_t)sa, 1};
+    uint64_t r2[2] = {(uint64_t)(uintptr_t)sa, 2};
+    uint64_t r3[2] = {0, 1};
+    uint64_t r4[2] = {(uint64_t)(uintptr_t)sb, 2};
+    uint64_t r5[2] = {(uint64_t)(uintptr_t)sa, 3};
+    uint64_t a1 = wo_row_insert(&db, 0, r1, &msg, NULL);
+    uint64_t a2 = wo_row_insert(&db, 0, r2, &msg, NULL);
+    uint64_t a3 = wo_row_insert(&db, 0, r3, &msg, NULL);
+    uint64_t a4 = wo_row_insert(&db, 0, r4, &msg, NULL);
+    uint64_t a5 = wo_row_insert(&db, 0, r5, &msg, NULL);
+    T_CHECK(a1 && a2 && a3 && a4 && a5);
+    T_EQ(wo_row_remove(&db, 0, a2), 0);
+
+    uint64_t *ids = NULL;
+    uint32_t n = 0;
+    /* text key "a" on index 0 ([k]): exactly a1 and a5 */
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, "a", 1, &ids, &n), 1);
+    T_EQ(n, 2);
+    T_CHECK(ids_contain(ids, n, a1) && ids_contain(ids, n, a5));
+    free(ids);
+    /* nil text key (bytes == NULL): exactly a3 */
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, NULL, 0, &ids, &n), 1);
+    T_EQ(n, 1);
+    T_CHECK(ids_contain(ids, n, a3));
+    free(ids);
+    /* scalar key 2 on index 1 ([n]): a4 only (a2 removed) */
+    T_EQ(wo_idx_probe(&db, 0, 1, 2, NULL, 0, &ids, &n), 1);
+    T_EQ(n, 1);
+    T_CHECK(ids_contain(ids, n, a4));
+    free(ids);
+    /* absent key: probed, empty */
+    T_EQ(wo_idx_probe(&db, 0, 1, 77, NULL, 0, &ids, &n), 1);
+    T_EQ(n, 0);
+    free(ids);
+    /* multi-column index 2 ([k, n]): refuses — caller falls back */
+    T_EQ(wo_idx_probe(&db, 0, 2, 2, NULL, 0, &ids, &n), 0);
+    /* out-of-range index: refuses, never traps */
+    T_EQ(wo_idx_probe(&db, 0, 9, 2, NULL, 0, &ids, &n), 0);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_misuse(void) {
     const char *msg = "";
     wo_db db;
@@ -238,6 +312,7 @@ int main(void) {
     test_id_interleave_across_shards();
     test_slab_growth_and_reuse();
     test_update_field();
+    test_idx_probe();
     test_misuse();
     return t_report("test_table");
 }

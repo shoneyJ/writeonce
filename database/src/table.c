@@ -319,6 +319,74 @@ static uint64_t idx_hash(const wo_classdesc *c, const db_index *ix, const db_row
     return h ? h : 1; /* 0 marks an empty bucket */
 }
 
+static db_ibucket *idx_bucket(db_index *ix, uint64_t h, int create);
+
+/* One KEY's bucket hash — must reproduce idx_hash's result for a
+ * single-column index bit for bit (same FNV, same float folding, same
+ * position mix at i == 0), or probes and maintenance disagree on the
+ * bucket and rows silently vanish from reads. */
+static uint64_t idx_hash_key1(uint8_t kind, uint64_t key_scalar, const void *key_bytes,
+                              uint32_t key_len) {
+    uint64_t v;
+    if (kind == WO_K_TEXT) {
+        if (key_bytes) {
+            uint64_t th = 1469598103934665603ull;
+            const uint8_t *p = (const uint8_t *)key_bytes;
+            for (uint32_t b = 0; b < key_len; b++) th = (th ^ p[b]) * 1099511628211ull;
+            v = th;
+        } else
+            v = 0; /* nil text, exactly as idx_hash spells it */
+    } else if (kind == WO_K_FLOAT)
+        v = idx_float_key(key_scalar);
+    else
+        v = key_scalar;
+    uint64_t h = 0x9e3779b97f4a7c15ull;
+    h ^= hmix(v + 0);
+    return h ? h : 1;
+}
+
+int wo_idx_probe(wo_db *db, uint32_t class_id, uint32_t index, uint64_t key_scalar,
+                 const void *key_bytes, uint32_t key_len, uint64_t **out_ids,
+                 uint32_t *out_cnt) {
+    *out_ids = NULL;
+    *out_cnt = 0;
+    if (class_id >= db->class_cnt) return 0;
+    db_table *t = &db->tables[class_id];
+    if (!t->row_size || index >= t->index_cnt) return 0;
+    db_index *ix = &t->indexes[index];
+    if (ix->col_cnt != 1) return 0; /* composite: the caller keeps its scan */
+    uint32_t col = ix->cols[0];
+    uint8_t kind = db->classes[class_id].kinds[col];
+    db_ibucket *b = idx_bucket(ix, idx_hash_key1(kind, key_scalar, key_bytes, key_len), 0);
+    if (!b || !b->len) return 1; /* probed: genuinely empty */
+    uint64_t *ids = malloc((size_t)b->len * 8u);
+    if (!ids) return -1;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < b->len; i++) {
+        db_row *r = wo_row_ptr(db, class_id, b->ids[i]);
+        if (!r) continue;
+        int eq;
+        if (kind == WO_K_TEXT) {
+            const db_text *have = (const db_text *)(uintptr_t)r->slots[col];
+            eq = (!key_bytes && !have) ||
+                 (key_bytes && have && have->len == key_len &&
+                  memcmp(have->bytes, key_bytes, key_len) == 0);
+        } else
+            /* raw-word equality for scalars AND floats — the slab walk's
+             * exact comparison, so probe results never differ from scan
+             * results (the hash canonicalized only to FIND the bucket) */
+            eq = r->slots[col] == key_scalar;
+        if (eq) ids[n++] = b->ids[i];
+    }
+    if (!n) {
+        free(ids);
+        return 1;
+    }
+    *out_ids = ids;
+    *out_cnt = n;
+    return 1;
+}
+
 static int idx_cols_equal(const wo_classdesc *c, const db_index *ix, const db_row *a,
                           const db_row *b) {
     for (uint32_t i = 0; i < ix->col_cnt; i++) {

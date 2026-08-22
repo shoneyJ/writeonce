@@ -90,3 +90,15 @@ Acceptance shape for that slice: db-bench `read`/`query` move from
 ~1.5k ops/s to the same order as inserts; `bench/baseline.json`
 refreshed with the delta recorded — the gate exists precisely so this
 claim gets measured.
+
+**LANDED 2026-08-22** — and the study missed half the gap: the engine
+probe was only ever emitted for BACKLINK navigation; a `where
+var.col == key` query lowered to DB_SCAN + a per-row VM filter loop.
+The slice therefore wired BOTH layers: `wo_idx_probe` in the engine
+(bucket lookup + scan-identical verify; composite indexes keep the
+walk) and index selection in the emitter (`probe_key_of_where` — the
+where guards still run over the candidates, so the guard stays the
+final arbiter). Measured: reads 1,336 → 1,336,362 ops/s (p50 599µs →
+1µs), query ×830, mixread ×70, single-shard, N=20k. Pinned by
+`tests/corpus/run/query-index-probe` and a `wo_idx_probe` unit suite in
+`runtime/test/test_table.c`.

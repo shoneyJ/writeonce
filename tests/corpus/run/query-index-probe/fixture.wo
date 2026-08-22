@@ -1,0 +1,58 @@
+-- index selection: `where var.col == key` on a single-column-indexed
+-- column lowers to DB_PROBE; the same query on an unindexed column
+-- keeps the scan. Results must be identical either way — the where
+-- guard stays the final arbiter (probe supplies candidates only).
+@table(name: "pts", index: [k])
+class Pt {
+  k: Int
+  u: Int
+  tag: Text
+}
+
+@table(name: "named", index: [name])
+class Named {
+  name: Text
+}
+
+fn main() -> Int {
+  let i = 0;
+  while i < 30 {
+    insert Pt { k: i % 3, u: i % 3, tag: "t${i % 3}" };
+    i = i + 1;
+  }
+  insert Named { name: "alpha" };
+  insert Named { name: "beta" };
+  -- probe path (k indexed) vs scan path (u unindexed): same counts
+  let key = 2;
+  let a = 0;
+  for x in from x in Pt where x.k == key select x {
+    a = a + 1;
+  }
+  let b = 0;
+  for x in from x in Pt where x.u == key select x {
+    b = b + 1;
+  }
+  print("indexed ${a} unindexed ${b}");
+  -- probe + second guard: guard still filters candidates
+  let c = 0;
+  for x in from x in Pt where x.k == key where x.u == 2 select x {
+    c = c + 1;
+  }
+  let d = 0;
+  for x in from x in Pt where x.k == key where x.u == 0 select x {
+    d = d + 1;
+  }
+  print("guarded ${c} and ${d}");
+  -- mirrored equality + literal key + take
+  let e = 0;
+  for x in from x in Pt where key == x.k take 4 select x {
+    e = e + 1;
+  }
+  print("mirrored-take ${e}");
+  -- text key probe (unique index): hit and miss
+  let want = "beta";
+  let hit = from n in Named where n.name == want take 1 select n;
+  let miss = from n in Named where n.name == "gamma" take 1 select n;
+  print("text ${len(hit)} ${len(miss)}");
+  return 0;
+}

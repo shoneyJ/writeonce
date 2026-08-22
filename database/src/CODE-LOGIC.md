@@ -79,3 +79,28 @@ rather than acknowledging what disk never got.
 - The update refactor extracted `row_apply_field_slot` (the post-encode
   half: unique shadow-check, index fix-up, slot swap) shared by both
   entry points — the VM-value path's behavior is unchanged bit for bit.
+
+## The read-path index probe (2026-08-22)
+
+- **wo_idx_probe** (table.c) answers a single-column equality from the
+  index's hash buckets instead of walking slabs — the O(1) wiring the
+  db-bench numbers demanded (reads were ~1.5k ops/s at p50 600µs on 20k
+  rows; ~1.3M ops/s at p50 1µs after). `idx_hash_key1` must reproduce
+  `idx_hash`'s single-column result bit for bit (same FNV over text
+  bytes, same float canonicalization, same position mix) or probes and
+  maintenance disagree on the bucket and rows silently vanish.
+- The VERIFY step compares exactly as the slab walk compared (raw words
+  for scalars/floats, byte equality for text; nil text == NULL bytes) —
+  the hash canonicalizes only to FIND the bucket, so probe results are
+  identical to scan results by construction.
+- Composite indexes refuse (return 0) and callers keep the slab walk;
+  both probe executors (`wo_builtin_db` and `wo_db_exec_req`) carry the
+  same wiring, so worker shards get the speedup through the DB actor.
+- The COMPILER half (emit.ml `probe_key_of_where`): a query whose where
+  list contains `var.col == key` on a single-column-indexed column
+  lowers its source to DB_PROBE; every where guard still runs over the
+  candidates, so the guard — not the engine — stays the final arbiter.
+  Keys are a plain identifier or an integer literal only; Float/Bytes
+  columns excluded (engine raw-eq is narrower than VM float-eq, and a
+  probe miss cannot be resurrected by a recheck). Pinned by
+  `tests/corpus/run/query-index-probe`.

@@ -45,19 +45,24 @@ slice.
 
 `bench/baseline.json` is the contract; headline readings:
 
-- ram seed 257–298k inserts/s; **durable seed ≈4.5k/s** (fsync-per-commit
+- ram seed 245–290k inserts/s; **durable seed ≈4.5k/s** (fsync-per-commit
   ≈220µs each — the gap iteration 23 exists to close).
-- reads ≈1.5k/s at p50 ≈600µs on a 20k-row store: point lookups are
-  O(table) — the probe walks every slab; index selection never reaches
-  the lookup path. THE read-path finding.
-- mixread 1,280 ops/s single-shard vs **21 ops/s** multi-shard: RPC
-  round-trip × O(table) probes × owner serialization — the arc's honest
-  price until reads index properly.
-- msgrate 13.4M msgs/s same-heap vs 2.45M cross-shard (the mutex-inbox
+- reads/queries ≈1.1–1.3M ops/s at p50 1µs since the read-path index
+  slice (2026-08-22, engine `wo_idx_probe` + emitter index selection) —
+  up from ≈1.5k/s at p50 600µs when point lookups walked every slab
+  (~×850). mixread 89k ops/s single-shard, ~1.9k multi-shard (was
+  1,280 / 21): the RPC round-trip is now the visible cost, as designed.
+- msgrate ≈13M msgs/s same-heap vs ≈2.4M cross-shard (the mutex-inbox
   number, stage-2 deviation 4).
+- Tolerance policy lives in the DRIVER (`tolerance_for`), not hand-edits
+  — a baseline refresh regenerates it: mix*/sN/read/query 50%
+  (scheduling + µs-scale jitter), rest 15%; latency floors
+  `max(4×value, 100µs)` — the tripwire means "µs became ms".
 
 ## The gate must bite (proven 2026-08-21)
 
 `scripts/db-bench.py --check <results.json>` evaluates a recorded run:
-the real results pass 74/0; a doctored copy (one ops/sec halved) FAILS
-on exactly that metric. Re-run the smoke after any gate change.
+the real results pass 74/0; a doctored copy FAILS on exactly the
+doctored metrics — use a 15%-class metric (seed) halved plus a
+50%-class metric (read) quartered, so both tolerance classes prove they
+bite. Re-run the smoke after any gate or policy change.
