@@ -92,9 +92,14 @@ static int wo_vm_adopt(wo_vm *vm) {
             e->actor->next_all = vm->actors;
             vm->actors = e->actor;
             break;
-        case 0: /* a cross-shard send: mailbox + activation on the HOME thread */
-            if (actor_push(e->actor, e->payload) == 0 && !e->actor->active)
-                (void)actor_activate(vm, e->actor);
+        case 0: /* a cross-shard send: mailbox + activation on the HOME thread.
+                   The sender already reserved the cap slot; a failed push
+                   (OOM) must hand it back or the slot leaks forever. */
+            if (actor_push(e->actor, e->payload) == 0) {
+                if (!e->actor->active) (void)actor_activate(vm, e->actor);
+            } else {
+                wo_mbox_release(e->actor);
+            }
             break;
         case 2: /* a home-routed free: this arena owns the object */
             wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
@@ -600,10 +605,30 @@ static void fib_reap_all(wo_vm *vm) {
 
 /* ---- actors (arc stage 1 Task 3) -------------------------------------- */
 
+/* iteration 24: fail-fast backpressure. The SENDER reserves a slot before
+ * anything is enqueued anywhere (same-shard push or cross-shard envelope);
+ * the home thread releases it when the message is popped for delivery.
+ * Reserve/release are the unit-testable core (test_mailbox.c). */
+uint32_t wo_mailbox_cap = 1024;
+
+int wo_mbox_reserve(wo_actor *a) {
+    uint32_t old = __atomic_fetch_add(&a->pending, 1, __ATOMIC_ACQ_REL);
+    if (old >= wo_mailbox_cap) {
+        __atomic_fetch_sub(&a->pending, 1, __ATOMIC_ACQ_REL);
+        return -1;
+    }
+    return 0;
+}
+
+void wo_mbox_release(wo_actor *a) {
+    __atomic_fetch_sub(&a->pending, 1, __ATOMIC_ACQ_REL);
+}
+
 static uint64_t actor_pop(wo_actor *a) {
     uint64_t m = a->msgs[a->mhead];
     a->mhead = (a->mhead + 1) % a->mcap;
     a->mlen--;
+    wo_mbox_release(a);
     return m;
 }
 
@@ -689,12 +714,19 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         *msg = "send: nil message";
         return WO_T_BOUNDS;
     }
+    /* iteration 24: the cap check happens SENDER-side on every path, so
+     * the sender always learns — fail-fast backpressure, catchable. */
+    if (wo_mbox_reserve(a) != 0) {
+        *msg = "actor mailbox full";
+        return WO_T_ACTOR;
+    }
     if (a->home != vm->shard_id) {
         /* cross-shard: the HOME thread owns the mailbox — send travels as
          * an inbox envelope, ownership moves with it (the mutex is the
          * happens-before edge TSan sees) */
         wo_envelope *e = calloc(1, sizeof *e);
         if (!e) {
+            wo_mbox_release(a);
             *msg = "out of memory";
             return WO_T_OOM;
         }
@@ -705,6 +737,7 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         return 0;
     }
     if (actor_push(a, msg_val) != 0) {
+        wo_mbox_release(a);
         *msg = "out of memory";
         return WO_T_OOM;
     }

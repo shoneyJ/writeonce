@@ -190,6 +190,11 @@ enum {
        honesty precedent DIV0 set (trap, never x86's silent count%64).
        Literal counts never get here: woc rejects them (WO-E223). */
     WO_T_SHIFT = 12,
+    /* iteration 24 (absorbing 31): the actor lifecycle's one trap kind —
+       a send/call against a full mailbox (fail-fast backpressure, the
+       sender always learns), call to a dead actor, callee died mid-call.
+       The message names which. Catchable like every trap. */
+    WO_T_ACTOR = 13,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */

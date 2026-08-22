@@ -1,0 +1,51 @@
+use time
+
+-- iteration 24: fail-fast backpressure from .wo. The sleeper parks in its
+-- first receive, so the mailbox only ever drains by one; a send loop must
+-- hit the cap (default 1024) and catch WO_T_ACTOR. The exact send count
+-- at the first trap depends on scheduling, so the fixture prints the
+-- trap's message once plus a bound check, never the count. `try` is an
+-- expression, so the send is wrapped in a helper whose success is nil.
+class Tick {
+  n: Int
+}
+
+class Sleeper {
+  pad: Int
+  fn receive(msg: Tick) {
+    time.sleep(5000);
+  }
+}
+
+fn send_one(s: actor Tick, n: Int) -> Text {
+  send(s, Tick { n: n });
+  return "";
+}
+
+fn main() -> Int {
+  let s: actor Tick = spawn Sleeper { pad: 0 };
+  let sent = 0;
+  let caught = "";
+  let i = 0;
+  while i < 2000 {
+    i = i + 1;
+    let r = try send_one(s, i) catch (e) e.msg;
+    if r == "" {
+      sent = sent + 1;
+    } else {
+      caught = "${r}";
+      i = 2000;
+    }
+  }
+  if caught == "actor mailbox full" {
+    print("trap: ${caught}");
+  } else {
+    print("NO TRAP after ${sent} sends");
+  }
+  if sent >= 1024 {
+    print("bounded: cap respected");
+  } else {
+    print("bounded: TRAPPED EARLY at ${sent}");
+  }
+  return 0;
+}

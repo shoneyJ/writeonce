@@ -216,6 +216,15 @@ int main(int argc, char **argv) {
         }
         VM.rt.wal = &WAL;
     }
+    /* iteration 24: the one mailbox cap; WO_MAILBOX shrinks it in soak
+     * tests to force the fail-fast policy (0/garbage keeps the default) */
+    {
+        const char *me = getenv("WO_MAILBOX");
+        if (me && me[0]) {
+            unsigned long v = strtoul(me, NULL, 10);
+            if (v >= 1 && v <= 0x7FFFFFFFul) wo_mailbox_cap = (uint32_t)v;
+        }
+    }
     /* the arc's stage 2: all cores by default (the brave landing), one
      * pinned worker vm per extra core; WO_SHARDS caps or forces it */
     {

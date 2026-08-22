@@ -2600,6 +2600,12 @@ and emit_try (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast
   (match expected with
   | Some t -> emit_expr p f v ~dst ~expected:t body
   | None -> emit_expr p f v ~dst body);
+  (* iteration 24 fix: a try ARM's value crosses an ownership boundary (the
+     binding the whole try feeds), but the outer binding only sees the Try
+     node — it cannot apply its own place-copy. A body arm that is a Text
+     place (`try r.field catch ...`) must copy here or the binding aliases
+     a register the arm's scope end frees. Same rule as any binding. *)
+  copy_place_text p f dst body;
   f.f_cur_line <- e.pos.line;
   put f (ins_abc op_endtry 0 0 0);
   emit_join_drops p f v ~node:e.id ~label:"TRYBODY";
@@ -2635,7 +2641,13 @@ and emit_try (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast
       f.f_cur_line <- last.Ast.s_pos.line;
       (match expected with
       | Some t -> emit_expr p f v ~dst ~expected:t ve
-      | None -> emit_expr p f v ~dst ve)
+      | None -> emit_expr p f v ~dst ve);
+      (* iteration 24 fix (the catch half of the arm-copy rule): a bare
+         `e.msg` arm aliases the Error record's field, and the record is
+         dropped at CATCH scope end below — ASan-confirmed use-after-free
+         (then a double-walk SEGV when a later trap unwinds the frame).
+         Copy the place out before the record dies. *)
+      copy_place_text p f dst ve
     | _ -> emit_stmt p f v last));
   emit_scope_drops p f v ~node:e.id ~label:"CATCH";
   f.f_nlocals <- saved_locals;

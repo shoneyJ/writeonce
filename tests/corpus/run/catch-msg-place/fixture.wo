@@ -1,0 +1,25 @@
+-- iteration 24 fix pin: a try ARM's value that is a Text PLACE must be
+-- copied out before the arm's scope dies. The catch half: bare `e.msg`
+-- aliased the Error record's field, the record dropped at arm end, and
+-- the binding dangled (ASan use-after-free, then a double-walk SEGV on
+-- the next unwind). The body half: `try box.name catch ...` aliased the
+-- box's field across the same boundary.
+use fs
+
+class Box {
+  name: Text
+}
+
+fn read_place(b: Box) -> Text {
+  return try b.name catch (e) "unreachable";
+}
+
+fn main() -> Int {
+  let r = try fs.read_all("/nonexistent-woc-fixture", 10) catch (e) e.msg;
+  print("caught: ${r}");
+  let b = Box { name: "boxed" };
+  let t = read_place(b);
+  print("place: ${t}");
+  print("still: ${b.name}");
+  return 0;
+}

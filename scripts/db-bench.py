@@ -127,7 +127,12 @@ def campaign():
         # msgrate once per shard count, RAM only (no store dependency)
     for shards in (1, ncores):
         tag = f"msg.s{'1' if shards == 1 else 'N'}"
-        rc, lines, _, _ = run(["msgrate", str(MSG_N)], {"WO_SHARDS": str(shards)}, 300)
+        # iteration 24 gave mailboxes a cap (default 1024, fail-fast trap);
+        # msgrate's contract is an UNBOUNDED one-way flood, so the driver
+        # raises the cap to the flood size — the measured number keeps
+        # iteration 22's semantics exactly.
+        rc, lines, _, _ = run(["msgrate", str(MSG_N)],
+                              {"WO_SHARDS": str(shards), "WO_MAILBOX": str(MSG_N)}, 300)
         if rc != 0:
             bad(tag, f"rc={rc}")
         else:

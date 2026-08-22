@@ -96,11 +96,23 @@ typedef struct wo_actor {
     uint64_t instance;   /* the moved-in state object (runtime-owned) */
     uint32_t method;     /* receive's method index (self + msg = 2 args) */
     uint32_t home;       /* the shard whose thread owns mailbox + delivery */
-    uint64_t *msgs;      /* FIFO ring, growable */
+    uint64_t *msgs;      /* FIFO ring, growable up to the cap */
     uint32_t mhead, mlen, mcap;
+    /* iteration 24: sent-but-not-delivered count, incremented by the
+     * SENDER on any shard (the cap check), decremented by the home
+     * thread at delivery pop. Accessed ONLY through __atomic builtins
+     * (wo_mbox_reserve/release) because senders race; the cap can
+     * overshoot by at most the number of in-flight sends — disclosed. */
+    uint32_t pending;
     wo_fiber *active;    /* the delivery fiber, NULL when idle */
     struct wo_actor *next_all; /* the vm's all-actors list */
 } wo_actor;
+
+/* iteration 24: the one mailbox cap (default 1024, WO_MAILBOX overrides
+ * at boot — soak tests shrink it to force the fail-fast policy). */
+extern uint32_t wo_mailbox_cap;
+int wo_mbox_reserve(wo_actor *a);   /* 0 = slot reserved; -1 = full */
+void wo_mbox_release(wo_actor *a);  /* delivery pop / failed enqueue */
 
 typedef struct wo_vm {
     const wo_module *mod;
