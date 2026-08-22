@@ -138,8 +138,9 @@ flowchart TD
 ## 3. Framework v1 — remaining ledger items
 
 Three gates recur: **net seams** (runtime `net` builtins), the **crypto
-fork** (no bitwise operators in the language — hashes become C runtime
-builtins or bit ops land first; brainstorm before the slice), and the
+fork** (bitwise operators + hex literals landed with iteration 36, so
+digests are now expressible in pure `.wo` — pure-`.wo` vs C-builtin is
+story 34's brainstorm before the slice), and the
 **concurrency chain above** (its gated nodes are not repeated here).
 
 ```mermaid

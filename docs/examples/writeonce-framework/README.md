@@ -62,11 +62,12 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
   JSON-first (no templates). Form-encoded bodies parse through
   `form_values(req)` (`+` and `%XX` decoded, nil on any other
   content-type); multipart/form-data through `multipart_parts(req)`
-  (whole-body, bounded by BODY_MAX — no streaming uploads until
-  fibers/shards) with `part_named` for fields; `media_type(req)` names
+  (whole-body, bounded by BODY_MAX — the arc landed 2026-08-21;
+  streaming uploads stay parked until their own slice) with
+  `part_named` for fields; `media_type(req)` names
   the body's media type for content negotiation.
 
-## The v1 surface — status ledger (2026-08-20)
+## The v1 surface — status ledger (2026-08-22)
 
 The target surface of **framework v1**, tracked per item. The memory-rich
 features (TTL cache, feature flags, durable job queue, `transaction { }`)
@@ -115,7 +116,7 @@ first (pure `.wo` cannot express it yet).
 | Ordered middleware chain | ✅ registration order, `?Resp` short-circuits |
 | Request-scoped context | 🔶 `req.params` + `req.principal` are the context today; a general `req.ctx` bag is a candidate slice |
 | Guaranteed teardown | 🔶 every fd closes on every path (gate-proven); no user teardown hooks yet |
-| Cancellation into pending storage ops | ⏸ fibers (11) |
+| Cancellation into pending storage ops | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
 | Panic recovery | 🔶 trap = 500 and the server survives ✅; "rolls back the transaction" is framework v2 (needs `transaction { }`, iteration 18) |
 
 ### Storage integration (the differentiator — framework v2 territory)
@@ -123,7 +124,7 @@ first (pure `.wo` cannot express it yet).
 | Item | State |
 | --- | --- |
 | Transaction-per-request middleware (commit on 2xx, roll back otherwise) | ⏸ **v2** — needs iteration 18's `transaction { }` |
-| Cancellation → rollback | ⏸ fibers (11) + v2 |
+| Cancellation → rollback | ⏸ arc landed; still needs v2's `transaction { }` (iteration 18) |
 | Migration generation + review workflow | ⬜ recorded future story (script-based destructive migrations) |
 | Eager-loading API (N+1) | ⬜ query-surface work (9-series), not framework code |
 | Tenant-scoped query roots | ⬜ future; wants the query surface to grow scoped roots first |
