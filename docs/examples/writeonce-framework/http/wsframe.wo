@@ -1,0 +1,112 @@
+-- http/wsframe.wo — the RFC 6455 frame codec (iteration 24), pure
+-- functions over Text (net.read/net.write speak Text; a wo Text is
+-- binary-safe bytes). No fd, no actor — the reader owns a carry buffer
+-- exactly like internal/parse.wo's keep-alive carry: append what
+-- net.read returned, call ws_parse, act on the frame, keep `rest`.
+--
+-- v1 bounds, all deliberate (spec 2026-08-23): client frames MUST be
+-- masked (RFC), fragmentation is refused (kind -1 — answer a close),
+-- 64-bit payload lengths are refused, payloads cap at 1 MiB (the
+-- BODY_MAX doctrine). Binary frames parse fine; what an app does with
+-- them is its business (chat echoes).
+--
+-- Frame.kind: 0 = incomplete (feed more bytes), 1 = text, 2 = binary,
+-- 8 = close, 9 = ping, 10 = pong, 0 - 1 = protocol error (close the
+-- peer). kind mirrors the wire opcode for real frames.
+
+pub typedef Frame = {
+  kind:    Int,
+  payload: Text,
+  rest:    Text
+}
+
+const WSF_MAX = 1048576
+
+fn incomplete() -> Frame {
+  return Frame { kind: 0, payload: "", rest: "" };
+}
+
+fn protocol_error() -> Frame {
+  return Frame { kind: 0 - 1, payload: "", rest: "" };
+}
+
+-- Parse ONE complete client frame off the front of buf. Anything short
+-- is `incomplete` — never an error, the bytes just have not arrived.
+pub fn ws_parse(buf: Text) -> Frame {
+  if len(buf) < 2 { return incomplete(); }
+  let b0 = byte_at(buf, 0);
+  let b1 = byte_at(buf, 1);
+  let fin = b0 & 0x80;
+  let op = b0 & 0x0F;
+  if b0 & 0x70 != 0 { return protocol_error(); }      -- RSV bits: no extension negotiated
+  if op == 0 or fin == 0 { return protocol_error(); } -- fragmentation refused, v1
+  if op != 1 and op != 2 and op != 8 and op != 9 and op != 10 {
+    return protocol_error();
+  }
+  if b1 & 0x80 == 0 { return protocol_error(); }      -- a client frame must be masked
+  let plen = b1 & 0x7F;
+  let off = 2;
+  if plen == 127 { return protocol_error(); }         -- 64-bit lengths refused, v1
+  if plen == 126 {
+    if len(buf) < 4 { return incomplete(); }
+    plen = (byte_at(buf, 2) << 8) | byte_at(buf, 3);
+    off = 4;
+  }
+  if plen > WSF_MAX { return protocol_error(); }
+  -- control frames are short by RFC (§5.5): <= 125 and never fragmented
+  if op >= 8 and plen > 125 { return protocol_error(); }
+  if len(buf) < off + 4 + plen { return incomplete(); }
+  let k0 = byte_at(buf, off);
+  let k1 = byte_at(buf, off + 1);
+  let k2 = byte_at(buf, off + 2);
+  let k3 = byte_at(buf, off + 3);
+  let data = off + 4;
+  -- unmask: XOR each payload byte with key[i % 4]; parts + one join
+  -- keeps the build linear instead of concat-quadratic
+  let parts: multi Text = [];
+  let i = 0;
+  while i < plen {
+    let k = k0;
+    let m = i % 4;
+    if m == 1 { k = k1; }
+    if m == 2 { k = k2; }
+    if m == 3 { k = k3; }
+    push(parts, char_of(byte_at(buf, data + i) ^ k));
+    i = i + 1;
+  }
+  let payload = join(parts, "");
+  let end = data + plen;
+  return Frame { kind: op, payload: payload,
+                 rest: substr(buf, end, len(buf) - end) };
+}
+
+-- Serialize a SERVER frame: unmasked by RFC (§5.1 — only clients mask).
+-- Payloads above 64 KiB are refused with "" — the framework never sends
+-- them (chat lines are short; the 16-bit length form is the v1 ceiling).
+fn ws_ser(op: Int, payload: Text) -> Text {
+  let n = len(payload);
+  if n > 65535 { return ""; }
+  let head = char_of(0x80 | op);
+  if n < 126 {
+    head = head .. char_of(n);
+  } else {
+    head = head .. char_of(126) .. char_of(n >> 8) .. char_of(n & 0xFF);
+  }
+  return head .. payload;
+}
+
+pub fn ws_text(payload: Text) -> Text {
+  return ws_ser(1, payload);
+}
+
+pub fn ws_close() -> Text {
+  return ws_ser(8, "");
+}
+
+pub fn ws_ping() -> Text {
+  return ws_ser(9, "");
+}
+
+pub fn ws_pong(payload: Text) -> Text {
+  return ws_ser(10, payload);
+}
