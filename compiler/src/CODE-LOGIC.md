@@ -260,3 +260,38 @@ a keyword, and visibility is name resolution at compile time.
 - **Exit-code bands stay split**: WO-E108 is a diagnostic through the normal
   collector path (exit 1); WO-E106/E107/E109 are manifest errors printed
   directly (exit 2).
+
+## Operator parity (iteration 36 — `.wob` v6)
+
+- **Precedence went INTO existing rungs, not new ones.** `|`/`^` joined
+  `parse_additive`, `&`/`<<`/`>>` joined `parse_multiplicative` — exactly
+  Go's table (`token.go` Precedence), which exists to fix C's trap:
+  `x & mask == 0` groups the AND first here. The ladder doc in `parser.ml`
+  carries the worked examples.
+- **`not` is a keyword at the unary level (Lua placement).** `not a == b`
+  groups `(not a) == b`. Chosen over Python's looser placement because the
+  grammar's ordering is already anchored to Lua by name and because
+  Bool-only typing turns almost every misread into a compile error. It
+  lowers on the existing EQ against a zero constant — no new opcode, the
+  same doctrine as and/or's JZ lowering.
+- **Compound assigns are parse-time sugar via rewind-and-reparse.**
+  `x += e` IS `x = x + e`, the documented contract — including an index
+  expression evaluating twice, exactly as the written-out form would. The
+  parser re-parses the place by resetting `st.pos` (no expression rung
+  consumes a compound token, so the second parse stops where the first
+  did); every re-parsed node draws a fresh id, so owner/emit see two
+  honest reads, never one node in two roles. `+=`/`-=` had been lexed
+  since haxe-parity Task 2 but no rule consumed them — dead tokens,
+  `x += 1` died as a generic WO-E101 until this iteration.
+- **Bitwise is Int-only on BOTH sides (WO-E201 family)** — no F-twin
+  exists, so a Float operand would have become a garbage word operation
+  with no diagnostic. A LITERAL shift count outside 0..63 is WO-E223 at
+  the operand's position (a negative literal arrives as
+  `Unary(Neg, IntLit)` — both shapes are caught); a variable count is the
+  VM's WO_T_SHIFT.
+- **Hex/binary literals accumulate in OCaml's native int (63-bit).** A
+  full-width 64-bit literal like `0xFFFFFFFFFFFFFFFF` is out of reach —
+  all-ones is spelled `-1` (and complement is `-1 ^ x`; there is no `~`).
+  The `0x`/`0b` prefix commits only when a real base digit follows, so
+  `0xg` stays `Int 0` + `Ident` — a parse error at its own position, no
+  new lexer diagnostic. `_` separators are consumed only BETWEEN digits.

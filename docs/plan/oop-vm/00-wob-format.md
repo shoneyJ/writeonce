@@ -11,7 +11,7 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 5 (iteration 19; see "v5: Float and Bytes" below), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 6 (iteration 36; see "v6: the Int bitwise set" below — v5 was iteration 19's "v5: Float and Bytes"), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
 **Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL); tag 2 = f64 as its IEEE 754 bit pattern in an LE u64 (v5). There is no Bytes tag: Bytes has no literal form.
 
@@ -55,6 +55,7 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 | 33 | ENDTRY | pop the innermost catch frame — the try region completed without trapping |
 | 34–38 | FADD/FSUB/FMUL/FDIV/FNEG | f64 arithmetic on the register's bits (v5). **None of these trap**: IEEE 754 quiet semantics, so `x/0.0` is ±Inf and `0.0/0.0` is NaN. FNEG flips the sign bit, so `-0.0` is reachable |
 | 39–41 | FEQ/FLT/FLE | f64 IEEE compares, result 0/1 — so any comparison involving NaN is 0, and `0.0 == -0.0` is 1. Not a total order; indexes and order-by use the `float_cmp` builtin instead |
+| 42–46 | BAND/BOR/BXOR/SHL/SHR | i64 bitwise (v6, iteration 36). Int-only — woc refuses Float/Bool/Text operands, so no F-twin exists. SHL shifts the unsigned word (wrapping, like ADD); **SHR is arithmetic** (the sign bit extends). A shift count outside 0..63 traps T_SHIFT — never the hardware's silent count%64; a *literal* out-of-range count is rejected at compile time (WO-E223), so the trap only ever fires on variable counts |
 
 **try/catch (Task 5).** A trap raised while a catch frame is live unwinds every frame *above* the catching one exactly as an uncaught trap does (drop maps run, registers null), then releases what the try region owned in the catching frame — the difference between the drop entry at the trapping instruction and the one at the handler pc — and resumes at the handler instead of leaving the VM. A frame that returns takes its still-open catch frames with it, so a `return` out of a try region cannot leave a handler pointing at a dead window. With no catch frame live, a trap behaves byte-for-byte as it did before v2. The catch arm's error record is an ordinary compiler-allocated object filled by the `err_fill` builtin (field order: 0 code, 1 line, 2 method, 3 msg).
 
@@ -70,7 +71,7 @@ The metadata exists for exactly one reason: `json.encode`/`json.decode` are runt
 
 `EQS` accepts a nil operand for the same reason: two `?Text` values compare with it, and the answer is "both absent is equal, one absent is not". A non-nil operand must still be a real Text.
 
-**Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT, IO (a syscall the source cannot prevent said no — errno's message rides in the error record).
+**Trap codes:** DIV0, BORROW, STACK, OOM, DB, BOUNDS, KEY, EXPLICIT, IO (a syscall the source cannot prevent said no — errno's message rides in the error record), UNIQUE, FK, SHIFT (v6 — a variable shift count outside 0..63).
 
 ## v5: Float and Bytes (iteration 19)
 
@@ -137,6 +138,34 @@ fraction there still fails the decode whole). A non-finite Float encodes as
 `null`, because JSON has no `nan`/`inf` literal and emitting one would be
 invalid JSON. A Bytes field crosses as a base64 string, matching
 `base64_encode`'s alphabet exactly.
+
+## v6: the Int bitwise set (iteration 36)
+
+The version bump is the same contract v5 set: an image is rejected in both
+age directions, because an older runtime meeting opcode 42 would bail on
+"unknown opcode" only after the loader trusted the rest of the header.
+
+**What v6 adds** — nothing but opcodes and one trap kind: no new constant
+tag, field kind, or section.
+
+- Opcodes `42–46` — `BAND`/`BOR`/`BXOR`/`SHL`/`SHR`, three-register i64
+  forms (table above). Int-only by the checker, so unlike v5 there is no
+  parallel F-set and no mode bit.
+- Trap kind `T_SHIFT` (12) — a variable shift count outside 0..63. The
+  DIV0 precedent, deliberately NOT x86's silent count-mod-64 (`x << 64`
+  must never quietly equal `x`) and NOT Go's saturate-to-0/-1 (spec
+  surface serving generic-width code this language does not have).
+  A literal count is rejected at compile time as WO-E223, so the trap
+  is reachable only through a count computed at run time.
+- `>>` is **arithmetic** — the sign bit extends, Go's own choice for a
+  signed integer, and this language's one Int is signed 64-bit. Byte-mask
+  code (crypto, base64) never notices: its values keep the sign bit clear,
+  where arithmetic and logical shifts agree bit for bit.
+- Source-side companions that need no format space: hex/binary/underscore
+  Int literals (a literal is pool bits by the time it reaches the image),
+  boolean `not` (lowered on the existing EQ against a zero constant, the
+  same no-new-opcode doctrine as and/or's JZ lowering), and the compound
+  assigns (parse-time sugar — `x += e` IS `x = x + e`, dead by emit time).
 
 ## Enum payload variants (haxe-parity compiler Task 4)
 

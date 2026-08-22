@@ -181,3 +181,22 @@ layout.
   word and a Bytes as the same length-prefixed blob a Text uses, so replay is
   bit-exact for NaN, ±Inf, and `-0.0`. `test_wal`'s `test_float_bytes_replay`
   asserts on bits for exactly that reason.
+
+## The Int bitwise set (iteration 36 — `.wob` v6)
+
+- **One shared case-body text serves both dispatch flavors** — the new
+  CASE blocks sit in the Int neighborhood after LE, so `-DWO_ISO_C`
+  cannot rot (same discipline as every opcode before them).
+- **SHL shifts the unsigned register word** (wrapping, like ADD — a
+  signed left-shift overflow would be UB); **SHR casts to int64_t
+  first**, so it is ARITHMETIC — gcc/clang define signed `>>` as
+  sign-extending, and those are the only compilers this runtime targets.
+- **The count check is a trap, not a mask.** x86 masks the count mod 64,
+  which would make `x << 64 == x` silently; Go saturates to 0/-1, spec
+  surface for generic-width code this VM does not have. WO_T_SHIFT (12)
+  follows the DIV0 precedent instead: named, catchable, honest. It can
+  only fire on a count computed at run time — woc rejects literal
+  out-of-range counts as WO-E223.
+- **The loader validates the five opcodes as plain three-register forms**
+  — the count is a register, not an immediate, so there is nothing to
+  range-check at load time.

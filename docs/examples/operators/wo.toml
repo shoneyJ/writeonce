@@ -1,0 +1,9 @@
+name        = "operators"
+version     = "0.1.0"
+description = "Operator-parity showcase — iteration 36's manual-test workload: not, bitwise & | ^ << >>, hex/binary literals, compound assigns"
+
+[runtime]
+wo = ">= 0.1"
+
+[build]
+runtime = "../../../runtime/wovm"

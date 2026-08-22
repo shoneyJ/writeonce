@@ -1,6 +1,6 @@
 ---
 iteration: "36"
-status: refine
+status: in-progress
 ---
 
 # Iteration 36 — operator parity: `not`, bitwise, hex literals, compound assigns
@@ -30,6 +30,22 @@ status: refine
 > (5 tasks: lexer/tokens; AST/parser incl. compound-assign desugar;
 > type checker incl. literal shift-count rejection; emit + VM opcodes
 > `.wob` v6; corpus/gates/docs closeout).
+>
+> **CODE LANDED 2026-08-22** (branch `operator-parity`), full stack in
+> one day: tokens/lexer (incl. hex `0x` / binary `0b` / `_` separators),
+> Go-rung parsing, WO-E201 Int-only/Bool-only checking, WO-E223 literal
+> shift rejection, opcodes `WOP_BAND..WOP_SHR` 42-46 + `WO_T_SHIFT` as
+> `.wob` v6. The dead-token defect is closed: `x += 1` parses (all five
+> compound assigns, parse-time sugar — the desugar-equivalence contract
+> incl. double index-eval is in `compiler/src/CODE-LOGIC.md`). Gates:
+> `woc-test` 543/0, `wovm-test` ASan both flavors, `oop-accept` ALL MET,
+> `deps-accept` 8/0, `web-app` 26/0 — all unchanged. **Deviation by
+> developer directive: NO test fixtures were written** — acceptance is
+> MANUAL via the new sample `docs/examples/operators/` (`woc .`, run,
+> read the ok/FAIL lines; `trap` mode proves WO_T_SHIFT). The corpus
+> pins this plan called for (grouping, arithmetic `>>`, ipad/opad,
+> trap) live in that sample instead. Status stays in-progress until the
+> developer's manual pass; the AC below reads as written pre-deviation.
 
 ## Why this iteration exists
 
