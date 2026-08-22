@@ -154,7 +154,7 @@ let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
 
 (* v5 (iteration 19): the Float constant tag, field kinds 6/7, opcodes 34-41,
    builtins 70-83. v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
-let wob_version = 5
+let wob_version = 6
 
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF

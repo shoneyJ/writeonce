@@ -859,6 +859,10 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
         [WOP_FMUL] = &&L_FMUL,         [WOP_FDIV] = &&L_FDIV,
         [WOP_FNEG] = &&L_FNEG,         [WOP_FEQ] = &&L_FEQ,
         [WOP_FLT] = &&L_FLT,           [WOP_FLE] = &&L_FLE,
+        /* iteration 36 (v6): the Int bitwise set */
+        [WOP_BAND] = &&L_BAND,         [WOP_BOR] = &&L_BOR,
+        [WOP_BXOR] = &&L_BXOR,         [WOP_SHL] = &&L_SHL,
+        [WOP_SHR] = &&L_SHR,
     };
 #define CASE(name) L_##name
 #define NEXT()                        \
@@ -932,6 +936,38 @@ dispatch:
     CASE(LE) : {
         R[wo_ins_a(ins)] =
             (int64_t)R[wo_ins_b(ins)] <= (int64_t)R[wo_ins_c(ins)] ? 1 : 0;
+        NEXT();
+    }
+
+    /* iteration 36 (v6): Int bitwise. AND/OR/XOR are sign-agnostic on
+     * the u64 register word. SHL shifts the unsigned word (wrapping,
+     * like ADD); SHR casts to int64_t first — ARITHMETIC, the sign bit
+     * extends (gcc/clang define signed >> as arithmetic, the only
+     * compilers this runtime targets). A count outside 0..63 traps
+     * WO_T_SHIFT rather than silently masking like the hardware would;
+     * literal counts were rejected at compile time (WO-E223). */
+    CASE(BAND) : {
+        R[wo_ins_a(ins)] = R[wo_ins_b(ins)] & R[wo_ins_c(ins)];
+        NEXT();
+    }
+    CASE(BOR) : {
+        R[wo_ins_a(ins)] = R[wo_ins_b(ins)] | R[wo_ins_c(ins)];
+        NEXT();
+    }
+    CASE(BXOR) : {
+        R[wo_ins_a(ins)] = R[wo_ins_b(ins)] ^ R[wo_ins_c(ins)];
+        NEXT();
+    }
+    CASE(SHL) : {
+        int64_t s = (int64_t)R[wo_ins_c(ins)];
+        if (s < 0 || s > 63) TRAPF(WO_T_SHIFT, "shift count out of range 0..63");
+        R[wo_ins_a(ins)] = R[wo_ins_b(ins)] << s;
+        NEXT();
+    }
+    CASE(SHR) : {
+        int64_t s = (int64_t)R[wo_ins_c(ins)];
+        if (s < 0 || s > 63) TRAPF(WO_T_SHIFT, "shift count out of range 0..63");
+        R[wo_ins_a(ins)] = (uint64_t)((int64_t)R[wo_ins_b(ins)] >> s);
         NEXT();
     }
 

@@ -2278,7 +2278,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 5 then fail "unsupported version"; (* v5: iteration 19 *)
+  if u32 4 <> 6 then fail "unsupported version"; (* v6: iteration 36 *)
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2554,7 +2554,9 @@ let validate_image (img : string) : string list =
         | 38 ->
           rchk pc a;
           rchk pc b
-        | 34 | 35 | 36 | 37 | 39 | 40 | 41 ->
+        (* iteration 36 (v6): 42-46, the Int bitwise set — same
+           three-register shape *)
+        | 34 | 35 | 36 | 37 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 ->
           rchk pc a;
           rchk pc b;
           rchk pc c

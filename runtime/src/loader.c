@@ -441,6 +441,14 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             case WOP_FEQ:
             case WOP_FLT:
             case WOP_FLE:
+            /* iteration 36 (v6): same three-register shape; the shift
+               count is range-checked at RUN time (WO_T_SHIFT), not here
+               — it lives in a register, not an immediate. */
+            case WOP_BAND:
+            case WOP_BOR:
+            case WOP_BXOR:
+            case WOP_SHL:
+            case WOP_SHR:
                 RCHK(A);
                 RCHK(B);
                 RCHK(C);

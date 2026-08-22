@@ -13,7 +13,9 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 5u /* v5 (iteration 19): the two missing scalars. New
+#define WOB_VERSION 6u /* v6 (iteration 36): opcodes 42-46 (the Int
+ * bitwise set BAND/BOR/BXOR/SHL/SHR), trap kind WO_T_SHIFT.
+ * v5 (iteration 19): the two missing scalars. New
  * constant tag WOB_K_FLOAT, field kinds WO_K_FLOAT/WO_K_BYTES (WO_K_MAX 5->7),
  * opcodes 34-41 (the f64 arithmetic/compare set), builtins 70-82.
  * v4 (iteration 7b): opcodes 27-28 (RC_INC/RC_DEC) retired; the drop table's
@@ -184,6 +186,10 @@ enum {
     /* iteration 9b: deleting a row still referenced by a `ref` traps here
        (restrict) — the employee sample's DROP-of-a-department-with-staff */
     WO_T_FK = 11,
+    /* iteration 36: a shift count outside 0..63 at run time — the Int
+       honesty precedent DIV0 set (trap, never x86's silent count%64).
+       Literal counts never get here: woc rejects them (WO-E223). */
+    WO_T_SHIFT = 12,
 };
 
 /* ---- opcodes (spec section 5; semantics in the format doc) ---- */
@@ -247,8 +253,19 @@ enum {
     WOP_FEQ = 39,  /* A B C: IEEE equality, so NaN == NaN is 0 */
     WOP_FLT = 40,  /* IEEE ordered <: any comparison with NaN is 0 */
     WOP_FLE = 41,
+    /* iteration 36 (v6): the Int bitwise set. A B C on i64, Int-only —
+     * woc's checker refuses Float/Bool/Text operands, so no F-twin
+     * exists. SHL/SHR trap WO_T_SHIFT when the count register is
+     * outside 0..63 (never x86's silent count%64; literal counts were
+     * already rejected at compile time as WO-E223). SHR is ARITHMETIC:
+     * the sign bit extends, Go's own choice for a signed integer. */
+    WOP_BAND = 42, /* A B C: r[A] = r[B] & r[C] */
+    WOP_BOR = 43,
+    WOP_BXOR = 44,
+    WOP_SHL = 45, /* A B C: r[A] = r[B] << r[C]; C outside 0..63 traps */
+    WOP_SHR = 46, /* A B C: arithmetic; C outside 0..63 traps */
 };
-#define WOP_MAX 41u
+#define WOP_MAX 46u
 
 /* ---- builtin ids (WOP_BUILTIN operand C) ---- */
 enum {

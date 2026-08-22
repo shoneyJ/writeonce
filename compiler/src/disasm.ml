@@ -159,6 +159,12 @@ let ins_str (i : int) (pc : int) : string =
   | 39 -> Printf.sprintf "FEQ       r%d, r%d, r%d" a b c
   | 40 -> Printf.sprintf "FLT       r%d, r%d, r%d" a b c
   | 41 -> Printf.sprintf "FLE       r%d, r%d, r%d" a b c
+  (* iteration 36 (v6): the Int bitwise set, same three-register shape *)
+  | 42 -> Printf.sprintf "BAND      r%d, r%d, r%d" a b c
+  | 43 -> Printf.sprintf "BOR       r%d, r%d, r%d" a b c
+  | 44 -> Printf.sprintf "BXOR      r%d, r%d, r%d" a b c
+  | 45 -> Printf.sprintf "SHL       r%d, r%d, r%d" a b c
+  | 46 -> Printf.sprintf "SHR       r%d, r%d, r%d" a b c
   | op -> Printf.sprintf "?OP%d" op
 
 (* ---- the dump ---- *)
@@ -173,10 +179,11 @@ let dump (img : string) : string =
   let line fmt = Buffer.add_string out (fmt ^ "\n") in
   if u32 img 0 <> magic then raise (Bad "bad magic");
   let ver = u32 img 4 in
-  (* iteration 19 bumped the format to v5 (Float constant tag, kinds 6/7,
+  (* iteration 36 bumped the format to v6 (opcodes 42-46, the Int bitwise
+     set; iteration 19's v5 added the Float constant tag, kinds 6/7 and
      opcodes 34-41). The disassembler tracks the emitter, not a range: an old
      image is a different format and reading it as this one would misrender. *)
-  if ver <> 5 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  if ver <> 6 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
