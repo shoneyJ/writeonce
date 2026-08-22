@@ -86,6 +86,11 @@ type kind =
   | KwConst
   | KwAnd
   | KwOr
+  (* iteration 36: boolean negation, spelled as a word like and/or (the
+     spec amendment's own doctrine — never `!`). Grepped the corpus and
+     samples first: `not` appears only in comments and string literals,
+     never as an identifier. *)
+  | KwNot
   | KwInline
   (* haxe-parity Task 3: `switch`/`case`/`default` — real keywords (none
      collides with an existing corpus/sample identifier, grepped first,
@@ -148,6 +153,19 @@ type kind =
   | GtEq
   | PlusEq
   | MinusEq
+  (* iteration 36: the rest of the compound-assign family (+=/-= above
+     predate it), and the five Int bitwise operators. `&`/`<<`/`>>`
+     join the multiplicative rung, `|`(Pipe, reused in expression
+     position)/`^` the additive rung — Go's C-trap-fixing precedence
+     (see parser.ml's ladder doc). No `<<=`/`>>=`/`&=` family and no
+     unary complement token: complement is spelled `-1 ^ x`. *)
+  | StarEq
+  | SlashEq
+  | PercentEq
+  | Amp (* & *)
+  | Caret (* ^ *)
+  | Shl (* << *)
+  | Shr (* >> *)
   (* haxe-parity Task 8: `#if name / #else / #end` build-flag directives.
      They exist only between the scanner and the preprocessor filter at the
      end of Lexer.tokenize — the parser never sees one. *)

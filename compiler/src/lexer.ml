@@ -143,6 +143,7 @@ let keyword_kind = function
   | "const" -> Some Token.KwConst
   | "and" -> Some Token.KwAnd
   | "or" -> Some Token.KwOr
+  | "not" -> Some Token.KwNot
   | "inline" -> Some Token.KwInline
   | "switch" -> Some Token.KwSwitch
   | "case" -> Some Token.KwCase
@@ -398,6 +399,49 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
                before consuming, so `2eggs` is still Int 2 then Ident. *)
         (* `c` is PEEKED, not consumed — the loop below reads it. Adding it to
            the buffer here as well would count the first digit twice. *)
+        (* iteration 36: hex (`0x`) and binary (`0b`) Int literals, and `_`
+           digit separators in every integer form. The prefix commits only
+           when the character AFTER it is a real digit of that base, so `0x`
+           followed by anything else stays Int 0 + Ident — a parse error at
+           its own position, no new lexer diagnostic. Accumulation uses
+           OCaml's native int (63-bit): a full-width 64-bit literal like
+           0xFFFFFFFFFFFFFFFF is out of reach — all-ones is spelled -1. The
+           float path below is untouched: neither prefix can reach it (a
+           fraction/exponent needs the decimal branch), and `_` is consumed
+           only between digits of an integer run. *)
+        let is_hex_digit ch =
+          is_digit ch || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+        in
+        let hex_val ch =
+          if is_digit ch then Char.code ch - Char.code '0'
+          else if ch >= 'a' && ch <= 'f' then Char.code ch - Char.code 'a' + 10
+          else Char.code ch - Char.code 'A' + 10
+        in
+        let scan_prefixed base is_base_digit digit_val =
+          (* consumes the peeked '0' and the prefix char, then the run *)
+          ignore (advance lx);
+          ignore (advance lx);
+          let n = ref 0 in
+          let scanning = ref true in
+          while !scanning do
+            match peek lx with
+            | Some d when is_base_digit d ->
+              n := (!n * base) + digit_val d;
+              ignore (advance lx)
+            | Some '_' when (match peek_at lx 1 with
+                             | Some d -> is_base_digit d
+                             | None -> false) ->
+              ignore (advance lx)
+            | _ -> scanning := false
+          done;
+          emit (Token.Int !n) line col
+        in
+        match (c, peek_at lx 1, peek_at lx 2) with
+        | '0', Some ('x' | 'X'), Some d when is_hex_digit d ->
+          scan_prefixed 16 is_hex_digit hex_val
+        | '0', Some ('b' | 'B'), Some ('0' | '1') ->
+          scan_prefixed 2 (fun ch -> ch = '0' || ch = '1') (fun ch -> Char.code ch - Char.code '0')
+        | _ ->
         let buf = Buffer.create 16 in
         let n = ref 0 in
         let scanning = ref true in
@@ -406,6 +450,12 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
           | Some d when is_digit d ->
             n := (!n * 10) + (Char.code d - Char.code '0');
             Buffer.add_char buf d;
+            ignore (advance lx)
+          | Some '_' when (match peek_at lx 1 with
+                           | Some d -> is_digit d
+                           | None -> false) ->
+            (* separator only BETWEEN digits: `1_` stops the run and the
+               `_` lexes as its own ident, a parse error at its position *)
             ignore (advance lx)
           | _ -> scanning := false
         done;
@@ -547,15 +597,37 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
             ignore (advance lx);
             emit Token.PlusEq line col
           | _ -> emit Token.Plus line col)
-        | '*' ->
+        | '*' -> (
           ignore (advance lx);
-          emit Token.Star line col
-        | '/' ->
+          match peek lx with
+          | Some '=' ->
+            ignore (advance lx);
+            emit Token.StarEq line col
+          | _ -> emit Token.Star line col)
+        | '/' -> (
           ignore (advance lx);
-          emit Token.Slash line col
-        | '%' ->
+          match peek lx with
+          | Some '=' ->
+            ignore (advance lx);
+            emit Token.SlashEq line col
+          | _ -> emit Token.Slash line col)
+        | '%' -> (
           ignore (advance lx);
-          emit Token.Percent line col
+          match peek lx with
+          | Some '=' ->
+            ignore (advance lx);
+            emit Token.PercentEq line col
+          | _ -> emit Token.Percent line col)
+        (* iteration 36: the bitwise operators. `&` and `^` were unknown
+           characters before this; `|` (Pipe, above) is reused in expression
+           position by the parser. No `&=`/`^=`/`<<=`/`>>=` — bitwise
+           compound assigns are out of scope per the story. *)
+        | '&' ->
+          ignore (advance lx);
+          emit Token.Amp line col
+        | '^' ->
+          ignore (advance lx);
+          emit Token.Caret line col
         | '=' -> (
           ignore (advance lx);
           match peek lx with
@@ -579,6 +651,9 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
           | Some '=' ->
             ignore (advance lx);
             emit Token.LtEq line col
+          | Some '<' ->
+            ignore (advance lx);
+            emit Token.Shl line col
           | _ -> emit Token.Lt line col)
         | '>' -> (
           ignore (advance lx);
@@ -586,6 +661,9 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
           | Some '=' ->
             ignore (advance lx);
             emit Token.GtEq line col
+          | Some '>' ->
+            ignore (advance lx);
+            emit Token.Shr line col
           | _ -> emit Token.Gt line col)
         | other ->
           ignore (advance lx);
