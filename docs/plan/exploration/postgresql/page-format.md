@@ -39,7 +39,7 @@ The body of the page after this header holds **line pointers** (`ItemIdData`, 4 
 
 ## What writeonce does instead (phase 10)
 
-Variable-length records, length-prefixed. The framing is in [`docs/plan/10-storage-foundations.md`](../../10-storage-foundations.md):
+Variable-length records, length-prefixed. The framing is in `docs/plan/10-storage-foundations.md` (Rust-era, removed 2026-08-18):
 
 ```text
 [u32 length LE][u8 flags][u8 record_kind][u64 LSN][payload bytes][u32 CRC32C]
@@ -76,7 +76,7 @@ Slotted pages are the answer when those assumptions break. Until then, the frami
 
 ## Used by
 
-- [`docs/plan/10-storage-foundations.md`](../../10-storage-foundations.md) — record framing borrows the **header + checksum** pattern from `bufpage.h`.
-- [`docs/plan/12-engine-disk-cutover.md`](../../12-engine-disk-cutover.md) — when reading rows back from disk, CRC verification is the silent-corruption safety net the page header gives Postgres.
+- `docs/plan/10-storage-foundations.md` (Rust-era, removed 2026-08-18) — record framing borrows the **header + checksum** pattern from `bufpage.h`.
+- `docs/plan/12-engine-disk-cutover.md` (Rust-era, removed 2026-08-18) — when reading rows back from disk, CRC verification is the silent-corruption safety net the page header gives Postgres.
 
 Pair with [`wal.md`](./wal.md) for the LSN convention and [`buffer-and-checkpoint.md`](./buffer-and-checkpoint.md) for the dirty-page semantics that pages need.

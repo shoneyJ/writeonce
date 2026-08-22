@@ -77,4 +77,4 @@ That's the core of phase 10's `SegStore`.
 
 ## Used by
 
-[`docs/plan/10-storage-foundations.md`](../../10-storage-foundations.md) — segment file layout, append path. Pair with [`linux/09-fallocate.md`](../linux/09-fallocate.md) for preallocation, [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md) for the syscall details.
+`docs/plan/10-storage-foundations.md` (Rust-era, removed 2026-08-18) — segment file layout, append path. Pair with [`linux/09-fallocate.md`](../linux/09-fallocate.md) for preallocation, [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md) for the syscall details.

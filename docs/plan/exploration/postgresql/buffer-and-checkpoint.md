@@ -65,7 +65,7 @@ For the checkpoint:
 
 ## Used by
 
-- [`docs/plan/12-engine-disk-cutover.md`](../../12-engine-disk-cutover.md) — disk-backed engine reads and dirty-row tracking.
-- [`docs/plan/11-wal-and-recovery.md`](../../11-wal-and-recovery.md) — control file write sequence (phase 11 ships the control file; checkpoint as a periodic step lands with phase 12 or shortly after).
+- `docs/plan/12-engine-disk-cutover.md` (Rust-era, removed 2026-08-18) — disk-backed engine reads and dirty-row tracking.
+- `docs/plan/11-wal-and-recovery.md` (Rust-era, removed 2026-08-18) — control file write sequence (phase 11 ships the control file; checkpoint as a periodic step lands with phase 12 or shortly after).
 
 Pair with [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md) for the fsync semantics and [`linux/08-mmap.md`](../linux/08-mmap.md) for the OS page-cache backstory.
