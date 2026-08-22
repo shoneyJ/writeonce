@@ -243,6 +243,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
 | 32  | [WAL checkpoint](language-runtime-database/refine/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
 | 33  | [Single-file store](language-runtime-database/refine/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
+| 34  | [Crypto builtins](language-runtime-database/refine/34-crypto-builtins.md)            | ⬜ off-chain but GATES 24 (WS handshake needs SHA-1) — digests + HMAC as vector-verified C builtins (story written 2026-08-22) |
 | 20  | [Cross-program tables](language-runtime-database/hold/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
 | 21  | [Keypair attach auth](language-runtime-database/hold/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
