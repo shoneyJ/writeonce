@@ -29,8 +29,8 @@ Readings, honestly:
   boundary; SQLite pays B-tree page traversal + the cgo call per op.
 - **ram writes: SQLite wins ~1.9×** — writeonce's update path re-runs a
   probe per update (update-through-query) and its insert encodes slots
-  per field; SQLite's page write is tight. A real optimization target,
-  now measured.
+  per field; SQLite's page write is tight. Registered as target 1 in
+  [`docs/plan/perf-targets.md`](../../../docs/plan/perf-targets.md).
 - **durable seed: writeonce wins ~1.4×** (append-only WAL + fdatasync
   vs SQLite WAL frame + FULL sync); durable mixed writes flip back to
   SQLite ×1.4 — the update's extra probe again.

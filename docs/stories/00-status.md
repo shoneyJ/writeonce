@@ -427,6 +427,11 @@ The C proving-ground work (`exploration/c-runtime/`, phases A–F: 859k reads/s,
 
 ## Pending
 
+Measured optimization candidates live in
+[`docs/plan/perf-targets.md`](../plan/perf-targets.md) — a register
+like discarded/learnings: a target enters with a number, leaves by
+landing (baseline delta) or by rejection into discarded.md.
+
 ### Implementation order (re-sequenced 2026-08-21 — concurrency chain)
 
 Everything still pending IS the runtime-concurrency chain. Basis: the
