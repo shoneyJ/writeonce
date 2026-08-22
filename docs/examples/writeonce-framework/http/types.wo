@@ -9,8 +9,14 @@ pub typedef Req = {
   query:     map<Text, Text>, -- decoded query-string pairs
   headers:   map<Text, Text>, -- names lowercased on read
   body:      Text,            -- exactly Content-Length bytes ("" if none)
-  principal: Text             -- who this is: "" until an auth middleware
+  principal: Text,            -- who this is: "" until an auth middleware
                               -- (http/auth.wo) authenticates the request
+  conn:      net.Conn         -- the connection the request arrived on.
+                              -- INTERNAL plumbing for http/ws.wo's
+                              -- upgrade (iteration 24): handlers never
+                              -- read or write it except through
+                              -- ws_accept; everything else treats Req
+                              -- as if this field did not exist
 }
 
 pub typedef Resp = {

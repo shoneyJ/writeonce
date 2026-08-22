@@ -1,0 +1,81 @@
+-- http/ws.wo — the WebSocket upgrade (iteration 24, RFC 6455 §4.2). The
+-- framework owns exactly the HANDSHAKE: validating the upgrade request,
+-- computing Sec-WebSocket-Accept (base64 of SHA-1 of key + GUID — SHA-1
+-- by RFC, not by choice), and writing the 101 on the request's own
+-- connection. What happens on the socket AFTERWARDS belongs to the app:
+-- `spawn` takes a class literal, so the framework cannot spawn an
+-- app-defined connection actor — the app's route handler calls
+-- ws_accept, moves the returned fd into ITS actors, and answers the
+-- `hijacked()` sentinel so the serve loop leaves the connection alone.
+--
+-- Handler shape:
+--   if ws_upgrade_valid(req) == false { return bad_request("not a websocket upgrade"); }
+--   let fd = ws_accept(req);
+--   ... spawn reader/writer actors owning fd ...
+--   return hijacked();
+use net
+
+-- The RFC's fixed GUID, appended to the client's key before hashing.
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+-- A comma-separated header value contains a token, case-insensitively —
+-- `Connection: keep-alive, Upgrade` is the shape browsers actually send.
+fn header_has_token(value: Text, token: Text) -> Bool {
+  let parts = split(to_lower(value), ",");
+  let i = 0;
+  while i < len(parts) {
+    if trim(parts[i]) == token { return true; }
+    i = i + 1;
+  }
+  return false;
+}
+
+-- RFC 6455 §4.2.1: GET, `Upgrade: websocket`, `Connection` containing
+-- `upgrade`, a Sec-WebSocket-Key (16 bytes base64 = exactly 24 chars),
+-- and version 13. Anything else is not an upgrade — the handler answers
+-- a plain HTTP response instead.
+pub fn ws_upgrade_valid(req: Req) -> Bool {
+  if req.method != "GET" { return false; }
+  let up = req.headers["upgrade"];
+  if up == nil { return false; }
+  if to_lower(trim(up)) != "websocket" { return false; }
+  let conn = req.headers["connection"];
+  if conn == nil { return false; }
+  if header_has_token("${conn}", "upgrade") == false { return false; }
+  let key = req.headers["sec-websocket-key"];
+  if key == nil { return false; }
+  if len(trim(key)) != 24 { return false; }
+  let ver = req.headers["sec-websocket-version"];
+  if ver == nil { return false; }
+  if trim(ver) != "13" { return false; }
+  return true;
+}
+
+-- The accept key, pure: base64(SHA-1(key + GUID)). Split out so a probe
+-- can pin the RFC's worked example ("dGhlIHNhbXBsZSBub25jZQ==" ->
+-- "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") without a socket.
+pub fn ws_accept_key(key: Text) -> Text {
+  return base64_encode(sha1(bytes_of_text("${key}${WS_GUID}")));
+}
+
+-- Write the 101 and hand the connection to the caller. The caller MUST
+-- have checked ws_upgrade_valid first — this function trusts the headers
+-- it reads. After this returns, the serve loop must never touch the fd
+-- again: the handler answers hijacked() to make that true.
+pub fn ws_accept(req: Req) -> net.Conn {
+  let key = req.headers["sec-websocket-key"];
+  let accept = ws_accept_key(trim("${key}"));
+  let resp = "HTTP/1.1 101 Switching Protocols\r\n";
+  resp = resp .. "Upgrade: websocket\r\n";
+  resp = resp .. "Connection: Upgrade\r\n";
+  resp = resp .. "Sec-WebSocket-Accept: ${accept}\r\n\r\n";
+  net.write(req.conn, resp);
+  return req.conn;
+}
+
+-- The hijack sentinel: status 101 tells serve.wo the connection left the
+-- HTTP world — no serialization, no close, straight back to accept.
+pub fn hijacked() -> Resp {
+  let h: map<Text, Text> = {};
+  return Resp { status: 101, headers: h, body: "" };
+}

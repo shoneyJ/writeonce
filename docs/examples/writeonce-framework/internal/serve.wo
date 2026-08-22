@@ -56,6 +56,7 @@ pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
     let c = net.accept(srv);
     let carry = "";
     let alive = true;
+    let hijacked = false;
     while alive {
       if env.stopping() { alive = false; continue; }
       let p = try parse_request(c, carry) catch (e) nil;   -- an IO trap = gone
@@ -85,9 +86,20 @@ pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
         if to_lower(conn) == "close" { keep = false; }
       }
       let resp = try d.dispatch(r) catch (e) server_error();
+      -- iteration 24: status 101 is the hijack sentinel (http/ws.wo).
+      -- The handler completed a WebSocket upgrade and now OWNS the fd
+      -- through its own actors: no serialization, no close — the loop
+      -- forgets this connection and returns to accept.
+      if resp.status == 101 {
+        hijacked = true;
+        alive = false;
+        continue;
+      }
       try net.write(c, serialize(resp, keep, is_head)) catch (e) { alive = false; }
       if keep == false { alive = false; }
     }
-    net.close(c);
+    if hijacked == false {
+      net.close(c);
+    }
   }
 }
