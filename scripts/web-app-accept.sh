@@ -23,6 +23,7 @@ if [[ ! -x "$WOC" || ! -x "$WOVM" ]]; then
   exit 1
 fi
 
+ulimit -n 8192 2>/dev/null || true  # the 1k soak needs headroom
 W="$(mktemp -d "${TMPDIR:-/tmp}/web-app-accept.XXXXXX")"
 SRV=""
 cleanup() {
@@ -363,6 +364,79 @@ print(d.decode(errors="replace").splitlines()[0].split(" ")[1])
 PYEOF
 )"
 [[ "$r" == "400" ]] && ok "duplicate Content-Length rejected (400)" || bad "dup-cl" "got $r"
+
+# ---- 12d. Transfer-Encoding is rejected outright (RFC 9112 §6.1) ----
+r="$(timeout 5 python3 - "$PORT" <<'PYEOF'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(b"POST /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+d = b""
+try:
+    while True:
+        c = s.recv(2000)
+        if not c: break
+        d += c
+except Exception: pass
+print(d.decode(errors="replace").splitlines()[0].split(" ")[1] if d else "closed")
+PYEOF
+)"
+[[ "$r" == "400" ]] && ok "Transfer-Encoding rejected (400, anti-smuggling)" || bad "te-reject" "got $r"
+
+# ---- 12e. the 1k soak: 500 idle + 500 real, fds and RSS come home ----
+fds_before="$(ls /proc/$SRV/fd 2>/dev/null | wc -l)"
+r="$(timeout 60 python3 - "$PORT" <<'PYEOF'
+import asyncio, sys, time
+port = int(sys.argv[1])
+REQ = b"GET /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+sem = asyncio.Semaphore(100)   # connect in waves: the listener backlog is 64
+async def idle_conn():
+    async with sem:
+        r, w = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        # the server evicts at idle_ms after ITS accept, which under the
+        # 1k wave can lag the client's connect by seconds — wait long; a
+        # reset counts as evicted too (closed is closed)
+        d = await asyncio.wait_for(r.read(64), timeout=30)
+        return 1 if d == b"" else 0
+    except asyncio.TimeoutError:
+        return 0
+    except (ConnectionResetError, BrokenPipeError):
+        return 1
+    finally:
+        w.close()
+async def real_conn():
+    async with sem:
+        r, w = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        w.write(REQ); await w.drain()
+        d = await asyncio.wait_for(r.read(-1), timeout=15)
+        return 1 if b" 200 " in d.split(b"\r\n")[0] + b" " else 0
+    finally:
+        w.close()
+async def main():
+    t0 = time.time()
+    tasks = [idle_conn() for _ in range(500)] + [real_conn() for _ in range(500)]
+    res = await asyncio.gather(*tasks, return_exceptions=True)
+    evicted = sum(1 for x in res[:500] if x == 1)
+    served  = sum(1 for x in res[500:] if x == 1)
+    print(f"{evicted}|{served}|{int(time.time()-t0)}")
+asyncio.run(main())
+PYEOF
+)"
+ev="${r%%|*}"; rest="${r#*|}"; sv="${rest%%|*}"; el="${rest#*|}"
+[[ "$ev" -ge 495 && "$sv" -ge 495 ]] \
+  && ok "1k soak: $sv/500 served + $ev/500 idle evicted in ${el}s" \
+  || bad "soak" "$r"
+sleep 1
+fds_after="$(ls /proc/$SRV/fd 2>/dev/null | wc -l)"
+rss_kb="$(awk '/VmRSS/{print $2}' /proc/$SRV/status 2>/dev/null)"
+[[ "$fds_after" -le $((fds_before + 8)) ]] \
+  && ok "soak fds came home ($fds_before -> $fds_after)" \
+  || bad "soak-fds" "$fds_before -> $fds_after"
+[[ -n "$rss_kb" && "$rss_kb" -lt 409600 ]] \
+  && ok "soak RSS bounded (${rss_kb}KB < 400MB)" \
+  || bad "soak-rss" "${rss_kb}KB"
+expect "server healthy after the soak" "$(hit GET /products)" 200 '"name":"mug"'
 
 # ---- 13. pipelined keep-alive: two requests, one connection ----
 n="$(timeout 5 python3 - "$PORT" <<'PYEOF'

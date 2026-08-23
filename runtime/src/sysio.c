@@ -354,7 +354,11 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         return 0;
     }
     /* ---- net --------------------------------------------------------- */
-    case WO_B_NET_LISTEN: { /* IPv4, SO_REUSEADDR, backlog 64 */
+    case WO_B_NET_LISTEN: { /* IPv4, SO_REUSEADDR. Backlog 1024 (iteration
+                             * 35's soak): 64 black-holed connect bursts —
+                             * the kernel drops the overflow's handshake and
+                             * the CLIENT hangs believing it connected. The
+                             * kernel clamps to somaxconn either way. */
         if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
         int64_t port = (int64_t)R[B + 1];
         if (port < 0 || port > 65535) {
@@ -375,7 +379,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         addr.sin_addr.s_addr =
             !strcmp(path, "0.0.0.0") ? (in_addr_t)INADDR_ANY : inet_addr(path);
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK); /* arc T4 */
-        if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 64) != 0) {
+        if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 1024) != 0) {
             *msg = strerror(errno);
             close(fd);
             return WO_T_IO;
@@ -666,7 +670,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         memset(&ua, 0, sizeof ua);
         ua.sun_family = AF_UNIX;
         strncpy(ua.sun_path, path, sizeof(ua.sun_path) - 1);
-        if (bind(fd, (struct sockaddr *)&ua, sizeof ua) != 0 || listen(fd, 64) != 0) {
+        if (bind(fd, (struct sockaddr *)&ua, sizeof ua) != 0 || listen(fd, 1024) != 0) {
             *msg = strerror(errno);
             close(fd);
             return WO_T_IO;

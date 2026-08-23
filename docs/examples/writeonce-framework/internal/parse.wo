@@ -150,6 +150,13 @@ pub fn parse_request(c: net.Conn, carry: Text, first_ms: Int, read_ms: Int) -> P
     }
   }
 
+  -- Transfer-Encoding is NOT implemented — and silently treating a
+  -- chunked request as body-less is request smuggling's other favorite
+  -- door (RFC 9112 §6.1: a server that cannot handle TE on a request
+  -- MUST respond 400 and close). Reject ANY TE header outright.
+  let te = headers["transfer-encoding"];
+  if te != nil { return malformed(""); }
+
   let want = 0;
   let cl = headers["content-length"];
   if cl != nil {
