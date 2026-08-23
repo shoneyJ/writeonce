@@ -171,7 +171,8 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
        both ranges (WO_B_MAP_GET_OPT and anything added after it) stay here */
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
-    if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS)
+    if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS
+        || (C >= WO_B_NET_READ_DL && C <= WO_B_NET_PEER))
         return wo_builtin_sys(vm, R, ins, msg);
     if (C >= WO_B_SHA1 && C <= WO_B_HMAC_SHA256)
         return wo_builtin_crypto(vm, R, ins, msg);

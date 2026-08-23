@@ -48,6 +48,54 @@ pub fn serialize(resp: Resp, keep: Bool, head_only: Bool) -> Text {
   return head .. resp.body;
 }
 
+-- iteration 35, the serving slice: ONE connection served to completion —
+-- the keep-alive loop with per-read deadlines. Meant to run INSIDE an
+-- app-spawned per-connection actor (fiber): a parked idle connection is
+-- legal there (it blocks nobody), so keep-alive stays OPEN until the
+-- idle deadline evicts it — close-when-idle retires. read_ms bounds a
+-- slow peer mid-request (torn = 400-and-close); idle_ms bounds the wait
+-- for a request's first bytes (expiry = clean close). ms <= 0 = forever.
+-- Closes the fd on every path except a WS hijack (status 101).
+pub fn serve_conn(c: net.Conn, d: Dispatcher, read_ms: Int, idle_ms: Int) {
+  let carry = "";
+  let alive = true;
+  let hijacked = false;
+  while alive {
+    if env.stopping() { alive = false; continue; }
+    let p = try parse_request(c, carry, idle_ms, read_ms) catch (e) nil;
+    if p == nil { alive = false; continue; }
+    if p.closed { alive = false; continue; }
+    if p.ok == false {
+      try net.write(c, serialize(bad_request("malformed request"), false, false)) catch (e) {}
+      alive = false;
+      continue;
+    }
+    let r = p.req;
+    if r == nil { alive = false; continue; }
+    carry = p.rest;
+    let is_head = r.method == "HEAD";
+    if is_head { r.method = "GET"; }
+    -- fiber-per-connection: keep-alive stays OPEN (the idle deadline is
+    -- the eviction policy), unless the client asks to close
+    let keep = true;
+    let conn = r.headers["connection"];
+    if conn != nil {
+      if to_lower(conn) == "close" { keep = false; }
+    }
+    let resp = try d.dispatch(r) catch (e) server_error();
+    if resp.status == 101 {
+      hijacked = true;
+      alive = false;
+      continue;
+    }
+    try net.write(c, serialize(resp, keep, is_head)) catch (e) { alive = false; }
+    if keep == false { alive = false; }
+  }
+  if hijacked == false {
+    net.close(c);
+  }
+}
+
 pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
   let srv = net.listen(host, port);
   print("listening on ${host}:${port}");
@@ -59,7 +107,7 @@ pub fn serve(host: Text, port: Int, d: Dispatcher) -> Int {
     let hijacked = false;
     while alive {
       if env.stopping() { alive = false; continue; }
-      let p = try parse_request(c, carry) catch (e) nil;   -- an IO trap = gone
+      let p = try parse_request(c, carry, 0, 0) catch (e) nil;   -- an IO trap = gone
       if p == nil { alive = false; continue; }
       if p.closed { alive = false; continue; }
       if p.ok == false {

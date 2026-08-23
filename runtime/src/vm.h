@@ -93,6 +93,12 @@ typedef struct wo_fiber {
      * a plain send) — where FIBER_DONE ships the receive's return value. */
     struct wo_fiber *msg_caller;
     uint32_t msg_caller_shard;
+    /* iteration 35: the in-flight per-CALL deadline (_dl builtins). Set on
+     * the builtin's first entry, cleared when it answers — the park/retry
+     * protocol re-executes the builtin, and this is how the retry knows
+     * the original deadline. */
+    int dl_active;
+    int64_t dl_at; /* wall ms */
 } wo_fiber;
 
 /* arc stage 3: park_fd sentinel — PARKED with NO plane wait; the wake is
@@ -164,6 +170,21 @@ typedef struct wo_vm {
     /* the I/O plane (arc T4, park.c): io_uring primary, epoll fallback */
     wo_fiber *parked;        /* fibers waiting on the plane */
     uint32_t nparked;
+    /* iteration 35: dead fibers are POOLED, never freed mid-run — a stale
+     * plane completion (the loser of a poll-vs-deadline race, consumed one
+     * wait later) may still read the fiber's `state` word, and reading
+     * freed memory is the UAF this prevents. Steady-state pool size = the
+     * peak live fiber count; the pool dies with the vm. */
+    wo_fiber *fib_pool;
+    /* iteration 35, uring backend: the shard's ONE deadline tick — a
+     * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
+     * deadline (fd parks keep exactly one POLL op each; expiry wakes them
+     * from the scan and POLL_REMOVE tombstones the poll). */
+    int tick_armed;
+    int64_t tick_at;
+    struct {
+        long long sec, nsec;
+    } tick_ts;
     int io_kind;             /* 0 = uring, 1 = epoll */
     int efd_armed;           /* wake_efd registered on the plane (uring oneshot) */
     int io_fd;               /* ring fd or epoll fd */

@@ -1,12 +1,23 @@
 ---
 iteration: "35"
-status: refine
+status: done
 ---
 
 # Iteration 35 — `net` runtime seams: timeouts, Unix sockets, peer address
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](../00-story.md).
+>
+> **LANDED 2026-08-23** (branch `framework-v1b`, with the serving slice
+> riding it): per-call `_dl` deadlines (nil/false = the expected
+> timeout; ids 91–93), `net.listen_unix` (unlink-before-bind, id 94),
+> `net.peer` (id 95). Plane: shard-tick TIMEOUT + expiry sweep +
+> POLL_REMOVE tombstone on uring, extended deadline scan on epoll,
+> fibers POOLED against stale-CQE UAF — the full design in
+> [the review spec](../../../superpowers/specs/2026-08-23-net-seams-park-design.md).
+> Proof: all five seams probe-verified on BOTH `WO_IO` backends;
+> `serve_conn` + web-app's fiber-per-connection pattern gate parallel
+> requests, idle eviction, and slow-loris tearing (web-app 41 checks).
 >
 > **Inserted 2026-08-22** — the framework ledger's three 🔧 rows get one
 > owner: "Read/write/idle timeouts — `net` has no timeout surface",

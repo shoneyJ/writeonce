@@ -99,7 +99,7 @@ flowchart TD
     I11x["11 fibers: reduction-budget preemption, blocking builtins park"]:::rt
     I9ex["22 baseline (numbers 8/23 sign against)"]:::rt
 
-    KEEPAL["keep-alive parking retired (close-when-idle policy dies; parked fds)"]:::gated
+    KEEPAL["keep-alive parking retired ✅ iteration 35 (app-owned fiber-per-connection + idle deadline)"]:::rt
     H2C2["h2c HTTP/2 cleartext (spec §C: also needs 23)"]:::gated
     STREAM2["request body streaming + backpressure"]:::gated
     SRESP2["streaming responses + explicit commit point"]:::gated
@@ -161,10 +161,10 @@ flowchart TD
     XFF["client_ip: X-Forwarded-For parsing ✅ slice 2 (peer VERIFY stays gated)"]:::done
     ACCEPT["accepts(): response-side negotiation ✅ slice 2"]:::done
 
-    NETSEAM["GATE: net runtime seams (timeouts, unix socket, peer address) — story 35 owns"]:::gate
-    TMOUT["read/write/idle timeouts"]:::blocked
-    UNIX["unix socket binding"]:::blocked
-    PEERV["trusted-proxy PEER verification"]:::blocked
+    NETSEAM["GATE CLEARED: iteration 35 landed the net seams — _dl deadlines, listen_unix, peer (ids 91-95)"]:::done
+    TMOUT["read/write/idle timeouts ✅ iteration 35 (serve_conn read_ms/idle_ms)"]:::done
+    UNIX["unix socket binding ✅ iteration 35"]:::done
+    PEERV["trusted-proxy PEER verification — net.peer landed; the verify middleware is a ready framework slice"]:::ready
 
     CRYPTO["GATE CLEARED: iteration 34 landed C builtins — sha1/sha256/hmac_sha256 (ids 85-87)"]:::done
     SHA["sha1/sha256/hmac_sha256 ✅ iteration 34; SHA-512/CRC32 wait for a consumer"]:::done

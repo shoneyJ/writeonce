@@ -115,4 +115,14 @@ pub class App {
   fn serve(host: Text, port: Int) -> Int {
     return internal.serve(host, port, self);
   }
+
+  -- iteration 35, the serving slice: serve ONE accepted connection to
+  -- completion (the keep-alive loop with deadlines) — the body of an
+  -- app-spawned per-connection actor. The app owns the accept loop and
+  -- the spawn (a class literal, so the framework cannot spawn it);
+  -- each worker builds its own App and calls this. See web-app's
+  -- ConnWorker for the ten-line pattern.
+  fn handle_conn(c: net.Conn, read_ms: Int, idle_ms: Int) {
+    internal.serve_conn(c, self, read_ms, idle_ms);
+  }
 }

@@ -468,9 +468,25 @@ enum {
                                * return value arrives. R is a SCALAR (v1,
                                * compiler-enforced WO-E226). Dead callee =
                                * WO_T_ACTOR, immediately or mid-call. */
+    /* ids 89 (monitor) and 90 (time.after) are RESERVED for the rest of
+     * the lifecycle slice — do not reuse. */
+    /* ---- iteration 35: net seams (sysio.c). Deadlines are per-CALL (no
+     * hidden fd state); a timeout is an EXPECTED outcome, so it answers
+     * nil/false, never a trap. ms <= 0 = no deadline (the old behavior,
+     * bit for bit). ---- */
+    WO_B_NET_READ_DL = 91,    /* (fd, max, ms) -> ?Text: nil = deadline
+                               * expired with nothing read; "" = EOF */
+    WO_B_NET_ACCEPT_DL = 92,  /* (fd, ms) -> ?Int: nil = nothing arrived */
+    WO_B_NET_WRITE_DL = 93,   /* (fd, text, ms) -> Bool: false = deadline
+                               * mid-write — the stream is torn, close it */
+    WO_B_NET_LISTEN_UNIX = 94,/* (path) -> Int: AF_UNIX listener; a stale
+                               * socket file is unlinked first (a restart
+                               * never needs manual cleanup) */
+    WO_B_NET_PEER = 95,       /* (fd) -> Text: "ip:port" for TCP peers,
+                               * "unix" for unix-socket peers, "" on error */
 };
 
-#define WO_B_MAX 88u
+#define WO_B_MAX 95u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

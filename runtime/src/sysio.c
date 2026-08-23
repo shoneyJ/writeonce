@@ -28,6 +28,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -392,6 +393,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             /* arc T4: park until the listener is readable, then retry */
             vm->cur->park_fd = (int)R[B];
+            vm->cur->park_deadline = 0;
             vm->cur->park_events = POLLIN;
             vm->cur->park_done = 0;
             return WO_SYS_PARKED;
@@ -426,6 +428,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
              * re-allocates) and park until the fd is readable */
             wo_str_free(rt, s);
             vm->cur->park_fd = (int)R[B];
+            vm->cur->park_deadline = 0;
             vm->cur->park_events = POLLIN;
             vm->cur->park_done = 0;
             return WO_SYS_PARKED;
@@ -471,6 +474,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     vm->cur->park_wr_at = at;
                     vm->cur->park_fd = (int)R[B];
+                    vm->cur->park_deadline = 0;
                     vm->cur->park_events = POLLOUT;
                     vm->cur->park_done = 0;
                     return WO_SYS_PARKED;
@@ -486,6 +490,224 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     case WO_B_NET_CLOSE: {
         close((int)R[B]);
         R[A] = 0;
+        return 0;
+    }
+    /* ---- iteration 35: per-call deadlines + unix sockets + peer -------
+     * The _dl protocol: the FIRST entry computes the absolute deadline
+     * into the fiber (dl_active/dl_at — the park/retry re-executes the
+     * builtin, and this is how the retry remembers it); every entry
+     * re-tries the syscall; EAGAIN past the deadline answers the timeout
+     * result (nil/false — an EXPECTED outcome, never a trap); EAGAIN
+     * before it parks with BOTH the fd and the deadline armed (park.c's
+     * sweep wakes whichever fires first). ms <= 0 = no deadline. */
+    case WO_B_NET_READ_DL: {
+        wo_fiber *fb = vm->cur;
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        int64_t dnow = (int64_t)dts.tv_sec * 1000 + dts.tv_nsec / 1000000;
+        if (!fb->dl_active) {
+            int64_t ms = (int64_t)R[B + 2];
+            fb->dl_active = 1;
+            fb->dl_at = ms > 0 ? dnow + ms : 0;
+        }
+        int64_t max = (int64_t)R[B + 1];
+        if (max < 0) max = 0;
+        wo_str *s = wo_str_alloc(rt, (uint32_t)max);
+        if (!s) {
+            fb->dl_active = 0;
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        ssize_t n;
+        for (;;) {
+            n = read((int)R[B], s->data, (size_t)max);
+            if (n >= 0 || errno != EINTR) break;
+            if (stop_pending()) {
+                wo_str_free(rt, s);
+                fb->dl_active = 0;
+                return WO_SYS_STOPPED;
+            }
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            wo_str_free(rt, s);
+            if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+                fb->dl_active = 0;
+                R[A] = 0; /* ?Text nil: the deadline expired */
+                return 0;
+            }
+            fb->park_fd = (int)R[B];
+            fb->park_deadline = fb->dl_at; /* 0 = wait forever, like read */
+            fb->park_events = POLLIN;
+            fb->park_done = 0;
+            return WO_SYS_PARKED;
+        }
+        fb->dl_active = 0;
+        if (n < 0) {
+            wo_str_free(rt, s);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        if ((size_t)n == (size_t)max) {
+            R[A] = (uint64_t)(uintptr_t)s;
+            return 0;
+        }
+        wo_str *exact = wo_str_new(rt, s->data, (uint32_t)n);
+        wo_str_free(rt, s);
+        if (!exact) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)exact;
+        return 0;
+    }
+    case WO_B_NET_ACCEPT_DL: {
+        wo_fiber *fb = vm->cur;
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        int64_t dnow = (int64_t)dts.tv_sec * 1000 + dts.tv_nsec / 1000000;
+        if (!fb->dl_active) {
+            int64_t ms = (int64_t)R[B + 1];
+            fb->dl_active = 1;
+            fb->dl_at = ms > 0 ? dnow + ms : 0;
+        }
+        int fd;
+        for (;;) {
+            fd = accept4((int)R[B], NULL, NULL, SOCK_NONBLOCK);
+            if (fd >= 0 || errno != EINTR) break;
+            if (stop_pending()) {
+                fb->dl_active = 0;
+                return WO_SYS_STOPPED;
+            }
+        }
+        if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+                fb->dl_active = 0;
+                R[A] = WO_NIL_SCALAR; /* ?Int nil: nothing arrived */
+                return 0;
+            }
+            fb->park_fd = (int)R[B];
+            fb->park_deadline = fb->dl_at;
+            fb->park_events = POLLIN;
+            fb->park_done = 0;
+            return WO_SYS_PARKED;
+        }
+        fb->dl_active = 0;
+        if (fd < 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_WRITE_DL: {
+        wo_fiber *fb = vm->cur;
+        const wo_str *body = (const wo_str *)(uintptr_t)R[B + 1];
+        if (!body || body->h.class_id != WO_CLS_STR) {
+            *msg = "not a text value";
+            return WO_T_BOUNDS;
+        }
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        int64_t dnow = (int64_t)dts.tv_sec * 1000 + dts.tv_nsec / 1000000;
+        if (!fb->dl_active) {
+            int64_t ms = (int64_t)R[B + 2];
+            fb->dl_active = 1;
+            fb->dl_at = ms > 0 ? dnow + ms : 0;
+        }
+        uint32_t at = fb->park_wr_at;
+        fb->park_wr_at = 0;
+        while (at < body->len) {
+            ssize_t n = write((int)R[B], body->data + at, body->len - at);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    if (stop_pending()) {
+                        fb->dl_active = 0;
+                        return WO_SYS_STOPPED;
+                    }
+                    continue;
+                }
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+                        fb->dl_active = 0;
+                        R[A] = 0; /* false: torn mid-write — close the fd */
+                        return 0;
+                    }
+                    fb->park_wr_at = at;
+                    fb->park_fd = (int)R[B];
+                    fb->park_deadline = fb->dl_at;
+                    fb->park_events = POLLOUT;
+                    fb->park_done = 0;
+                    return WO_SYS_PARKED;
+                }
+                fb->dl_active = 0;
+                *msg = strerror(errno);
+                return WO_T_IO;
+            }
+            at += (uint32_t)n;
+        }
+        fb->dl_active = 0;
+        R[A] = 1;
+        return 0;
+    }
+    case WO_B_NET_LISTEN_UNIX: { /* unlink-before-bind: a restart never
+                                  * needs manual socket-file cleanup */
+        if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
+        struct sockaddr_un ua;
+        if (strlen(path) >= sizeof(ua.sun_path)) {
+            *msg = "unix socket path too long";
+            return WO_T_BOUNDS;
+        }
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        unlink(path);
+        memset(&ua, 0, sizeof ua);
+        ua.sun_family = AF_UNIX;
+        strncpy(ua.sun_path, path, sizeof(ua.sun_path) - 1);
+        if (bind(fd, (struct sockaddr *)&ua, sizeof ua) != 0 || listen(fd, 64) != 0) {
+            *msg = strerror(errno);
+            close(fd);
+            return WO_T_IO;
+        }
+        /* the listener must be NONBLOCKING like net.listen's (arc T4):
+         * accept4's SOCK_NONBLOCK flags the ACCEPTED socket, not this one —
+         * a blocking listener would block the whole shard in the syscall */
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_PEER: { /* "ip:port" (TCP), "unix" (unix peers), "" error */
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof ss;
+        if (getpeername((int)R[B], (struct sockaddr *)&ss, &sl) != 0) {
+            wo_str *e = wo_str_new(rt, "", 0);
+            if (!e) {
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            R[A] = (uint64_t)(uintptr_t)e;
+            return 0;
+        }
+        char pbuf[64];
+        if (ss.ss_family == AF_INET) {
+            struct sockaddr_in *in = (struct sockaddr_in *)&ss;
+            uint32_t ip = ntohl(in->sin_addr.s_addr);
+            snprintf(pbuf, sizeof pbuf, "%u.%u.%u.%u:%u", (ip >> 24) & 255,
+                     (ip >> 16) & 255, (ip >> 8) & 255, ip & 255,
+                     (unsigned)ntohs(in->sin_port));
+        } else if (ss.ss_family == AF_UNIX) {
+            snprintf(pbuf, sizeof pbuf, "unix");
+        } else {
+            pbuf[0] = 0;
+        }
+        wo_str *out = wo_str_new(rt, pbuf, (uint32_t)strlen(pbuf));
+        if (!out) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        R[A] = (uint64_t)(uintptr_t)out;
         return 0;
     }
     /* ---- proc -------------------------------------------------------- */

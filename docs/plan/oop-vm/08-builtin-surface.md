@@ -281,6 +281,11 @@ unset `env.get` are nil.
 | `env.get(name)` | `-> ?Text` | unset is nil |
 | `env.stopping()` | `-> Bool` | SIGTERM/SIGINT latch, handlers installed on first use |
 | `net.listen(host, port)` | `-> Int` | IPv4, SO_REUSEADDR, backlog 64; returns an fd |
+| `net.read_dl(fd, max, ms)` | `-> ?Text` | iteration 35 (id 91): read with a per-call deadline — nil = expired (an EXPECTED outcome, never a trap), "" = EOF; ms <= 0 = wait forever |
+| `net.accept_dl(fd, ms)` | `-> ?Int` | iteration 35 (id 92): accept with a deadline — nil = nothing arrived |
+| `net.write_dl(fd, t, ms)` | `-> Bool` | iteration 35 (id 93): false = deadline mid-write — the stream is torn, close it |
+| `net.listen_unix(path)` | `-> Int` | iteration 35 (id 94): AF_UNIX listener, stale socket unlinked before bind |
+| `net.peer(fd)` | `-> Text` | iteration 35 (id 95): "ip:port" (TCP), "unix", "" on error |
 | `net.accept(fd)` | `-> Int` | |
 | `net.read(fd, max)` | `-> Text` | one read; the empty Text is EOF |
 | `net.write(fd, text)` | — | writes all of it |

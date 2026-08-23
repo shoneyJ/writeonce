@@ -550,6 +550,12 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
 }
 
 void wo_vm_destroy(wo_vm *vm) {
+    /* iteration 35: the fiber pool dies with the vm */
+    while (vm->fib_pool) {
+        wo_fiber *fb = vm->fib_pool;
+        vm->fib_pool = fb->next;
+        free(fb);
+    }
     /* actors first — dropping their state and queued messages needs the
      * runtime alive */
     wo_actor *a = vm->actors;
@@ -591,12 +597,28 @@ static wo_fiber *fib_dequeue(wo_vm *vm) {
     return fb;
 }
 
+/* iteration 35: dead fibers pool instead of freeing (vm.h's UAF note).
+ * next links the pool; a pooled fiber's state is DONE, so a stale plane
+ * completion reading it is harmless. */
+static void fib_retire(wo_vm *vm, wo_fiber *fb) {
+    fb->state = WO_FIB_DONE;
+    fb->next = vm->fib_pool;
+    vm->fib_pool = fb;
+}
+
 wo_fiber *wo_vm_spawn_fiber(wo_vm *vm, uint32_t method_idx, const uint64_t *args,
                             uint32_t argc) {
     if (method_idx >= vm->mod->method_cnt) return NULL;
     const wo_methodrec *sme = &vm->mod->methods[method_idx];
     if (argc != sme->arg_cnt) return NULL;
-    wo_fiber *fb = calloc(1, sizeof(*fb));
+    wo_fiber *fb;
+    if (vm->fib_pool) {
+        fb = vm->fib_pool;
+        vm->fib_pool = fb->next;
+        memset(fb, 0, sizeof(*fb));
+    } else {
+        fb = calloc(1, sizeof(*fb));
+    }
     if (!fb) return NULL;
     fb->depth = 1;
     fb->frames[0].method = method_idx;
@@ -625,7 +647,7 @@ static void fib_reap(wo_vm *vm, wo_fiber *fb) {
     }
     if (fb != &vm->f0) {
         vm->nfibers--;
-        free(fb);
+        fib_retire(vm, fb);
     }
 }
 
@@ -1175,7 +1197,7 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
              * dangled — the actor's mailbox rotted forever). */          \
             if (dead->actor) actor_die(vm, dead->actor, dead);            \
             vm->nfibers--;                               \
-            free(dead);                                  \
+            fib_retire(vm, dead);                        \
             NEXT_RUNNABLE();                             \
             RELOAD();                                    \
             NEXT();                                      \
@@ -1543,7 +1565,7 @@ dispatch:
             a->active = NULL;                                             \
         }                                                                 \
         vm->nfibers--;                                                    \
-        free(dead);                                                       \
+        fib_retire(vm, dead);                                             \
         NEXT_RUNNABLE();                                                  \
         RELOAD();                                                         \
         NEXT();                                                           \
@@ -1713,7 +1735,7 @@ dispatch:
                 wo_fiber *dead = vm->cur;
                 vm->cur = &vm->f0;
                 vm->nfibers--;
-                free(dead);
+                fib_retire(vm, dead);
                 if (vm->f0.depth) {
                     /* main was queued mid-run: release its frames too */
                     wo_fiber *q = vm->qhead, *prev = NULL;

@@ -257,6 +257,63 @@ int wo_io_arm(wo_vm *vm, wo_fiber *fb) {
 /* user_data sentinel for the wake-eventfd's own readiness (fibers are
  * heap pointers, never 1) */
 #define EFD_SENTINEL 1ull
+/* iteration 35: the shard deadline tick (one TIMEOUT op armed for the
+ * nearest fd-park deadline) and the tombstone POLL_REMOVE's own CQE.
+ * Sentinels, never pointers — a late completion can never dangle. */
+#define TICK_SENTINEL 2ull
+#define CANCEL_SENTINEL 3ull
+#define IORING_OP_POLL_REMOVE 7
+
+/* iteration 35: wake every fd-park whose deadline passed and tombstone
+ * its POLL op (the resumed builtin answers nil — the timeout result).
+ * The removed poll's CQE (-ECANCELED, user_data = the fiber) arrives
+ * later and is ignored: the fiber is RUNNABLE by then, and even a
+ * recycled fiber just takes a benign spurious wake (the park protocol
+ * re-executes the builtin, which re-checks). Returns woke-count. */
+static int deadline_sweep_uring(wo_vm *vm, int64_t now) {
+    int woke = 0;
+    for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext) {
+        if (fb->state == WO_FIB_PARKED && fb->park_fd >= 0
+            && fb->park_deadline > 0 && fb->park_deadline <= now) {
+            struct io_uring_sqe sqe;
+            memset(&sqe, 0, sizeof sqe);
+            sqe.opcode = IORING_OP_POLL_REMOVE;
+            sqe.fd = -1;
+            sqe.addr = (uint64_t)(uintptr_t)fb; /* match the poll's user_data */
+            sqe.user_data = CANCEL_SENTINEL;
+            (void)uring_submit(vm, &sqe);
+            wake(vm, fb);
+            woke++;
+        }
+    }
+    return woke;
+}
+
+/* Arm (or re-arm) the tick for the nearest fd-park deadline. Cheap
+ * over-arming is fine: a tick firing with nothing expired just re-arms. */
+static void tick_arm_uring(wo_vm *vm, int64_t now) {
+    int64_t next = 0;
+    for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
+        if (fb->state == WO_FIB_PARKED && fb->park_fd >= 0 && fb->park_deadline > 0)
+            if (next == 0 || fb->park_deadline < next) next = fb->park_deadline;
+    if (next == 0) return;
+    if (vm->tick_armed && vm->tick_at <= next) return;
+    int64_t rel = next - now;
+    if (rel < 0) rel = 0;
+    vm->tick_ts.sec = rel / 1000;
+    vm->tick_ts.nsec = (rel % 1000) * 1000000LL;
+    struct io_uring_sqe sqe;
+    memset(&sqe, 0, sizeof sqe);
+    sqe.opcode = IORING_OP_TIMEOUT;
+    sqe.fd = -1;
+    sqe.addr = (uint64_t)(uintptr_t)&vm->tick_ts;
+    sqe.len = 1;
+    sqe.user_data = TICK_SENTINEL;
+    if (uring_submit(vm, &sqe) == 0) {
+        vm->tick_armed = 1;
+        vm->tick_at = next;
+    }
+}
 
 static void efd_drain(wo_vm *vm) {
     uint64_t v = 0;
@@ -279,6 +336,7 @@ int wo_io_wait(wo_vm *vm) {
                 sqe.user_data = EFD_SENTINEL;
                 if (uring_submit(vm, &sqe) == 0) vm->efd_armed = 1;
             }
+            tick_arm_uring(vm, now_ms());
             rings r = ring_ptrs(vm);
             uint32_t head = *r.cq_head;
             uint32_t tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
@@ -299,6 +357,10 @@ int wo_io_wait(wo_vm *vm) {
                     vm->efd_armed = 0;
                     efd_drain(vm);
                     woke = 2; /* inbox wake: the caller adopts */
+                } else if (cqe->user_data == TICK_SENTINEL) {
+                    vm->tick_armed = 0; /* the sweep below decides who expired */
+                } else if (cqe->user_data == CANCEL_SENTINEL) {
+                    /* the tombstone's own completion: nothing to do */
                 } else {
                     wo_fiber *fb = (wo_fiber *)(uintptr_t)cqe->user_data;
                     if (fb && fb->state == WO_FIB_PARKED) {
@@ -309,6 +371,7 @@ int wo_io_wait(wo_vm *vm) {
                 head++;
             }
             __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
+            if (deadline_sweep_uring(vm, now_ms()) && woke != 2) woke = 1;
             if (woke == 2) return 1; /* adopt-needed */
             if (woke) return 0;
             continue;
@@ -327,7 +390,9 @@ int wo_io_wait(wo_vm *vm) {
         int timeout = -1;
         int64_t now = now_ms();
         for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
-            if (fb->park_fd == -1) { /* deadline waits only, never INBOX */
+            if (fb->park_fd == -1
+                || (fb->park_fd >= 0 && fb->park_deadline > 0)) {
+                /* sleeps AND deadline'd fd-parks (iteration 35); never INBOX */
                 int64_t rel = fb->park_deadline - now;
                 if (rel < 0) rel = 0;
                 if (timeout < 0 || rel < timeout) timeout = (int)rel;
@@ -355,7 +420,11 @@ int wo_io_wait(wo_vm *vm) {
         wo_fiber *fb = vm->parked;
         while (fb) {
             wo_fiber *nx = fb->pnext;
-            if (fb->park_fd == -1 && fb->park_deadline <= now) {
+            if ((fb->park_fd == -1
+                 || (fb->park_fd >= 0 && fb->park_deadline > 0))
+                && fb->park_deadline <= now) {
+                if (fb->park_fd >= 0)
+                    epoll_ctl(vm->io_fd, EPOLL_CTL_DEL, fb->park_fd, NULL);
                 wake(vm, fb);
                 woke = 1;
             }

@@ -82,7 +82,7 @@ else
 fi
 
 DATA="$W/data"; mkdir -p "$DATA"
-WA_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >"$W/srv.out" 2>&1 &
+WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >"$W/srv.out" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do grep -q listening "$W/srv.out" 2>/dev/null && break; sleep 0.1; done
 
@@ -280,6 +280,74 @@ r="$(hraw "$AUTH
 origin: http://x" GET /products)"
 [[ "$r" == 200\|*"access-control-allow-origin: *"* ]] \
   && ok "CORS origin stamped on real responses" || bad "cors-after" "$r"
+# ---- 12c. the serving slice: fiber-per-connection + deadlines ----
+r="$(timeout 10 python3 - "$PORT" <<'PYEOF'
+import socket, sys, time, threading
+port = int(sys.argv[1])
+REQ = b"GET /slow HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+def one(res, i):
+    s = socket.create_connection(("127.0.0.1", port), timeout=8)
+    s.sendall(REQ)
+    d = b""
+    while True:
+        c = s.recv(4000)
+        if not c: break
+        d += c
+    res[i] = b"slow done" in d
+t0 = time.time()
+res = [False, False]
+ts = [threading.Thread(target=one, args=(res, i)) for i in (0, 1)]
+[t.start() for t in ts]; [t.join() for t in ts]
+el = int((time.time() - t0) * 1000)
+print(f"{res[0] and res[1]}|{el}")
+PYEOF
+)"
+pw="${r%%|*}"; pe="${r#*|}"
+[[ "$pw" == "True" && "$pe" -lt 700 ]] \
+  && ok "two slow requests served in PARALLEL (${pe}ms, serial would be 800+)" \
+  || bad "parallel" "$r"
+r="$(timeout 10 python3 - "$PORT" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1])
+# a client that connects and sends NOTHING: the idle deadline must evict it
+s = socket.create_connection(("127.0.0.1", port), timeout=8)
+t0 = time.time()
+s.settimeout(5)
+try:
+    d = s.recv(100)
+    print(f"closed|{int((time.time()-t0)*1000)}" if d == b"" else f"data|{d[:20]}")
+except socket.timeout:
+    print("still-open|5000")
+PYEOF
+)"
+sw="${r%%|*}"; se="${r#*|}"
+[[ "$sw" == "closed" && "$se" -lt 2500 ]] \
+  && ok "stalled client evicted at the idle deadline (${se}ms)" \
+  || bad "stalled" "$r"
+r="$(timeout 10 python3 - "$PORT" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1])
+# half a request then silence: the READ deadline tears it (400-and-close)
+s = socket.create_connection(("127.0.0.1", port), timeout=8)
+s.sendall(b"GET /products HTTP/1.1\r\nhost: a\r\nauthor")
+t0 = time.time()
+d = b""
+s.settimeout(5)
+try:
+    while True:
+        c = s.recv(400)
+        if not c: break
+        d += c
+except socket.timeout: pass
+status = d.decode(errors="replace").split(" ")[1] if d else "closed"
+print(f"{status}|{int((time.time()-t0)*1000)}")
+PYEOF
+)"
+tw="${r%%|*}"; te="${r#*|}"
+[[ "$tw" == "400" && "$te" -lt 2500 ]] \
+  && ok "slow-loris torn at the read deadline (400, ${te}ms)" \
+  || bad "slowloris" "$r"
+
 r="$(timeout 5 python3 - "$PORT" <<'PYEOF'
 import socket, sys
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
@@ -325,7 +393,7 @@ for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { stopped=0; break; }; sl
 SRV=""
 
 # ---- 15. restart persistence (WAL replay) ----
-WA_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$W/srv.out" 2>&1 &
+WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$W/srv.out" 2>&1 &
 SRV=$!
 sleep 0.5
 expect "product survives a restart (WAL)" "$(hit GET /products)" 200 '"name":"mug"'

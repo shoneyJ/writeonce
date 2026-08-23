@@ -52,9 +52,13 @@ writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", 
 
 ## Honest limits (v1, all deliberate)
 
-- **Single-threaded, blocking** — one request at a time. Concurrency arrives
-  underneath this same surface now that the arc (8/11) has landed
-  (2026-08-21); the switch itself rides iteration 24's serving slice.
+- **Concurrency is the APP's ten lines** (iteration 35's serving slice):
+  the framework ships `serve_conn` — the keep-alive loop with read/idle
+  deadlines — and the app owns accept + one spawned ConnWorker actor per
+  connection (web-app's pattern; `spawn` takes a class literal, so this
+  cannot live in the library). Parallel requests, stalled-client
+  eviction and parked idle keep-alive are gate-proven. The plain
+  `serve()` stays single-threaded for simple apps.
 - **TLS: none, anywhere.** Deploy behind nginx/caddy; the proxy terminates
   TLS+ALPN and gives browsers HTTP/2 while this backend speaks HTTP/1.1
   keep-alive. See the web-app sample's README for the nginx sketch.
@@ -81,10 +85,10 @@ first (pure `.wo` cannot express it yet).
 | Item | State |
 | --- | --- |
 | HTTP/1.1 parsing | ✅ parses + 400-and-survive; duplicate `Content-Length` rejected outright (RFC 9112 §6.3, slice 2); BODY_MAX bounds headers and body |
-| Keep-alive | ✅ pipelined-serve / close-when-idle (arc landed 2026-08-21; retirement of close-when-idle rides iteration 24's fiber-per-connection slice) |
-| Read/write/idle timeouts | 🔧 `net` has no timeout surface — story 35 owns the seam (park_deadline infra already exists for sleeps), then a framework knob |
+| Keep-alive | ✅ RETIRED close-when-idle (iteration 35's serving slice): under the app-owned fiber-per-connection pattern, idle connections PARK until the idle deadline; the sequential `serve()` keeps the old policy for simple apps |
+| Read/write/idle timeouts | ✅ iteration 35: per-call deadlines (`net.read_dl`/`accept_dl`/`write_dl`, nil/false = the expected timeout); `serve_conn(read_ms, idle_ms)` bounds slow-loris AND idle keep-alive |
 | Request size limits | ✅ BODY_MAX bounds headers AND body |
-| Unix socket binding | 🔧 `net.listen` is TCP-only — story 35 owns the seam |
+| Unix socket binding | ✅ `net.listen_unix(path)` (iteration 35) — stale sockets unlinked before bind, same accept/read/write after |
 | Graceful SIGTERM | ✅ in-flight request completes (blocking model), listener + fds closed, storage is per-commit durable (WAL fdatasync — nothing to checkpoint) |
 
 ### Routing
@@ -104,7 +108,7 @@ first (pure `.wo` cannot express it yet).
 | Case-insensitive headers · query parsing | ✅ (names lowercased on read) |
 | JSON · form-urlencoded · multipart | ✅ all three hooks (`json.decode`, `form_values`, `multipart_parts`) |
 | Content negotiation | ✅ `media_type(req)` request-side; `accepts(req, mtype)` response-side (exact, type/*, */*; q-values stripped not ranked — ranking waits for an app serving alternates) — slice 2 |
-| Trusted-proxy client IP | 🔶 `client_ip(req)` parses X-Forwarded-For (slice 2); VERIFYING the peer is the trusted proxy still needs the peer-address seam 🔧 — story 35 owns it |
+| Trusted-proxy client IP | 🔶 `client_ip(req)` parses X-Forwarded-For; `net.peer(fd)` (iteration 35) exposes the peer — the verify middleware is now a pure-`.wo` candidate slice |
 | Status/header setting · redirects | ✅ builders + `set_header` |
 | Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
 | ETag + conditional requests | ✅ `etag_for` (quoted base64 SHA-256) + `with_etag` (If-None-Match → 304) over iteration 34's digest builtins — slice 2 |

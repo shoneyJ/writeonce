@@ -302,6 +302,13 @@ let stdlib_members : stdlib_member list =
     m "net" "read" 2 53 (Some (TScalar "Text")) None;
     m "net" "write" 2 54 None None;
     m "net" "close" 1 55 None None;
+    (* iteration 35: per-call deadlines (nil/false = the EXPECTED timeout),
+       unix listeners, the peer's address *)
+    m "net" "read_dl" 3 91 (Some (TNullable (TScalar "Text"))) None;
+    m "net" "accept_dl" 2 92 (Some (TNullable (TScalar "Int"))) None;
+    m "net" "write_dl" 3 93 (Some (TScalar "Bool")) None;
+    m "net" "listen_unix" 1 94 (Some (TScalar "Int")) None;
+    m "net" "peer" 1 95 (Some (TScalar "Text")) None;
     (* proc *)
     m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
     (* json — both members are lowered specially (emit.ml): encode needs its

@@ -232,3 +232,24 @@ layout.
 - Proof: `just db-actor` (docs/examples/db-actor — multi-shard set ×3,
   both forced backends, single-shard byte-exact, WO_DATA replay pair);
   ASan/TSan clean on the RPC path.
+
+## Net deadlines + the deadline tick (iteration 35)
+
+- **`_dl` builtins (91–95) are per-call**: the fiber carries the absolute
+  deadline (`dl_active`/`dl_at`) across the park protocol's re-execution;
+  a timeout is the EXPECTED nil/false result, never a trap. `ms <= 0` is
+  the pre-35 behavior bit for bit.
+- **One op per fd-park stays the law.** Deadlines ride ONE per-shard
+  TIMEOUT ("tick", sentinel user_data) armed for the nearest fd-park
+  deadline; the post-CQE sweep wakes expired parks and POLL_REMOVE
+  tombstones their poll. epoll needs no ops — its deadline scan grew the
+  fd-park case. Full design + rejected alternatives:
+  docs/superpowers/specs/2026-08-23-net-seams-park-design.md.
+- **Fibers pool, never free mid-run** (`vm->fib_pool`): the loser of a
+  readiness-vs-deadline race can complete one wait late, and its
+  user_data must never point at freed memory. Worst case anywhere is a
+  spurious wake, absorbed by re-execution. Pool dies with the vm;
+  steady-state size = peak live fibers.
+- **`listen_unix` sets O_NONBLOCK on the listener itself** — accept4's
+  SOCK_NONBLOCK flags the ACCEPTED socket only; a blocking listener
+  would block the whole shard (found by the seam probe, both backends).

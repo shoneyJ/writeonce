@@ -4,6 +4,8 @@
 -- separate process, one binary.
 use env
 use json
+use net
+use time
 use framework
 use framework/http
 use framework/router
@@ -118,6 +120,39 @@ class DeleteProduct {
   }
 }
 
+-- ---- iteration 35, the serving slice: fiber-per-connection ------------
+-- The app owns the accept loop and spawns ONE ConnWorker actor per
+-- accepted connection (spawn takes a class literal, so this ten-line
+-- pattern lives app-side by doctrine). Each worker builds its OWN App —
+-- route tables are small, and per-shard placement means no shared state
+-- crosses heaps — then runs the framework's keep-alive loop with
+-- deadlines. Concurrency: a slow request no longer blocks the next one;
+-- a stalled client is evicted at the read deadline; an idle keep-alive
+-- connection parks (blocking nobody) until the idle deadline.
+
+class Conn {
+  fd: net.Conn
+}
+
+class ConnWorker {
+  token:   Text
+  read_ms: Int
+  idle_ms: Int
+  fn receive(msg: Conn) {
+    let app = build_app(self.token);
+    app.handle_conn(msg.fd, self.read_ms, self.idle_ms);
+  }
+}
+
+-- a deliberately slow route: the concurrency proof's workload
+class Slow {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    time.sleep(400);
+    return ok_text("slow done");
+  }
+}
+
 -- ---- framework v1 slice 2: the storefront exercises the new surface ----
 
 -- wildcard capture: GET /files/*path echoes the rest
@@ -185,13 +220,40 @@ fn main(args: multi Text) -> Int {
     return 2;
   }
 
+  -- iteration 35: the app-owned accept loop. accept_dl's tick keeps the
+  -- stop flag honored within 250ms; each accepted fd moves into its own
+  -- ConnWorker actor (placed round-robin across shards — DB access from
+  -- any shard rides the transparent DB actor).
+  let read_ms = 5000;
+  let idle_ms = 5000;
+  let ie = env.get("WA_IDLE_MS");
+  if ie != nil {
+    let iv = parse_int(ie);
+    if iv != nil { idle_ms = iv; read_ms = iv; }
+  }
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    let c = net.accept_dl(srv, 250);
+    if c != nil {
+      let w: actor Conn = spawn ConnWorker { token: "${token}", read_ms: read_ms, idle_ms: idle_ms };
+      send(w, Conn { fd: c });
+    }
+  }
+}
+
+-- Every worker's own App: registration is idempotent code, and per-worker
+-- construction is what lets connections live on ANY shard without shared
+-- state (route tables are small; measured before optimized, per doctrine).
+fn build_app(token: Text) -> App {
   let app = App { middleware: [], routes: [] };
   -- v1 slice 2: host gate first (421 before anything runs), CORS preflight
   -- next, then the framework's Bearer mechanism (constant-time compare,
   -- principal attached to req.principal for handlers that want "who")
   app.use_mw(Mw { m: HostAllow { host: "a" } });
   app.use_mw(Mw { m: Cors { allow_origin: "*" } });
-  app.use_mw(Mw { m: BearerAuth { token: token, principal: "api" } });
+  app.use_mw(Mw { m: BearerAuth { token: "${token}", principal: "api" } });
   -- the response half: security headers + the CORS origin stamp on every
   -- response that leaves dispatch (404/405/401 included)
   app.use_after(Aw { a: SecurityHeaders { pad: 0 } });
@@ -204,9 +266,10 @@ fn main(args: multi Text) -> Int {
   app.get("/files/*path",          EchoPath { pad: 0 });
   app.get("/etag-probe",           EtagProbe { pad: 0 });
   app.get("/nego",                 NegoProbe { pad: 0 });
+  app.get("/slow",                 Slow { pad: 0 });
   let g = Group { prefix: "/api" };
   g.use_mw(Mw { m: StampCtx { pad: 0 } });
   g.get("/ping", ApiPing { pad: 0 });
   app.mount(g);
-  return app.serve("127.0.0.1", port);
+  return app;
 }

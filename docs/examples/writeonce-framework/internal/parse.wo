@@ -83,12 +83,25 @@ fn malformed(rest: Text) -> Parsed {
 }
 
 -- One request off the connection. `carry` = leftover bytes from the same
--- connection's previous request (keep-alive).
-pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
+-- connection's previous request (keep-alive). Deadlines (iteration 35):
+-- `first_ms` bounds the wait for a request's FIRST bytes (the keep-alive
+-- idle window — expiry is a CLEAN close, not an error), `read_ms` bounds
+-- every later read (a slow-loris mid-request is torn = 400-and-close).
+-- ms <= 0 = wait forever, the pre-35 behavior bit for bit.
+pub fn parse_request(c: net.Conn, carry: Text, first_ms: Int, read_ms: Int) -> Parsed {
   let buf = carry;
   let header_end = index_of(buf, "\r\n\r\n");
   while header_end == -1 {
-    let got = net.read(c, 8192);
+    let dl = read_ms;
+    if buf == "" { dl = first_ms; }
+    let r = net.read_dl(c, 8192, dl);
+    if r == nil {
+      -- deadline expired: idle (nothing arrived) closes clean; a stalled
+      -- peer MID-request is torn
+      if trim(buf) == "" { return Parsed { closed: true, ok: true, req: nil, rest: "" }; }
+      return malformed("");
+    }
+    let got = "${r}";
     if len(got) == 0 {
       -- peer closed: clean between requests (empty buffer), torn otherwise
       if trim(buf) == "" { return Parsed { closed: true, ok: true, req: nil, rest: "" }; }
@@ -148,7 +161,9 @@ pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
 
   let body = substr(buf, header_end + 4, len(buf) - header_end - 4);
   while len(body) < want {
-    let got = net.read(c, 8192);
+    let r2 = net.read_dl(c, 8192, read_ms);
+    if r2 == nil { return malformed(""); }         -- stalled mid-body
+    let got = "${r2}";
     if len(got) == 0 { return malformed(""); }     -- peer died mid-body
     body = body .. got;
   }
