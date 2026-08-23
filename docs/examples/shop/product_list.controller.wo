@@ -1,0 +1,20 @@
+-- product_list.controller.wo — the CONTROLLER for /: query the model,
+-- fill the view classes, answer a Resp. One controller file per feature;
+-- they live in the ROOT module because the @tables do (see types.wo's
+-- note on the pub+@table gap) — the views stay behind their module line.
+use framework/http
+use layout
+use product_list
+
+pub class ListProducts {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let cards = "";
+    for p in from x in Product order by x.name select x {
+      let card = ProductCard { sku: p.sku, name: p.name, price: p.price, stock: p.stock };
+      cards = cards .. card.render();
+    }
+    let page = ProductListPage { cards: cards };
+    return ok_html(app_shell("shop — products", page.render()));
+  }
+}

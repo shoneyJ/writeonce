@@ -1,0 +1,33 @@
+-- product_list/view.wo — the VIEW (view.html's analog). Classes with
+-- `fn render() -> Text`: fields are exactly the values displayed, the
+-- markup reads top to bottom. No queries here — the controller fills
+-- the fields. (A future `@view` class would let a projection query fill
+-- them directly; today the controller copies the fields in.)
+use html
+
+pub class ProductCard {
+  sku:   Text
+  name:  Text
+  price: Float
+  stock: Int
+
+  fn render() -> Text {
+    let h = el("h3", "", link("/p/${esc(self.sku)}", "", esc(self.name)));
+    let price = el("p", "price", "€ ${self.price}");
+    let stock = el("p", "stock", "${self.stock} in stock");
+    if self.stock == 0 {
+      stock = el("p", "stock out", "sold out");
+    }
+    return el("div", "card", h .. price .. stock);
+  }
+}
+
+pub class ProductListPage {
+  cards: Text
+
+  fn render() -> Text {
+    let head = el("h1", "", "Products");
+    let grid = el("div", "grid", self.cards);
+    return head .. grid;
+  }
+}

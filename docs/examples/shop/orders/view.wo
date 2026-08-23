@@ -1,0 +1,44 @@
+-- orders/view.wo — the confirmation page and the orders table.
+use html
+
+pub class OrderOk {
+  name:  Text
+  qty:   Int
+  total: Float
+
+  fn render() -> Text {
+    let head = el("h1", "", "Order placed");
+    let what = el("p", "", "${self.qty} × ${esc(self.name)} — total € ${self.total}");
+    let links = el("p", "", link("/orders", "", "See all orders") .. " · " .. link("/", "", "Keep shopping"));
+    return el("div", "card", head .. what .. links);
+  }
+}
+
+pub class OrderRow {
+  name:   Text
+  qty:    Int
+  total:  Float
+  status: Text
+
+  fn render() -> Text {
+    let cells = el("td", "", esc(self.name));
+    cells = cells .. el("td", "", "${self.qty}");
+    cells = cells .. el("td", "", "€ ${self.total}");
+    cells = cells .. el("td", "", esc(self.status));
+    return el("tr", "", cells);
+  }
+}
+
+pub class OrdersPage {
+  rows: Text
+
+  fn render() -> Text {
+    let head = el("h1", "", "Orders");
+    if self.rows == "" {
+      return head .. el("p", "", "No orders yet — " .. link("/", "", "go buy something") .. ".");
+    }
+    let thead = el("tr", "", el("th", "", "Product") .. el("th", "", "Qty") .. el("th", "", "Total") .. el("th", "", "Status"));
+    let table = el("table", "orders", thead .. self.rows);
+    return head .. table;
+  }
+}

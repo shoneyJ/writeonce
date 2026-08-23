@@ -1,0 +1,29 @@
+-- types.wo — the MODEL. Every @table class IS a WAL-backed table: rows
+-- persist under WO_DATA and replay on restart; without WO_DATA the
+-- store is RAM-only (handy while developing). Nothing else lives here —
+-- no rendering, no request handling.
+--
+-- Root module by NECESSITY, not choice: `pub` and `@table` cannot
+-- combine yet (recorded language gap), so tables cannot be exported to
+-- other modules — everything that queries them (the controllers) lives
+-- in the root module too. When the gap closes, this file becomes a
+-- `types/` module and the controllers move into their feature folders.
+
+@table(name: "products", index: [sku])
+class Product {
+  sku:   Text @unique
+  name:  Text
+  price: Float
+  stock: Int
+
+  orders: backlink Order.product
+}
+
+@table(name: "orders", index: [product])
+class Order {
+  product: ref Product
+  qty:     Int
+  total:   Float
+  placed:  Int    -- epoch ms (time.now at purchase)
+  status:  Text   -- "placed" in v1; a fulfilment flow would grow this
+}

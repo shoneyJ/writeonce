@@ -1,0 +1,25 @@
+-- product_page/view.wo — the product detail view with the order form.
+use html
+
+pub class ProductPage {
+  sku:   Text
+  name:  Text
+  price: Float
+  stock: Int
+
+  fn render() -> Text {
+    let head = el("h1", "", esc(self.name));
+    let price = el("p", "price", "€ ${self.price}");
+    let stock = el("p", "stock", "${self.stock} in stock");
+    let form = "";
+    if self.stock > 0 {
+      let qty = text_input("qty", "1");
+      let buy = submit_btn("Buy");
+      form = form_post("/orders/${esc(self.sku)}", el("label", "", "Quantity") .. qty .. buy);
+    } else {
+      form = el("p", "stock out", "sold out");
+    }
+    let back = el("p", "", link("/", "", "← all products"));
+    return el("div", "card detail", head .. price .. stock .. form) .. back;
+  }
+}

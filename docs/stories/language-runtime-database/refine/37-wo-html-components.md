@@ -15,6 +15,29 @@ status: refine
 > own dependency (the site sample's two-dep lesson). Unscheduled —
 > independent of the concurrency chain; needs its spec brainstormed
 > first.
+>
+> **REDIRECTED 2026-08-23** (developer review of the shop template
+> against a Vue SFC): render()-as-string-concatenation failed the DX
+> referendum — markup must be markup-FIRST. New direction:
+> **`view.html` template files COMPILED BY `woc` into render code** —
+> `{{ self.name }}` interpolation (auto-escaped; a raw opt-out spelling
+> for prebuilt fragments), `w:if`/`w:for` structural attributes, typed
+> against the view class's fields at compile time (a typo'd field is a
+> compile error), NO template engine at runtime — the doctrine's real
+> meaning becomes "no template interpreted at request time", not "no
+> template files". A runtime mustache-lite was considered and REJECTED:
+> reflection-free means values degrade to `map<Text, Text>` — typing
+> lost. Client-side reactivity from the Vue sample (`ref`, `@click`,
+> `v-model`) stays out under the no-JS posture; qty steppers are form
+> fields, actions are POSTs. This makes 37 a COMPILER iteration too
+> (template-to-code lowering), gated behind the standing
+> "no compiler/VM/database changes yet" directive — schedule
+> accordingly. The shop template
+> ([`docs/examples/shop`](../../../examples/shop/README.md)) is the
+> consumer: its `view.wo` classes become `view.html` + view classes,
+> and its README's recorded gaps ride along (gap #1: `pub` + `@table`
+> cannot combine — blocks a shared model module; gap #2: `@view`
+> projection classes).
 
 ## Why this iteration exists
 
@@ -78,8 +101,9 @@ detection, event bindings, SPA router) deliberately does not.
 - Client-side anything: change detection, event/two-way bindings, SPA
   routing, hydration — the no-JS posture stands; interactivity is form
   round trips until a directive says otherwise.
-- A template LANGUAGE (files parsed at build or runtime) — templates are
-  `.wo` code by doctrine (no closures also means no template lambdas).
+- A RUNTIME template engine (files parsed per request, mustache-style) —
+  rejected 2026-08-23: reflection-free means untyped `map<Text, Text>`
+  values. Templates compile to code at build time or they don't exist.
 - Dependency injection / services — components are data-in, Text-out.
 - Moving wo-html into the framework — settled 2026-08-23: separate
   libraries, composed via `[deps]`.
@@ -88,21 +112,25 @@ detection, event bindings, SPA router) deliberately does not.
 
 ## Info
 
-Forks the spec must settle:
+Forks the spec must settle (REVISED 2026-08-23 for the compiled-template
+direction):
 
-1. **Interface shape** — `render() -> Text` alone, or `render(ctx) ->
-   Text` with a context record (e.g. the request's principal for
-   view-level decisions)? Leaning: bare `render()` — context smells like
-   DI; whatever the view needs arrives as a field.
-2. **The framework seam** — does `ok_html(body)` move into the framework
+1. **Template pairing** — Vue-SFC style (one `view.html` whose
+   frontmatter/`<script>` block declares the fields) vs paired files
+   (`view.html` + a `.wo` view class it compiles against). Leaning:
+   paired — the class stays ordinary `.wo`, the template is pure markup.
+2. **Directive surface** — the minimal set: `{{ expr }}` (auto-escaped),
+   a raw spelling for prebuilt fragments (slots), `w:if`, `w:for`,
+   `w:class`-style conditional classes. Anything beyond is YAGNI until a
+   sample demands it.
+3. **Escaping default** — `{{ }}` escapes ALWAYS (safer than today's
+   caller-explicit `esc()`); the raw spelling is the only door, and it
+   is greppable.
+4. **The framework seam** — does `ok_html(body)` move into the framework
    beside `ok_text`/`ok_json` (transport, not rendering — flagged
    2026-08-23), and does wo-html gain `respond(c: Component)` sugar?
-3. **Slot typing** — slots as pre-rendered `Text` fields (simple, order
-   forced by the parent) vs slots as `Component` fields (uniform, but
-   ownership of nested components needs care under move semantics).
-4. **Migration depth** — site only, or web-app's HTML-less JSON pages
-   deliberately untouched as the counter-example (a framework consumer
-   that never links the view layer)?
+5. **Migration depth** — shop first (the template is its acceptance),
+   site second; web-app stays HTML-less as the counter-example.
 
 Study sources: Angular's component/`@Input`/`ng-content` docs (format
 only; no Angular code enters the repo — candidate `.dev/reference`

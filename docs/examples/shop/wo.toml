@@ -1,0 +1,12 @@
+name        = "shop"
+version     = "0.1.0"
+description = "The writeonce program template: an MVC-separated shop — @table model, render() view classes, controller handlers, static assets"
+
+[runtime]
+wo = ">= 0.1"
+
+# Two library dependencies, the site sample's proven shape. The [deps]
+# KEY is the module name `use` imports.
+[deps]
+framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+html      = { git = "https://github.com/shoneyj/wo-html", rev = "v0.1.0" }

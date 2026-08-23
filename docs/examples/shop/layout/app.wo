@@ -1,0 +1,34 @@
+-- layout/app.wo — the app shell (app.html's analog): one full document
+-- wrapping every page with the shared header and footer. Styles are NOT
+-- inlined here — the shop links /assets/style.css, a real stylesheet
+-- served by the static_files controller, so view markup and styling
+-- stay separate files exactly as the template promises.
+use framework/http
+use html
+
+pub fn app_shell(title: Text, content: Text) -> Text {
+  let d = "<!doctype html><html><head><meta charset=\"utf-8\">";
+  d = d .. "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
+  d = d .. "<title>${esc(title)}</title>";
+  d = d .. "<link rel=\"stylesheet\" href=\"/assets/style.css\">";
+  d = d .. "</head><body>";
+  d = d .. header();
+  d = d .. el("main", "site-main", content);
+  d = d .. footer();
+  d = d .. "</body></html>";
+  return d;
+}
+
+-- The one transport helper every controller shares: a 200 HTML Resp.
+pub fn ok_html(body: Text) -> Resp {
+  let h: map<Text, Text> = {};
+  h["content-type"] = "text/html; charset=utf-8";
+  return Resp { status: 200, headers: h, body: body };
+}
+
+pub fn html_error(status: Int, title: Text, msg: Text) -> Resp {
+  let content = el("h1", "", esc(title)) .. el("p", "", esc(msg)) .. el("p", "", link("/", "", "Back to products"));
+  let h: map<Text, Text> = {};
+  h["content-type"] = "text/html; charset=utf-8";
+  return Resp { status: status, headers: h, body: app_shell("shop — ${title}", content) };
+}

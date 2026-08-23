@@ -1,0 +1,8 @@
+-- layout/header.wo — the header fragment (header.html's analog).
+use html
+
+pub fn header() -> Text {
+  let brand = link("/", "brand", "writeonce shop");
+  let nav = link("/", "", "Products") .. link("/orders", "", "Orders");
+  return el("header", "site-header", brand .. el("nav", "site-nav", nav));
+}

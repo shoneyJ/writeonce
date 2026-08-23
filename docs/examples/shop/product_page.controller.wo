@@ -1,0 +1,21 @@
+-- product_page.controller.wo — the CONTROLLER for /p/:sku.
+use framework/http
+use layout
+use product_page
+
+pub class ShowProduct {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let sku = req.params["sku"];
+    if sku == nil {
+      return html_error(404, "No such product", "The address is missing a product.");
+    }
+    let hits = from p in Product where p.sku == sku take 1 select p;
+    if len(hits) == 0 {
+      return html_error(404, "No such product", "Nothing is listed under that sku.");
+    }
+    let p = hits[0];
+    let page = ProductPage { sku: p.sku, name: p.name, price: p.price, stock: p.stock };
+    return ok_html(app_shell("shop — ${p.name}", page.render()));
+  }
+}
