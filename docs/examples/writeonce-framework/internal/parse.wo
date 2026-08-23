@@ -116,6 +116,7 @@ pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
   path = url_decode(path, false);
 
   let headers: map<Text, Text> = {};
+  let cl_seen = 0;
   let i = 1;
   while i < len(lines) {
     let line = trim(lines[i]);
@@ -123,7 +124,16 @@ pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
     if line == "" { continue; }
     let colon = index_of(line, ":");
     if colon > 0 {
-      headers[to_lower(substr(line, 0, colon))] = trim(substr(line, colon + 1, len(line) - colon - 1));
+      let hname = to_lower(substr(line, 0, colon));
+      -- v1 slice 2, the strict-ambiguity audit: a SECOND Content-Length
+      -- header is request smuggling's favorite tool — reject the request
+      -- outright instead of letting last-one-wins pick a body length
+      -- (RFC 9112 §6.3: such a message MUST be treated as an error).
+      if hname == "content-length" {
+        cl_seen = cl_seen + 1;
+        if cl_seen > 1 { return malformed(""); }
+      }
+      headers[hname] = trim(substr(line, colon + 1, len(line) - colon - 1));
     }
   }
 
@@ -150,6 +160,7 @@ pub fn parse_request(c: net.Conn, carry: Text) -> Parsed {
   }
 
   let req = Req { method: method, path: path, params: {}, query: query,
-                  headers: headers, body: body, principal: "", conn: c };
+                  headers: headers, body: body, principal: "", ctx: {},
+                  conn: c };
   return Parsed { closed: false, ok: true, req: req, rest: rest };
 }

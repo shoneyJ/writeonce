@@ -118,6 +118,57 @@ class DeleteProduct {
   }
 }
 
+-- ---- framework v1 slice 2: the storefront exercises the new surface ----
+
+-- wildcard capture: GET /files/*path echoes the rest
+class EchoPath {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let p = req.params["path"];
+    if p == nil { return ok_text("path="); }
+    return ok_text("path=${p}");
+  }
+}
+
+-- group middleware writes the request-scoped ctx bag; the handler reads it
+class StampCtx {
+  pad: Int
+  fn before(mut req: Req) -> ?Resp {
+    req.ctx["via"] = "api-group";
+    return nil;
+  }
+}
+
+class ApiPing {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    let via = req.ctx["via"];
+    if via == nil { return ok_text("pong via="); }
+    return ok_text("pong via=${via}");
+  }
+}
+
+-- ETag + conditional: same body = same tag; If-None-Match collapses to 304
+class EtagProbe {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    return with_etag(req, ok_json("{\"v\":1}"));
+  }
+}
+
+-- response-side negotiation: JSON or nothing
+class NegoProbe {
+  pad: Int
+  fn handle(req: Req) -> Resp {
+    if accepts(req, "application/json") == false {
+      let h: map<Text, Text> = {};
+      h["content-type"] = "application/json";
+      return Resp { status: 406, headers: h, body: "{\"error\":\"json only\"}" };
+    }
+    return ok_json("{\"ok\":true}");
+  }
+}
+
 fn main(args: multi Text) -> Int {
   if len(args) < 1 {
     print_err("usage: web-app <port>   (WA_TOKEN and WO_DATA must be set)");
@@ -135,13 +186,27 @@ fn main(args: multi Text) -> Int {
   }
 
   let app = App { middleware: [], routes: [] };
-  -- the framework's Bearer mechanism: constant-time compare, principal
-  -- attached to req.principal for handlers that want "who is this"
+  -- v1 slice 2: host gate first (421 before anything runs), CORS preflight
+  -- next, then the framework's Bearer mechanism (constant-time compare,
+  -- principal attached to req.principal for handlers that want "who")
+  app.use_mw(Mw { m: HostAllow { host: "a" } });
+  app.use_mw(Mw { m: Cors { allow_origin: "*" } });
   app.use_mw(Mw { m: BearerAuth { token: token, principal: "api" } });
+  -- the response half: security headers + the CORS origin stamp on every
+  -- response that leaves dispatch (404/405/401 included)
+  app.use_after(Aw { a: SecurityHeaders { pad: 0 } });
+  app.use_after(Aw { a: Cors { allow_origin: "*" } });
   app.get("/products",             ListProducts { pad: 0 });
   app.get("/products/:name",       ShowProduct { pad: 0 });
   app.post("/products",            CreateProduct { pad: 0 });
   app.post("/orders",              CreateOrder { pad: 0 });
   app.delete_("/products/:name",   DeleteProduct { pad: 0 });
+  app.get("/files/*path",          EchoPath { pad: 0 });
+  app.get("/etag-probe",           EtagProbe { pad: 0 });
+  app.get("/nego",                 NegoProbe { pad: 0 });
+  let g = Group { prefix: "/api" };
+  g.use_mw(Mw { m: StampCtx { pad: 0 } });
+  g.get("/ping", ApiPing { pad: 0 });
+  app.mount(g);
   return app.serve("127.0.0.1", port);
 }

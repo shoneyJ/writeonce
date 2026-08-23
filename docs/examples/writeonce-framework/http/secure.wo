@@ -1,0 +1,76 @@
+-- http/secure.wo — framework v1 slice 2: the security middlewares and the
+-- trusted-proxy parsing helper. Mechanism here, POLICY in the app — the
+-- same split http/auth.wo keeps. The classes satisfy router's Middleware/
+-- After interfaces STRUCTURALLY at the registration site — no import here.
+
+-- The response headers every deployment wants and nobody remembers.
+-- HSTS is deliberately absent: TLS terminates at the proxy (the
+-- framework's standing decision), so Strict-Transport-Security belongs
+-- in the proxy config next to the certificates.
+pub class SecurityHeaders {
+  pad: Int
+  fn after(req: Req, mut r: Resp) {
+    r.headers["x-content-type-options"] = "nosniff";
+    r.headers["x-frame-options"] = "DENY";
+    r.headers["referrer-policy"] = "strict-origin-when-cross-origin";
+  }
+}
+
+-- CORS, both halves in one class: `before` answers the OPTIONS preflight
+-- (204 with the allow set), `after` stamps Access-Control-Allow-Origin on
+-- every response to a request that carried an Origin. Register it twice —
+-- once as Mw, once as Aw — the structural interfaces make one value
+-- satisfy both. allow_origin is the policy knob ("*" or one origin).
+pub class Cors {
+  allow_origin: Text
+
+  fn before(mut req: Req) -> ?Resp {
+    if req.method != "OPTIONS" { return nil; }
+    let origin = req.headers["origin"];
+    if origin == nil { return nil; }
+    let want = req.headers["access-control-request-method"];
+    if want == nil { return nil; }
+    let h: map<Text, Text> = {};
+    h["access-control-allow-origin"] = self.allow_origin;
+    h["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS";
+    h["access-control-allow-headers"] = "authorization, content-type";
+    h["access-control-max-age"] = "600";
+    return Resp { status: 204, headers: h, body: "" };
+  }
+
+  fn after(req: Req, mut r: Resp) {
+    let origin = req.headers["origin"];
+    if origin != nil {
+      r.headers["access-control-allow-origin"] = self.allow_origin;
+    }
+  }
+}
+
+-- Host validation: a request whose Host header is missing or not the
+-- one this app serves answers 421 (misdirected request) before any
+-- route runs. Port suffixes count as part of the host on purpose —
+-- behind the proxy the forwarded Host is exactly one known value.
+pub class HostAllow {
+  host: Text
+  fn before(mut req: Req) -> ?Resp {
+    let got = req.headers["host"];
+    if got != nil {
+      if trim(got) == self.host { return nil; }
+    }
+    let h: map<Text, Text> = {};
+    h["content-type"] = "application/json";
+    return Resp { status: 421, headers: h, body: "{\"error\":\"misdirected request\"}" };
+  }
+}
+
+-- The PARSING half of trusted-proxy client identity: the left-most
+-- X-Forwarded-For entry, trimmed; "" when absent. VERIFYING that the
+-- peer actually is the trusted proxy needs a peer-address runtime seam —
+-- story 35's, not this slice's.
+pub fn client_ip(req: Req) -> Text {
+  let xff = req.headers["x-forwarded-for"];
+  if xff == nil { return ""; }
+  let parts = split("${xff}", ",");
+  if len(parts) == 0 { return ""; }
+  return trim(parts[0]);
+}

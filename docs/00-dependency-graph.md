@@ -148,38 +148,38 @@ flowchart TD
     classDef gate fill:#8250df,color:#fff,stroke:none
     classDef ready fill:#1a7f37,color:#fff,stroke:none
     classDef blocked fill:#eac54f,color:#000,stroke:none
+    classDef done fill:#6e7781,color:#fff,stroke:none
 
-    CORS["CORS middleware"]:::ready
-    SECH["security-headers middleware"]:::ready
-    HOSTV["host validation"]:::ready
-    STRICT["strict-parsing audit (dup/conflicting Content-Length)"]:::ready
-    WILD["wildcard segments *rest"]:::ready
-    PREC["specificity precedence"]:::blocked
-    GROUPS["route groups"]:::ready
-    CTX["req.ctx bag"]:::ready
-    XFF["X-Forwarded-For/-Proto parsing"]:::ready
-    ACCEPT["Accept-driven negotiation"]:::ready
+    CORS["CORS middleware ✅ slice 2"]:::done
+    SECH["security-headers middleware ✅ slice 2"]:::done
+    HOSTV["host validation (421) ✅ slice 2"]:::done
+    STRICT["strict-parsing audit (dup Content-Length = 400) ✅ slice 2"]:::done
+    WILD["wildcard segments *rest ✅ slice 2"]:::done
+    PREC["precedence: registration order stands, wildcards last by construction ✅"]:::done
+    GROUPS["route groups + group middleware ✅ slice 2"]:::done
+    CTX["req.ctx bag ✅ slice 2"]:::done
+    XFF["client_ip: X-Forwarded-For parsing ✅ slice 2 (peer VERIFY stays gated)"]:::done
+    ACCEPT["accepts(): response-side negotiation ✅ slice 2"]:::done
 
     NETSEAM["GATE: net runtime seams (timeouts, unix socket, peer address) — story 35 owns"]:::gate
     TMOUT["read/write/idle timeouts"]:::blocked
     UNIX["unix socket binding"]:::blocked
     PEERV["trusted-proxy PEER verification"]:::blocked
 
-    CRYPTO["GATE: story 34 crypto — C builtins vs pure-.wo (bitwise landed with 36, both possible; brainstorm decides); carriers (Bytes, base64) landed with 19"]:::gate
-    SHA["SHA-256/512, HMAC, CRC32"]:::blocked
-    ETAG["ETag + conditional requests"]:::blocked
-    COOKIE["signed cookies"]:::blocked
-    CSRF["CSRF"]:::blocked
-    SESS["session integrity"]:::blocked
-    HOOKV["webhook verification"]:::blocked
-    JWT["JWT HS256 (HARD STOP after)"]:::blocked
+    CRYPTO["GATE CLEARED: iteration 34 landed C builtins — sha1/sha256/hmac_sha256 (ids 85-87)"]:::done
+    SHA["sha1/sha256/hmac_sha256 ✅ iteration 34; SHA-512/CRC32 wait for a consumer"]:::done
+    ETAG["ETag + If-None-Match 304 ✅ slice 2"]:::done
+    COOKIE["signed cookies"]:::ready
+    CSRF["CSRF"]:::ready
+    SESS["session integrity"]:::ready
+    HOOKV["webhook verification"]:::ready
+    JWT["JWT HS256 (HARD STOP after)"]:::ready
 
     RADIX["radix-tree routing"]:::blocked
     I9E3["GATE: router scan unmeasured — 22's harness landed but benched the DB, not the router; perf-targets entry first"]:::gate
 
     STORAGE["storage-integration rows: migrations (future story), eager loading + tenant roots (query-surface work, 9-series)"]:::blocked
 
-    WILD --> PREC
     NETSEAM --> TMOUT
     NETSEAM --> UNIX
     NETSEAM --> PEERV
@@ -193,12 +193,18 @@ flowchart TD
     I9E3 --> RADIX
 ```
 
-Green nodes (CORS, security headers, host validation, strict-parsing
-audit, wildcards, route groups, `req.ctx`, XFF parsing, Accept
-negotiation) need nothing — startable in any order, gated by
-`just web-app`. Note: 21's keypair crypto is its own C implementation
-(already on branch `keypair-auth`) — it neither waits for nor feeds the
-crypto-fork gate.
+**Slice 2 landed (2026-08-23, branch `framework-v1b`):** every
+formerly-green node plus the crypto chain's first consumers — CORS,
+security headers, host validation (421), strict dup-Content-Length,
+`*rest` wildcards, route groups + group middleware, `req.ctx`,
+`client_ip`, `accepts()`, ETag/304 — all gated by `just web-app`
+(38 checks). The after-middleware seam (`After`/`use_after`) carries
+the response-header half. Now READY with the digest builtins landed:
+signed cookies, CSRF, session integrity, webhook verification, JWT
+HS256 (the hard stop). Still gated: timeouts/unix-socket/peer-verify
+(story 35's net seams) and the radix tree (router scan unmeasured).
+Note: 21's keypair crypto is its own C implementation (already on
+branch `keypair-auth`) — it neither waits for nor feeds this chain.
 
 ## 4. Framework v2 (iteration 18) — internal order
 

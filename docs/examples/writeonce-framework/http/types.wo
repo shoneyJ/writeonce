@@ -11,6 +11,10 @@ pub typedef Req = {
   body:      Text,            -- exactly Content-Length bytes ("" if none)
   principal: Text,            -- who this is: "" until an auth middleware
                               -- (http/auth.wo) authenticates the request
+  ctx:       map<Text, Text>, -- request-scoped bag (v1 slice 2): middleware
+                              -- writes, handlers read — request ids,
+                              -- tenant keys, anything per-request that is
+                              -- not identity (identity is `principal`)
   conn:      net.Conn         -- the connection the request arrived on.
                               -- INTERNAL plumbing for http/ws.wo's
                               -- upgrade (iteration 24): handlers never

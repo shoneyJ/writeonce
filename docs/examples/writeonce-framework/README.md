@@ -80,7 +80,7 @@ first (pure `.wo` cannot express it yet).
 
 | Item | State |
 | --- | --- |
-| HTTP/1.1 parsing | 🔶 parses + 400-and-survive; STRICT ambiguity rejection (duplicate/conflicting `Content-Length`, oversize checks beyond BODY_MAX) not audited — hardening slice |
+| HTTP/1.1 parsing | ✅ parses + 400-and-survive; duplicate `Content-Length` rejected outright (RFC 9112 §6.3, slice 2); BODY_MAX bounds headers and body |
 | Keep-alive | ✅ pipelined-serve / close-when-idle (arc landed 2026-08-21; retirement of close-when-idle rides iteration 24's fiber-per-connection slice) |
 | Read/write/idle timeouts | 🔧 `net` has no timeout surface — story 35 owns the seam (park_deadline infra already exists for sleeps), then a framework knob |
 | Request size limits | ✅ BODY_MAX bounds headers AND body |
@@ -93,9 +93,9 @@ first (pure `.wo` cannot express it yet).
 | --- | --- |
 | Path matching | 🔶 linear scan, first-match-wins; a radix tree waits on a MEASUREMENT first — 22's harness landed (benched the DB, not the router); needs a perf-targets register entry |
 | Method dispatch · path params · 404 · 405+`Allow` | ✅ |
-| Wildcards | ⬜ only `:param` today; `*rest` capture is a candidate slice |
-| Precedence rules | 🔶 registration order IS the rule (documented); specificity-based precedence unneeded until wildcards exist |
-| Route groups | ⬜ candidate slice (prefix + per-group middleware) |
+| Wildcards | ✅ `*rest` as the LAST pattern segment captures the joined tail (empty rest matches) — slice 2 |
+| Precedence rules | ✅ registration order IS the rule; wildcards capture only in last position, so order stays the whole story |
+| Route groups | ✅ `Group { prefix }` + per-group before-middleware, mounted in one move — slice 2 |
 
 ### Request/response
 
@@ -103,18 +103,18 @@ first (pure `.wo` cannot express it yet).
 | --- | --- |
 | Case-insensitive headers · query parsing | ✅ (names lowercased on read) |
 | JSON · form-urlencoded · multipart | ✅ all three hooks (`json.decode`, `form_values`, `multipart_parts`) |
-| Content negotiation | 🔶 `media_type(req)` covers the request side; `Accept`-driven response negotiation ⬜ |
-| Trusted-proxy client IP | 🔶 `X-Forwarded-For/-Proto` parsing is expressible (candidate slice); VERIFYING the peer is the trusted proxy needs a peer-address seam 🔧 — story 35 owns it |
+| Content negotiation | ✅ `media_type(req)` request-side; `accepts(req, mtype)` response-side (exact, type/*, */*; q-values stripped not ranked — ranking waits for an app serving alternates) — slice 2 |
+| Trusted-proxy client IP | 🔶 `client_ip(req)` parses X-Forwarded-For (slice 2); VERIFYING the peer is the trusted proxy still needs the peer-address seam 🔧 — story 35 owns it |
 | Status/header setting · redirects | ✅ builders + `set_header` |
 | Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
-| ETag + conditional requests | ⬜ candidate; wants story 34's digests (bitwise landed with 36 — pure-`.wo` vs C-builtin is 34's brainstorm) |
+| ETag + conditional requests | ✅ `etag_for` (quoted base64 SHA-256) + `with_etag` (If-None-Match → 304) over iteration 34's digest builtins — slice 2 |
 
 ### Context & middleware
 
 | Item | State |
 | --- | --- |
 | Ordered middleware chain | ✅ registration order, `?Resp` short-circuits |
-| Request-scoped context | 🔶 `req.params` + `req.principal` are the context today; a general `req.ctx` bag is a candidate slice |
+| Request-scoped context | ✅ `req.ctx` map (slice 2): middleware writes, handlers read; identity stays in `principal` |
 | Guaranteed teardown | 🔶 every fd closes on every path (gate-proven); no user teardown hooks yet |
 | Cancellation into pending storage ops | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
 | Panic recovery | 🔶 trap = 500 and the server survives ✅; "rolls back the transaction" is framework v2 (needs `transaction { }`, iteration 18) |
@@ -134,18 +134,18 @@ first (pure `.wo` cannot express it yet).
 | Item | State |
 | --- | --- |
 | Constant-time comparison · Authorization parsing · Basic auth · principal | ✅ `http/auth.wo`, `req.principal` |
-| CORS | ⬜ candidate slice (middleware + preflight answers) |
-| Security headers | ⬜ candidate slice (one middleware, a header set) |
-| Host validation | ⬜ candidate slice (middleware against a host allowlist) |
-| Strict parsing | 🔶 same item as Transport's hardening slice |
+| CORS | ✅ `Cors { allow_origin }` — preflight 204 (before) + origin stamp on every response (after) — slice 2 |
+| Security headers | ✅ `SecurityHeaders` after-middleware (nosniff, DENY, referrer-policy); HSTS stays at the TLS proxy by design — slice 2 |
+| Host validation | ✅ `HostAllow { host }` answers 421 before any route — slice 2 |
+| Strict parsing | ✅ same item as Transport's row: duplicate Content-Length is a 400 |
 
 ### Crypto (self-written, hard-stop after JWT HS256)
 
 | Item | State |
 | --- | --- |
 | base64 | ✅ pure `.wo` (`http/auth.wo`) |
-| SHA-256 · SHA-512 · HMAC · CRC32 | 🔧 the language has NO bitwise operators — these are C runtime builtins (libc-only doctrine permits hand-rolled crypto in the runtime) or the language grows bit ops first; the fork goes to a brainstorm before the slice |
-| Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT HS256) | ⬜ framework slices AFTER the hash primitives exist; **hard stop there** — no RS256, no JOSE zoo |
+| SHA-1 · SHA-256 · HMAC-SHA256 | ✅ C runtime builtins (iteration 34, ids 85–87, RFC-vector gated); SHA-512/CRC32 wait for a consumer |
+| Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT HS256) | ⬜ UNBLOCKED (the primitives exist since iteration 34); each is its own slice; **hard stop at JWT HS256** — no RS256, no JOSE zoo |
 
 ## Layout and privacy (iteration 17)
 

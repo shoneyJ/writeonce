@@ -1,0 +1,49 @@
+-- http/nego.wo — framework v1 slice 2: response-side content negotiation
+-- and ETag / conditional requests (the crypto slice's first ledger
+-- consumer beyond the WS handshake).
+
+-- Does the request accept this media type? Absent Accept = yes (RFC 9110
+-- §12.5.1: no header means anything goes). Matching is exact, type/*,
+-- or */*; q-values are stripped, not ranked — v1 answers CAN I send
+-- this, not WHICH ONE is best (a ranking negotiation waits for an app
+-- that serves alternates).
+pub fn accepts(req: Req, mtype: Text) -> Bool {
+  let acc = req.headers["accept"];
+  if acc == nil { return true; }
+  let slash = index_of(mtype, "/");
+  let major = mtype;
+  if slash >= 0 { major = substr(mtype, 0, slash); }
+  for part in split(to_lower("${acc}"), ",") {
+    let item = trim(part);
+    let semi = index_of(item, ";");
+    if semi >= 0 { item = trim(substr(item, 0, semi)); }
+    if item == mtype { return true; }
+    if item == "*/*" { return true; }
+    if item == "${major}/*" { return true; }
+  }
+  return false;
+}
+
+-- A strong ETag for a body: quoted base64 of its SHA-256. Deterministic,
+-- content-addressed — two identical bodies share one tag across
+-- restarts and shards.
+pub fn etag_for(body: Text) -> Text {
+  return "\"${base64_encode(sha256(bytes_of_text(body)))}\"";
+}
+
+-- Stamp the response's ETag and collapse it to 304 when the request's
+-- If-None-Match already has it. The 304 keeps the etag header and
+-- drops the body (RFC 9110 §15.4.5). Call it last in a handler:
+--   return with_etag(req, ok_json(body));
+pub fn with_etag(req: Req, take r: Resp) -> Resp {
+  let tag = etag_for(r.body);
+  r.headers["etag"] = tag;
+  let inm = req.headers["if-none-match"];
+  if inm != nil {
+    if trim(inm) == tag {
+      r.status = 304;
+      r.body = "";
+    }
+  }
+  return r;
+}

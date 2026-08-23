@@ -1,15 +1,21 @@
--- app.wo — the assembly: an App holds the middleware chain and the route
+-- app.wo — the assembly: an App holds the middleware chains and the route
 -- table, satisfies internal's Dispatcher interface, and serves.
 --
---   let app = App { middleware: [], routes: [] };
+--   let app = App { middleware: [], gmw: [], afters: [], routes: [] };
 --   app.use_mw(Mw { m: Auth { token: t } });
+--   app.use_after(Aw { a: SecurityHeaders { pad: 0 } });
 --   app.add(Route { method: "GET", pattern: "/products/:id", h: Show {} });
 --   return app.serve("127.0.0.1", port);
 --
--- Dispatch order: middleware in registration order (a Resp short-circuits),
--- then the first matching route (method + pattern), else the framework 404.
--- The serve loop wraps dispatch in `try`, so a trapping handler answers 500
--- and the server survives.
+-- Dispatch order: global middleware in registration order (a Resp
+-- short-circuits), prefix-scoped group middleware next (framework v1
+-- slice 2), then the first matching route (method + pattern), else the
+-- framework 404/405 — and EVERY one of those responses passes the after
+-- chain (security headers, CORS response headers) before it leaves.
+-- The one exception is the WS hijack sentinel (status 101): that
+-- response is never serialized, so afters skip it.
+-- The serve loop wraps dispatch in `try`, so a trapping handler answers
+-- 500 and the server survives.
 use http
 use router
 -- iteration 17: the serve loop is library-internal now (internal/serve.wo).
@@ -18,14 +24,34 @@ use internal
 
 pub class App {
   middleware: multi Mw
+  -- v1 slice 2 additions carry defaults so the standing ctor literal
+  -- `App { middleware: [], routes: [] }` keeps compiling everywhere.
+  gmw:        multi Gmw = []
+  afters:     multi Aw = []
   routes:     multi Route
 
   fn use_mw(take m: Mw) {
     push(self.middleware, m);
   }
 
+  fn use_after(take a: Aw) {
+    push(self.afters, a);
+  }
+
   fn add(take r: Route) {
     push(self.routes, r);
+  }
+
+  -- Mount a group: its (already prefixed) routes join the table in
+  -- order; its middleware becomes prefix-scoped entries.
+  fn mount(take g: Group) {
+    while len(g.routes) > 0 {
+      push(self.routes, shift(g.routes));
+    }
+    while len(g.middleware) > 0 {
+      let m = shift(g.middleware);
+      push(self.gmw, Gmw { prefix: g.prefix, m: m.m });
+    }
   }
 
   -- Registration helpers — the ctor-literal-into-take shape, per method.
@@ -45,10 +71,17 @@ pub class App {
     push(self.routes, Route { method: "DELETE", pattern: pattern, h: h });
   }
 
-  fn dispatch(mut req: Req) -> Resp {
+  -- The pre-after half of dispatch: first Resp wins.
+  fn route_req(mut req: Req) -> Resp {
     for mw in self.middleware {
       let short = mw.m.before(req);
       if short != nil { return short; }
+    }
+    for g in self.gmw {
+      if starts_with(req.path, g.prefix) {
+        let short = g.m.before(req);
+        if short != nil { return short; }
+      }
     }
     -- Path-first matching so a wrong-method hit on a known path answers
     -- 405 with the Allow header (registration order) instead of a 404.
@@ -67,6 +100,16 @@ pub class App {
     }
     if allow != "" { return method_not_allowed(allow); }
     return not_found();
+  }
+
+  fn dispatch(mut req: Req) -> Resp {
+    let resp = self.route_req(req);
+    if resp.status != 101 {
+      for aw in self.afters {
+        aw.a.after(req, resp);
+      }
+    }
+    return resp;
   }
 
   fn serve(host: Text, port: Int) -> Int {

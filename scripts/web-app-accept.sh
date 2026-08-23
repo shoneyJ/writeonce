@@ -213,6 +213,89 @@ IFS='|' read -r hs same hb gb <<<"$hd"
   && ok "HEAD answers GET's Content-Length with no body" \
   || bad "HEAD" "status=$hs same-length=$same head-body=$hb get-body=$gb"
 
+# ---- 12b. framework v1 slice 2 ----
+# raw client with header control: prints "STATUS|HEADERS|BODY"
+# (headers ;-joined, lowercased names)
+hraw() { # extra_header_lines(\n-separated) method path
+  timeout 5 python3 - "$PORT" "$1" "$2" "$3" <<'PYEOF'
+import socket, sys
+port, extra, method, path = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
+h = f"{method} {path} HTTP/1.1\r\n"
+for line in extra.split("\n"):
+    if line: h += line + "\r\n"
+h += "content-length: 0\r\nconnection: close\r\n\r\n"
+s.sendall(h.encode())
+d = b""
+try:
+    while True:
+        c = s.recv(4000)
+        if not c: break
+        d += c
+except Exception: pass
+s.close()
+head, _, body = d.partition(b"\r\n\r\n")
+lines = head.decode().splitlines()
+status = lines[0].split(" ")[1]
+def norm(l):
+    n, _, v = l.partition(":")
+    return n.lower() + ":" + v
+hdrs = ";".join(norm(l) for l in lines[1:])
+print(status + "|" + hdrs + "|" + body.decode(errors="replace"))
+PYEOF
+}
+AUTH="host: a
+authorization: Bearer s3cr3t"
+
+r="$(hraw "$AUTH" GET /files/a/b/c)"
+[[ "$r" == 200\|*"path=a/b/c"* ]] && ok "wildcard *rest captures the tail" || bad "wildcard" "$r"
+r="$(hraw "$AUTH" GET /files)"
+[[ "$r" == 200\|*"path="* ]] && ok "wildcard matches the empty rest" || bad "wildcard-empty" "$r"
+r="$(hraw "$AUTH" GET /api/ping)"
+[[ "$r" == 200\|*"pong via=api-group"* ]] && ok "group route + group middleware + req.ctx" || bad "group" "$r"
+r="$(hraw "$AUTH" GET /etag-probe)"
+[[ "$r" == 200\|*"etag: \""* ]] && ok "ETag stamped on the response" || bad "etag" "$r"
+tag="$(printf '%s' "$r" | tr ';' '\n' | grep -m1 '^etag: ' | cut -d' ' -f2)"
+r="$(hraw "$AUTH
+if-none-match: $tag" GET /etag-probe)"
+[[ "$r" == 304\|* ]] && ok "If-None-Match answers 304" || bad "etag-304" "$r"
+r="$(hraw "$AUTH
+accept: text/html" GET /nego)"
+[[ "$r" == 406\|* ]] && ok "Accept negotiation refuses non-JSON (406)" || bad "nego-406" "$r"
+r="$(hraw "$AUTH
+accept: application/*" GET /nego)"
+[[ "$r" == 200\|*'"ok":true'* ]] && ok "Accept type/* matches" || bad "nego-200" "$r"
+r="$(hraw "$AUTH" GET /products)"
+[[ "$r" == 200\|*"x-content-type-options: nosniff"*"x-frame-options: DENY"* ]] \
+  && ok "security headers on responses" || bad "sec-headers" "$r"
+r="$(hraw "host: evil
+authorization: Bearer s3cr3t" GET /products)"
+[[ "$r" == 421\|* ]] && ok "host validation answers 421" || bad "host-421" "$r"
+r="$(hraw "host: a
+origin: http://x
+access-control-request-method: POST" OPTIONS /products)"
+[[ "$r" == 204\|*"access-control-allow-origin: *"*"access-control-allow-methods:"* ]] \
+  && ok "CORS preflight answers 204 + allow set" || bad "cors-preflight" "$r"
+r="$(hraw "$AUTH
+origin: http://x" GET /products)"
+[[ "$r" == 200\|*"access-control-allow-origin: *"* ]] \
+  && ok "CORS origin stamped on real responses" || bad "cors-after" "$r"
+r="$(timeout 5 python3 - "$PORT" <<'PYEOF'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(b"GET /products HTTP/1.1\r\nhost: a\r\nauthorization: Bearer s3cr3t\r\ncontent-length: 0\r\ncontent-length: 5\r\nconnection: close\r\n\r\n")
+d = b""
+try:
+    while True:
+        c = s.recv(2000)
+        if not c: break
+        d += c
+except Exception: pass
+print(d.decode(errors="replace").splitlines()[0].split(" ")[1])
+PYEOF
+)"
+[[ "$r" == "400" ]] && ok "duplicate Content-Length rejected (400)" || bad "dup-cl" "got $r"
+
 # ---- 13. pipelined keep-alive: two requests, one connection ----
 n="$(timeout 5 python3 - "$PORT" <<'PYEOF'
 import socket, sys
