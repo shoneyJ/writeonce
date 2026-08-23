@@ -245,7 +245,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 33  | [Single-file store](language-runtime-database/refine/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/refine/34-crypto-builtins.md)            | ⬜ off-chain but GATES 24 (WS handshake needs SHA-1) — digests + HMAC as vector-verified C builtins (story written 2026-08-22) |
 | 37  | [wo-html components](language-runtime-database/refine/37-wo-html-components.md)      | ⬜ off-chain — MVC-shaped view layer in wo-html (Component interface, layouts/slots, site migrates as acceptance); Angular format studied, client-side half rejected (story written 2026-08-23) |
-| 35  | [net runtime seams](language-runtime-database/refine/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
+| 35  | [net runtime seams](language-runtime-database/done/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
 | 20  | [Cross-program tables](language-runtime-database/hold/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
 | 21  | [Keypair attach auth](language-runtime-database/hold/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
