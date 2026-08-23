@@ -1,6 +1,6 @@
--- orders/view.wo — the confirmation page and the orders table. The
--- comment above each render() is the STORY-37 TARGET (raw template
--- literal, {{ }} auto-escaped); the body is today's hand-lowering.
+-- orders/view.wo — the confirmation page and the orders table.
+-- Markup-first, one HTML line per statement; see product_list/view.wo
+-- for the convention and the story-37 endgame.
 use html
 
 pub class OrderOk {
@@ -8,18 +8,13 @@ pub class OrderOk {
   qty:   Int
   total: Float
 
-  -- 37 target:
-  --   return `
-  --     <div class="card">
-  --       <h1>Order placed</h1>
-  --       <p>{{ self.qty }} × {{ self.name }} — total € {{ self.total }}</p>
-  --       <p><a href="/orders">See all orders</a> · <a href="/">Keep shopping</a></p>
-  --     </div>`;
   fn render() -> Text {
-    let head = el("h1", "", "Order placed");
-    let what = el("p", "", "${self.qty} × ${esc(self.name)} — total € ${self.total}");
-    let links = el("p", "", link("/orders", "", "See all orders") .. " · " .. link("/", "", "Keep shopping"));
-    return el("div", "card", head .. what .. links);
+    let h = "<div class='card'>";
+    h = h .. "<h1>Order placed</h1>";
+    h = h .. "<p>${self.qty} × ${esc(self.name)} — total € ${self.total}</p>";
+    h = h .. "<p><a href='/orders'>See all orders</a> · <a href='/'>Keep shopping</a></p>";
+    h = h .. "</div>";
+    return h;
   }
 }
 
@@ -29,44 +24,30 @@ pub class OrderRow {
   total:  Float
   status: Text
 
-  -- 37 target:
-  --   return `
-  --     <tr>
-  --       <td>{{ self.name }}</td>
-  --       <td>{{ self.qty }}</td>
-  --       <td>€ {{ self.total }}</td>
-  --       <td>{{ self.status }}</td>
-  --     </tr>`;
   fn render() -> Text {
-    let cells = el("td", "", esc(self.name));
-    cells = cells .. el("td", "", "${self.qty}");
-    cells = cells .. el("td", "", "€ ${self.total}");
-    cells = cells .. el("td", "", esc(self.status));
-    return el("tr", "", cells);
+    let h = "<tr>";
+    h = h .. "<td>${esc(self.name)}</td>";
+    h = h .. "<td>${self.qty}</td>";
+    h = h .. "<td>€ ${self.total}</td>";
+    h = h .. "<td>${esc(self.status)}</td>";
+    h = h .. "</tr>";
+    return h;
   }
 }
 
 pub class OrdersPage {
   rows: Text
 
-  -- 37 target:
-  --   if self.rows == "" {
-  --     return `<h1>Orders</h1>
-  --             <p>No orders yet — <a href="/">go buy something</a>.</p>`;
-  --   }
-  --   return `
-  --     <h1>Orders</h1>
-  --     <table class="orders">
-  --       <tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>
-  --       {!! self.rows !!}
-  --     </table>`;
   fn render() -> Text {
-    let head = el("h1", "", "Orders");
+    let h = "<h1>Orders</h1>";
     if self.rows == "" {
-      return head .. el("p", "", "No orders yet — " .. link("/", "", "go buy something") .. ".");
+      h = h .. "<p>No orders yet — <a href='/'>go buy something</a>.</p>";
+      return h;
     }
-    let thead = el("tr", "", el("th", "", "Product") .. el("th", "", "Qty") .. el("th", "", "Total") .. el("th", "", "Status"));
-    let table = el("table", "orders", thead .. self.rows);
-    return head .. table;
+    h = h .. "<table class='orders'>";
+    h = h .. "<tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>";
+    h = h .. "${self.rows}";
+    h = h .. "</table>";
+    return h;
   }
 }

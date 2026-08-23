@@ -1,8 +1,4 @@
 -- layout/footer.wo — the footer fragment (footer.html's analog).
-use html
-
--- 37 target:
---   return `<footer class="site-footer">writeonce shop — one binary: server, database, these pages.</footer>`;
 pub fn footer() -> Text {
-  return el("footer", "site-footer", "writeonce shop — one binary: server, database, these pages.");
+  return "<footer class='site-footer'>writeonce shop — one binary: server, database, these pages.</footer>";
 }

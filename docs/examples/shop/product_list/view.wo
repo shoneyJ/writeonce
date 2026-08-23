@@ -1,11 +1,12 @@
--- product_list/view.wo — the VIEW. Classes with `fn render() -> Text`:
--- fields are exactly the values displayed. No queries here — the
--- controller fills the fields.
+-- product_list/view.wo — the VIEW. Classes with `fn render() -> Text`;
+-- fields are exactly the values displayed, bodies are MARKUP-FIRST: one
+-- HTML line per statement (single-quoted attributes — no escape noise),
+-- ${} holes, data through esc().
 --
--- Each render() carries its STORY-37 TARGET above it: a raw multi-line
--- template literal whose {{ expr }} holes are auto-escaped, compile-
--- time-checked interpolations (a typo'd field = compile error). The
--- body below is today's hand-lowering of exactly that literal.
+-- The `h = h ..` prefix on every line is the language's cost today:
+-- statements are single-line and there is no multi-line literal. Story
+-- 37's raw template literal deletes exactly that prefix and the esc()
+-- calls ({{ }} auto-escapes and type-checks) — the markup stays as-is.
 use html
 
 pub class ProductCard {
@@ -14,36 +15,26 @@ pub class ProductCard {
   price: Float
   stock: Int
 
-  -- 37 target:
-  --   let tail = `<p class="stock">{{ self.stock }} in stock</p>`;
-  --   if self.stock == 0 { tail = `<p class="stock out">sold out</p>`; }
-  --   return `
-  --     <div class="card">
-  --       <h3><a href="/p/{{ self.sku }}">{{ self.name }}</a></h3>
-  --       <p class="price">€ {{ self.price }}</p>
-  --       {!! tail !!}
-  --     </div>`;
   fn render() -> Text {
-    let h = el("h3", "", link("/p/${esc(self.sku)}", "", esc(self.name)));
-    let price = el("p", "price", "€ ${self.price}");
-    let stock = el("p", "stock", "${self.stock} in stock");
-    if self.stock == 0 {
-      stock = el("p", "stock out", "sold out");
+    let h = "<div class='card'>";
+    h = h .. "<h3><a href='/p/${esc(self.sku)}'>${esc(self.name)}</a></h3>";
+    h = h .. "<p class='price'>€ ${self.price}</p>";
+    if self.stock > 0 {
+      h = h .. "<p class='stock'>${self.stock} in stock</p>";
+    } else {
+      h = h .. "<p class='stock out'>sold out</p>";
     }
-    return el("div", "card", h .. price .. stock);
+    h = h .. "</div>";
+    return h;
   }
 }
 
 pub class ProductListPage {
   cards: Text
 
-  -- 37 target:
-  --   return `
-  --     <h1>Products</h1>
-  --     <div class="grid">{!! self.cards !!}</div>`;
   fn render() -> Text {
-    let head = el("h1", "", "Products");
-    let grid = el("div", "grid", self.cards);
-    return head .. grid;
+    let h = "<h1>Products</h1>";
+    h = h .. "<div class='grid'>${self.cards}</div>";
+    return h;
   }
 }
