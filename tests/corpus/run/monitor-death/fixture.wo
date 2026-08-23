@@ -1,0 +1,36 @@
+use time
+
+-- iteration 24 T4: actor death is OBSERVABLE. The observer names its own
+-- notice message; the watched actor trapping uncaught (the runtime's
+-- stderr line) delivers it. Monitoring an ALREADY dead actor fires
+-- immediately. WO_SHARDS=1 (the runner) keeps the order deterministic.
+class Note {
+  who: Text
+}
+
+class Watch {
+  pad: Int
+  fn receive(msg: Note) {
+    print("died: ${msg.who}");
+  }
+}
+
+class Boom {
+  pad: Int
+  fn receive(msg: Note) {
+    let z = len(msg.who) - len(msg.who);
+    let q = 1 / z;
+  }
+}
+
+fn main() -> Int {
+  let obs: actor Note = spawn Watch { pad: 0 };
+  let b: actor Note = spawn Boom { pad: 0 };
+  monitor(b, obs, Note { who: "boom" });
+  send(b, Note { who: "x" });
+  time.sleep(100);
+  monitor(b, obs, Note { who: "late" });
+  time.sleep(100);
+  print("done");
+  return 0;
+}

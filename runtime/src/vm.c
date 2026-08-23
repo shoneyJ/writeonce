@@ -78,6 +78,9 @@ static int actor_push(wo_actor *a, wo_msg m);
 static void call_reply_to(wo_vm *vm, wo_fiber *caller, uint32_t caller_shard,
                           uint64_t reply, int status);
 static void actor_drop_payload(wo_vm *vm, uint64_t payload);
+static void monitors_fire(wo_vm *vm, wo_actor *a);
+static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
+                           const char *what);
 
 /* the owning thread drains its inbox: adopt actors, deliver sends,
  * execute home-routed frees. Returns how many envelopes were handled. */
@@ -131,6 +134,25 @@ static int wo_vm_adopt(wo_vm *vm) {
                 wo_mbox_release(e->actor);
                 call_reply_to(vm, e->from_fiber, e->from_shard, 0, WO_T_ACTOR);
             }
+            break;
+        }
+        case 7: { /* iteration 24 T4: a cross-shard monitor registration —
+                   WE are the watched actor's home. Dead already = the
+                   notice fires now; else it joins the list. */
+            wo_actor *ob = (wo_actor *)(uintptr_t)e->from_fiber;
+            if (e->actor->dead) {
+                runtime_notify(vm, ob, e->payload, "death notice");
+                break;
+            }
+            wo_monitor *mn = calloc(1, sizeof *mn);
+            if (!mn) {
+                actor_drop_payload(vm, e->payload);
+                break;
+            }
+            mn->observer = ob;
+            mn->msg = e->payload;
+            mn->next = e->actor->monitors;
+            e->actor->monitors = mn;
             break;
         }
         case 6: /* iteration 24: a call reply landing on the caller's shard —
@@ -566,9 +588,24 @@ void wo_vm_destroy(wo_vm *vm) {
             uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
             if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
         }
+        wo_monitor *mo = a->monitors;
+        while (mo) { /* undelivered notices are the runtime's to drop */
+            wo_monitor *mnx = mo->next;
+            if (mo->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
+            free(mo);
+            mo = mnx;
+        }
         free(a->msgs);
         free(a);
         a = nx;
+    }
+    wo_timer *tt = vm->timers;
+    vm->timers = NULL;
+    while (tt) { /* unfired timers likewise */
+        wo_timer *tnx = tt->next;
+        if (tt->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
+        free(tt);
+        tt = tnx;
     }
     vm->actors = NULL;
     wo_io_destroy(vm);
@@ -760,6 +797,7 @@ static void actor_die(wo_vm *vm, wo_actor *a, wo_fiber *delivery) {
         a->instance = 0;
     }
     a->active = NULL;
+    monitors_fire(vm, a);
 }
 
 /* Mailbox nonempty, no delivery fiber: start one on the next message.
@@ -877,6 +915,57 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
     return 0;
 }
 
+/* iteration 24 T4/T5: a RUNTIME-sourced delivery (death notice, timer).
+ * No fiber to trap: a full or dead target drops the message with a
+ * stderr line (spec'd disclosure), never silently. Runs on any thread —
+ * cross-shard targets ride the ordinary kind-0 envelope. */
+static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
+                           const char *what) {
+    if (!target || !msg_val) return;
+    if (target->dead) {
+        actor_drop_payload(vm, msg_val);
+        return; /* send-to-dead: silent by contract */
+    }
+    if (wo_mbox_reserve(target) != 0) {
+        fprintf(stderr, "wovm: %s dropped — the observer's mailbox is full\n", what);
+        actor_drop_payload(vm, msg_val);
+        return;
+    }
+    if (target->home != vm->shard_id) {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            wo_mbox_release(target);
+            actor_drop_payload(vm, msg_val);
+            return;
+        }
+        e->kind = 0;
+        e->actor = target;
+        e->payload = msg_val;
+        inbox_push_to(target->home, e);
+        return;
+    }
+    wo_msg m0 = { msg_val, NULL, 0 };
+    if (actor_push(target, m0) != 0) {
+        wo_mbox_release(target);
+        actor_drop_payload(vm, msg_val);
+        return;
+    }
+    if (!target->active) (void)actor_activate(vm, target);
+}
+
+/* iteration 24 T4: the death walk — every registered observer gets its
+ * chosen notice, then the list is gone (an actor dies once). */
+static void monitors_fire(wo_vm *vm, wo_actor *a) {
+    wo_monitor *m = a->monitors;
+    a->monitors = NULL;
+    while (m) {
+        wo_monitor *nx = m->next;
+        runtime_notify(vm, m->observer, m->msg, "death notice");
+        free(m);
+        m = nx;
+    }
+}
+
 /* iteration 24: call — send that waits. First entry enqueues with the
  * caller attached and parks (WO_PARK_INBOX, the DB-RPC park); the resume
  * RE-EXECUTES this builtin and consumes the scalar reply. No hangs, ever:
@@ -944,6 +1033,105 @@ int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     fb->park_fd = WO_PARK_INBOX;
     fb->park_done = 0; /* resume RE-EXECUTES the builtin: the consume path */
     return WO_SYS_PARKED;
+}
+
+int wo_vm_actor_monitor(wo_vm *vm, uint64_t watched, uint64_t observer,
+                        uint64_t msg_val, const char **msg) {
+    wo_actor *w = (wo_actor *)(uintptr_t)watched;
+    wo_actor *o = (wo_actor *)(uintptr_t)observer;
+    if (!w || !o) {
+        *msg = "monitor: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "monitor: nil notice message";
+        return WO_T_BOUNDS;
+    }
+    /* the registration belongs to the WATCHED actor's home thread */
+    if (w->home != vm->shard_id) {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            actor_drop_payload(vm, msg_val);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        e->kind = 7;
+        e->actor = w;
+        e->payload = msg_val;
+        e->from_fiber = (wo_fiber *)o; /* reused slot: the observer */
+        inbox_push_to(w->home, e);
+        return 0;
+    }
+    if (w->dead) { /* monitoring the dead: the notice fires NOW */
+        runtime_notify(vm, o, msg_val, "death notice");
+        return 0;
+    }
+    wo_monitor *m = calloc(1, sizeof *m);
+    if (!m) {
+        actor_drop_payload(vm, msg_val);
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    m->observer = o;
+    m->msg = msg_val;
+    m->next = w->monitors;
+    w->monitors = m;
+    return 0;
+}
+
+int wo_vm_timer_after(wo_vm *vm, int64_t ms, uint64_t addr, uint64_t msg_val,
+                      const char **msg) {
+    wo_actor *a = (wo_actor *)(uintptr_t)addr;
+    if (!a) {
+        *msg = "time.after: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "time.after: nil message";
+        return WO_T_BOUNDS;
+    }
+    if (ms <= 0) { /* no wait to arm: deliver now */
+        runtime_notify(vm, a, msg_val, "timer message");
+        return 0;
+    }
+    wo_timer *t = calloc(1, sizeof *t);
+    if (!t) {
+        actor_drop_payload(vm, msg_val);
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    t->at = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + ms;
+    t->target = a;
+    t->msg = msg_val;
+    t->next = vm->timers;
+    vm->timers = t;
+    return 0;
+}
+
+int wo_vm_timers_fire(wo_vm *vm, int64_t now) {
+    int fired = 0;
+    wo_timer **pp = &vm->timers;
+    while (*pp) {
+        wo_timer *t = *pp;
+        if (t->at <= now) {
+            *pp = t->next;
+            runtime_notify(vm, t->target, t->msg, "timer message");
+            free(t);
+            fired++;
+        } else {
+            pp = &t->next;
+        }
+    }
+    return fired;
+}
+
+int64_t wo_vm_timers_next(wo_vm *vm) {
+    int64_t next = 0;
+    for (wo_timer *t = vm->timers; t; t = t->next)
+        if (next == 0 || t->at < next) next = t->at;
+    return next;
 }
 
 /* The drop-table entry governing instruction [pc]: the last one recorded

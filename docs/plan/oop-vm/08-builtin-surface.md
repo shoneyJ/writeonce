@@ -277,6 +277,8 @@ unset `env.get` are nil.
 | `sha1(bytes)` | `-> Bytes` | 20-byte digest (id 85, iteration 34) — exists because RFC 6455's Sec-WebSocket-Accept demands SHA-1 |
 | `sha256(bytes)` | `-> Bytes` | 32-byte digest (id 86, iteration 34) |
 | `hmac_sha256(key, msg)` | `-> Bytes` | RFC 2104 over SHA-256, both args Bytes (id 87, iteration 34); key > 64 bytes hashed first |
+| `monitor(watched, observer, msg)` | — | iteration 24 (id 89): the observer's own M-typed msg (MOVED) is delivered when watched dies (trap-death); already-dead delivers now; a full observer's notice is dropped with a stderr line — no fiber to trap |
+| `time.after(ms, addr, msg)` | — | iteration 24 (id 90): one-shot timer — msg (MOVED) arrives as an ordinary send after ms on the arming shard; ms <= 0 delivers now; NO cancel — the generation-counter idiom (run/timer-generation) is the answer |
 | `call(addr, msg)` | `-> R` | send that WAITS (id 88, iteration 24): the message moves like `send`'s, the caller's fiber parks until the receive's return value arrives. R = the receive's declared return type — every `receive(msg: M)` program-wide must agree on it and it must be a copyable scalar in v1 (WO-E226 otherwise). A dead callee traps WO_T_ACTOR, immediately or mid-call — a `call` never hangs |
 | `env.get(name)` | `-> ?Text` | unset is nil |
 | `env.stopping()` | `-> Bool` | SIGTERM/SIGINT latch, handlers installed on first use |
