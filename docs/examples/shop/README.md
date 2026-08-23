@@ -29,6 +29,7 @@ it and restart: the orders are still there (WAL replay).
 | `product_page/`, `orders/` | one view module per feature + its root controller file | feature folders |
 | `static_files/controller.wo` | `/assets/*` from disk, traversal-safe, typed | `angular.json` assets |
 | `assets/style.css` | ONE real stylesheet, sectioned per feature | the `.scss` files |
+| `*/view.html`, `layout/*.html` | STORY 37's TARGET — markup-first templates ({{ }} auto-escaped, w:if/w:for, {!! !!} slots) that woc will COMPILE against the view classes; inert today | `.component.html` / Vue `<template>` |
 | `main.wo` | bootstrap: seed, routes, serve — nothing else | `app-routing.module.ts` + `main.ts` |
 
 Separation is compiler-enforced where the language allows it today:
@@ -38,9 +39,12 @@ sit in the root module beside `types.wo`, because of gap #1 below.
 
 ## What is deliberately different (doctrine)
 
-- **No `.html`/`.scss` template files.** Views are `.wo` code — the
-  compiler type-checks them, `esc()` is the one escaping rule, and no
-  template engine runs at request time. Styles stay a real CSS file,
+- **Templates compile or they don't exist (story 37).** The `.html`
+  files here are the TARGET: when 37 lands, `woc` compiles each against
+  its view class (typo'd field = compile error) and the hand-written
+  `render()` methods in `view.wo` disappear. Until then the `.wo` files
+  are the running hand-lowering of exactly that markup, and NO template
+  engine runs at request time — ever. Styles stay a real CSS file,
   served statically (there is no scss preprocessor).
 - **No closures, no DI.** A view is a class with fields + `render()`;
   a controller is a class satisfying `Handler`. Capture = a field.
@@ -64,6 +68,8 @@ sit in the root module beside `types.wo`, because of gap #1 below.
 1. `types.wo` — the entire persistence layer is 20 lines.
 2. `orders.controller.wo` — the whole buying flow (validate, stock
    check, decrement, durable insert, render) with no framework magic.
-3. `product_list/view.wo` — is markup-as-code readable enough without
-   templates? This file is the referendum.
+3. `product_list/view.html` NEXT TO `product_list/view.wo` — the
+   template 37 will compile vs today's hand-lowering. The pair is the
+   referendum: the `.html` is what writing a view will feel like, the
+   `.wo` is what it costs today.
 4. `main.wo` — the app at a glance: five routes, one middleware, serve.

@@ -1,0 +1,20 @@
+<!-- product_list/view.html — STORY 37's TARGET, not yet compiled.
+     When 37 lands, woc compiles this file against the view classes in
+     view.wo; until then view.wo's render() methods are the HAND-LOWERED
+     equivalent of exactly this markup. Notation ({{ }} auto-escaped,
+     {!! !!} raw slot, w:if / w:for) is illustrative — 37's spec settles
+     the final spelling. -->
+
+<template w:component="ProductCard">
+  <div class="card">
+    <h3><a href="/p/{{ self.sku }}">{{ self.name }}</a></h3>
+    <p class="price">€ {{ self.price }}</p>
+    <p w:if="self.stock > 0" class="stock">{{ self.stock }} in stock</p>
+    <p w:if="self.stock == 0" class="stock out">sold out</p>
+  </div>
+</template>
+
+<template w:component="ProductListPage">
+  <h1>Products</h1>
+  <div class="grid">{!! self.cards !!}</div>
+</template>

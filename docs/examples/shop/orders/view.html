@@ -1,0 +1,28 @@
+<!-- orders/view.html — STORY 37's TARGET (see product_list/view.html for
+     the convention). view.wo is the hand-lowered equivalent. -->
+
+<template w:component="OrderOk">
+  <div class="card">
+    <h1>Order placed</h1>
+    <p>{{ self.qty }} × {{ self.name }} — total € {{ self.total }}</p>
+    <p><a href="/orders">See all orders</a> · <a href="/">Keep shopping</a></p>
+  </div>
+</template>
+
+<template w:component="OrderRow">
+  <tr>
+    <td>{{ self.name }}</td>
+    <td>{{ self.qty }}</td>
+    <td>€ {{ self.total }}</td>
+    <td>{{ self.status }}</td>
+  </tr>
+</template>
+
+<template w:component="OrdersPage">
+  <h1>Orders</h1>
+  <p w:if="self.rows == ''">No orders yet — <a href="/">go buy something</a>.</p>
+  <table w:if="self.rows != ''" class="orders">
+    <tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>
+    {!! self.rows !!}
+  </table>
+</template>

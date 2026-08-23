@@ -1,0 +1,18 @@
+<!-- product_page/view.html — STORY 37's TARGET (see product_list/view.html
+     for the convention). view.wo is the hand-lowered equivalent. -->
+
+<template w:component="ProductPage">
+  <div class="card detail">
+    <h1>{{ self.name }}</h1>
+    <p class="price">€ {{ self.price }}</p>
+    <p class="stock">{{ self.stock }} in stock</p>
+
+    <form w:if="self.stock > 0" method="POST" action="/orders/{{ self.sku }}">
+      <label>Quantity</label>
+      <input type="text" name="qty" value="1" class="field">
+      <button type="submit" class="btn">Buy</button>
+    </form>
+    <p w:if="self.stock == 0" class="stock out">sold out</p>
+  </div>
+  <p><a href="/">← all products</a></p>
+</template>

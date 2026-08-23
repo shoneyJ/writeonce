@@ -1,0 +1,20 @@
+<!-- layout/app.html — STORY 37's TARGET for the app shell: the document
+     every page shares. {!! !!} slots take prebuilt fragments (header,
+     footer, the page content); app.wo is the hand-lowered equivalent. -->
+
+<template w:component="AppShell">
+  <!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ self.title }}</title>
+    <link rel="stylesheet" href="/assets/style.css">
+  </head>
+  <body>
+    {!! self.header !!}
+    <main class="site-main">{!! self.content !!}</main>
+    {!! self.footer !!}
+  </body>
+  </html>
+</template>
