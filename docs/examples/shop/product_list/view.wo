@@ -1,8 +1,11 @@
--- product_list/view.wo — the VIEW (view.html's analog). Classes with
--- `fn render() -> Text`: fields are exactly the values displayed, the
--- markup reads top to bottom. No queries here — the controller fills
--- the fields. (A future `@view` class would let a projection query fill
--- them directly; today the controller copies the fields in.)
+-- product_list/view.wo — the VIEW. Classes with `fn render() -> Text`:
+-- fields are exactly the values displayed. No queries here — the
+-- controller fills the fields.
+--
+-- Each render() carries its STORY-37 TARGET above it: a raw multi-line
+-- template literal whose {{ expr }} holes are auto-escaped, compile-
+-- time-checked interpolations (a typo'd field = compile error). The
+-- body below is today's hand-lowering of exactly that literal.
 use html
 
 pub class ProductCard {
@@ -11,6 +14,15 @@ pub class ProductCard {
   price: Float
   stock: Int
 
+  -- 37 target:
+  --   let tail = `<p class="stock">{{ self.stock }} in stock</p>`;
+  --   if self.stock == 0 { tail = `<p class="stock out">sold out</p>`; }
+  --   return `
+  --     <div class="card">
+  --       <h3><a href="/p/{{ self.sku }}">{{ self.name }}</a></h3>
+  --       <p class="price">€ {{ self.price }}</p>
+  --       {!! tail !!}
+  --     </div>`;
   fn render() -> Text {
     let h = el("h3", "", link("/p/${esc(self.sku)}", "", esc(self.name)));
     let price = el("p", "price", "€ ${self.price}");
@@ -25,6 +37,10 @@ pub class ProductCard {
 pub class ProductListPage {
   cards: Text
 
+  -- 37 target:
+  --   return `
+  --     <h1>Products</h1>
+  --     <div class="grid">{!! self.cards !!}</div>`;
   fn render() -> Text {
     let head = el("h1", "", "Products");
     let grid = el("div", "grid", self.cards);

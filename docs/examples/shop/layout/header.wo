@@ -1,6 +1,12 @@
 -- layout/header.wo — the header fragment (header.html's analog).
 use html
 
+-- 37 target:
+--   return `
+--     <header class="site-header">
+--       <a href="/" class="brand">writeonce shop</a>
+--       <nav class="site-nav"><a href="/">Products</a> <a href="/orders">Orders</a></nav>
+--     </header>`;
 pub fn header() -> Text {
   let brand = link("/", "brand", "writeonce shop");
   let nav = link("/", "", "Products") .. link("/orders", "", "Orders");

@@ -1,4 +1,6 @@
 -- product_page/view.wo — the product detail view with the order form.
+-- The comment above render() is the STORY-37 TARGET (raw template
+-- literal, {{ }} auto-escaped); the body is today's hand-lowering.
 use html
 
 pub class ProductPage {
@@ -7,6 +9,22 @@ pub class ProductPage {
   price: Float
   stock: Int
 
+  -- 37 target:
+  --   let action = `
+  --     <form method="POST" action="/orders/{{ self.sku }}">
+  --       <label>Quantity</label>
+  --       <input type="text" name="qty" value="1" class="field">
+  --       <button type="submit" class="btn">Buy</button>
+  --     </form>`;
+  --   if self.stock == 0 { action = `<p class="stock out">sold out</p>`; }
+  --   return `
+  --     <div class="card detail">
+  --       <h1>{{ self.name }}</h1>
+  --       <p class="price">€ {{ self.price }}</p>
+  --       <p class="stock">{{ self.stock }} in stock</p>
+  --       {!! action !!}
+  --     </div>
+  --     <p><a href="/">← all products</a></p>`;
   fn render() -> Text {
     let head = el("h1", "", esc(self.name));
     let price = el("p", "price", "€ ${self.price}");

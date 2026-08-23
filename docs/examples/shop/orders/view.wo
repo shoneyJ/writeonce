@@ -1,4 +1,6 @@
--- orders/view.wo — the confirmation page and the orders table.
+-- orders/view.wo — the confirmation page and the orders table. The
+-- comment above each render() is the STORY-37 TARGET (raw template
+-- literal, {{ }} auto-escaped); the body is today's hand-lowering.
 use html
 
 pub class OrderOk {
@@ -6,6 +8,13 @@ pub class OrderOk {
   qty:   Int
   total: Float
 
+  -- 37 target:
+  --   return `
+  --     <div class="card">
+  --       <h1>Order placed</h1>
+  --       <p>{{ self.qty }} × {{ self.name }} — total € {{ self.total }}</p>
+  --       <p><a href="/orders">See all orders</a> · <a href="/">Keep shopping</a></p>
+  --     </div>`;
   fn render() -> Text {
     let head = el("h1", "", "Order placed");
     let what = el("p", "", "${self.qty} × ${esc(self.name)} — total € ${self.total}");
@@ -20,6 +29,14 @@ pub class OrderRow {
   total:  Float
   status: Text
 
+  -- 37 target:
+  --   return `
+  --     <tr>
+  --       <td>{{ self.name }}</td>
+  --       <td>{{ self.qty }}</td>
+  --       <td>€ {{ self.total }}</td>
+  --       <td>{{ self.status }}</td>
+  --     </tr>`;
   fn render() -> Text {
     let cells = el("td", "", esc(self.name));
     cells = cells .. el("td", "", "${self.qty}");
@@ -32,6 +49,17 @@ pub class OrderRow {
 pub class OrdersPage {
   rows: Text
 
+  -- 37 target:
+  --   if self.rows == "" {
+  --     return `<h1>Orders</h1>
+  --             <p>No orders yet — <a href="/">go buy something</a>.</p>`;
+  --   }
+  --   return `
+  --     <h1>Orders</h1>
+  --     <table class="orders">
+  --       <tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>
+  --       {!! self.rows !!}
+  --     </table>`;
   fn render() -> Text {
     let head = el("h1", "", "Orders");
     if self.rows == "" {

@@ -29,7 +29,7 @@ it and restart: the orders are still there (WAL replay).
 | `product_page/`, `orders/` | one view module per feature + its root controller file | feature folders |
 | `static_files/controller.wo` | `/assets/*` from disk, traversal-safe, typed | `angular.json` assets |
 | `assets/style.css` | ONE real stylesheet, sectioned per feature | the `.scss` files |
-| `*/view.html`, `layout/*.html` | STORY 37's TARGET — markup-first templates ({{ }} auto-escaped, w:if/w:for, {!! !!} slots) that woc will COMPILE against the view classes; inert today | `.component.html` / Vue `<template>` |
+| the `-- 37 target:` block above each `render()` | STORY 37's TARGET — an in-class raw template literal ({{ }} auto-escaped + type-checked, {!! !!} raw slots) replacing the hand-built body below it | Vue `<template>` (in-SFC) |
 | `main.wo` | bootstrap: seed, routes, serve — nothing else | `app-routing.module.ts` + `main.ts` |
 
 Separation is compiler-enforced where the language allows it today:
@@ -39,13 +39,16 @@ sit in the root module beside `types.wo`, because of gap #1 below.
 
 ## What is deliberately different (doctrine)
 
-- **Templates compile or they don't exist (story 37).** The `.html`
-  files here are the TARGET: when 37 lands, `woc` compiles each against
-  its view class (typo'd field = compile error) and the hand-written
-  `render()` methods in `view.wo` disappear. Until then the `.wo` files
-  are the running hand-lowering of exactly that markup, and NO template
-  engine runs at request time — ever. Styles stay a real CSS file,
-  served statically (there is no scss preprocessor).
+- **Templates compile or they don't exist (story 37).** The target is
+  an IN-CLASS raw template literal: `render()` returns one multi-line
+  literal whose `{{ expr }}` holes are auto-escaped, compile-time-
+  checked interpolations (typo'd field = compile error); `{!! !!}` is
+  the raw slot for prebuilt fragments; structural control stays the
+  language's `if`/`for` composing literals. Every `render()` here
+  carries that target as the `-- 37 target:` comment above it — the
+  body below is today's hand-lowering. NO template engine runs at
+  request time — ever. Styles stay a real CSS file, served statically
+  (there is no scss preprocessor).
 - **No closures, no DI.** A view is a class with fields + `render()`;
   a controller is a class satisfying `Handler`. Capture = a field.
 - **No sessions/cart yet.** Buying is per-product (qty → order). A cart
@@ -68,8 +71,7 @@ sit in the root module beside `types.wo`, because of gap #1 below.
 1. `types.wo` — the entire persistence layer is 20 lines.
 2. `orders.controller.wo` — the whole buying flow (validate, stock
    check, decrement, durable insert, render) with no framework magic.
-3. `product_list/view.html` NEXT TO `product_list/view.wo` — the
-   template 37 will compile vs today's hand-lowering. The pair is the
-   referendum: the `.html` is what writing a view will feel like, the
-   `.wo` is what it costs today.
+3. `orders/view.wo` — each `-- 37 target:` literal vs the hand-built
+   body under it. The pair is the referendum: the literal is what
+   writing a view will feel like, the body is what it costs today.
 4. `main.wo` — the app at a glance: five routes, one middleware, serve.

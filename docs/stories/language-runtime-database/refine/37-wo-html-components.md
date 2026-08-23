@@ -18,24 +18,27 @@ status: refine
 >
 > **REDIRECTED 2026-08-23** (developer review of the shop template
 > against a Vue SFC): render()-as-string-concatenation failed the DX
-> referendum — markup must be markup-FIRST. New direction:
-> **`view.html` template files COMPILED BY `woc` into render code** —
-> `{{ self.name }}` interpolation (auto-escaped; a raw opt-out spelling
-> for prebuilt fragments), `w:if`/`w:for` structural attributes, typed
-> against the view class's fields at compile time (a typo'd field is a
-> compile error), NO template engine at runtime — the doctrine's real
-> meaning becomes "no template interpreted at request time", not "no
-> template files". A runtime mustache-lite was considered and REJECTED:
-> reflection-free means values degrade to `map<Text, Text>` — typing
-> lost. Client-side reactivity from the Vue sample (`ref`, `@click`,
-> `v-model`) stays out under the no-JS posture; qty steppers are form
-> fields, actions are POSTs. This makes 37 a COMPILER iteration too
-> (template-to-code lowering), gated behind the standing
-> "no compiler/VM/database changes yet" directive — schedule
-> accordingly. The shop template
+> referendum — markup must be markup-FIRST. **RE-POINTED 2026-08-24**
+> (developer counter-proposal): the leaning is now **in-class raw
+> template literals**, not separate `.html` files — `render()` RETURNS
+> a raw multi-line string literal whose `{{ expr }}` holes are
+> auto-escaped, compile-time-checked interpolations in class scope (a
+> typo'd field is a compile error). Compiler surface shrinks to one
+> lexer addition (the raw literal — a general language win: multi-line
+> text without `\"` noise) plus one desugar; no file pairing, no
+> `w:component` sections. Structural control stays the language's own
+> `if`/`for` composing literals; `w:if`/`w:for` attributes and separate
+> `.html` files are DEMOTED to a later option that can layer on without
+> breaking this form. Escaping: `{{ }}` always escapes; the raw/slot
+> spelling is the one greppable door. A runtime mustache-lite stays
+> REJECTED (reflection-free means untyped `map<Text, Text>`); client-
+> side reactivity (`ref`, `@click`, `v-model`) stays out under the
+> no-JS posture — forms and POSTs instead. Still a COMPILER iteration,
+> parked behind the standing "no compiler/VM/database changes yet"
+> directive. The shop template
 > ([`docs/examples/shop`](../../../examples/shop/README.md)) is the
-> consumer: its `view.wo` classes become `view.html` + view classes,
-> and its README's recorded gaps ride along (gap #1: `pub` + `@table`
+> consumer: each `render()` body becomes one raw template literal, and
+> its README's recorded gaps ride along (gap #1: `pub` + `@table`
 > cannot combine — blocks a shared model module; gap #2: `@view`
 > projection classes).
 
@@ -115,14 +118,12 @@ detection, event bindings, SPA router) deliberately does not.
 Forks the spec must settle (REVISED 2026-08-23 for the compiled-template
 direction):
 
-1. **Template pairing** — Vue-SFC style (one `view.html` whose
-   frontmatter/`<script>` block declares the fields) vs paired files
-   (`view.html` + a `.wo` view class it compiles against). Leaning:
-   paired — the class stays ordinary `.wo`, the template is pure markup.
-2. **Directive surface** — the minimal set: `{{ expr }}` (auto-escaped),
-   a raw spelling for prebuilt fragments (slots), `w:if`, `w:for`,
-   `w:class`-style conditional classes. Anything beyond is YAGNI until a
-   sample demands it.
+1. **The raw-literal spelling** — backticks, triple quotes, or another
+   delimiter; and the raw-slot spelling inside it (`{!! !!}` vs `${}`
+   staying unescaped). One rule: `{{ }}` always escapes.
+2. **Directive surface** — v1 ships NONE (structural control is `if`/
+   `for` composing literals); `w:if`/`w:for` and separate `.html` files
+   layer on later only if a sample proves the need.
 3. **Escaping default** — `{{ }}` escapes ALWAYS (safer than today's
    caller-explicit `esc()`); the raw spelling is the only door, and it
    is greppable.
