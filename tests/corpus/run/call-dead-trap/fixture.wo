@@ -1,0 +1,29 @@
+-- iteration 24: no hangs, ever. A receive that traps kills the ACTOR:
+-- the parked caller is error-unparked into a catchable WO_T_ACTOR
+-- (callee died mid-call), and a later call to the same address traps
+-- immediately (call-to-dead). The runtime prints the fiber-trap report
+-- to stderr; stdout carries only the caller's side.
+class Q {
+  n: Int
+}
+
+class Bomb {
+  pad: Int
+  fn receive(msg: Q) -> Int {
+    return msg.n / (msg.n - msg.n);   -- DIV0: the actor dies mid-call
+  }
+}
+
+fn call_one(b: actor Q, n: Int) -> Text {
+  let r = call(b, Q { n: n });
+  return "replied ${r}";
+}
+
+fn main() -> Int {
+  let b: actor Q = spawn Bomb { pad: 0 };
+  let first = try call_one(b, 7) catch (e) e.msg;
+  print("mid-call: ${first}");
+  let second = try call_one(b, 8) catch (e) e.msg;
+  print("to-dead: ${second}");
+  return 0;
+}

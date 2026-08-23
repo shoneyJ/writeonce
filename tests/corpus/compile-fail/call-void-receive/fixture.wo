@@ -1,0 +1,19 @@
+-- iteration 24: `call` needs a reply — a receive with no return type
+-- serves `send` only (WO-E226).
+
+class Q {
+  n: Int
+}
+
+class Sink {
+  pad: Int
+  fn receive(msg: Q) {
+    self.pad = msg.n;
+  }
+}
+
+fn main() -> Int {
+  let s: actor Q = spawn Sink { pad: 0 };
+  let r = call(s, Q { n: 1 });
+  return r;
+}

@@ -197,6 +197,8 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = 0;
         return 0;
     }
+    case WO_B_CALL: /* iteration 24: park/reply protocol lives in vm.c */
+        return wo_vm_actor_call(vm, R, ins, msg);
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);

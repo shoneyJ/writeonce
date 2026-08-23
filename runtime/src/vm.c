@@ -72,9 +72,12 @@ static void inbox_push_to(uint32_t shard, wo_envelope *e) {
 }
 
 static void fib_enqueue(wo_vm *vm, wo_fiber *fb);
-static int actor_push(wo_actor *a, uint64_t m);
 static int actor_activate(wo_vm *vm, wo_actor *a);
 static void fib_reap_all(wo_vm *vm);
+static int actor_push(wo_actor *a, wo_msg m);
+static void call_reply_to(wo_vm *vm, wo_fiber *caller, uint32_t caller_shard,
+                          uint64_t reply, int status);
+static void actor_drop_payload(wo_vm *vm, uint64_t payload);
 
 /* the owning thread drains its inbox: adopt actors, deliver sends,
  * execute home-routed frees. Returns how many envelopes were handled. */
@@ -92,14 +95,50 @@ static int wo_vm_adopt(wo_vm *vm) {
             e->actor->next_all = vm->actors;
             vm->actors = e->actor;
             break;
-        case 0: /* a cross-shard send: mailbox + activation on the HOME thread.
-                   The sender already reserved the cap slot; a failed push
-                   (OOM) must hand it back or the slot leaks forever. */
-            if (actor_push(e->actor, e->payload) == 0) {
+        case 0: { /* a cross-shard send: mailbox + activation on the HOME
+                   thread. The sender already reserved the cap slot; a failed
+                   push (OOM) must hand it back or the slot leaks forever.
+                   A dead target drops the moved message silently (the
+                   send-to-dead rule) and frees the slot. */
+            if (e->actor->dead) {
+                actor_drop_payload(vm, e->payload);
+                wo_mbox_release(e->actor);
+                break;
+            }
+            wo_msg m0 = { e->payload, NULL, 0 };
+            if (actor_push(e->actor, m0) == 0) {
                 if (!e->actor->active) (void)actor_activate(vm, e->actor);
             } else {
+                actor_drop_payload(vm, e->payload);
                 wo_mbox_release(e->actor);
             }
+            break;
+        }
+        case 5: { /* iteration 24: a cross-shard call — same enqueue as a
+                   send, but the slot remembers the parked caller. A dead
+                   target answers the error reply instead. */
+            if (e->actor->dead) {
+                actor_drop_payload(vm, e->payload);
+                wo_mbox_release(e->actor);
+                call_reply_to(vm, e->from_fiber, e->from_shard, 0, WO_T_ACTOR);
+                break;
+            }
+            wo_msg mc = { e->payload, e->from_fiber, e->from_shard };
+            if (actor_push(e->actor, mc) == 0) {
+                if (!e->actor->active) (void)actor_activate(vm, e->actor);
+            } else {
+                actor_drop_payload(vm, e->payload);
+                wo_mbox_release(e->actor);
+                call_reply_to(vm, e->from_fiber, e->from_shard, 0, WO_T_ACTOR);
+            }
+            break;
+        }
+        case 6: /* iteration 24: a call reply landing on the caller's shard —
+                   fill the slot and wake the parked fiber; the re-executed
+                   builtin consumes it (status != 0 makes it trap). */
+            e->from_fiber->call_reply = e->payload;
+            e->from_fiber->call_state = e->status ? 3 : 2;
+            wo_io_unpark(vm, e->from_fiber);
             break;
         case 2: /* a home-routed free: this arena owns the object */
             wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
@@ -518,7 +557,7 @@ void wo_vm_destroy(wo_vm *vm) {
         wo_actor *nx = a->next_all;
         if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
         for (uint32_t i = 0; i < a->mlen; i++) {
-            uint64_t m = a->msgs[(a->mhead + i) % a->mcap];
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
             if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
         }
         free(a->msgs);
@@ -624,18 +663,18 @@ void wo_mbox_release(wo_actor *a) {
     __atomic_fetch_sub(&a->pending, 1, __ATOMIC_ACQ_REL);
 }
 
-static uint64_t actor_pop(wo_actor *a) {
-    uint64_t m = a->msgs[a->mhead];
+static wo_msg actor_pop(wo_actor *a) {
+    wo_msg m = a->msgs[a->mhead];
     a->mhead = (a->mhead + 1) % a->mcap;
     a->mlen--;
     wo_mbox_release(a);
     return m;
 }
 
-static int actor_push(wo_actor *a, uint64_t m) {
+static int actor_push(wo_actor *a, wo_msg m) {
     if (a->mlen == a->mcap) {
         uint32_t ncap = a->mcap ? a->mcap * 2 : 8;
-        uint64_t *nm = malloc((size_t)ncap * 8u);
+        wo_msg *nm = malloc((size_t)ncap * sizeof(wo_msg));
         if (!nm) return -1;
         for (uint32_t i = 0; i < a->mlen; i++) nm[i] = a->msgs[(a->mhead + i) % a->mcap];
         free(a->msgs);
@@ -648,16 +687,75 @@ static int actor_push(wo_actor *a, uint64_t m) {
     return 0;
 }
 
+/* iteration 24: a message the runtime must discard (dead target, failed
+ * enqueue). Messages are class instances — wo_drop_obj routes a wrong-
+ * shard drop home through the free envelope. */
+static void actor_drop_payload(wo_vm *vm, uint64_t payload) {
+    if (payload) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)payload);
+}
+
+/* iteration 24: answer one parked caller. Same-shard callers unpark
+ * directly; remote ones get a kind-6 envelope. status 0 delivers the
+ * scalar reply; WO_T_ACTOR makes the caller's re-executed builtin trap. */
+static void call_reply_to(wo_vm *vm, wo_fiber *caller, uint32_t caller_shard,
+                          uint64_t reply, int status) {
+    if (!caller) return;
+    if (caller_shard == vm->shard_id) {
+        caller->call_reply = reply;
+        caller->call_state = status ? 3 : 2;
+        wo_io_unpark(vm, caller);
+        return;
+    }
+    wo_envelope *e = calloc(1, sizeof *e);
+    if (!e) return; /* OOM: the caller stays parked until stop — leak, not UB */
+    e->kind = 6;
+    e->payload = reply;
+    e->from_fiber = caller;
+    e->status = status;
+    inbox_push_to(caller_shard, e);
+}
+
+/* iteration 24: an actor dies (its receive trapped uncaught). Marked on
+ * the HOME thread only. The in-flight caller and every QUEUED caller get
+ * the dead error; queued payloads are the runtime's to drop; the moved-in
+ * state is released. The wo_actor shell itself stays allocated forever
+ * (addresses are copyable scalars that may still be sent to). */
+static void actor_die(wo_vm *vm, wo_actor *a, wo_fiber *delivery) {
+    a->dead = 1;
+    if (delivery->cur_msg) {
+        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)delivery->cur_msg);
+        delivery->cur_msg = 0;
+    }
+    call_reply_to(vm, delivery->msg_caller, delivery->msg_caller_shard, 0, WO_T_ACTOR);
+    delivery->msg_caller = NULL;
+    while (a->mlen) {
+        wo_msg m = actor_pop(a);
+        if (m.payload) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m.payload);
+        call_reply_to(vm, m.caller, m.caller_shard, 0, WO_T_ACTOR);
+    }
+    if (a->instance) {
+        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        a->instance = 0;
+    }
+    a->active = NULL;
+}
+
 /* Mailbox nonempty, no delivery fiber: start one on the next message.
  * receive borrows both self and the message; the runtime keeps ownership
  * of the message (fiber->cur_msg) and drops it when the call returns. */
 static int actor_activate(wo_vm *vm, wo_actor *a) {
-    uint64_t m = actor_pop(a);
-    uint64_t args[2] = { a->instance, m };
+    wo_msg m = actor_pop(a);
+    uint64_t args[2] = { a->instance, m.payload };
     wo_fiber *fb = wo_vm_spawn_fiber(vm, a->method, args, 2);
-    if (!fb) return -1;
+    if (!fb) {
+        actor_drop_payload(vm, m.payload);
+        call_reply_to(vm, m.caller, m.caller_shard, 0, WO_T_ACTOR);
+        return -1;
+    }
     fb->actor = a;
-    fb->cur_msg = m;
+    fb->cur_msg = m.payload;
+    fb->msg_caller = m.caller;
+    fb->msg_caller_shard = m.caller_shard;
     a->active = fb;
     return 0;
 }
@@ -714,6 +812,14 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         *msg = "send: nil message";
         return WO_T_BOUNDS;
     }
+    /* send-to-dead is a silent drop (spec'd v1): the message moved to the
+     * runtime, so the runtime discards it. The dead flag is written on the
+     * home thread; a racing remote read at worst enqueues an envelope the
+     * home drain then discards through its own dead check. */
+    if (a->dead) {
+        actor_drop_payload(vm, msg_val);
+        return 0;
+    }
     /* iteration 24: the cap check happens SENDER-side on every path, so
      * the sender always learns — fail-fast backpressure, catchable. */
     if (wo_mbox_reserve(a) != 0) {
@@ -736,7 +842,8 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         inbox_push_to(a->home, e);
         return 0;
     }
-    if (actor_push(a, msg_val) != 0) {
+    wo_msg m0 = { msg_val, NULL, 0 };
+    if (actor_push(a, m0) != 0) {
         wo_mbox_release(a);
         *msg = "out of memory";
         return WO_T_OOM;
@@ -746,6 +853,75 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
         return WO_T_OOM;
     }
     return 0;
+}
+
+/* iteration 24: call — send that waits. First entry enqueues with the
+ * caller attached and parks (WO_PARK_INBOX, the DB-RPC park); the resume
+ * RE-EXECUTES this builtin and consumes the scalar reply. No hangs, ever:
+ * call-to-dead traps immediately, callee-dies-mid-call error-unparks. */
+int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
+    uint32_t A = wo_ins_a(ins), B = wo_ins_b(ins);
+    wo_fiber *fb = vm->cur;
+
+    if (fb->call_state == 2) { /* the reply: consume it */
+        fb->call_state = 0;
+        R[A] = fb->call_reply;
+        return 0;
+    }
+    if (fb->call_state == 3) { /* the callee was/went dead */
+        fb->call_state = 0;
+        *msg = "actor died during call";
+        return WO_T_ACTOR;
+    }
+
+    wo_actor *a = (wo_actor *)(uintptr_t)R[B];
+    uint64_t msg_val = R[B + 1];
+    if (!a) {
+        *msg = "call: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "call: nil message";
+        return WO_T_BOUNDS;
+    }
+    if (a->dead) { /* unlike send, the caller MUST learn */
+        actor_drop_payload(vm, msg_val);
+        *msg = "actor died during call";
+        return WO_T_ACTOR;
+    }
+    if (wo_mbox_reserve(a) != 0) {
+        *msg = "actor mailbox full";
+        return WO_T_ACTOR;
+    }
+    if (a->home != vm->shard_id) {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            wo_mbox_release(a);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        e->kind = 5;
+        e->actor = a;
+        e->payload = msg_val;
+        e->from_shard = vm->shard_id;
+        e->from_fiber = fb;
+        inbox_push_to(a->home, e);
+    } else {
+        wo_msg mc = { msg_val, fb, vm->shard_id };
+        if (actor_push(a, mc) != 0) {
+            wo_mbox_release(a);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        if (!a->active && actor_activate(vm, a) != 0) {
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+    }
+    fb->call_state = 1;
+    fb->park_fd = WO_PARK_INBOX;
+    fb->park_done = 0; /* resume RE-EXECUTES the builtin: the consume path */
+    return WO_SYS_PARKED;
 }
 
 /* The drop-table entry governing instruction [pc]: the last one recorded
@@ -830,7 +1006,7 @@ static void vm_gc_roots(wo_vm *vm) {
     for (const wo_actor *a = vm->actors; a; a = a->next_all) {
         if (a->instance) wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
         for (uint32_t i = 0; i < a->mlen; i++) {
-            uint64_t m = a->msgs[(a->mhead + i) % a->mcap];
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
             if (m) wo_gc_scan_root(&vm->rt, (wo_hdr *)(uintptr_t)m);
         }
         if (a->active && a->active->cur_msg)
@@ -992,6 +1168,12 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
                         "wovm: fiber trap %d at %s:%d: %s\n", \
                         err->code, err->method, err->line, err->msg); \
             wo_fiber *dead = vm->cur;                    \
+            /* iteration 24: a receive trapping uncaught kills the ACTOR, \
+             * not just the fiber — the dead flag, the in-flight caller,  \
+             * every queued caller, the state and the mailbox are all     \
+             * settled here (before: cur_msg leaked and a->active         \
+             * dangled — the actor's mailbox rotted forever). */          \
+            if (dead->actor) actor_die(vm, dead->actor, dead);            \
             vm->nfibers--;                               \
             free(dead);                                  \
             NEXT_RUNNABLE();                             \
@@ -1332,10 +1514,15 @@ dispatch:
                 wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)dead->cur_msg); \
                 dead->cur_msg = 0;                                        \
             }                                                             \
+            /* iteration 24: the receive's return value IS the reply —   \
+             * ship it before this context is reused or freed */         \
+            call_reply_to(vm, dead->msg_caller, dead->msg_caller_shard,  \
+                          (rv), 0);                                       \
+            dead->msg_caller = NULL;                                     \
             if (a->mlen) {                                                \
                 /* next message: REUSE this context, re-queued for       \
                  * fairness (one message per turn, never a monopolist) */ \
-                uint64_t m_ = actor_pop(a);                               \
+                wo_msg m_ = actor_pop(a);                                 \
                 const wo_methodrec *sme_ = &vm->mod->methods[a->method];  \
                 dead->depth = 1;                                          \
                 dead->ncatch = 0;                                         \
@@ -1343,9 +1530,11 @@ dispatch:
                 dead->frames[0].pc = 0;                                   \
                 dead->frames[0].base = 0;                                 \
                 dead->regs[0] = a->instance;                              \
-                dead->regs[1] = m_;                                       \
+                dead->regs[1] = m_.payload;                               \
                 memset(dead->regs + 2, 0, (size_t)(sme_->reg_cnt - 2) * 8u); \
-                dead->cur_msg = m_;                                       \
+                dead->cur_msg = m_.payload;                               \
+                dead->msg_caller = m_.caller;                             \
+                dead->msg_caller_shard = m_.caller_shard;                 \
                 fib_enqueue(vm, dead);                                    \
                 NEXT_RUNNABLE();                                          \
                 RELOAD();                                                 \

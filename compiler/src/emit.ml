@@ -288,6 +288,7 @@ let b_text_of_bytes = 83
 let b_sha1 = 85
 let b_sha256 = 86
 let b_hmac_sha256 = 87
+let b_call = 88
 let b_split = 28
 let b_split_ws = 29
 let b_join = 30
@@ -1099,7 +1100,7 @@ let is_builtin_name (n : string) =
       "substr"; "trim"; "to_lower"; "char_of"; "parse_int"; "split"; "split_ws"; "join"; "slice";
       "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at";
       (* the concurrency arc *)
-      "send";
+      "send"; "call";
       (* iteration 19: Float bridges and Bytes surface *)
       "float"; "trunc"; "parse_float"; "float_to_text"; "float_cmp"; "bytes_len"; "bytes_at";
       "bytes_slice"; "bytes_eq"; "bytes_concat"; "base64_encode"; "base64_decode";
@@ -3662,6 +3663,8 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       || id = b_float_cmp || id = b_bytes_at || id = b_bytes_eq || id = b_bytes_concat
       (* iteration 34, two arguments *)
       || id = b_hmac_sha256
+      (* iteration 24, two arguments *)
+      || id = b_call
     then 2
     else 3 (* b_bytes_slice lands here with substr's shape: (value, start, len) *)
   in
@@ -3697,7 +3700,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
          dangle the value just read) and the stores, which either copy (Text,
          handled by copied_container_call) or take ownership (OWNED/GCREF). *)
       let reader = List.mem name [ "get"; "latest"; "key_at"; "val_at" ] in
-      (if not (List.mem name [ "push"; "set"; "send" ]) then
+      (if not (List.mem name [ "push"; "set"; "send"; "call" ]) then
          List.iteri
            (fun i (a : Ast.expr) ->
              (* a reader's result points into arg0 (the container) — dropping
@@ -3728,6 +3731,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   in
   match name with
   | "send" -> fixed b_send (* arc: msg (arg1) moved to the runtime — never dropped here *)
+  | "call" -> fixed b_call (* iteration 24: same move; the SCALAR reply lands in dst *)
   | "now" -> fixed b_now
   | "print" -> fixed b_print
   | "print_int" -> fixed b_print_int

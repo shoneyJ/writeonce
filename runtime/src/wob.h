@@ -462,9 +462,15 @@ enum {
     WO_B_SHA256 = 86,         /* (bytes) -> fresh 32-byte Bytes */
     WO_B_HMAC_SHA256 = 87,    /* (key bytes, msg bytes) -> fresh 32-byte Bytes,
                                * RFC 2104 (key > 64 bytes hashed first) */
+    /* ---- iteration 24: actor lifecycle ---- */
+    WO_B_CALL = 88,           /* (addr, msg) -> R: send that WAITS — the
+                               * caller's fiber parks until the receive's
+                               * return value arrives. R is a SCALAR (v1,
+                               * compiler-enforced WO-E226). Dead callee =
+                               * WO_T_ACTOR, immediately or mid-call. */
 };
 
-#define WO_B_MAX 87u
+#define WO_B_MAX 88u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

@@ -1344,8 +1344,10 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
     | Ident "set" ->
       (i = 1 || i = 2) && Types.StringMap.find_opt "set" ctx.syms.Types.free_fns = None
     (* arc: send(addr, msg) MOVES the message to the runtime — the sender's
-       binding dies (compile-time move, iteration 8's criterion) *)
+       binding dies (compile-time move, iteration 8's criterion).
+       iteration 24: call(addr, msg) moves its message identically. *)
     | Ident "send" -> i = 1 && Types.StringMap.find_opt "send" ctx.syms.Types.free_fns = None
+    | Ident "call" -> i = 1 && Types.StringMap.find_opt "call" ctx.syms.Types.free_fns = None
     | _ -> false
   in
   List.iteri
@@ -1363,7 +1365,8 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
              transfer ctx p
                ~what:
                  (match callee.kind with
-                 | Ident "send" -> "cannot be sent — a message moves to the receiver"
+                 | Ident "send" | Ident "call" ->
+                   "cannot be sent — a message moves to the receiver"
                  | _ -> "cannot be stored in a container")
            then record_move ctx p (MvArg "element"))
         )

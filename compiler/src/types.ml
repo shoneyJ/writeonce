@@ -433,6 +433,7 @@ let nullable_used_without_check_code = Diag.types_prefix ^ "11"
 let nullable_assign_mismatch_code = Diag.types_prefix ^ "12"
 let spawn_no_receive_code = Diag.types_prefix ^ "21" (* WO-E221: spawn target lacks fn receive(msg: M); E219/E220 are taken on the language-surface-strictness branch *)
 let traced_send_code = Diag.types_prefix ^ "22" (* WO-E222: traced(-containing) type in an actor message or actor state — aliased graphs cannot cross heap boundaries *)
+let call_reply_code = Diag.types_prefix ^ "26" (* WO-E226 (iteration 24): `call`'s reply through actor-M erasure — every receive(msg: M) program-wide must declare the SAME return type, and it must be a copyable scalar (v1) *)
 let pub_read_write_code = Diag.types_prefix ^ "19" (* WO-E219: pub(read) field written outside its class *)
 let using_collision_code = Diag.types_prefix ^ "20" (* WO-E220: using extension collides with a real method *)
 
@@ -1049,6 +1050,47 @@ let builtin_confident_ret (name : string) (arg0 : typ option) : typ option =
   | "base64_decode" -> Some (TNullable (TScalar "Bytes"))
   | _ -> None
 
+(* iteration 24: every receive(msg: M) in the program, as
+   (class_name, reply typ option). `actor M` erases the class, so `call`'s
+   static reply type exists only if ALL of them agree — the WO-E226 rule.
+   The caller analyzes this list; building it is one fold over the class
+   table (bounded by the program, done per call SITE — call sites are
+   rare enough that a cache is speculative). *)
+let call_receivers (classes : class_info StringMap.t) (mname : string) :
+    (string * typ option) list =
+  StringMap.fold
+    (fun cname (cls : class_info) acc ->
+      match List.find_opt (fun (m : method_info) -> m.name = "receive") cls.methods with
+      | Some { params = [ (_, pty, _) ]; ret; _ } -> (
+        match typ_of_field_ty pty with
+        | TScalar n when n = mname -> (cname, Option.map typ_of_field_ty ret) :: acc
+        | _ -> acc)
+      | _ -> acc)
+    classes []
+
+(* v1: a call reply must be a copyable WORD — the runtime ships it in an
+   envelope payload with no ownership transfer machinery. Text/Bytes/
+   containers/objects are the extension a real consumer earns later. *)
+let call_reply_scalar (t : typ) : bool =
+  match t with
+  | TActor _ | TRef _ -> true
+  | TScalar n ->
+    n = "Int" || n = "Bool" || n = "Timestamp" || n = "Id" || n = "Float"
+    || is_stdlib_scalar_type n
+  | _ -> false
+
+(* The agreed reply type, when everything agrees and is scalar — the
+   silent half confident_typ uses; the diagnostics half reports. *)
+let call_reply_typ (classes : class_info StringMap.t) (mname : string) : typ option =
+  match call_receivers classes mname with
+  | [] -> None
+  | (_, first) :: rest ->
+    if List.for_all (fun (_, r) -> r = first) rest then
+      match first with
+      | Some r when call_reply_scalar r -> Some r
+      | _ -> None
+    else None
+
 (* `use_edge`/`uses_of_program`/`path_str` -- relocated here (hotfix)
    from their original home in the "Modules" section, much further
    below, purely so `confident_typ`'s free-fn resolution (inside
@@ -1302,6 +1344,16 @@ let typecheck_program ~file ~(module_of : string -> string)
                    name). *)
                 match find_variant syms name with
                 | Some (u, _) -> Some (TScalar u.u_name)
+                | None when name = "call" -> (
+                    (* iteration 24: call's reply type through the address's
+                       actor M — only when every receive(M) agrees on one
+                       scalar R (WO-E226's silent half). *)
+                    match args with
+                    | addr :: _ -> (
+                      match confident_typ cenv addr with
+                      | Some (TActor m) -> call_reply_typ syms.classes m
+                      | _ -> None)
+                    | [] -> None)
                 | None -> (
                     match List.find_opt (fun (n, _, _) -> n = name) builtin_signatures with
                     | None -> None
@@ -1738,6 +1790,76 @@ let typecheck_program ~file ~(module_of : string -> string)
                           (Diag.error ~code:type_mismatch_code ~file ~line:a.pos.line
                              ~col:a.pos.col
                              ~message:"`send`'s first argument must be an `actor M` address" ())
+                      | None -> ())
+                    | _ -> ())
+             | None when name = "call" ->
+                 (* iteration 24: call(addr, msg) — send's shape plus the
+                    reply contract (WO-E226): every receive(M) in the
+                    program must declare the same return type, and it must
+                    be a copyable scalar (v1). *)
+                 (if List.length args <> 2 then
+                    Diag.Collector.add collector
+                      (Diag.error ~code:bad_arity_code ~file ~line:e.pos.line ~col:e.pos.col
+                         ~message:
+                           (Printf.sprintf "`call` takes 2 arguments (address, message), given %d"
+                              (List.length args))
+                         ())
+                  else
+                    match args with
+                    | [ a; m ] -> (
+                      match confident_typ cenv a with
+                      | Some (TActor want) -> (
+                        (match confident_typ cenv m with
+                        | Some (TScalar got) when got <> want ->
+                          Diag.Collector.add collector
+                            (Diag.error ~code:type_mismatch_code ~file ~line:m.pos.line
+                               ~col:m.pos.col
+                               ~message:
+                                 (Printf.sprintf
+                                    "this actor receives `%s` — the message is a `%s`" want got)
+                               ())
+                        | _ -> ());
+                        match call_receivers syms.classes want with
+                        | [] -> ()
+                        | (c0, r0) :: rest -> (
+                          match
+                            List.find_opt (fun (_, r) -> r <> r0) rest
+                          with
+                          | Some (c1, _) ->
+                            Diag.Collector.add collector
+                              (Diag.error ~code:call_reply_code ~file ~line:e.pos.line
+                                 ~col:e.pos.col
+                                 ~message:
+                                   (Printf.sprintf
+                                      "`call` on `actor %s` needs one reply type, but `%s` and `%s` declare different `receive` returns"
+                                      want c0 c1)
+                                 ())
+                          | None -> (
+                            match r0 with
+                            | None ->
+                              Diag.Collector.add collector
+                                (Diag.error ~code:call_reply_code ~file ~line:e.pos.line
+                                   ~col:e.pos.col
+                                   ~message:
+                                     (Printf.sprintf
+                                        "`call` needs a reply: `%s`'s `receive(msg: %s)` declares no return type — use `send`"
+                                        c0 want)
+                                   ())
+                            | Some r when not (call_reply_scalar r) ->
+                              Diag.Collector.add collector
+                                (Diag.error ~code:call_reply_code ~file ~line:e.pos.line
+                                   ~col:e.pos.col
+                                   ~message:
+                                     (Printf.sprintf
+                                        "`call`'s reply type `%s` is not a copyable scalar — v1 replies are scalars (Int, Bool, Float, an actor address, ...)"
+                                        (typ_label r))
+                                   ())
+                            | Some _ -> ())))
+                      | Some _ ->
+                        Diag.Collector.add collector
+                          (Diag.error ~code:type_mismatch_code ~file ~line:a.pos.line
+                             ~col:a.pos.col
+                             ~message:"`call`'s first argument must be an `actor M` address" ())
                       | None -> ())
                     | _ -> ())
              | None ->

@@ -82,6 +82,17 @@ typedef struct wo_fiber {
     /* arc stage 3: the in-flight DB request while parked on the DB actor's
      * reply (a wo_db_req*, opaque here; vm.c owns the protocol) */
     void *dbreq;
+    /* iteration 24, caller side of call(): 0 = no call in flight,
+     * 1 = parked awaiting the reply, 2 = reply landed (call_reply is the
+     * scalar), 3 = the callee was/went dead (the re-executed builtin
+     * traps WO_T_ACTOR). Set on the caller's own thread or under its
+     * shard's inbox drain — never concurrently with the fiber running. */
+    int call_state;
+    uint64_t call_reply;
+    /* iteration 24, delivery side: the CURRENT message's caller (NULL for
+     * a plain send) — where FIBER_DONE ships the receive's return value. */
+    struct wo_fiber *msg_caller;
+    uint32_t msg_caller_shard;
 } wo_fiber;
 
 /* arc stage 3: park_fd sentinel — PARKED with NO plane wait; the wake is
@@ -89,14 +100,26 @@ typedef struct wo_fiber {
  * scans, which key on park_fd == -1 exactly. */
 #define WO_PARK_INBOX (-2)
 
+/* iteration 24: one mailbox slot. A plain send has caller == NULL; a
+ * call carries the parked caller so the delivery's return value can
+ * route home as a kind-6 envelope (or a same-shard unpark). */
+typedef struct wo_msg {
+    uint64_t payload;
+    struct wo_fiber *caller; /* NULL = send */
+    uint32_t caller_shard;
+} wo_msg;
+
 /* An actor: moved-in state, its receive method, a FIFO mailbox, and at
  * most one delivery fiber at a time (one message at a time — the actor
- * guarantee). Actors live until program end (v1: no actor death). */
+ * guarantee). Death (iteration 24): a receive trapping uncaught marks
+ * the actor dead — sends to it drop silently, calls trap, queued
+ * callers are error-unparked; the state and mailbox are released. */
 typedef struct wo_actor {
     uint64_t instance;   /* the moved-in state object (runtime-owned) */
     uint32_t method;     /* receive's method index (self + msg = 2 args) */
     uint32_t home;       /* the shard whose thread owns mailbox + delivery */
-    uint64_t *msgs;      /* FIFO ring, growable up to the cap */
+    int dead;            /* set on the home thread when a receive traps */
+    wo_msg *msgs;        /* FIFO ring, growable up to the cap */
     uint32_t mhead, mlen, mcap;
     /* iteration 24: sent-but-not-delivered count, incremented by the
      * SENDER on any shard (the cap check), decremented by the home
@@ -158,6 +181,10 @@ typedef struct wo_vm {
 int wo_vm_actor_spawn(wo_vm *vm, uint64_t instance, uint32_t method_idx,
                       uint64_t *out_addr, const char **msg);
 int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **msg);
+/* iteration 24: send-that-waits. First entry enqueues the message with the
+ * caller attached and parks (WO_SYS_PARKED); the re-execution consumes the
+ * scalar reply into R[A] (vm.c owns the protocol, builtin.c dispatches). */
+int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 /* ---- the shard engine (arc stage 2) ------------------------------------
  * One pinned thread per shard, each a full wo_vm (own arena, GC, I/O
@@ -178,9 +205,17 @@ typedef struct wo_envelope {
     int kind; /* 0 = SEND (actor, payload), 1 = SPAWN-ADOPT (actor),
                * 2 = FREE (payload = wo_hdr*),
                * 3 = DB_REQ (payload = wo_db_req*, to shard 0),
-               * 4 = DB_RESP (payload = wo_db_req*, back to the requester) */
+               * 4 = DB_RESP (payload = wo_db_req*, back to the requester),
+               * 5 = CALL (iteration 24: actor, payload = moved message,
+               *     from_shard/from_fiber = the parked caller),
+               * 6 = CALL_REPLY (payload = the SCALAR reply, from_fiber =
+               *     the caller to unpark; status 0 = ok, WO_T_ACTOR =
+               *     the callee was/went dead — the caller traps) */
     struct wo_actor *actor;
     uint64_t payload;
+    uint32_t from_shard;
+    struct wo_fiber *from_fiber;
+    int status;
 } wo_envelope;
 
 /* arc stage 3: the requester half of the transparent DB RPC (vm.c). Called

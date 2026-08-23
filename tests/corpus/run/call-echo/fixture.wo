@@ -1,0 +1,24 @@
+-- iteration 24: call — send that waits. The caller parks until the
+-- receive's return value comes back; same-shard here (the runner pins
+-- WO_SHARDS=1), so the reply path is the direct unpark. The actor's
+-- state update across two calls proves the mailbox kept its order.
+class Q {
+  n: Int
+}
+
+class Doubler {
+  seen: Int
+  fn receive(msg: Q) -> Int {
+    self.seen = self.seen + 1;
+    return msg.n * 2;
+  }
+}
+
+fn main() -> Int {
+  let d: actor Q = spawn Doubler { seen: 0 };
+  let a = call(d, Q { n: 21 });
+  print("a=${a}");
+  let b = call(d, Q { n: a });
+  print("b=${b}");
+  return 0;
+}

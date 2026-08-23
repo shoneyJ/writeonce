@@ -1,0 +1,27 @@
+-- iteration 24: `actor M` erases the class, so `call`'s reply type is
+-- only defined when every receive(msg: M) program-wide agrees on one
+-- return type. Two classes disagreeing is WO-E226 naming both.
+
+class Q {
+  n: Int
+}
+
+class IntAnswer {
+  pad: Int
+  fn receive(msg: Q) -> Int {
+    return msg.n;
+  }
+}
+
+class BoolAnswer {
+  pad: Int
+  fn receive(msg: Q) -> Bool {
+    return msg.n > 0;
+  }
+}
+
+fn main() -> Int {
+  let a: actor Q = spawn IntAnswer { pad: 0 };
+  let r = call(a, Q { n: 1 });
+  return r;
+}
