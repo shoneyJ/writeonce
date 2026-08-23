@@ -4,6 +4,7 @@
  *   2 = usage or load failure (loader's message on stderr)
  * Heap cap defaults to 64 MiB, overridable via WO_HEAP_MB. */
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +179,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     wo_tls_set(&VM);
+    /* iteration 24: a write to a peer-closed socket must be EPIPE (a
+     * catchable WO_T_IO), never a process-killing SIGPIPE — every
+     * serving program writes to sockets whose peers vanish. */
+    signal(SIGPIPE, SIG_IGN);
     /* The database engine boots with the VM: every class IS a table.
      * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
      * replays it before the entry runs (boot-before-listeners doctrine),

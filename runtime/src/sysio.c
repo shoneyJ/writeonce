@@ -395,6 +395,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             if (stop_pending()) return WO_SYS_STOPPED;
         }
         if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (stop_pending()) return WO_SYS_STOPPED;
             /* arc T4: park until the listener is readable, then retry */
             vm->cur->park_fd = (int)R[B];
             vm->cur->park_deadline = 0;
@@ -431,6 +432,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             /* arc T4: nothing readable yet — free the buffer (the retry
              * re-allocates) and park until the fd is readable */
             wo_str_free(rt, s);
+            if (stop_pending()) return WO_SYS_STOPPED;
             vm->cur->park_fd = (int)R[B];
             vm->cur->park_deadline = 0;
             vm->cur->park_events = POLLIN;
@@ -476,6 +478,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                     continue;
                 }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (stop_pending()) return WO_SYS_STOPPED;
                     vm->cur->park_wr_at = at;
                     vm->cur->park_fd = (int)R[B];
                     vm->cur->park_deadline = 0;
@@ -534,7 +537,9 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             wo_str_free(rt, s);
-            if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+            if (stop_pending() || (fb->dl_at > 0 && dnow >= fb->dl_at)) {
+                /* iteration 24: a STOP resolves the wait as its timeout
+                 * result — the program's own drain code decides what next */
                 fb->dl_active = 0;
                 R[A] = 0; /* ?Text nil: the deadline expired */
                 return 0;
@@ -584,9 +589,9 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             }
         }
         if (fd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+            if (stop_pending() || (fb->dl_at > 0 && dnow >= fb->dl_at)) {
                 fb->dl_active = 0;
-                R[A] = WO_NIL_SCALAR; /* ?Int nil: nothing arrived */
+                R[A] = WO_NIL_SCALAR; /* ?Int nil: nothing arrived (or stop) */
                 return 0;
             }
             fb->park_fd = (int)R[B];
@@ -631,7 +636,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                     continue;
                 }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+                    if (stop_pending() || (fb->dl_at > 0 && dnow >= fb->dl_at)) {
                         fb->dl_active = 0;
                         R[A] = 0; /* false: torn mid-write — close the fd */
                         return 0;

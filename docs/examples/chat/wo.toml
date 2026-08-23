@@ -1,0 +1,9 @@
+name        = "chat"
+version     = "0.1.0"
+description = "Iteration 24's acceptance workload: rooms + presence + broadcast over WebSocket — actors on fibers across shards, one binary, no broker"
+
+[runtime]
+wo = ">= 0.1"
+
+[deps]
+framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }

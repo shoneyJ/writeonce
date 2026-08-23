@@ -325,7 +325,27 @@ static void efd_drain(wo_vm *vm) {
 
 int wo_io_wait(wo_vm *vm) {
     for (;;) {
-        if (wo_sys_stop_pending()) return WO_IO_STOP;
+        if (wo_sys_stop_pending()) {
+            /* iteration 24 (the drain): a STOP does not kill parked fibers
+             * from the outside — it WAKES them all, and each blocking
+             * builtin resolves per its own stop contract (deadline'd waits
+             * answer their timeout result, sleeps return early, plain
+             * waits answer WO_SYS_STOPPED and that fiber unwinds). The
+             * program's own code then drains and returns. Nothing parked
+             * = nothing to resolve: the old immediate-stop answer. */
+            int woke = 0;
+            wo_fiber *fb = vm->parked;
+            while (fb) {
+                wo_fiber *nx = fb->pnext;
+                if (fb->state == WO_FIB_PARKED) {
+                    wake(vm, fb);
+                    woke = 1;
+                }
+                fb = nx;
+            }
+            if (woke) return 0;
+            return WO_IO_STOP;
+        }
         if (vm->io_kind == 0) {
             /* keep the wake eventfd armed (oneshot POLL_ADD, re-armed
              * after each firing) so inbox pushes interrupt the wait */

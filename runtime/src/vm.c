@@ -467,6 +467,85 @@ int wo_engine_primary_inbox(int wake_efd) {
     return 0;
 }
 
+/* iteration 24 teardown phase 1 (single-threaded, BEFORE eng_teardown):
+ * dismantle one vm's actor world with real drops — container backings are
+ * malloc'd, so wholesale arena death does NOT cover them (LSan, chat's
+ * registry map). Cross-shard payloads route home through wo_route_free
+ * (still live here); the routed kind-2 envelopes are settled by the
+ * caller's inbox passes. */
+static void vm_drop_actor_world(wo_vm *vm) {
+    wo_actor *a = vm->actors;
+    vm->actors = NULL;
+    while (a) {
+        wo_actor *nx = a->next_all;
+        if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; i < a->mlen; i++) {
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
+            if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
+        }
+        wo_monitor *mo = a->monitors;
+        while (mo) {
+            wo_monitor *mnx = mo->next;
+            if (mo->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
+            free(mo);
+            mo = mnx;
+        }
+        free(a->msgs);
+        free(a);
+        a = nx;
+    }
+    wo_timer *tt = vm->timers;
+    vm->timers = NULL;
+    while (tt) {
+        wo_timer *tnx = tt->next;
+        if (tt->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
+        free(tt);
+        tt = tnx;
+    }
+}
+
+/* Settle every inbox after phase 1: home-routed frees execute on their
+ * owner vm; payload-carrying strays drop (possibly routing again — the
+ * outer loop runs until everything is quiet). Node memory always freed. */
+static int eng_settle_inboxes(void) {
+    int moved = 0;
+    for (uint32_t i = 0; i < wo_eng.nshards && i < WO_ENG_MAX_SHARDS; i++) {
+        if (!INBOX_READY[i]) continue;
+        wo_vm *vm = &wo_eng.shards[i];
+        wo_inbox *ib = &INBOX[i];
+        wo_envelope *e = ib->head;
+        ib->head = ib->tail = NULL;
+        while (e) {
+            wo_envelope *nx = e->next;
+            switch (e->kind) {
+            case 2: /* WE are home: the direct drop is the settlement */
+                wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+                break;
+            case 0:
+            case 5:
+            case 7: /* in-flight payloads: drop (may route -> next pass) */
+                if (e->payload)
+                    wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+                break;
+            case 1: /* an unadopted actor shell */
+                if (e->actor) {
+                    if (e->actor->instance)
+                        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->actor->instance);
+                    free(e->actor->msgs);
+                    free(e->actor);
+                }
+                break;
+            default: /* 3/4/6: scalar or engine-side payloads, node-only */
+                break;
+            }
+            free(e);
+            moved++;
+            e = nx;
+        }
+    }
+    return moved;
+}
+
 int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
     wo_eng.nshards = nshards;
     eng_heap_cap = heap_cap;
@@ -511,6 +590,13 @@ void wo_engine_stop(void) {
         (void)n;
     }
     for (uint32_t i = 1; i < wo_eng.nshards; i++) pthread_join(ts[i - 1], NULL);
+    /* single-threaded from here: PHASE 1 — real drops while every arena
+     * and the routing fabric are still alive (malloc'd container backings
+     * inside actor state need them; iteration 24's registry map). Settle
+     * passes run until routed frees stop appearing. */
+    for (uint32_t i = 0; i < wo_eng.nshards && i < WO_ENG_MAX_SHARDS; i++)
+        if (wo_eng.shards[i].rt.arena.base) vm_drop_actor_world(&wo_eng.shards[i]);
+    while (eng_settle_inboxes() > 0) {}
     /* single-threaded from here. Every arena dies wholesale, so routed
      * frees and queued payloads need no per-object drops — DISCARD the
      * envelopes (freeing the malloc'd nodes/actors) and let the arenas
@@ -579,19 +665,26 @@ void wo_vm_destroy(wo_vm *vm) {
         free(fb);
     }
     /* actors first — dropping their state and queued messages needs the
-     * runtime alive */
+     * runtime alive. BUT: once the engine is in teardown, arenas die
+     * WHOLESALE (the standing doctrine) — a moved-in message's home arena
+     * may belong to an ALREADY-destroyed shard, and even reading its
+     * header is a use-after-free (ASan, chat's drain). Structures are
+     * still freed; payload drops are skipped. */
+    int drops_ok = !eng_teardown;
     wo_actor *a = vm->actors;
     while (a) {
         wo_actor *nx = a->next_all;
-        if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
-        for (uint32_t i = 0; i < a->mlen; i++) {
+        if (drops_ok && a->instance)
+            wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; drops_ok && i < a->mlen; i++) {
             uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
             if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
         }
         wo_monitor *mo = a->monitors;
         while (mo) { /* undelivered notices are the runtime's to drop */
             wo_monitor *mnx = mo->next;
-            if (mo->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
+            if (drops_ok && mo->msg)
+                wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
             free(mo);
             mo = mnx;
         }
@@ -603,7 +696,8 @@ void wo_vm_destroy(wo_vm *vm) {
     vm->timers = NULL;
     while (tt) { /* unfired timers likewise */
         wo_timer *tnx = tt->next;
-        if (tt->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
+        if (drops_ok && tt->msg)
+            wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
         free(tt);
         tt = tnx;
     }
@@ -1415,6 +1509,15 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
             }                                        \
             int iorc_ = wo_io_wait(vm);              \
             if (iorc_ == WO_IO_STOP) {               \
+                /* iteration 24: a WORKER on stop keeps DRAINING — its    \
+                 * serve loop spins adopting the inbox until the primary  \
+                 * finishes the drain window and sets eng_shutdown, so    \
+                 * queued shutdown messages (close frames!) still run.    \
+                 * Only the PRIMARY's stop ends the program. */           \
+                if (!vm->is_primary) {               \
+                    vm->cur = &vm->f0;               \
+                    return 2;                        \
+                }                                    \
                 fib_reap_all(vm);                    \
                 vm->cur = &vm->f0;                   \
                 return 1;                            \
@@ -1917,8 +2020,31 @@ dispatch:
             vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;
             vm->cur->ncatch = 0;
             vm_unwind(vm, 0);
-            /* a stop ends the PROGRAM: every fiber — the stopped one,
-             * queued ones, main wherever it is — unwinds clean */
+            /* iteration 24 (the drain): a STOPPED wait on a NON-main fiber
+             * unwinds that fiber ALONE — the rest of the program (main's
+             * drain code, actors flushing close frames) keeps running.
+             * Main's own STOPPED still ends the program, as ever. */
+            if (vm->cur != &vm->f0) {
+                wo_fiber *dead = vm->cur;
+                if (dead->actor) {
+                    wo_actor *da = dead->actor;
+                    if (dead->cur_msg) {
+                        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)dead->cur_msg);
+                        dead->cur_msg = 0;
+                    }
+                    call_reply_to(vm, dead->msg_caller, dead->msg_caller_shard,
+                                  0, WO_T_ACTOR);
+                    dead->msg_caller = NULL;
+                    da->active = NULL;
+                }
+                vm->nfibers--;
+                fib_retire(vm, dead);
+                NEXT_RUNNABLE();
+                RELOAD();
+                NEXT();
+            }
+            /* main: a stop ends the PROGRAM — every remaining fiber
+             * unwinds clean */
             if (vm->cur != &vm->f0) {
                 wo_fiber *dead = vm->cur;
                 vm->cur = &vm->f0;
