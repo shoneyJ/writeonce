@@ -1,0 +1,10 @@
+name        = "wo-html"
+kind        = "library"
+version     = "0.1.0"
+description = "HTML building for writeonce apps: escaping, element builders, and a Tailwind-style utility stylesheet — server-rendered pages as plain Text"
+
+[runtime]
+wo = ">= 0.1"
+
+# A LIBRARY project: no `fn main`. Apps import it through wo.toml [deps]
+# (the key names the module — `html = { git = ... }` gives `use html`).

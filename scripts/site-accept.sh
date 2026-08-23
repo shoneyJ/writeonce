@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# scripts/site-accept.sh — the writeonce.de tutorial site's gate: TWO deps
+# (framework + wo-html) resolved from run-time file:// remotes, build,
+# serve, the page matrix (render/escape/404/401/authed edit), SIGTERM,
+# and WAL restart persistence of an admin edit.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WOC="$ROOT/compiler/_build/default/bin/woc"
+WOVM="$ROOT/runtime/wovm"
+
+pass=0; fail=0
+ok() { echo "ok   $1"; pass=$((pass + 1)); }
+bad() { echo "FAIL $1 -- $2"; fail=$((fail + 1)); }
+
+if [[ ! -x "$WOC" || ! -x "$WOVM" ]]; then
+  echo "site-accept: build woc and wovm first (just woc-build; just wovm-build)" >&2
+  exit 1
+fi
+
+W="$(mktemp -d "${TMPDIR:-/tmp}/site-accept.XXXXXX")"
+SRV=""
+cleanup() {
+  [[ -n "$SRV" ]] && kill -9 "$SRV" 2>/dev/null
+  rm -rf "$W"
+}
+trap cleanup EXIT
+
+# ---- both deps as git remotes; the app pointed at them ----
+cp -r "$ROOT/docs/examples/writeonce-framework" "$W/fw"
+cp -r "$ROOT/docs/examples/wo-html" "$W/lib"
+for d in "$W/fw" "$W/lib"; do
+  git -C "$d" init -q
+  git -C "$d" add -A
+  git -C "$d" -c user.email=t@t -c user.name=t commit -qm v01
+  git -C "$d" tag v0.1.0
+done
+cp -r "$ROOT/docs/examples/site" "$W/app"
+sed -i "s|https://github.com/shoneyj/writeonce-framework|file://$W/fw|; s|https://github.com/shoneyj/wo-html|file://$W/lib|" "$W/app/wo.toml"
+printf '[build]\nruntime = "%s"\n' "$WOVM" >> "$W/app/wo.toml"
+
+# ---- 1. two-dep fetch + lock + build ----
+if "$WOC" "$W/app" >"$W/build.out" 2>&1 && [[ -x "$W/app/target/site" && -f "$W/app/wo.lock" ]]; then
+  ok "deps chain: two remotes fetched + wo.lock + build"
+else
+  bad "build" "$(grep -m1 "error" "$W/build.out" || head -1 "$W/build.out")"
+  printf 'site-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
+  exit 1
+fi
+
+PORT=$((8500 + RANDOM % 400))
+DATA="$W/data"; mkdir -p "$DATA"
+
+hit() { # path [method] [data] [token] -> "STATUS|BODY" (redirects not followed)
+  python3 - "$PORT" "$1" "${2:-GET}" "${3:-}" "${4:-}" <<'PYEOF'
+import sys, urllib.request, urllib.error
+port, path, method, data, token = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k): return None
+req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+                             data=data.encode() if data else None, method=method)
+if data: req.add_header("content-type", "application/x-www-form-urlencoded")
+if token: req.add_header("authorization", "Bearer " + token)
+try:
+    r = urllib.request.build_opener(NoRedirect).open(req, timeout=5)
+    print(f"{r.status}|{r.read().decode()}")
+except urllib.error.HTTPError as e:
+    print(f"{e.code}|{e.read().decode()}")
+PYEOF
+}
+
+expect() { # name got want_status want_substr
+  local name="$1" got="$2" want="$3" sub="$4"
+  local st="${got%%|*}" body="${got#*|}"
+  if [[ "$st" == "$want" && "$body" == *"$sub"* ]]; then ok "$name"
+  else bad "$name" "status=$st body=$(printf '%.90s' "$body")"; fi
+}
+
+serve() {
+  SITE_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/site" "$PORT" >>"$W/srv.out" 2>&1 &
+  SRV=$!
+  for _ in $(seq 1 40); do
+    [[ "$(hit /health 2>/dev/null)" == 200* ]] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+# ---- 2..8 the page matrix ----
+serve || bad "serve" "server never answered /health"
+expect "home renders the tutorial"      "$(hit /)"           200 "Learn writeonce"
+expect "tailwind sheet inlined"         "$(hit /)"           200 ".btn{"
+expect "chapter renders a code sample"  "$(hit /ch/hello)"   200 "fn main"
+expect "escaped interpolation visible"  "$(hit /ch/values)"  200 '${port}'
+expect "unknown chapter is a 404 page"  "$(hit /ch/nope)"    404 "No such chapter"
+expect "admin without token is 401"     "$(hit /admin/ch/hello POST "title=X")"  401 "unauthorized"
+expect "admin edit answers a redirect"  "$(hit /admin/ch/hello POST "title=Hello v2" s3cr3t)" 302 ""
+expect "the edit is live"               "$(hit /ch/hello)"   200 "Hello v2"
+
+# ---- 9. SIGTERM stops it ----
+kill -TERM "$SRV"
+stopped=1
+for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { stopped=0; break; }; sleep 0.1; done
+[[ $stopped -eq 0 ]] && ok "SIGTERM stops the server" || bad "stop" "still running"
+SRV=""
+
+# ---- 10. restart persistence: the edit replayed from the WAL ----
+serve || bad "re-serve" "server never answered /health after restart"
+expect "edit survives a restart (WAL)"  "$(hit /ch/hello)"   200 "Hello v2"
+kill -TERM "$SRV" 2>/dev/null; SRV=""
+
+echo
+printf 'site-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
+[[ $fail -eq 0 ]]

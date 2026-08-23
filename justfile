@@ -48,6 +48,12 @@ deps-accept:
 web-app:
     ./scripts/web-app-accept.sh
 
+# site: the writeonce.de tutorial (docs/examples/site) — TWO deps
+# (framework + wo-html), server-rendered pages, page matrix -> 401/edit
+# -> SIGTERM -> WAL restart persistence. `just site` runs it.
+site:
+    ./scripts/site-accept.sh
+
 # fibers: the hybrid-scheduler demo (docs/examples/fibers) — part 1 byte-
 # exact budget interleave, part 2 parked-sleeper-blocks-nobody, on the
 # uring AND epoll backends plus an ASan run.
