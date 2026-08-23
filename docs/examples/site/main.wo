@@ -43,14 +43,26 @@ fn ok_html(body: Text) -> Resp {
   return Resp { status: 200, headers: h, body: body };
 }
 
-fn site_header() -> Text {
-  let brand = link("/", "text-xl font-bold text-gray-900 no-underline", "writeonce.de");
-  let tag = el("span", "text-sm text-gray-500", "one language, one runtime, one database, one binary");
-  return el("div", "flex items-center justify-between mb-8", brand .. tag);
+fn site_nav() -> Text {
+  let links = link("/ch/hello", "text-gray-700", "Tutorial");
+  links = links .. link("/health", "text-gray-700", "Health");
+  links = links .. link("https://github.com/shoneyj", "text-gray-700", "GitHub");
+  return nav_bar("/", "writeonce.de", links);
+}
+
+fn site_footer() -> Text {
+  return el("div", "footer", "writeonce.de — served by the language it teaches. " .. "One binary: compiler, runtime, database, this page.");
 }
 
 fn shell(title: Text, inner: Text) -> Text {
-  let body = el("div", "mx-auto max-w-3xl px-4 py-8", site_header() .. inner);
+  let body = site_nav() .. el("div", "mx-auto max-w-3xl px-4 py-8", inner) .. site_footer();
+  return page(title, body);
+}
+
+-- The homepage uses the wider container (go.dev shape); chapter pages
+-- keep the reading width above.
+fn shell_wide(title: Text, inner: Text) -> Text {
+  let body = site_nav() .. el("div", "mx-auto max-w-5xl px-4", inner) .. site_footer();
   return page(title, body);
 }
 
@@ -72,10 +84,30 @@ fn chapter_nav(current: Int) -> Text {
 class Home {
   pad: Int
   fn handle(req: Req) -> Resp {
-    let hero = el("h1", "text-3xl font-bold mb-4", "Learn writeonce");
-    let intro = el("p", "leading-relaxed mb-4", "A language where the runtime, the database and the web server are one thing. " .. "This site is written in it — every page you read here is a " .. "<code>Resp</code> built by <code>.wo</code> code, stored in the language's own " .. "tables, served by its own framework. Work through the chapters in order:");
-    let body = el("div", "bg-white rounded-lg border shadow-sm p-6", hero .. intro .. chapter_nav(0));
-    return ok_html(shell("writeonce — learn the language", body));
+    -- hero: tagline + the two CTAs (the go.dev shape, no JS anywhere)
+    let h1 = el("h1", "text-4xl font-bold mb-4", "One language. One runtime.<br>One database. One binary.");
+    let sub = el("p", "text-lg text-gray-700 leading-relaxed mb-6", "writeonce is a language whose compiler, runtime, web server and " .. "database ship as a single never-stopping Linux binary. Ownership-" .. "checked memory, inferred GC where ownership cannot reach, actors " .. "on every core — and the page you are reading is served by it.");
+    let ctas = el("div", "flex items-center justify-center gap-4", btn_link("/ch/hello", "Get started", true) .. btn_link("https://github.com/shoneyj", "View source", false));
+    let hero = el("div", "text-center py-16", h1 .. sub .. ctas);
+
+    -- code showcase: a real flavor of the language
+    let show_head = el("h2", "text-2xl font-bold mb-2 text-center", "An actor per chat room, rows in the built-in database");
+    let show_cap = el("p", "text-sm text-gray-500 text-center mb-4", "No broker, no ORM, no async keyword — ownership moves the message, the WAL makes the row durable.");
+    let showcase = el("div", "mx-auto max-w-3xl mb-8", show_head .. show_cap .. home_snippet());
+
+    -- why-cards (2x2 grid, collapses on small screens)
+    let cards = card("One binary", "woc build emits a self-contained executable: VM, your bytecode, the database engine. Deploys are a file copy; the runtime swaps code in place.");
+    cards = cards .. card("Memory safety, no tax", "Rust-shaped ownership checked at compile time; where ownership cannot express the shape, the compiler infers GC — per shard, no global pause.");
+    cards = cards .. card("The database is built in", "Every class is a table. Inserts are WAL-logged before they acknowledge; restart replays. No server to operate, no connection string.");
+    cards = cards .. card("Actors on every core", "spawn returns an address, send moves ownership. Fibers park on io_uring instead of blocking threads — no async/await, ever.");
+    let grid = el("div", "grid grid-cols-2 gap-6 mb-8", cards);
+
+    -- chapters (the gate's anchor string lives here)
+    let learn = el("h2", "text-2xl font-bold mb-4", "Learn writeonce");
+    let learn_p = el("p", "leading-relaxed mb-4", "The tutorial is written in the language and stored in its tables — work through the chapters in order:");
+    let chapters = el("div", "bg-white rounded-lg border shadow-sm p-6 mb-8", learn .. learn_p .. chapter_nav(0));
+
+    return ok_html(shell_wide("writeonce — learn the language", hero .. showcase .. grid .. chapters));
   }
 }
 

@@ -71,6 +71,29 @@ pub fn form_post(action: Text, inner: Text) -> Text {
   return "<form method=\"POST\" action=\"${esc(action)}\" class=\"flex flex-col gap-2\">${inner}</form>";
 }
 
+-- A sticky top navigation bar: brand on the left, a prebuilt row of
+-- links on the right. The bar spans the viewport; the inner row shares
+-- the page's container widths.
+pub fn nav_bar(brand_href: Text, brand: Text, right: Text) -> Text {
+  let b = link(brand_href, "text-xl font-bold text-gray-900 no-underline", brand);
+  let row = el("div", "mx-auto max-w-5xl px-4 flex items-center justify-between", b .. el("div", "flex items-center gap-4", right));
+  return el("nav", "nav", row);
+}
+
+-- A titled card for feature grids.
+pub fn card(title: Text, body: Text) -> Text {
+  let t = el("h3", "text-lg font-bold mb-2", title);
+  return el("div", "bg-white rounded-lg border shadow-sm p-6", t .. el("p", "leading-relaxed text-gray-700", body));
+}
+
+-- A link styled as a button; primary = filled, otherwise outline.
+pub fn btn_link(href: Text, label: Text, primary: Bool) -> Text {
+  if primary {
+    return link(href, "btn no-underline", label);
+  }
+  return link(href, "btn-outline no-underline", label);
+}
+
 -- The utility sheet. Tailwind's names, one hand-written static sheet —
 -- only the utilities this ecosystem's pages actually use; growing it is
 -- adding a line, not adopting a toolchain. `.code-block`, `.field` and
@@ -107,6 +130,19 @@ pub fn tw_css() -> Text {
   c = c .. "padding:.5rem;font-family:ui-monospace,monospace;font-size:.875rem}";
   c = c .. ".btn{background:#2563eb;color:#fff;border:0;border-radius:.25rem;";
   c = c .. "padding:.5rem 1rem;font-weight:700;cursor:pointer}";
+  c = c .. "a.btn{color:#fff;display:inline-block}a.btn:hover{text-decoration:none;background:#1d4ed8}";
+  c = c .. ".btn-outline{display:inline-block;border:1px solid #2563eb;color:#2563eb;";
+  c = c .. "border-radius:.25rem;padding:.5rem 1rem;font-weight:700}";
+  c = c .. "a.btn-outline:hover{text-decoration:none;background:#eff6ff}";
+  c = c .. ".nav{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;";
+  c = c .. "padding:.75rem 0;z-index:10}";
+  c = c .. ".footer{border-top:1px solid #e5e7eb;color:#6b7280;font-size:.875rem;";
+  c = c .. "padding:2rem 1rem;text-align:center;margin-top:4rem}";
+  c = c .. ".max-w-5xl{max-width:64rem}.text-4xl{font-size:2.25rem;line-height:1.2}";
+  c = c .. ".py-16{padding-top:4rem;padding-bottom:4rem}.text-center{text-align:center}";
+  c = c .. ".mb-6{margin-bottom:1.5rem}.gap-6{gap:1.5rem}.justify-center{justify-content:center}";
+  c = c .. ".grid{display:grid}.grid-cols-2{grid-template-columns:repeat(2,1fr)}";
+  c = c .. "@media(max-width:640px){.grid-cols-2{grid-template-columns:1fr}}";
   return c;
 }
 

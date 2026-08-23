@@ -7,6 +7,20 @@
 -- site that teaches it.
 use html
 
+-- The homepage's code showcase: a real flavor of the language — an
+-- actor per chat room, rows in the built-in database, one binary.
+fn home_snippet() -> Text {
+  let s = "@table\nclass Message {\n  room: Text\n  body: Text\n}\n\n";
+  s = s .. "class Room {\n  name: Text\n  fn receive(msg: Post) {\n";
+  s = s .. "    insert Message { room: self.name, body: msg.body };\n";
+  s = s .. "    print(\"[\${self.name}] \${msg.body}\");\n  }\n}\n\n";
+  s = s .. "fn main() -> Int {\n";
+  s = s .. "  let general: actor Post = spawn Room { name: \"general\" };\n";
+  s = s .. "  send(general, Post { body: \"hello, writeonce\" });\n";
+  s = s .. "  time.sleep(50);\n  return 0;\n}";
+  return code_block(s);
+}
+
 fn ch_hello() -> Text {
   let b = el("p", "leading-relaxed mb-4",
     "A writeonce program is one directory of <code>.wo</code> files and one entry: a free " .. "function named <code>main</code>. It returns the process exit code. There is no " .. "runtime to install separately and no build pipeline — <code>woc build</code> produces " .. "ONE self-contained binary with the VM and your bytecode inside.");
