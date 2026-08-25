@@ -45,10 +45,16 @@ jobs:
         with:
           ocaml-compiler: '4.14'
 
-      # Pinned to the version this project is developed against
-      # (compiler/dune-project says `(lang dune 3.14)`).
-      - name: Install dune
-        run: opam install -y dune.3.14.0
+      # setup-ocaml may already have installed a dune (it uses one for its
+      # own cache), in which case asking for an exact older version is a
+      # DOWNGRADE the solver refuses — which is how the pinned
+      # `dune.3.14.0` failed. So: use whatever is there, and only install
+      # if there is nothing. Any dune >= 3.14 satisfies this project's
+      # `(lang dune 3.14)`.
+      - name: Ensure dune is available
+        run: |
+          opam exec -- dune --version || opam install -y dune
+          echo "dune: $(opam exec -- dune --version)"
 
       # The tag is the release's identity; VERSION is what the binaries
       # report. If they disagree the download URL would name a version
