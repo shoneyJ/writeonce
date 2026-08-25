@@ -2,11 +2,11 @@
 -- wrapping every page with the shared header and footer. Styles are NOT
 -- inlined — pages link /assets/style.css (served by static_files), so
 -- markup and styling stay separate files.
-use framework/http
-use html
+use serve/http
+use view
 
--- The app shell as a COMPONENT (wo-html's `Component`: fields in, Text
--- out), the same shape as wo-html's own `Layout` — two slots instead of
+-- The app shell as a COMPONENT (writeonce-view's `Component`: fields in, Text
+-- out), the same shape as writeonce-view's own `Layout` — two slots instead of
 -- four, and its own document rather than `page()`'s, because this
 -- template deliberately LINKS a stylesheet instead of inlining one.
 -- That is the whole reason it is not just `Layout`: markup and styling

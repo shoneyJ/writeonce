@@ -3,7 +3,7 @@
 -- Three components: a card for the index, the index itself (holding its
 -- cards as CHILDREN through the structural interface), and the detail
 -- page. None of them knows where the catalogue came from.
-use html
+use view
 
 pub class PackageCard {
   name:    Text

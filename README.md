@@ -269,7 +269,7 @@ dependencies, declared in the manifest:
 
 ```toml
 [deps]
-niceframework = { git = "https://github.com/shoneyj/niceframework", rev = "v0.1.0" }
+niceserve     = { git = "https://github.com/shoneyj/niceframework", rev = "v0.1.0" }
 ```
 
 `woc` fetches each dep (via the `git` binary) into `.wo-deps/<name>/`, pins
@@ -303,7 +303,7 @@ acceptance tests:
   just employee            # compile + run every mode against a durable database
   ```
 
-- **`docs/examples/writeonce-framework/` + `docs/examples/web-app/`** — a web
+- **`docs/examples/writeonce-serve/` + `docs/examples/web-app/`** — a web
   framework written in writeonce (HTTP/1.1 behind a TLS-terminating proxy,
   router with `:param` captures, interface-based handlers) and a storefront
   consuming it **as a `[deps]` dependency**, with `@table` persistence. Run:

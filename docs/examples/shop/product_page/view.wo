@@ -1,7 +1,7 @@
 -- product_page/view.wo — the product detail view with the order form.
 -- Raw text literals for the bodies; see product_list/view.wo for the
 -- convention.
-use html
+use view
 
 pub class ProductPage {
   sku:   Text

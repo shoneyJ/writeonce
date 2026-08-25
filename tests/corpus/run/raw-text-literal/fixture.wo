@@ -4,7 +4,7 @@
 -- carry the markup's own nesting and not the method's.
 -- `${...}` interpolates raw; `{{ ... }}` HTML-escapes through the `esc`
 -- in scope (here a local one, which is exactly how a program overrides
--- wo-html's).
+-- writeonce-view's).
 fn esc(t: Text) -> Text {
   let out = "";
   let i = 0;

@@ -1,4 +1,4 @@
--- wo-html — server-rendered HTML as plain Text. Four layers, all pure:
+-- writeonce-view — server-rendered HTML as plain Text. Four layers, all pure:
 --   esc()        HTML-escape untrusted text. `{{ }}` in a raw text
 --                literal compiles to a call to this, so display data is
 --                escaped by construction; esc() by hand is the fallback

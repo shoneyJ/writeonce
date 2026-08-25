@@ -1,11 +1,14 @@
-# writeonce-framework
+# writeonce-serve
+> Renamed 2026-08-25: this library was `writeonce-framework`, imported as
+> `use framework`. Stories, specs and plans dated before that still say the
+> old name — they are dated records and were left as written.
 
 A web framework **written in writeonce**, consumed as a `[deps]` dependency
 (iteration 15). Spec: `docs/superpowers/specs/2026-08-18-web-framework-design.md` §B.
 
 ```toml
 [deps]
-writeonce-framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+writeonce-serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
 ```
 
 ## What it is
@@ -167,7 +170,7 @@ naming the kind, unless a demo `main` is added (lib+bin is allowed).
 - **`internal/` — not importable by a consumer.** The connection-level request
   parser and carry-state record (`parse.wo`) and the serve loop, status text,
   and response serializer (`serve.wo`) live here. A consuming app that writes
-  `use writeonce-framework/internal` gets **WO-E108** at that `use`. The rule
+  `use writeonce-serve/internal` gets **WO-E108** at that `use`. The rule
   is Go's: a path segment named `internal` is refused across the `[deps]`
   boundary only — the framework's own modules import it freely.
 
@@ -180,3 +183,20 @@ elimination); a consumer simply cannot name them.
 `docs/examples/web-app` — a small storefront importing this framework
 through `[deps]`. Its acceptance (`just web-app`) exercises the whole chain:
 fetch → lock → build → serve → durable restart.
+
+## Serving files
+
+`StaticFiles { dir, max_bytes }` mounts a directory on a wildcard route:
+
+```
+app.get("/assets/*path", StaticFiles { dir: "assets", max_bytes: 2097152 })
+app.get("/dl/*path",     StaticFiles { dir: "dist",   max_bytes: 16777216 })
+```
+
+Two rules, both refusals rather than repairs: a path containing `..` is a
+404 and never reaches the filesystem, and `max_bytes` is a hard ceiling —
+`fs.read_all` truncates above it, so set it above the largest file you
+mean to serve. Content types come from the extension; archives
+(`.tar.gz`, `.tgz`, `.zip`) also get `content-disposition: attachment`.
+Text is binary-safe in this language, so archives and images travel
+unchanged. Lifted out of the shop template 2026-08-25.

@@ -1,10 +1,10 @@
 -- home/view.wo — the VIEW for `/`. A component: fields in, Text out.
 -- Everything on this page is static copy EXCEPT the chapter list, so
 -- the one field is that list's already-built component — content
--- projection, the same slot pattern wo-html's `Layout` uses. HomePage
+-- projection, the same slot pattern writeonce-view's `Layout` uses. HomePage
 -- therefore knows nothing about chapters, the Chapter table, or how the
 -- nav decides which entry is current.
-use html
+use view
 
 pub class HomePage {
   chapter_nav: Component

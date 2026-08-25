@@ -38,19 +38,19 @@ fn render() -> Text {
 }
 ```
 
-Every `render()` makes its class a **component** — wo-html's structural
+Every `render()` makes its class a **component** — writeonce-view's structural
 `Component` interface, satisfied by having the method, never declared.
 Parent components hold children directly (`cards: multi Component`) and
 render them with `render_all`, so `ProductListPage` knows nothing about
 `ProductCard` beyond `render()`. The document itself is a component too:
 `AppShell { title, content }` in `layout/app.wo`, which links a real
 stylesheet rather than inlining one — that is why it is its own shell and
-not wo-html's `Layout`.
+not writeonce-view's `Layout`.
 
 Two holes, and the difference is the whole escaping story:
 
 - `{{ expr }}` **HTML-escapes** — it compiles to a call to the `esc` in
-  scope (wo-html's, unless the app declares its own). Display data goes
+  scope (writeonce-view's, unless the app declares its own). Display data goes
   here; a typo'd field is a compile error, not a broken page.
 - `${ expr }` is **raw** — for markup you built yourself, like the
   `${stock}` fragment above or `${content}` in the app shell.
@@ -70,7 +70,7 @@ up, or sandbox.
 | `product_list/view.wo` | VIEW — classes with `fn render() -> Text`, fields = exactly what is displayed | `product-list/view.html` |
 | `product_list/controller.wo` | CONTROLLER — query the model, fill the view, answer a `Resp`; beside its view in the same module | component `.ts` + service |
 | `product_page/`, `orders/` | one module per feature: `view.wo` + `controller.wo` | feature folders |
-| `static_files/controller.wo` | `/assets/*` from disk, traversal-safe, typed | `angular.json` assets |
+| `/assets/*` | served by the framework's `StaticFiles` — the template no longer carries its own copy | `angular.json` assets |
 | `assets/style.css` | ONE real stylesheet, sectioned per feature | the `.scss` files |
 | the `render()` bodies | ONE raw text literal each: real newlines, real double-quoted attributes, source indentation removed at compile time, `${}` raw holes and `{{ }}` auto-escaping ones | Vue `<template>` (in-SFC) |
 | `layout/app.wo` → `AppShell` | the document, as a two-slot component | `app.component.html` |
@@ -94,12 +94,12 @@ it looks like.
   this directory was its consumer. Styles stay a real CSS file, served
   statically (there is no scss preprocessor).
 - **No closures, no DI.** A view is a class with fields + `render()`
-  (wo-html's `Component`); a controller is a class satisfying `Handler`.
+  (writeonce-view's `Component`); a controller is a class satisfying `Handler`.
   Capture = a field.
 - **The MVC seam is enforced by where the query sits.** Controllers hold
   every `from … select`; a view receives VALUES — for the list page, a
   `multi Component` of already-filled cards. No view in this template
-  touches the database, and wo-html contains no query at all.
+  touches the database, and writeonce-view contains no query at all.
 - **No sessions/cart yet.** Buying is per-product (qty → order). A cart
   needs a session story that does not exist yet.
 - **No client-side JS.** Every interaction is a form round trip.

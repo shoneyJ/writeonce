@@ -10,7 +10,7 @@ samples now read the same way.
 | --- | --- | --- |
 | `types.wo` | MODEL | the `Chapter` `@table`, the `ChapterLink` projection, `Chapters.links()`, and `seed_if_empty()` |
 | `content.wo` | MODEL (content) | the nine chapter bodies as fragment-returning functions, plus `seed_chapters()` |
-| `layout/app.wo` | VIEW (chrome) | `AppShell` — the component that fills wo-html's `Layout` — the two named widths, and `html_error` |
+| `layout/app.wo` | VIEW (chrome) | `AppShell` — the component that fills writeonce-view's `Layout` — the two named widths, and `html_error` |
 | `layout/header.wo`, `layout/footer.wo` | VIEW (chrome) | the shared nav bar (brand = mark + wordmark) and footer |
 | `layout/logo.wo` | VIEW (chrome) | the mark as inline SVG, plus the `<head>` links |
 | `install/view.wo`, `install/controller.wo` | VIEW + CONTROLLER | `/install` — the toolchain guide. Static copy, so `InstallPage` has no fields |
@@ -43,7 +43,7 @@ class — recorded gap #1 — but nothing needs it to.)
 - **Chapters are rows, not constants.** `seed_if_empty()` inserts them
   only when the table answers empty, so a WAL restart keeps admin edits
   instead of reseeding over them — the sample's own proof of chapter 6's
-  claim. The seed bodies are BUILT with wo-html's builders at boot; after
+  claim. The seed bodies are BUILT with writeonce-view's builders at boot; after
   that the table is the truth and the builders are never consulted again.
 - **The seam is enforced by where the query sits.** `Chapters.links()`
   lives with the MODEL and hands the view a `multi ChapterLink` —
@@ -87,10 +87,19 @@ class — recorded gap #1 — but nothing needs it to.)
   hole; it is written with `&#123;` entities instead. This is the same
   limitation the chapter code samples hit with `${`, and the reason both
   doors exist.
+- **Downloads are the framework's, not the site's.** `/dl/*path` is
+  `StaticFiles` mounted in `main.wo` with a 16 MiB ceiling — no
+  controller, because there is no decision to make. `WO_DIST` says where
+  the tarballs are (default `./dist`). The install page offers the GitHub
+  release as primary and this as a mirror, with the `.sha256` beside it.
+- **The supported-systems list is read off the binaries**, not off a
+  wish list: `file` gives the triple, and the highest `GLIBC_` symbol
+  version they import gives the libc floor (2.38 today). Overstating
+  support costs a reader an afternoon.
 - **`SITE_HOST` picks the interface.** Loopback by default — right behind
   a proxy — with the env var for reaching a dev instance across the LAN.
   The bound address is printed at startup.
-- **wo-html's sheet is static.** Tailwind's class NAMES, one hand-written
+- **writeonce-view's sheet is static.** Tailwind's class NAMES, one hand-written
   CSS string inlined per page by `page()` — self-contained responses, no
   toolchain; growing the sheet is appending a line in `tw_css()`.
 

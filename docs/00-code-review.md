@@ -79,7 +79,7 @@ the number or produce the benchmark.
 | 22's battery never run | 22 is ⬜ "needs a spec first"; no `bench/baseline.json`, no `just db-bench`; `runtime/bench/` is the retired C prototype's harness |
 | TSan covers one demo | only `scripts/fibers-accept.sh` builds and runs `wovm_tsan` |
 | no fuzzing, no CI | no `.github/`, no fuzz target |
-| one framework, five samples, one consumer | exact: `writeonce-framework`; employee, employee-list, fibers, gc-cycle, log-watcher; `web-app` |
+| one framework, five samples, one consumer | exact: `writeonce-serve`; employee, employee-list, fibers, gc-cycle, log-watcher; `web-app` |
 
 ### Consequence
 

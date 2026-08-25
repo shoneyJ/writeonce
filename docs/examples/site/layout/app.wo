@@ -1,13 +1,13 @@
 -- layout/app.wo — the app shell: one component wrapping every page with
 -- the shared header and footer. Unlike the shop template, this site
--- INLINES its stylesheet (wo-html's `page()` does that), so the shell
--- fills wo-html's own `Layout` rather than writing its own document.
+-- INLINES its stylesheet (writeonce-view's `page()` does that), so the shell
+-- fills writeonce-view's own `Layout` rather than writing its own document.
 --
 -- The only thing that varies between pages is the container width, so
 -- that is the one extra slot — and the two widths are named once, here,
 -- instead of as class strings scattered through the controllers.
-use framework/http
-use html
+use serve/http
+use view
 
 pub class AppShell {
   title:     Text

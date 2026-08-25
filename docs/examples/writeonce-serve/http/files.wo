@@ -1,0 +1,72 @@
+-- http/files.wo — serving a file from disk, the framework's answer to
+-- "let people download something". Lifted out of the shop template
+-- 2026-08-25, which had carried its own copy and said in a comment that
+-- this belonged here.
+--
+-- Mount it on a wildcard route and it answers that subtree:
+--
+--   app.get("/assets/*path", StaticFiles { dir: "assets",  max_bytes: 2097152 })
+--   app.get("/dl/*path",     StaticFiles { dir: "dist",    max_bytes: 8388608 })
+--
+-- Safety is two rules, both refusals rather than repairs: a path holding
+-- `..` is a 404 and never reaches the filesystem, and a file bigger than
+-- `max_bytes` is truncated by `fs.read_all` — so `max_bytes` is a real
+-- ceiling you must set above the largest file you intend to serve, not a
+-- hint. Text is binary-safe in this language, so archives and images
+-- travel unchanged.
+use fs
+
+pub class StaticFiles {
+  dir:       Text
+  max_bytes: Int
+
+  fn handle(req: Req) -> Resp {
+    let rel = req.params["path"];
+    if rel == nil {
+      return not_found();
+    }
+    -- Traversal: refuse, never normalise. A rewritten path is a second
+    -- chance to get it wrong.
+    if index_of("${rel}", "..") != -1 {
+      return not_found();
+    }
+    let body = try fs.read_all("${self.dir}/${rel}", self.max_bytes) catch (e) nil;
+    if body == nil {
+      return not_found();
+    }
+    let h: map<Text, Text> = {};
+    h["content-type"] = content_type("${rel}");
+    if is_download("${rel}") {
+      h["content-disposition"] = "attachment";
+    }
+    return Resp { status: 200, headers: h, body: "${body}" };
+  }
+}
+
+-- Extension to content type. Unknown extensions are octet-stream: a
+-- wrong guess is worse than no guess.
+pub fn content_type(name: Text) -> Text {
+  if ends_with(name, ".html") { return "text/html; charset=utf-8"; }
+  if ends_with(name, ".css") { return "text/css; charset=utf-8"; }
+  if ends_with(name, ".js") { return "text/javascript"; }
+  if ends_with(name, ".json") { return "application/json"; }
+  if ends_with(name, ".svg") { return "image/svg+xml"; }
+  if ends_with(name, ".png") { return "image/png"; }
+  if ends_with(name, ".webp") { return "image/webp"; }
+  if ends_with(name, ".ico") { return "image/x-icon"; }
+  if ends_with(name, ".woff2") { return "font/woff2"; }
+  if ends_with(name, ".txt") { return "text/plain; charset=utf-8"; }
+  if ends_with(name, ".sha256") { return "text/plain; charset=utf-8"; }
+  if ends_with(name, ".tar.gz") { return "application/gzip"; }
+  if ends_with(name, ".tgz") { return "application/gzip"; }
+  if ends_with(name, ".zip") { return "application/zip"; }
+  return "application/octet-stream";
+}
+
+-- Archives are offered as a save, not rendered into a tab.
+fn is_download(name: Text) -> Bool {
+  if ends_with(name, ".tar.gz") { return true; }
+  if ends_with(name, ".tgz") { return true; }
+  if ends_with(name, ".zip") { return true; }
+  return false;
+}

@@ -4,7 +4,7 @@
 -- source indentation removed at compile time. `${}` interpolates raw,
 -- `{{ }}` HTML-escapes — so display data goes through `{{ }}` and never
 -- through a hand-written esc() call.
-use html
+use view
 
 pub class ProductCard {
   sku:   Text

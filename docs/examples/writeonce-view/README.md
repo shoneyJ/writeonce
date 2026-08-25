@@ -1,4 +1,7 @@
-# wo-html — server-rendered HTML as plain Text
+# writeonce-view — server-rendered HTML as plain Text
+> Renamed 2026-08-25: this library was `wo-html`, imported as `use html`.
+> Stories, specs and plans dated before that still say the old name — they
+> are dated records and were left as written.
 
 A view library, not a framework and not a template engine. Everything in
 it is a pure function or a class with a `render()`; nothing here opens a
@@ -6,7 +9,7 @@ socket, reads a file, or touches the database.
 
 ```
 [deps]
-html = { git = "https://github.com/shoneyj/wo-html", rev = "v0.1.0" }
+view = { git = "https://github.com/shoneyj/writeonce-view", rev = "v0.1.0" }
 ```
 
 ## The four layers
@@ -78,7 +81,7 @@ component like any other.
 
 `ok_html` is the **framework's** (`framework/http`, beside `ok_text` and
 `ok_json`): a status line plus a content-type is transport, not
-rendering, so wo-html never learns what a `Resp` is.
+rendering, so writeonce-view never learns what a `Resp` is.
 
 The seam is what makes a view testable without a server and a query
 testable without markup. Breaking it looks like one convenience — a

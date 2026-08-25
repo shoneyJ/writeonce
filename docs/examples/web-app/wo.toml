@@ -1,6 +1,6 @@
 name        = "web-app"
 version     = "0.1.0"
-description = "Storefront sample: consumes writeonce-framework through [deps]; @table persistence; iteration 16's acceptance workload"
+description = "Storefront sample: consumes writeonce-serve through [deps]; @table persistence; iteration 16's acceptance workload"
 
 [runtime]
 wo = ">= 0.1"
@@ -11,9 +11,9 @@ wo = ">= 0.1"
 # The framework is a real dependency, never a relative path — extraction of
 # the framework to its own repository changes only this URL. The acceptance
 # gate (scripts/web-app-accept.sh) substitutes a run-time file:// remote
-# built from docs/examples/writeonce-framework, so CI never needs the
+# built from docs/examples/writeonce-serve, so CI never needs the
 # network and this repo never carries .wo-deps/wo.lock artifacts.
 # The [deps] KEY is the module name `use` imports (hyphens are not identifier
 # characters, so the key is `framework` while the repository keeps its name).
 [deps]
-framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }

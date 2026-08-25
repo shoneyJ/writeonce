@@ -6,7 +6,7 @@
 -- links), so it renders identically on the homepage and on a chapter
 -- page — the only difference is which ord is `current`. Reuse is the
 -- same component with different fields, never copied markup.
-use html
+use view
 
 -- `ChapterLink` is the MODEL's projection type (types.wo); a class is
 -- reachable across module lines, so the view just names it.

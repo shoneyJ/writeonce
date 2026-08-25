@@ -168,7 +168,7 @@ sees through Interp; same corpus pin). Body-parsing hooks: all three ✅.
 
 Scope split (2026-08-20): the surface above plus the remaining transport/
 routing/security gaps is **framework v1**, tracked item-by-item in the
-[framework README's status ledger](../examples/writeonce-framework/README.md)
+[framework README's status ledger](../examples/writeonce-serve/README.md)
 (✅/🔶/⬜/⏸/🔧 per feature — timeouts and Unix sockets need `net` runtime
 seams, crypto hashes need C builtins since the language has no bitwise
 operators, streaming/cancellation park behind 8/11). The memory-rich

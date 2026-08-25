@@ -1,4 +1,4 @@
--- web-app — the storefront: writeonce-framework (via [deps]) + @table
+-- web-app — the storefront: writeonce-serve (via [deps]) + @table
 -- persistence. Every handler is a class satisfying Handler; the auth gate is
 -- a Middleware; the data layer is the language's own database — no ORM, no
 -- separate process, one binary.
@@ -6,9 +6,9 @@ use env
 use json
 use net
 use time
-use framework
-use framework/http
-use framework/router
+use serve
+use serve/http
+use serve/router
 
 -- decode target for POST /products, encode shape for every product answer
 typedef ProductView = { name: Text, price: Float, stock: Int }

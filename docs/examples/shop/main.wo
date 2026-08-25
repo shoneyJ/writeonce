@@ -4,12 +4,12 @@
 --
 --   WO_DATA=./data ./target/shop 8080     (run from the shop directory:
 --   /assets/* serves from ./assets)
-use framework
-use framework/router
+use serve
+use serve/http
+use serve/router
 use product_list
 use product_page
 use orders
-use static_files
 
 fn seed_if_empty() {
   let n = 0;
@@ -44,6 +44,8 @@ fn main(args: multi Text) -> Int {
   app.get("/p/:sku",          ShowProduct {});
   app.post("/orders/:sku",    CreateOrder {});
   app.get("/orders",          ListOrders {});
-  app.get("/assets/*path",    StaticFiles { dir: "assets" });
+  -- the framework's file server (serve/http): 2 MiB ceiling is well
+  -- above this template's stylesheet.
+  app.get("/assets/*path",    StaticFiles { dir: "assets", max_bytes: 2097152 });
   return app.serve("127.0.0.1", port);
 }

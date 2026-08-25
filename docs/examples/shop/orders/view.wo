@@ -1,7 +1,7 @@
 -- orders/view.wo — the confirmation page and the orders table.
 -- Raw text literals for the bodies; see product_list/view.wo for the
 -- convention.
-use html
+use view
 
 pub class OrderOk {
   name:  Text

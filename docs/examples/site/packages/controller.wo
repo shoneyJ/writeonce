@@ -3,8 +3,8 @@
 -- The catalogue is static data, not rows, so it lives here on the DATA
 -- side of the feature rather than in the view: the components are handed
 -- values exactly as they would be if this were a table one day.
-use framework/http
-use html
+use serve/http
+use view
 use layout
 
 typedef PackageInfo = {
@@ -54,25 +54,26 @@ fn catalogue() -> multi PackageInfo {
   let out: multi PackageInfo = [];
 
   push(out, PackageInfo {
-    name:    "framework",
-    summary: "A web framework written in writeonce: an HTTP/1.1 keep-alive server core, a router with :param captures, and Handler/Middleware structural interfaces.",
-    git:     "https://github.com/shoneyj/writeonce-framework",
+    name:    "serve",
+    summary: "The web framework:  an HTTP/1.1 keep-alive server core, a router with :param captures, and Handler/Middleware structural interfaces.",
+    git:     "https://github.com/shoneyj/writeonce-serve",
     rev:     "v0.1.0",
     what:    `
       <ul class="list-disc pl-6 leading-relaxed">
         <li class="mb-2"><code>App</code> — the route table and the middleware chains; <code>app.get</code>/<code>post</code>/<code>delete_</code>, <code>use_mw</code>, <code>use_after</code>, <code>mount</code>, <code>serve</code>.</li>
+        <li class="mb-2"><code>StaticFiles</code> — serve a directory over a wildcard route. Traversal is refused, not normalised; <code>max_bytes</code> is a hard ceiling. This site's <code>/dl</code> downloads run through it.</li>
         <li class="mb-2"><code>Handler</code>, <code>Middleware</code>, <code>After</code> — structural interfaces. A handler is a CLASS; its fields are the closure this language does not have.</li>
         <li class="mb-2"><code>Req</code>/<code>Resp</code> plus builders: <code>ok_text</code>, <code>ok_html</code>, <code>ok_json</code>, <code>created_json</code>, <code>not_found</code>, <code>bad_request</code>, <code>unauthorized</code>, <code>conflict</code>, <code>redirect</code>.</li>
         <li class="mb-2">Auth MECHANISM only — <code>bearer_token</code>, <code>basic_credentials</code>, constant-time <code>ct_eq</code>. Which routes are gated stays your policy.</li>
         <li class="mb-2">Bodies: <code>form_values</code>, <code>multipart_parts</code>, content negotiation, ETags, security headers, CORS, WebSocket frames.</li>
       </ul>`,
-    usage:   code_block("use framework\nuse framework/http\nuse framework/router\n\nclass Hello {\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"hello\");\n  }\n}\n\nfn main(args: multi Text) -> Int {\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\", Hello {});\n  return app.serve(\"127.0.0.1\", 8080);\n}")
+    usage:   code_block("use serve\nuse serve/http\nuse serve/router\n\nclass Hello {\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"hello\");\n  }\n}\n\nfn main(args: multi Text) -> Int {\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\", Hello {});\n  return app.serve(\"127.0.0.1\", 8080);\n}")
   });
 
   push(out, PackageInfo {
-    name:    "html",
+    name:    "view",
     summary: "Server-rendered HTML as plain Text: escaping, element builders, a component layer, and a Tailwind-style utility stylesheet inlined into every page.",
-    git:     "https://github.com/shoneyj/wo-html",
+    git:     "https://github.com/shoneyj/writeonce-view",
     rev:     "v0.1.0",
     what:    `
       <ul class="list-disc pl-6 leading-relaxed">
@@ -82,7 +83,7 @@ fn catalogue() -> multi PackageInfo {
         <li class="mb-2">Builders: <code>el</code>, <code>link</code>, <code>card</code>, <code>nav_bar</code>, <code>code_block</code>, <code>form_post</code>, <code>text_input</code>, <code>text_area</code>, <code>submit_btn</code>, <code>btn_link</code>.</li>
         <li class="mb-2"><code>tw_css()</code> + <code>page()</code> — one hand-written utility sheet, inlined, so a page is one self-contained response. No CDN, no build step, no JS.</li>
       </ul>`,
-    usage:   code_block("use html\n\nclass Card {\n  name: Text\n  fn render() -> Text {\n    return `\n      <div class=\"card\">\n        <h3>{{ self.name }}</h3>\n      </div>`;\n  }\n}\n\n-- in a handler:\nlet c = Card { name: user_supplied };\nreturn ok_html(page(\"Hello\", c.render()));")
+    usage:   code_block("use view\n\nclass Card {\n  name: Text\n  fn render() -> Text {\n    return `\n      <div class=\"card\">\n        <h3>{{ self.name }}</h3>\n      </div>`;\n  }\n}\n\n-- in a handler:\nlet c = Card { name: user_supplied };\nreturn ok_html(page(\"Hello\", c.render()));")
   });
 
   return out;

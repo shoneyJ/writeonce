@@ -1,5 +1,5 @@
 -- layout/footer.wo — the site footer, shared by every page.
-use html
+use view
 
 pub fn footer() -> Text {
   return el("div", "footer", "writeonce.de — served by the language it teaches. " .. "One binary: compiler, runtime, database, this page.");

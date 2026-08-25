@@ -1,12 +1,12 @@
 -- content.wo — the tutorial chapters, seeded into the Chapter table on
 -- first boot (types.wo's seed_if_empty). Model CONTENT, so it sits in
 -- the root module beside types.wo: it inserts rows. Bodies are HTML fragments
--- BUILT with the wo-html dep — prose in el(), code samples through
+-- BUILT with the writeonce-view dep — prose in el(), code samples through
 -- code_block() which escapes them. Editing a chapter later (the admin
 -- route) overwrites body/title in place; the WAL keeps the edit across
 -- restarts, which is exactly chapter 6's lesson demonstrated by the
 -- site that teaches it.
-use html
+use view
 
 fn ch_hello() -> Text {
   let b = el("p", "leading-relaxed mb-4",
@@ -61,15 +61,15 @@ fn ch_actors() -> Text {
 
 fn ch_deps() -> Text {
   let b = el("p", "leading-relaxed mb-4",
-    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: the web framework, and the wo-html " .. "library that rendered the page you are reading.");
+    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: the web framework, and the writeonce-view " .. "library that rendered the page you are reading.");
   b = b .. code_block(`
     [deps]
-    framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
-    html      = { git = "https://github.com/shoneyj/wo-html",              rev = "v0.1.0" }`);
+    serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+    view      = { git = "https://github.com/shoneyj/writeonce-view",              rev = "v0.1.0" }`);
   b = b .. code_block(`
-    use framework
-    use framework/http
-    use html
+    use serve
+    use serve/http
+    use view
 
     -- html's builders + tailwind-style utilities, zero JS, no build step:
     let body = el("h1", "text-3xl font-bold", "Hello");

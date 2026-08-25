@@ -1,11 +1,12 @@
 -- site — writeonce.de: the language tutorial, served BY the language.
--- Full stack in one binary: writeonce-framework ([deps]) for HTTP/routing/
--- auth, wo-html ([deps]) for server-rendered pages with Tailwind-style
+-- Full stack in one binary: writeonce-serve ([deps]) for HTTP/routing/
+-- auth, writeonce-view ([deps]) for server-rendered pages with Tailwind-style
 -- utilities, @table + WAL for the chapters themselves. The site is its own
 -- final chapter: /ch/serving shows this file's shape.
 --
 --   SITE_TOKEN=... WO_DATA=./data ./site 8080
 --   SITE_HOST=0.0.0.0 ... ./site 8080     (reachable from the network)
+--   WO_DIST=/srv/dist ...                  (where /dl serves tarballs from)
 --
 -- Behind nginx/caddy for writeonce.de: the proxy terminates TLS and
 -- forwards to 127.0.0.1:8080 (the framework speaks HTTP/1.1 keep-alive).
@@ -14,8 +15,9 @@
 -- model is types.wo; every feature is a directory holding its view and
 -- its controller.
 use env
-use framework
-use framework/router
+use serve
+use serve/http
+use serve/router
 use home
 use chapter
 use install
@@ -49,6 +51,14 @@ fn main(args: multi Text) -> Int {
     host = "${h}";
   }
 
+  -- Where the release tarballs live. `just dist` writes them to ./dist;
+  -- a deployment points WO_DIST at wherever it keeps them.
+  let dist = "dist";
+  let d = env.get("WO_DIST");
+  if d != nil {
+    dist = "${d}";
+  }
+
   seed_if_empty();
 
   let app = App { middleware: [], routes: [] };
@@ -59,6 +69,9 @@ fn main(args: multi Text) -> Int {
   app.get("/packages/:name",  ShowPackage {});
   app.get("/health",          Health {});
   app.get("/favicon.svg",     Favicon {});
+  -- 16 MiB ceiling: the toolchain tarball is under 1 MiB today, and
+  -- `max_bytes` is a hard truncation point, not a hint.
+  app.get("/dl/*path",        StaticFiles { dir: dist, max_bytes: 16777216 });
   app.get("/ch/:slug",        ShowChapter {});
   app.post("/admin/ch/:slug", AdminEdit { token: "${token}" });
   print_err("site: listening on ${host}:${port}");

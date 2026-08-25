@@ -2,7 +2,7 @@
 -- form-encoded, bearer-gated. Mechanism (bearer_token, constant-time
 -- ct_eq) is the framework's; POLICY — which routes, which token — is
 -- this app's, right here. No rendering: the answer is a redirect.
-use framework/http
+use serve/http
 
 pub class AdminEdit {
   token: Text

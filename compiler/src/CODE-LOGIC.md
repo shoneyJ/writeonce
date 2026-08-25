@@ -332,7 +332,7 @@ Things worth knowing before editing them:
 - **`{{ e }}` desugars to `esc(${e})`, resolved by ordinary name
   lookup.** `desugar_interp` in `parser.ml` builds a `Call` on an
   `Ident "esc"` — precisely what a developer wrote by hand before. The
-  compiler learns nothing about HTML, `esc` stays wo-html's ordinary
+  compiler learns nothing about HTML, `esc` stays writeonce-view's ordinary
   `pub fn`, a typo'd field inside the hole is a normal name/type error,
   and a locally defined `esc` shadows deliberately (a custom escaper is
   a feature). `${ }` inside the same literal stays raw — that is the

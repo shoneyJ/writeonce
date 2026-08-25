@@ -41,7 +41,7 @@ deps-accept:
     ./scripts/deps-accept.sh
 
 # web-app: iteration 16's gate — the whole chain at run time, network-free:
-# a temp git remote from docs/examples/writeonce-framework, file:// URL
+# a temp git remote from docs/examples/writeonce-serve, file:// URL
 # substituted into a temp copy of docs/examples/web-app, then fetch -> lock
 # -> build -> serve -> the storefront matrix (auth/CRUD/@unique/FK/404/400/
 # pipelining) -> SIGTERM -> WAL restart persistence.
@@ -49,7 +49,7 @@ web-app:
     ./scripts/web-app-accept.sh
 
 # site: the writeonce.de tutorial (docs/examples/site) — TWO deps
-# (framework + wo-html), server-rendered pages, page matrix -> 401/edit
+# (serve + view), server-rendered pages, page matrix -> 401/edit
 # -> SIGTERM -> WAL restart persistence. `just site` runs it.
 site:
     ./scripts/site-accept.sh

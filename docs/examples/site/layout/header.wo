@@ -1,5 +1,5 @@
 -- layout/header.wo — the site navigation bar, shared by every page.
-use html
+use view
 
 pub fn header() -> Text {
   let links = link("/install", "text-gray-700", "Install");
