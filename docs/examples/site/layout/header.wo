@@ -5,7 +5,7 @@ pub fn header() -> Text {
   let links = link("/install", "text-gray-700", "Install");
   links = links .. link("/ch/hello", "text-gray-700", "Tutorial");
   links = links .. link("/packages", "text-gray-700", "Packages");
-  links = links .. link("https://github.com/shoneyj", "text-gray-700", "GitHub");
+  links = links .. link("https://github.com/shoneyJ/writeonce", "text-gray-700", "GitHub");
   -- The brand is the mark plus the wordmark, one inline-flex row so the
   -- tile and the text share a baseline at any font size.
   let brand = el("span", "flex items-center gap-2", logo_svg(28) .. "<span>writeonce.de</span>");

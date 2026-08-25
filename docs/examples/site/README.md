@@ -93,6 +93,43 @@ server {
 Run the binary under systemd (`Restart=on-failure`, `Environment=SITE_TOKEN=...`,
 `Environment=WO_DATA=/var/lib/writeonce-site`); SIGTERM drains cleanly.
 
+### What to copy to the host
+
+The binary is self-contained — VM, bytecode and database engine are
+inside it — but two directories are read at RUNTIME and must travel
+with it:
+
+```
+/srv/writeonce-site/
+  site                     the binary (docs/examples/site/target/site)
+  dist/                    what /dl serves — the RELEASE assets:
+    writeonce-0.1.0-linux-amd64.tar.gz
+    writeonce-0.1.0-linux-amd64.tar.gz.sha256
+  data/                    WO_DATA — the WAL; create it, keep it
+```
+
+```
+SITE_TOKEN=<bearer for /admin>   required, the process refuses to start without it
+WO_DATA=/srv/writeonce-site/data durable chapters; omit for RAM-only
+WO_DIST=/srv/writeonce-site/dist where /dl reads from (default ./dist)
+SITE_HOST                        leave UNSET behind a proxy — loopback is the
+                                 right default; set it only to expose directly
+```
+
+Behind a proxy `SITE_HOST` stays unset, so the process binds
+`127.0.0.1` and is unreachable except through nginx. It prints the
+bound address at startup, which is the quickest way to confirm that.
+
+**Keep `dist/` the published release, not a local build.** `just dist`
+produces a different digest on every run, so a locally built tarball
+would not match the `.sha256` the release publishes and would make the
+mirror disagree with the GitHub download. Fetch the assets from the
+release instead:
+
+```
+gh release download v0.1.0 -D dist -R shoneyJ/writeonce
+```
+
 ## What it demonstrates
 
 Chapters 1–9 teach the language (values, containers, classes, optionals,
