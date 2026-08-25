@@ -1,0 +1,13 @@
+-- favicon/controller.wo — GET /favicon.svg. The one route that answers
+-- something other than HTML or text, so it builds its own Resp.
+use framework/http
+use layout
+
+pub class Favicon {
+  fn handle(req: Req) -> Resp {
+    let h: map<Text, Text> = {};
+    h["content-type"] = "image/svg+xml";
+    h["cache-control"] = "public, max-age=86400";
+    return Resp { status: 200, headers: h, body: favicon_svg() };
+  }
+}

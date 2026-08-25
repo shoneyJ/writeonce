@@ -166,6 +166,14 @@ pub fn tw_css() -> Text {
 -- One full document: the sheet inlined, viewport set, body handed in.
 -- Self-contained by construction — view-source shows everything.
 pub fn page(title: Text, body: Text) -> Text {
+  return page_head(title, "", body);
+}
+
+-- The same document with extra <head> markup: a favicon link, a meta
+-- description, whatever the app needs up there. Kept RAW (`${}`) — head
+-- content is markup the app built, not data — and defaulted to "" by
+-- `page()` so no consumer has to care.
+pub fn page_head(title: Text, head: Text, body: Text) -> Text {
   -- The whole document as one literal. Every newline here lands
   -- inside <head>, where whitespace is insignificant; the body hole
   -- and its closing tags share one line so nothing is inserted into
@@ -174,6 +182,7 @@ pub fn page(title: Text, body: Text) -> Text {
     <!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>{{ title }}</title>
+    ${head}
     <style>${tw_css()}</style>
     </head><body>${body}</body></html>`;
 }
@@ -213,16 +222,18 @@ pub fn render_all(cs: multi Component) -> Text {
 -- builder's output — the layout never knows which, which is exactly why
 -- it never needs to know the child's type.
 --
--- Deliberately four slots and no container/width field: a page that
--- wants its content in a fixed-width column wraps it before passing it
--- in. One less knob here beats one more.
+-- Deliberately no container/width field: a page that wants its content
+-- in a fixed-width column wraps it before passing it in. `head` is the
+-- one non-body slot — a favicon link or a meta tag has nowhere else to
+-- go, and "" is the ordinary value.
 pub class Layout {
   title:   Text
+  head:    Text
   nav:     Text
   content: Text
   footer:  Text
 
   fn render() -> Text {
-    return page(self.title, self.nav .. self.content .. self.footer);
+    return page_head(self.title, self.head, self.nav .. self.content .. self.footer);
   }
 }

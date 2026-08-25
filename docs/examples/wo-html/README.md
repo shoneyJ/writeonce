@@ -53,12 +53,15 @@ pub class ProductListPage {
 record is needed (the framework's `Mw`/`Aw` wrappers are not a language
 requirement). `render_all(cs)` renders children in order.
 
-`Layout { title, nav, content, footer }` is content projection —
+`Layout { title, head, nav, content, footer }` is content projection —
 Angular's `<ng-content>` with the slots as ordinary pre-rendered `Text`.
 The caller passes `child.render()`, a raw literal, or a builder's output;
 the layout never learns which, which is precisely why it never needs the
 child's type. A page wanting a fixed-width column wraps its content
-before handing it over — deliberately no container knob here.
+before handing it over — deliberately no container knob here. `head` is
+the one slot that is not body markup: a favicon link or a meta tag has
+nowhere else to go, and `""` is the ordinary value (`page()` passes it
+for you).
 
 `Layout` renders through `page()`, so it inlines the utility sheet. An
 app that links a real stylesheet instead writes its own two-slot shell

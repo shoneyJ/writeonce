@@ -17,7 +17,18 @@ html      = { git = "https://github.com/shoneyj/wo-html",             rev = "v0.
 woc . && SITE_TOKEN=change-me WO_DATA=./data ./target/site 8080
 ```
 
-- `GET /` — the chapter index; `GET /ch/<slug>` — one chapter.
+It binds loopback by default. To reach it from another machine while
+developing, name the interface:
+
+```
+SITE_HOST=0.0.0.0 SITE_TOKEN=change-me WO_DATA=./data ./target/site 8080
+```
+
+- `GET /` — the homepage; `GET /ch/<slug>` — one chapter.
+- `GET /install` — the installation guide; `GET /packages` and
+  `GET /packages/<name>` — the package catalogue with copy-paste
+  `[deps]` lines and usage.
+- `GET /favicon.svg` — the mark, inline SVG, no asset pipeline.
 - `POST /admin/ch/<slug>` — edit a chapter (`title`/`body`, form-encoded,
   `authorization: Bearer $SITE_TOKEN`). Edits are WAL-durable under
   `WO_DATA` and replay on restart — that is chapter 6, demonstrated by
@@ -38,7 +49,9 @@ MVC, laid out exactly like the program template
 | `types.wo` | MODEL — the `Chapter` `@table`, and seed-if-empty |
 | `content.wo` | the nine chapter bodies + `seed_chapters()` |
 | `layout/` | the chrome: `AppShell` (+ the two named widths), header, footer, `html_error` |
-| `home/`, `chapter/`, `admin/`, `health/` | one module per feature: its `view.wo` (components: fields in, Text out) and its `controller.wo` (query the model, fill the components, answer a `Resp`) |
+| `home/`, `chapter/`, `install/`, `packages/` | one module per feature: its `view.wo` (components: fields in, Text out) and its `controller.wo` (query the model, fill the components, answer a `Resp`) |
+| `admin/`, `health/`, `favicon/` | controller-only features — a redirect, a text probe, an SVG |
+| `layout/logo.wo` | the mark as inline SVG: one source for the nav brand and `/favicon.svg` |
 | `main.wo` | bootstrap: seed, routes, serve — nothing else |
 
 Every `render()` makes its class a component (wo-html's structural

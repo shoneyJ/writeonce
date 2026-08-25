@@ -11,7 +11,11 @@ samples now read the same way.
 | `types.wo` | MODEL | the `Chapter` `@table`, the `ChapterLink` projection, `Chapters.links()`, and `seed_if_empty()` |
 | `content.wo` | MODEL (content) | the nine chapter bodies as fragment-returning functions, plus `seed_chapters()` |
 | `layout/app.wo` | VIEW (chrome) | `AppShell` — the component that fills wo-html's `Layout` — the two named widths, and `html_error` |
-| `layout/header.wo`, `layout/footer.wo` | VIEW (chrome) | the shared nav bar and footer |
+| `layout/header.wo`, `layout/footer.wo` | VIEW (chrome) | the shared nav bar (brand = mark + wordmark) and footer |
+| `layout/logo.wo` | VIEW (chrome) | the mark as inline SVG, plus the `<head>` links |
+| `install/view.wo`, `install/controller.wo` | VIEW + CONTROLLER | `/install` — the toolchain guide. Static copy, so `InstallPage` has no fields |
+| `packages/view.wo`, `packages/controller.wo` | VIEW + CONTROLLER | `/packages` and `/packages/:name` — the catalogue, its cards, and per-package usage |
+| `favicon/controller.wo` | CONTROLLER | `/favicon.svg` — builds its own `Resp` (image/svg+xml) |
 | `home/view.wo` | VIEW | `HomePage` and the homepage's code showcase |
 | `home/controller.wo` | CONTROLLER | `Home` — the `/` handler |
 | `chapter/view.wo` | VIEW | `ChapterNav`, `ChapterPage` |
@@ -73,6 +77,19 @@ class — recorded gap #1 — but nothing needs it to.)
   removed at compile time, `${ }` raw and `{{ }}` auto-escaping. The old
   "`..` does not straddle newlines, so build accumulator-style" note is
   obsolete and was removed.
+- **The logo is inline SVG, authored once.** `logo_svg(px)` goes in the
+  nav brand and `favicon_svg()` is served at `/favicon.svg` — a dark tile
+  with a two-stroke "W", white then accent blue. No asset pipeline, no
+  binary in the repo, and it stays legible at 16px. The `<head>` link
+  reaches the document through `Layout`'s `head` slot.
+- **A raw literal cannot contain a literal `{{`.** The packages page has
+  prose ABOUT `{{ }}` holes, and writing it directly would have made it a
+  hole; it is written with `&#123;` entities instead. This is the same
+  limitation the chapter code samples hit with `${`, and the reason both
+  doors exist.
+- **`SITE_HOST` picks the interface.** Loopback by default — right behind
+  a proxy — with the env var for reaching a dev instance across the LAN.
+  The bound address is printed at startup.
 - **wo-html's sheet is static.** Tailwind's class NAMES, one hand-written
   CSS string inlined per page by `page()` — self-contained responses, no
   toolchain; growing the sheet is appending a line in `tw_css()`.

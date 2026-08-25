@@ -1,0 +1,73 @@
+-- install/view.wo — the VIEW for /install. Static copy: no fields, so
+-- the component has none. It is still a component, and still renders
+-- through the same interface as every other page.
+use html
+
+pub class InstallPage {
+  fn render() -> Text {
+    let head = `
+      <h1 class="text-3xl font-bold mb-4">Install writeonce</h1>
+      <p class="leading-relaxed mb-6">Two native binaries — <code>woc</code>,
+      the compiler, and <code>wovm</code>, the runtime VM. Both depend only on
+      the system C library. There is no package manager to install, no
+      language runtime to install on the machines you deploy to, and no
+      build toolchain beyond these two files.</p>`;
+
+    let s1 = section("1. Get the toolchain",
+      `<p class="leading-relaxed mb-4">Download the release tarball and extract
+      it into <code>/usr/local</code>. Run this as root, or through
+      <code>sudo</code>:</p>`,
+      code_block("rm -rf /usr/local/writeonce\ntar -C /usr/local -xzf writeonce-0.1.0-linux-amd64.tar.gz"));
+
+    let s2 = section("2. Put it on your PATH",
+      `<p class="leading-relaxed mb-4">Add one line to your
+      <code>$HOME/.profile</code> (or <code>/etc/profile</code> for every user
+      on the box), then restart your shell:</p>`,
+      code_block("export PATH=$PATH:/usr/local/writeonce/bin"));
+
+    let s3 = section("3. Check it",
+      `<p class="leading-relaxed mb-4">Both should print the same version.
+      <code>woc</code> finds <code>wovm</code> beside itself, so a tarball
+      install needs no further configuration.</p>`,
+      code_block("woc version        # writeonce 0.1.0 linux/amd64\nwovm --version     # wovm 0.1.0"));
+
+    let s4 = section("4. Your first project",
+      `<p class="leading-relaxed mb-4">A project is a directory with a
+      <code>wo.toml</code> manifest and one or more <code>.wo</code> files.
+      Nothing else — no lockfile to create by hand, no scaffolding step.</p>`,
+      code_block("mkdir hello && cd hello\n\ncat > wo.toml <<'EOF'\nname    = \"hello\"\nversion = \"0.1.0\"\n\n[runtime]\nwo = \">= 0.1\"\nEOF\n\ncat > main.wo <<'EOF'\nfn main() -> Int {\n  print(\"hello, writeonce\");\n  return 0;\n}\nEOF"));
+
+    let s5 = section("5. Build and run",
+      `<p class="leading-relaxed mb-4"><code>woc &lt;dir&gt;</code> emits ONE
+      standalone binary at <code>target/&lt;name&gt;</code>. Copy that file to a
+      server and run it — the VM is inside it, and so is the database.</p>`,
+      code_block("woc .\n./target/hello        # hello, writeonce"));
+
+    let s6 = section("6. Add a dependency",
+      `<p class="leading-relaxed mb-4">Dependencies are git repositories pinned
+      by revision. The <code>[deps]</code> KEY is the module name your code
+      <code>use</code>s. <code>woc</code> writes a <code>wo.lock</code> with the
+      exact revision, and a locked build works offline. See
+      <a href="/packages">Packages</a> for what is available.</p>`,
+      code_block("[deps]\nhtml = { git = \"https://github.com/shoneyj/wo-html\", rev = \"v0.1.0\" }"));
+
+    let note = el("div", "bg-white rounded-lg border shadow-sm p-6 mt-8",
+      el("h2", "text-lg font-bold mb-2", "Where things go") ..
+      `<p class="leading-relaxed">The tarball installs to
+      <code>/usr/local/writeonce</code>: <code>bin/woc</code>,
+      <code>bin/wovm</code>, and a <code>VERSION</code> file. To point
+      <code>woc</code> at a different VM, set <code>$WO_RUNTIME</code> or add a
+      <code>[build] runtime = "..."</code> key to <code>wo.toml</code>. A
+      manifest may also require a minimum toolchain with
+      <code>[runtime] wo = "&gt;= 0.1"</code>; <code>woc</code> refuses to build
+      a project that needs a newer toolchain than itself.</p>`);
+
+    return head .. s1 .. s2 .. s3 .. s4 .. s5 .. s6 .. note;
+  }
+}
+
+-- One numbered step: heading, prose, and the commands to run.
+fn section(title: Text, prose: Text, code: Text) -> Text {
+  return el("div", "mb-8",
+    el("h2", "text-2xl font-bold mb-2", title) .. prose .. code);
+}

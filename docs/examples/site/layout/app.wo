@@ -17,6 +17,7 @@ pub class AppShell {
   fn render() -> Text {
     let l = Layout {
       title:   self.title,
+      head:    head_links(),
       nav:     header(),
       content: el("div", self.container, self.content),
       footer:  footer()

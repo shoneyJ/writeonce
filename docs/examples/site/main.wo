@@ -5,6 +5,7 @@
 -- final chapter: /ch/serving shows this file's shape.
 --
 --   SITE_TOKEN=... WO_DATA=./data ./site 8080
+--   SITE_HOST=0.0.0.0 ... ./site 8080     (reachable from the network)
 --
 -- Behind nginx/caddy for writeonce.de: the proxy terminates TLS and
 -- forwards to 127.0.0.1:8080 (the framework speaks HTTP/1.1 keep-alive).
@@ -17,8 +18,11 @@ use framework
 use framework/router
 use home
 use chapter
+use install
+use packages
 use admin
 use health
+use favicon
 
 fn main(args: multi Text) -> Int {
   if len(args) < 1 {
@@ -36,13 +40,27 @@ fn main(args: multi Text) -> Int {
     return 2;
   }
 
+  -- Bind to loopback unless SITE_HOST says otherwise. Behind a proxy
+  -- loopback is right; SITE_HOST=0.0.0.0 (or a LAN address) is how you
+  -- reach it from another machine while developing.
+  let host = "127.0.0.1";
+  let h = env.get("SITE_HOST");
+  if h != nil {
+    host = "${h}";
+  }
+
   seed_if_empty();
 
   let app = App { middleware: [], routes: [] };
   app.use_mw(Mw { m: Logging {} });
   app.get("/",                Home {});
+  app.get("/install",         ShowInstall {});
+  app.get("/packages",        ShowPackages {});
+  app.get("/packages/:name",  ShowPackage {});
   app.get("/health",          Health {});
+  app.get("/favicon.svg",     Favicon {});
   app.get("/ch/:slug",        ShowChapter {});
   app.post("/admin/ch/:slug", AdminEdit { token: "${token}" });
-  return app.serve("127.0.0.1", port);
+  print_err("site: listening on ${host}:${port}");
+  return app.serve(host, port);
 }
