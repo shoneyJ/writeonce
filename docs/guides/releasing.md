@@ -52,18 +52,16 @@ ignored by this workflow.
     publish step later fails with 403, come back and select
     "Read and write permissions".
 
- 5  REHEARSE before a real tag. Add --draft to the gh release create
-    line in .github/workflows/release.yml, commit, push.
+ 5  REHEARSE with a dry run — no tag, no publish, no cleanup.
+    Actions tab -> "release" -> "Run workflow" -> master.
+    A workflow_dispatch run skips the tag guard and the publish step,
+    so it builds, verifies, smoke-tests the extracted tarball and
+    reports the glibc floor, and stops there.
 
- 6  Fire it with a throwaway tag:
-      git tag -a v0.0.0-test -m "pipeline rehearsal"
-      git push origin v0.0.0-test
-    Note: the tag guard compares the tag to VERSION, so this run is
-    EXPECTED to fail at step "Tag must match VERSION". That is the
-    cheapest proof the guard works. To rehearse the whole job, set
-    VERSION to 0.0.0-test on a scratch branch and tag that instead.
+ 6  (nothing to undo — a dry run creates no tag and no release)
 
- 7  Watch it: Actions tab, or `gh run watch` once gh is authenticated.
+ 7  Watch it: the Actions tab, or `gh run watch` once gh is
+    authenticated.
 
  8  Read the "Report the glibc floor" step. It prints what the
     RUNNER-built binaries actually require. Expect 2.35-ish from

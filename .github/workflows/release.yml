@@ -6,7 +6,9 @@
 name: release
 
 # Fires only on a version tag, so nothing is published by an ordinary
-# push. `workflow_dispatch` is the manual escape hatch for a re-run.
+# push. `workflow_dispatch` is a DRY RUN: it builds, verifies and reports
+# the glibc floor, but skips the tag guard (there is no tag) and skips
+# publishing. Use it to rehearse before tagging anything.
 on:
   push:
     tags:
@@ -46,6 +48,7 @@ jobs:
       # nobody can install. mkdist.sh already guards VERSION against the
       # binaries; this guards the tag against VERSION.
       - name: Tag must match VERSION
+        if: github.event_name == 'push'
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver="$(cat VERSION)"
@@ -107,7 +110,9 @@ jobs:
 
       # gh is preinstalled on GitHub runners and reads GH_TOKEN from the
       # environment, so there is no `gh auth login` anywhere in this file.
+      # Skipped on workflow_dispatch: a dry run must never publish.
       - name: Publish
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
