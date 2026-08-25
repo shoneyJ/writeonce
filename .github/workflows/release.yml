@@ -37,11 +37,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The compiler is OCaml stdlib only — no opam packages — so this
-      # step exists purely to get a compiler and dune onto the runner.
+      # setup-ocaml gives a compiler and opam. It does NOT give dune —
+      # dune is an ordinary opam package, and this project has no .opam
+      # file for it to infer one from, so nothing pulls it in. The first
+      # run failed here with `dune: command not found`.
       - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: '4.14'
+
+      # Pinned to the version this project is developed against
+      # (compiler/dune-project says `(lang dune 3.14)`).
+      - name: Install dune
+        run: opam install -y dune.3.14.0
 
       # The tag is the release's identity; VERSION is what the binaries
       # report. If they disagree the download URL would name a version
@@ -57,8 +64,10 @@ jobs:
             exit 1
           }
 
+      # `opam exec --` because mkdist.sh calls dune internally; without
+      # the opam environment on PATH the script cannot find it.
       - name: Build the tarball
-        run: ./scripts/mkdist.sh
+        run: opam exec -- ./scripts/mkdist.sh
 
       # The site links one exact filename. If mkdist ever changes its
       # naming, the download button 404s for every visitor — so fail
