@@ -118,7 +118,7 @@ expect "packages index lists both"      "$(hit /packages)"   200 "/packages/serv
 expect "package detail shows its dep"   "$(hit /packages/view)" 200 "writeonce-view"
 expect "unknown package is a 404 page"  "$(hit /packages/nope)" 404 "No such package"
 expect "favicon is served as svg"       "$(hit /favicon.svg)" 200 "<svg"
-expect "install lists supported systems" "$(hit /install)"   200 "glibc 2.38 or newer"
+expect "install lists supported systems" "$(hit /install)"   200 "glibc 2.35 or newer"
 got="$(hit_bin /dl/writeonce-0.1.0-linux-amd64.tar.gz)"
 if [[ "$got" == 200\|application/gzip\|* && "${got##*|}" -gt 0 ]]; then
   ok "the release tarball downloads as gzip"

@@ -91,13 +91,15 @@ fn supported() -> Text {
       <h2 class="text-2xl font-bold mb-2">Supported systems</h2>
       <ul class="list-disc pl-6 leading-relaxed">
         <li class="mb-2"><b>Linux on x86-64</b> — the only target built today. There is no ARM, macOS or Windows build.</li>
-        <li class="mb-2"><b>glibc 2.38 or newer.</b> The binaries link the system C library dynamically and import symbols up to <code>GLIBC_2.38</code>. That covers Ubuntu 24.04+, Debian 13+, and Fedora 39+ — and rules out Ubuntu 22.04 (2.35), Debian 12 (2.36) and RHEL 9 (2.34).</li>
+        <li class="mb-2"><b>glibc 2.35 or newer.</b> The binaries link the system C library dynamically: <code>woc</code> imports symbols up to <code>GLIBC_2.35</code> and <code>wovm</code> up to <code>GLIBC_2.34</code>, read off the published v0.1.0 release. That covers Ubuntu 22.04+, Debian 12+ and Fedora 36+. On RHEL 9 (2.34) the runtime works but the compiler does not — build elsewhere and copy the binary over, which is the point of a self-contained executable.</li>
         <li class="mb-2"><b>Not musl.</b> Alpine needs a build against musl, which does not exist yet.</li>
         <li class="mb-2"><b>Nothing else.</b> No JVM, no Node, no Python, no package manager. The two binaries and libc are the whole dependency list.</li>
       </ul>
       <p class="leading-relaxed mt-4 text-gray-700">Check yours with
-      <code>ldd --version</code>. If it is older than 2.38, build from source
-      until a wider-compatibility release exists.</p>
+      <code>ldd --version</code>. If it is older than 2.35, build from source
+      until a wider-compatibility release exists. The floor is set by the
+      machine that BUILT the release, not by the language — the CI runner is
+      pinned to Ubuntu 22.04 to keep it this low.</p>
     </div>`;
 }
 
