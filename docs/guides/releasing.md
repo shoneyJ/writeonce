@@ -16,17 +16,69 @@ tag must be `v0.1.0` and the asset must be named exactly
 `writeonce-0.1.0-linux-amd64.tar.gz` — which is what `just dist` already
 produces.
 
-## 0. Before you start
+## 0. Authenticate `gh` (once per machine)
 
-`gh` must be authenticated. It is an interactive browser/device flow, so
-run it yourself:
+`gh` keeps its own credential, separate from git's. SSH keys let you
+`git push`; they do **not** let `gh` call the API, so a machine that
+pushes fine can still fail to create a release.
+
+Check first — if this names your account, skip the rest of this section:
+
+```
+gh auth status
+```
+
+### The interactive flow (what to pick)
 
 ```
 gh auth login
 ```
 
-In a Claude Code session, type it with a leading `!` so the output lands
-in the conversation: `! gh auth login`.
+It asks five things:
+
+| prompt | answer |
+| --- | --- |
+| What account do you want to log into? | **GitHub.com** |
+| Preferred protocol for Git operations? | **SSH** — this repo's remote is already `git@github.com:shoneyJ/writeonce.git`, and answering HTTPS here rewrites how git talks to GitHub for every repo on the host |
+| Upload your SSH public key? | pick `~/.ssh/id_ed25519.pub`, or **Skip** if that key is already on your account |
+| How would you like to authenticate? | **Login with a web browser** |
+| One-time code | gh prints something like `ABCD-1234`; press Enter, paste it at <https://github.com/login/device>, authorise |
+
+The token lands in the system credential store, or in a plain file if
+there is no store (`gh auth status` prints the location; `--insecure-storage`
+forces the file). `-w`/`--web` skips straight to the browser step.
+
+**In a Claude Code session, prefix it with `!`** — `! gh auth login` — so
+the prompts are yours to answer and the output lands in the conversation.
+An agent cannot complete a device flow on your behalf.
+
+### No browser on that machine (server, container, CI)
+
+Create a personal access token at <https://github.com/settings/tokens>.
+Classic tokens need the scopes `repo`, `read:org` and `gist`;
+a fine-grained token needs **Contents: read and write** on the repo,
+which is what release assets are written through. Then:
+
+```
+printf '%s' "$TOKEN" | gh auth login --with-token
+```
+
+Read it from a `chmod 600` file rather than typing it inline — an
+argument on the command line lands in shell history and in `ps`. For
+automation, skip login entirely and export `GH_TOKEN`; gh picks it up and
+stores nothing.
+
+### Verify before you rely on it
+
+```
+gh auth status
+gh repo view shoneyJ/writeonce --json name,visibility
+```
+
+The second call is the real check: it proves the token can reach *this*
+repo, which a valid-but-wrong-account token would not.
+
+## 1. Before you build
 
 Check the tree is clean and the version is what you mean to ship —
 `VERSION` is the single source, and `mkdist.sh` refuses to build if
@@ -37,7 +89,7 @@ git status --porcelain     # expect empty
 cat VERSION                # e.g. 0.1.0
 ```
 
-## 1. Build the artifact
+## 2. Build the artifact
 
 ```
 just dist
@@ -51,7 +103,7 @@ dist/writeonce-<ver>-linux-amd64.tar.gz
 dist/writeonce-<ver>-linux-amd64.tar.gz.sha256
 ```
 
-## 2. Verify it before anyone else can
+## 3. Verify it before anyone else can
 
 Two checks, both cheap, both worth it. First the digest:
 
@@ -76,7 +128,7 @@ woc . && ./target/hello
 
 If that prints `hello, writeonce`, the release is sound.
 
-## 3. Tag the commit
+## 4. Tag the commit
 
 The tag is what the download URL points at, so tag the exact commit the
 binaries were built from:
@@ -86,7 +138,7 @@ git tag -a v0.1.0 -m "writeonce 0.1.0"
 git push origin v0.1.0
 ```
 
-## 4. Publish and upload
+## 5. Publish and upload
 
 One command creates the release and attaches both files:
 
@@ -120,7 +172,7 @@ page → *Draft a new release* → choose tag `v0.1.0` → drag both files
 into the attachment box → *Publish release*. Uploading by hand is where
 the filename usually drifts, so paste it rather than retyping it.
 
-## 5. Check the link the site actually uses
+## 6. Check the link the site actually uses
 
 ```
 curl -sIL -o /dev/null -w '%{http_code} %{url_effective}\n' \
@@ -131,7 +183,7 @@ A `200` means `/install`'s download button works for a stranger. Anything
 else means the tag, the asset name, or the repo path disagrees with the
 link in `docs/examples/site/install/view.wo`.
 
-## 6. Refresh the site's mirror
+## 7. Refresh the site's mirror
 
 `/install` offers this site as a mirror beside the GitHub link, served by
 the framework's `StaticFiles` out of `$WO_DIST` (default `./dist`). Copy
