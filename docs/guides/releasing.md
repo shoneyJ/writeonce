@@ -98,6 +98,57 @@ Known first-run risks, in the order they are likely to bite:
 runners, absent in slim containers); and a 403 on publish, which is
 step 4.
 
+## Why the release job is NOT on a self-hosted runner
+
+A self-hosted runner would work — it needs no inbound ports, polls
+GitHub over outbound HTTPS, and honours `HTTPS_PROXY`/`NO_PROXY`, so a
+box behind a proxy is fine. Two reasons not to use one for THIS job:
+
+**It defeats the point of pinning the runner.** The release binaries
+link glibc dynamically, so the build host sets the floor every user
+must clear. `ubuntu-22.04` was chosen to keep that floor near 2.35. A
+runner on a developer machine (glibc 2.39 here) puts it back at 2.38+
+and silently drops Ubuntu 22.04, Debian 12 and RHEL 9 — the exact
+regression the pinned image prevents. If a self-hosted runner is
+unavoidable, build inside a container pinned to the oldest glibc you
+intend to support, not on the host.
+
+**A release built on a workstation is unattested.** "It built on my
+machine" is what a pipeline exists to stop being true.
+
+### If you do self-host, what you are accepting
+
+A runner executes workflow code **as the user that started it**, with
+that user's filesystem and network reach. On a personal workstation
+that means `~/.ssh`, `~/.config/gh`, cloud and cluster credentials,
+browser profiles, and every host reachable from it — including LAN
+services and anything named in `~/.ssh/config`, which on a work laptop
+is usually production. A job does not need to be malicious to leak;
+it needs to be careless once.
+
+The risk is highest on a **public** repository, where a pull request
+from a stranger can run arbitrary code on the runner. GitHub's own
+guidance is not to use self-hosted runners with public repositories.
+On a private repository the blast radius is smaller but not zero:
+anyone with write access, or one compromised token, reaches the same
+shell.
+
+If it is still the right call, make it boring:
+
+- a dedicated VM or container, never a workstation, on a network
+  segment that cannot reach production;
+- a separate unprivileged user with no SSH keys, no cloud config, and
+  no credentials of its own;
+- `--ephemeral` registration so each job gets a clean runner and a
+  poisoned toolchain cannot outlive one build;
+- `.credentials` under the runner's home is a long-lived credential to
+  act as that runner — treat the box as holding a secret;
+- restrict egress if the workload allows; the same outbound HTTPS the
+  runner needs is what exfiltration would use.
+
+A reasonable split: self-hosted for tests that need private-network
+access or unusual hardware, GitHub-hosted for the release artifact.
+
 ## Releasing from the pipeline
 
 ```
