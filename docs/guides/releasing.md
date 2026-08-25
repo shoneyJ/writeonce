@@ -16,7 +16,62 @@ tag must be `v0.1.0` and the asset must be named exactly
 `writeonce-0.1.0-linux-amd64.tar.gz` — which is what `just dist` already
 produces.
 
-## 0. Authenticate `gh` (once per machine)
+## Two routes
+
+**Automated (preferred).** `.github/workflows/release.yml` builds,
+verifies and publishes on a `v*` tag push. It needs no `gh auth login`
+and no secret: GitHub injects a per-job `GITHUB_TOKEN`, and the single
+line `permissions: contents: write` is what lets that token create a
+release. The token expires when the job ends, so there is nothing to
+rotate or leak. Skip to *Releasing from the pipeline* below.
+
+**Manual.** Everything from §0 onward — the path for a first release, or
+when the pipeline is broken and you need to ship anyway.
+
+## Releasing from the pipeline
+
+```
+git tag -a v0.1.0 -m "writeonce 0.1.0"
+git push origin v0.1.0
+```
+
+That is the whole release. The workflow then, in order: checks the tag
+matches `VERSION`, builds via `scripts/mkdist.sh`, asserts the produced
+filename is the one `/install` links, verifies the `.sha256`, extracts
+the tarball and builds a hello project **with the binaries inside it**,
+prints the glibc floor of what is about to ship, and publishes both
+files with `gh release create`.
+
+Two things about that file are deliberate:
+
+- **`runs-on: ubuntu-22.04`, not `ubuntu-latest`.** The binaries link
+  glibc dynamically, so the build host's glibc caps the symbol versions
+  they can import — and that cap becomes the minimum glibc every user
+  needs. On 24.04 (glibc 2.39) the floor is 2.39; on 22.04 (2.35) it is
+  2.35. That is the difference between excluding and including Ubuntu
+  22.04, Debian 12 and RHEL 9. Changing the image changes who can run
+  the release, so change `install/view.wo`'s supported-systems list in
+  the same commit.
+- **It fails rather than publishes** when the tag, `VERSION` and the
+  asset name disagree, because those three are what the download URL on
+  `/install` is built from.
+
+### Other CI (GitLab, Jenkins, Buildkite)
+
+No `gh auth login` there either — `gh` reads a token from the
+environment:
+
+```
+GH_TOKEN=$MY_SECRET gh release create v0.1.0 dist/*.tar.gz dist/*.sha256
+```
+
+The secret is a PAT with `repo` scope (classic) or **Contents: read and
+write** (fine-grained). Outside GitHub it is a long-lived credential you
+own and must rotate — which is exactly the cost `GITHUB_TOKEN` avoids,
+and the reason to prefer Actions for this one job even if the rest of
+your CI lives elsewhere.
+
+## 0. Authenticate `gh` (manual route only)
 
 `gh` keeps its own credential, separate from git's. SSH keys let you
 `git push`; they do **not** let `gh` call the API, so a machine that
