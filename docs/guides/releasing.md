@@ -98,6 +98,28 @@ Known first-run risks, in the order they are likely to bite:
 runners, absent in slim containers); and a 403 on publish, which is
 step 4.
 
+## What the hosted runner costs
+
+**Public repository: nothing.** Standard GitHub-hosted runners are free
+with unlimited minutes on public repos. Only *larger* runners (4-core
+and up) are billed there, and this workflow does not ask for one.
+
+**Private repository:** each plan includes monthly minutes — 2,000 on
+Free, 3,000 on Pro and Team, 50,000 on Enterprise Cloud — then bills
+per minute. Linux counts ×1, Windows ×2, macOS ×10, so staying on Linux
+is also the cheap choice. Each *job* is rounded up to the next minute.
+
+This job is small either way. A cold `scripts/mkdist.sh` measured 3.4s
+on a 20-core workstation; on a 2-core runner call it well under a
+minute. The real cost is `ocaml/setup-ocaml`, which is minutes cold and
+under one when its opam cache hits — so budget roughly 3–10 minutes per
+release, and it only ever runs on a tag. Ten releases a month is a
+couple of percent of the smallest free allowance.
+
+Release assets do **not** count against Actions artifact storage; they
+live with the release. (Rates and allowances change — check the current
+billing page before making a decision that depends on them.)
+
 ## Why the release job is NOT on a self-hosted runner
 
 A self-hosted runner would work — it needs no inbound ports, polls
