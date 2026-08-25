@@ -1,0 +1,9 @@
+-- layout/header.wo — the site navigation bar, shared by every page.
+use html
+
+pub fn header() -> Text {
+  let links = link("/ch/hello", "text-gray-700", "Tutorial");
+  links = links .. link("/health", "text-gray-700", "Health");
+  links = links .. link("https://github.com/shoneyj", "text-gray-700", "GitHub");
+  return nav_bar("/", "writeonce.de", links);
+}

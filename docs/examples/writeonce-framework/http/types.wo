@@ -37,6 +37,17 @@ pub fn ok_text(body: Text) -> Resp {
   return Resp { status: 200, headers: h, body: body };
 }
 
+-- iteration 37: HTML is transport here, exactly like text and JSON —
+-- the status line and the content-type, nothing about rendering. It
+-- lives beside its two siblings because both HTML apps had hand-rolled
+-- the identical four lines; wo-html stays a pure Text library and never
+-- learns what a Resp is.
+pub fn ok_html(body: Text) -> Resp {
+  let h: map<Text, Text> = {};
+  h["content-type"] = "text/html; charset=utf-8";
+  return Resp { status: 200, headers: h, body: body };
+}
+
 pub fn ok_json(body: Text) -> Resp {
   let h: map<Text, Text> = {};
   h["content-type"] = "application/json";

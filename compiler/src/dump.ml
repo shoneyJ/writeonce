@@ -34,6 +34,7 @@ let kind_label (k : Token.kind) : string =
     let part_str = function
       | Token.SText s -> Printf.sprintf "TEXT(%s)" s
       | Token.SExpr s -> Printf.sprintf "EXPR(%s)" s
+      | Token.SEsc s -> Printf.sprintf "ESC(%s)" s
     in
     Printf.sprintf "INTERP_STR(%s)" (String.concat "," (List.map part_str segs))
   | Token.KwType -> "KW_TYPE"

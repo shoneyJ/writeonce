@@ -1,0 +1,21 @@
+-- product_list/controller.wo — the CONTROLLER for /: query the model,
+-- fill the view components beside it, answer a Resp. One feature = one
+-- directory = one module, view and controller together. The @tables it
+-- queries live in the root module, which is fine: a CLASS is reachable
+-- across module lines (only free `fn`s are module-scoped).
+use framework/http
+use layout
+
+pub class ListProducts {
+  fn handle(req: Req) -> Resp {
+    -- The MVC seam: the query is HERE, and what crosses into the view is
+    -- a list of child components, never a cursor.
+    let cards: multi Component = [];
+    for p in from x in Product order by x.name select x {
+      push(cards, ProductCard { sku: p.sku, name: p.name, price: p.price, stock: p.stock });
+    }
+    let page = ProductListPage { cards: cards };
+    let shell = AppShell { title: "shop — products", content: page.render() };
+    return ok_html(shell.render());
+  }
+}

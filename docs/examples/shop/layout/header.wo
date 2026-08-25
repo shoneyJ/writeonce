@@ -1,8 +1,8 @@
 -- layout/header.wo — the header fragment (header.html's analog).
 pub fn header() -> Text {
-  let h = "<header class='site-header'>";
-  h = h .. "<a href='/' class='brand'>writeonce shop</a>";
-  h = h .. "<nav class='site-nav'><a href='/'>Products</a> <a href='/orders'>Orders</a></nav>";
-  h = h .. "</header>";
-  return h;
+  return `
+    <header class="site-header">
+      <a href="/" class="brand">writeonce shop</a>
+      <nav class="site-nav"><a href="/">Products</a> <a href="/orders">Orders</a></nav>
+    </header>`;
 }

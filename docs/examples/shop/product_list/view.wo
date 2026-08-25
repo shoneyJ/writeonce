@@ -1,12 +1,9 @@
 -- product_list/view.wo — the VIEW. Classes with `fn render() -> Text`;
--- fields are exactly the values displayed, bodies are MARKUP-FIRST: one
--- HTML line per statement (single-quoted attributes — no escape noise),
--- ${} holes, data through esc().
---
--- The `h = h ..` prefix on every line is the language's cost today:
--- statements are single-line and there is no multi-line literal. Story
--- 37's raw template literal deletes exactly that prefix and the esc()
--- calls ({{ }} auto-escapes and type-checks) — the markup stays as-is.
+-- fields are exactly the values displayed, and a body is ONE raw text
+-- literal: markup written as markup, attributes in real double quotes,
+-- source indentation removed at compile time. `${}` interpolates raw,
+-- `{{ }}` HTML-escapes — so display data goes through `{{ }}` and never
+-- through a hand-written esc() call.
 use html
 
 pub class ProductCard {
@@ -16,25 +13,29 @@ pub class ProductCard {
   stock: Int
 
   fn render() -> Text {
-    let h = "<div class='card'>";
-    h = h .. "<h3><a href='/p/${esc(self.sku)}'>${esc(self.name)}</a></h3>";
-    h = h .. "<p class='price'>€ ${self.price}</p>";
-    if self.stock > 0 {
-      h = h .. "<p class='stock'>${self.stock} in stock</p>";
-    } else {
-      h = h .. "<p class='stock out'>sold out</p>";
+    let stock = `<p class="stock">${self.stock} in stock</p>`;
+    if self.stock == 0 {
+      stock = `<p class="stock out">sold out</p>`;
     }
-    h = h .. "</div>";
-    return h;
+    return `
+      <div class="card">
+        <h3><a href="/p/{{ self.sku }}">{{ self.name }}</a></h3>
+        <p class="price">€ ${self.price}</p>
+        ${stock}
+      </div>`;
   }
 }
 
+-- A parent component: its `cards` are CHILDREN, held through the
+-- structural interface, and its render calls theirs. Nothing here knows
+-- that a card is a ProductCard — swapping in a different card component
+-- is a controller change, not a view rewrite.
 pub class ProductListPage {
-  cards: Text
+  cards: multi Component
 
   fn render() -> Text {
-    let h = "<h1>Products</h1>";
-    h = h .. "<div class='grid'>${self.cards}</div>";
-    return h;
+    return `
+      <h1>Products</h1>
+      <div class="grid">${render_all(self.cards)}</div>`;
   }
 }

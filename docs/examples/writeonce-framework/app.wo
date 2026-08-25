@@ -3,7 +3,7 @@
 --
 --   let app = App { middleware: [], gmw: [], afters: [], routes: [] };
 --   app.use_mw(Mw { m: Auth { token: t } });
---   app.use_after(Aw { a: SecurityHeaders { pad: 0 } });
+--   app.use_after(Aw { a: SecurityHeaders {} });
 --   app.add(Route { method: "GET", pattern: "/products/:id", h: Show {} });
 --   return app.serve("127.0.0.1", port);
 --

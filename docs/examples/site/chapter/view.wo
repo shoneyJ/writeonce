@@ -1,0 +1,46 @@
+-- chapter/view.wo — the VIEW for `/ch/:slug`, plus the chapter nav that
+-- the homepage reuses.
+--
+-- The MVC seam in one place: these components RENDER, the controller
+-- QUERIES, and the two never meet. ChapterNav holds VALUES (a list of
+-- links), so it renders identically on the homepage and on a chapter
+-- page — the only difference is which ord is `current`. Reuse is the
+-- same component with different fields, never copied markup.
+use html
+
+-- `ChapterLink` is the MODEL's projection type (types.wo); a class is
+-- reachable across module lines, so the view just names it.
+
+pub class ChapterNav {
+  items:   multi ChapterLink
+  current: Int
+
+  fn render() -> Text {
+    let out = "";
+    for c in self.items {
+      let label = `${c.ord}. {{ c.title }}`;
+      if c.ord == self.current {
+        out = out .. el("li", "mb-2 font-bold text-gray-900", label);
+      } else {
+        out = out .. el("li", "mb-2", link("/ch/${c.slug}", "", label));
+      }
+    }
+    return el("ul", "list-disc pl-6", out);
+  }
+}
+
+-- One chapter. `body` is site-authored HTML held in the row, so it goes
+-- through the RAW hole; the title is data and goes through `{{ }}`.
+pub class ChapterPage {
+  ord:         Int
+  title:       Text
+  body:        Text
+  chapter_nav: Component
+
+  fn render() -> Text {
+    let head = el("h1", "text-3xl font-bold mb-4", `${self.ord}. {{ self.title }}`);
+    let art = el("div", "bg-white rounded-lg border shadow-sm p-6", head .. self.body);
+    let nav = el("div", "mt-8", el("h2", "text-lg font-bold mb-2", "Chapters") .. self.chapter_nav.render());
+    return art .. nav;
+  }
+}

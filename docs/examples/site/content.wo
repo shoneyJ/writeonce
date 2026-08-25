@@ -1,25 +1,12 @@
--- site/content.wo — the tutorial chapters, seeded into the Chapter table
--- on first boot (main.wo's seed_if_empty). Bodies are HTML fragments
+-- content.wo — the tutorial chapters, seeded into the Chapter table on
+-- first boot (types.wo's seed_if_empty). Model CONTENT, so it sits in
+-- the root module beside types.wo: it inserts rows. Bodies are HTML fragments
 -- BUILT with the wo-html dep — prose in el(), code samples through
 -- code_block() which escapes them. Editing a chapter later (the admin
 -- route) overwrites body/title in place; the WAL keeps the edit across
 -- restarts, which is exactly chapter 6's lesson demonstrated by the
 -- site that teaches it.
 use html
-
--- The homepage's code showcase: a real flavor of the language — an
--- actor per chat room, rows in the built-in database, one binary.
-fn home_snippet() -> Text {
-  let s = "@table\nclass Message {\n  room: Text\n  body: Text\n}\n\n";
-  s = s .. "class Room {\n  name: Text\n  fn receive(msg: Post) {\n";
-  s = s .. "    insert Message { room: self.name, body: msg.body };\n";
-  s = s .. "    print(\"[\${self.name}] \${msg.body}\");\n  }\n}\n\n";
-  s = s .. "fn main() -> Int {\n";
-  s = s .. "  let general: actor Post = spawn Room { name: \"general\" };\n";
-  s = s .. "  send(general, Post { body: \"hello, writeonce\" });\n";
-  s = s .. "  time.sleep(50);\n  return 0;\n}";
-  return code_block(s);
-}
 
 fn ch_hello() -> Text {
   let b = el("p", "leading-relaxed mb-4",
@@ -75,15 +62,25 @@ fn ch_actors() -> Text {
 fn ch_deps() -> Text {
   let b = el("p", "leading-relaxed mb-4",
     "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: the web framework, and the wo-html " .. "library that rendered the page you are reading.");
-  b = b .. code_block("[deps]\nframework = { git = \"https://github.com/shoneyj/writeonce-framework\", rev = \"v0.1.0\" }\nhtml      = { git = \"https://github.com/shoneyj/wo-html\",              rev = \"v0.1.0\" }");
-  b = b .. code_block("use framework\nuse framework/http\nuse html\n\n-- html's builders + tailwind-style utilities, zero JS, no build step:\nlet body = el(\"h1\", \"text-3xl font-bold\", \"Hello\");\nreturn ok_html(page(\"Hello\", body));");
+  b = b .. code_block(`
+    [deps]
+    framework = { git = "https://github.com/shoneyj/writeonce-framework", rev = "v0.1.0" }
+    html      = { git = "https://github.com/shoneyj/wo-html",              rev = "v0.1.0" }`);
+  b = b .. code_block(`
+    use framework
+    use framework/http
+    use html
+
+    -- html's builders + tailwind-style utilities, zero JS, no build step:
+    let body = el("h1", "text-3xl font-bold", "Hello");
+    return ok_html(page("Hello", body));`);
   return b;
 }
 
 fn ch_serving() -> Text {
   let b = el("p", "leading-relaxed mb-4",
     "The whole stack of this site: routes with <code>:param</code> captures, a middleware " .. "chain, handler classes, <code>@table</code> persistence, and server-rendered HTML — " .. "one binary behind a proxy. This is the site's own main, abbreviated:");
-  b = b .. code_block("fn main(args: multi Text) -> Int {\n  seed_if_empty();\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging { pad: 0 } });\n  app.get(\"/\",            Home { pad: 0 });\n  app.get(\"/ch/:slug\",    ShowChapter { pad: 0 });\n  app.post(\"/admin/ch/:slug\", AdminEdit { token: token });\n  return app.serve(\"127.0.0.1\", port);\n}");
+  b = b .. code_block("fn main(args: multi Text) -> Int {\n  seed_if_empty();\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\",            Home {});\n  app.get(\"/ch/:slug\",    ShowChapter {});\n  app.post(\"/admin/ch/:slug\", AdminEdit { token: token });\n  return app.serve(\"127.0.0.1\", port);\n}");
   b = b .. el("p", "leading-relaxed mt-4",
     "The admin route checks its bearer token in the handler — mechanism lives in the " .. "framework (<code>bearer_token</code>, constant-time <code>ct_eq</code>), POLICY stays " .. "in the app. Try editing this chapter: " .. "<code>curl -X POST -H \"authorization: Bearer ...\" -d \"title=...&amp;body=...\" /admin/ch/serving</code>.");
   return b;

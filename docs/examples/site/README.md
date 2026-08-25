@@ -28,6 +28,39 @@ The acceptance gate is `just site` (scripts/site-accept.sh): two file://
 dep remotes, build, the page matrix, 401, an authed edit, SIGTERM, and
 the edit surviving a restart.
 
+## The file map
+
+MVC, laid out exactly like the program template
+([`docs/examples/shop`](../shop/README.md)) so the two read the same way:
+
+| this app | layer |
+| --- | --- |
+| `types.wo` | MODEL — the `Chapter` `@table`, and seed-if-empty |
+| `content.wo` | the nine chapter bodies + `seed_chapters()` |
+| `layout/` | the chrome: `AppShell` (+ the two named widths), header, footer, `html_error` |
+| `home/`, `chapter/`, `admin/`, `health/` | one module per feature: its `view.wo` (components: fields in, Text out) and its `controller.wo` (query the model, fill the components, answer a `Resp`) |
+| `main.wo` | bootstrap: seed, routes, serve — nothing else |
+
+Every `render()` makes its class a component (wo-html's structural
+`Component`). `HomePage` and `ChapterPage` each take the chapter nav as
+an already-built child component in a slot, so neither knows what a
+chapter is; `ChapterNav` is therefore literally the same component on the
+homepage and on every chapter page, differing only by which `ord` is
+current.
+
+The seam that keeps it honest: **every query lives in a controller.**
+`chapter_links()` sits in `chapter.controller.wo` and hands the views a
+`multi ChapterLink` projection — no component in this sample touches the
+database, and wo-html contains no query at all.
+
+One feature = one directory = one module, holding that feature's view
+and its controller. The `@table` lives in `types.wo` at the root and is
+reachable from every feature module without being exported — a CLASS
+crosses module lines, only a free `fn` is module-scoped (`WO-E210`).
+That is why the query both pages need is `Chapters.links()`, a `static
+fn` on a root class, rather than a free function one of them would have
+to import from the other.
+
 ## writeonce.de deployment
 
 The framework speaks HTTP/1.1 keep-alive and no TLS by design — terminate

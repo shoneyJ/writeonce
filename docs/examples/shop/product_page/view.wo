@@ -1,6 +1,6 @@
 -- product_page/view.wo — the product detail view with the order form.
--- Markup-first, one HTML line per statement; see product_list/view.wo
--- for the convention and the story-37 endgame.
+-- Raw text literals for the bodies; see product_list/view.wo for the
+-- convention.
 use html
 
 pub class ProductPage {
@@ -10,21 +10,22 @@ pub class ProductPage {
   stock: Int
 
   fn render() -> Text {
-    let h = "<div class='card detail'>";
-    h = h .. "<h1>${esc(self.name)}</h1>";
-    h = h .. "<p class='price'>€ ${self.price}</p>";
-    h = h .. "<p class='stock'>${self.stock} in stock</p>";
-    if self.stock > 0 {
-      h = h .. "<form method='POST' action='/orders/${esc(self.sku)}'>";
-      h = h .. "<label>Quantity</label>";
-      h = h .. "<input type='text' name='qty' value='1' class='field'>";
-      h = h .. "<button type='submit' class='btn'>Buy</button>";
-      h = h .. "</form>";
-    } else {
-      h = h .. "<p class='stock out'>sold out</p>";
+    let action = `
+      <form method="POST" action="/orders/{{ self.sku }}">
+        <label>Quantity</label>
+        <input type="text" name="qty" value="1" class="field">
+        <button type="submit" class="btn">Buy</button>
+      </form>`;
+    if self.stock == 0 {
+      action = `<p class="stock out">sold out</p>`;
     }
-    h = h .. "</div>";
-    h = h .. "<p><a href='/'>← all products</a></p>";
-    return h;
+    return `
+      <div class="card detail">
+        <h1>{{ self.name }}</h1>
+        <p class="price">€ ${self.price}</p>
+        <p class="stock">${self.stock} in stock</p>
+        ${action}
+      </div>
+      <p><a href="/">← all products</a></p>`;
   }
 }

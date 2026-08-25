@@ -47,10 +47,10 @@ pub class Mw {
 }
 
 -- Request-line logging, the one middleware every framework ships: method +
--- path to stderr, never short-circuits. `pad` is the record-class ctor
--- convention (every stateless handler carries one Int field).
+-- path to stderr, never short-circuits. A stateless handler declares NO
+-- fields and constructs as `Logging {}` — an earlier convention gave every
+-- one of them a filler `pad: Int`, which the language never required.
 pub class Logging {
-  pad: Int
   fn before(mut req: Req) -> ?Resp {
     print_err("${req.method} ${req.path}");
     return nil;

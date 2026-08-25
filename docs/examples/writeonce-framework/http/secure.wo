@@ -8,7 +8,6 @@
 -- framework's standing decision), so Strict-Transport-Security belongs
 -- in the proxy config next to the certificates.
 pub class SecurityHeaders {
-  pad: Int
   fn after(req: Req, mut r: Resp) {
     r.headers["x-content-type-options"] = "nosniff";
     r.headers["x-frame-options"] = "DENY";

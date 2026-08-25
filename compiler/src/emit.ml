@@ -3258,8 +3258,20 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
         | None ->
           if is_builtin_name name then emit_builtin p f v ~dst ?expected e name args
           else begin
+            (* iteration 37: `{{ e }}` in a raw text literal desugars to
+               a call to `esc`, so a program using that hole without an
+               `esc` in scope lands here with a name it never typed.
+               The caret is already on the literal; this says why. *)
+            let hint =
+              if name = "esc" then
+                " (a `{{ ... }}` hole calls it -- add `use html`, or \
+                 declare your own `fn esc(t: Text) -> Text`)"
+              else ""
+            in
             err p ~code:cannot_lower_code ~file:f.f_file ~pos:e.pos
-              ~message:(Printf.sprintf "call to `%s`, which is not a declared fn or a builtin" name);
+              ~message:
+                (Printf.sprintf "call to `%s`, which is not a declared fn or a builtin%s"
+                   name hint);
             put f (ins_abx op_loadk dst (const_int p 0))
           end)))
   | Field (base, mname) -> (

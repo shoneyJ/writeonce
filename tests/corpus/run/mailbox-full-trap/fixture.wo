@@ -11,7 +11,6 @@ class Tick {
 }
 
 class Sleeper {
-  pad: Int
   fn receive(msg: Tick) {
     time.sleep(5000);
   }
@@ -23,7 +22,7 @@ fn send_one(s: actor Tick, n: Int) -> Text {
 }
 
 fn main() -> Int {
-  let s: actor Tick = spawn Sleeper { pad: 0 };
+  let s: actor Tick = spawn Sleeper {};
   let sent = 0;
   let caught = "";
   let i = 0;

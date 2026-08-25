@@ -236,6 +236,128 @@ let () =
   check "dash-continuation: a - b (spaced) lexes as Ident, Dash, Ident"
     (kinds = [ Token.Ident "a"; Token.Dash; Token.Ident "b"; Token.Eof ])
 
+(* ---- raw text literal, iteration 37 (not golden-diffed) ------------
+
+   golden/tokens/raw-literal.wo pins the token STREAM; these pin the
+   pieces a dump cannot show: that a backtick literal with no holes is
+   byte-identical to the Str a "..." string would have produced, that
+   the common margin is removed at LEX time (so no runtime cost and no
+   downstream stage ever sees the source indentation), and that the two
+   new diagnostics fire at the right position. *)
+
+let () =
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"raw.wo" "let t = `<div>hi</div>`" in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "raw literal: no holes lexes as a plain Str"
+    (kinds
+    = [ Token.KwLet; Token.Ident "t"; Token.Eq; Token.Str "<div>hi</div>"; Token.Eof ]);
+  check_eq "raw literal: reports nothing" ~expected:0
+    ~actual:(List.length (Diag.Collector.diagnostics collector))
+    string_of_int
+
+let () =
+  (* Nothing between the backticks is escape-processed: a quote is a
+     quote and a backslash-n is two characters, which is the whole
+     point of the form: markup without quote-escape noise. *)
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"raw.wo" "`a\"b\\n`" in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "raw literal: content is verbatim, no escape processing"
+    (kinds = [ Token.Str "a\"b\\n"; Token.Eof ])
+
+let () =
+  (* The margin case, written the way a render() body actually is:
+     opening newline dropped, the 4-space common margin removed from
+     every line, the whitespace-only closing line reduced to nothing
+     while its newline survives (Java text-block behavior). *)
+  let src = "let t = `\n    <div>\n      many\n    </div>\n  `" in
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"raw.wo" src in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "raw literal: common margin stripped, leading newline dropped"
+    (kinds
+    = [
+        Token.KwLet;
+        Token.Ident "t";
+        Token.Eq;
+        Token.Str "<div>\n  many\n</div>\n";
+        Token.Eof;
+      ])
+
+let () =
+  (* Both hole forms in one literal. The payloads are raw and unlexed,
+     exactly as SExpr has always carried `${...}` -- the parser is what
+     tells them apart (SEsc gains the esc() wrapper). *)
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"raw.wo" "`<p>${a}{{ b }}</p>`" in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "raw literal: ${} stays raw, {{}} becomes SEsc"
+    (kinds
+    = [
+        Token.InterpStr
+          [
+            Token.SText "<p>";
+            Token.SExpr "a";
+            (* the empty run between two adjacent holes, exactly as a
+               "..." string has always produced it -- the parser drops
+               empty SText segments in desugar_interp *)
+            Token.SText "";
+            Token.SEsc " b ";
+            Token.SText "</p>";
+          ];
+        Token.Eof;
+      ])
+
+let () =
+  (* Unlike a plain "..." string, an unterminated raw literal is an
+     error: multi-line is its normal case, so silently swallowing the
+     rest of the file would be a footgun, not rt parity. *)
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"raw.wo" "let t = `abc" in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "unterminated raw literal: closes with what was collected"
+    (kinds = [ Token.KwLet; Token.Ident "t"; Token.Eq; Token.Str "abc"; Token.Eof ]);
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "unterminated raw literal: exactly one diagnostic reported" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "unterminated raw literal: WO-E004 at the backtick (line 1, col 9)"
+      (d.code = "WO-E004" && d.site.line = 1 && d.site.col = 9)
+  | _ -> check "unterminated raw literal: diagnostic shape" false
+
+let () =
+  (* A raw newline inside "..." used to be accepted silently (the
+     scanner's catch-all appended it like any other byte), which meant a
+     forgotten closing quote ate the rest of the file with no
+     diagnostic. Now that the backtick literal is the blessed spelling
+     for multi-line text, that newline is an error and the scan stops
+     WITHOUT consuming it, so the Newline token still terminates the
+     statement and the next line parses normally. *)
+  let collector = Diag.Collector.create () in
+  let toks = Lexer.tokenize collector ~file:"nl.wo" "let t = \"ab\ncd" in
+  let kinds = List.map (fun (t : Token.t) -> t.kind) toks in
+  check "newline in string: scan stops at the newline, which still tokenizes"
+    (kinds
+    = [
+        Token.KwLet;
+        Token.Ident "t";
+        Token.Eq;
+        Token.Str "ab";
+        Token.Newline;
+        Token.Ident "cd";
+        Token.Eof;
+      ]);
+  let diags = Diag.Collector.diagnostics collector in
+  check_eq "newline in string: exactly one diagnostic reported" ~expected:1
+    ~actual:(List.length diags) string_of_int;
+  match diags with
+  | [ d ] ->
+    check "newline in string: WO-E005 at the newline (line 1, col 12)"
+      (d.code = "WO-E005" && d.site.line = 1 && d.site.col = 12)
+  | _ -> check "newline in string: diagnostic shape" false
+
 (* ---- direct parser/AST assertions (Task 4, not golden-diffed) ------------
 
    golden/ast/*.wo fixtures already pin the AST *shape* via --dump-ast,

@@ -1,0 +1,10 @@
+-- WO-E004: a raw text literal with no closing backtick. Unlike a plain
+-- unterminated "..." string (silent, rt parity), this is reported --
+-- multi-line is this form's normal case, so the rest of the file would
+-- otherwise vanish into the literal with nothing said.
+fn main() -> Int {
+  let page = `<div>
+    never closed
+  print(page);
+  return 0;
+}

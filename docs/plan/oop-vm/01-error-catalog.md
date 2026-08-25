@@ -26,6 +26,8 @@ half of the story ("moved here" / "borrowed here" / etc.).
 | --- | --- | --- |
 | WO-E001 | an input byte the lexer doesn't recognize as the start of any token. Reported once per bad byte, which is then skipped — one bad byte never stops the whole file. | `unknown character '$'` |
 | WO-E002 | a string literal's backslash escape is the last byte of the file, with no character left to escape (a plain unterminated string with no dangling backslash is *not* an error — rt parity). | `unterminated string escape` |
+| WO-E004 | a raw text literal (backtick-delimited) that runs off the end of the file. Reported at the OPENING backtick — unlike a plain `"..."` string this is never silent, because multi-line is this form's normal case and a missing close would swallow every remaining line. | `unterminated raw text literal` |
+| WO-E005 | a raw newline inside a `"..."` or `'...'` string. The scan stops at the newline without consuming it, so the `Newline` token still terminates the statement and only one line is lost. Multi-line text is spelled with a raw literal instead. | ``newline in string literal (use a `...` raw text literal for multi-line text)`` |
 
 ## WO-E1xx — parsing (Tasks 4–5, `compiler/src/parser.ml`; WO-E103 haxe-parity Task 2)
 

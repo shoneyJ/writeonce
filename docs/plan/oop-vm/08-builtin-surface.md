@@ -182,6 +182,8 @@ Lowered by the emitter, not added to the format:
 | `a > b`, `a >= b` | `LT` / `LE` with the operands swapped |
 | `a == b` on `Text` | `EQS` (content equality); `EQ` otherwise |
 | `a .. b` | `CONCAT` — `+` is arithmetic only, never string addition |
+| `` `...${e}...` `` | the same `StrLit`/`Interp`/`CONCAT` chain a `"..."` string produces — the raw literal is a LEXER form (verbatim content, common margin removed at lex time), not a new node or opcode |
+| `` `...{{ e }}...` `` | `esc(${e})` — the parser wraps the interpolation in a call to whatever `esc` is in scope (wo-html's `pub fn esc`, or a local one that deliberately shadows it). No builtin, no opcode, no HTML knowledge in the compiler or the VM |
 | `a and b` | evaluate `a`; `JZ` past evaluating `b` (result stays `a`'s value); else evaluate `b` into the same register (haxe-parity Task 2) |
 | `a or b` | evaluate `a`; `JZ` + `JMP` past evaluating `b` when `a` is already true; else evaluate `b` (haxe-parity Task 2) |
 

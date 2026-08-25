@@ -1,0 +1,23 @@
+-- chapter/controller.wo — the CONTROLLER for `/ch/:slug`. It queries the
+-- model and fills the view components that sit beside it in this module;
+-- a view receives VALUES, never a cursor.
+use framework/http
+use layout
+
+pub class ShowChapter {
+  fn handle(req: Req) -> Resp {
+    let slug = req.params["slug"];
+    if slug == nil {
+      return html_error(404, "No such chapter", "The address names no chapter.");
+    }
+    let hits = from c in Chapter where c.slug == slug take 1 select c;
+    if len(hits) == 0 {
+      return html_error(404, "No such chapter", "Nothing is filed under that slug.");
+    }
+    let c = hits[0];
+    let nav = ChapterNav { items: Chapters.links(), current: c.ord };
+    let page = ChapterPage { ord: c.ord, title: c.title, body: c.body, chapter_nav: nav };
+    let shell = reading_shell("writeonce — ${c.title}", page.render());
+    return ok_html(shell.render());
+  }
+}

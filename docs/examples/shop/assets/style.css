@@ -1,5 +1,5 @@
 /* shop/assets/style.css — one real stylesheet, sectioned per feature.
-   Served by static_files/controller.wo; app_shell links it. This file is
+   Served by static_files/controller.wo; AppShell links it. This file is
    the .scss stand-in: the language ships no preprocessor, so styles are
    plain CSS kept OUT of the markup code. */
 

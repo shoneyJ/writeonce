@@ -1,6 +1,6 @@
 -- orders/view.wo — the confirmation page and the orders table.
--- Markup-first, one HTML line per statement; see product_list/view.wo
--- for the convention and the story-37 endgame.
+-- Raw text literals for the bodies; see product_list/view.wo for the
+-- convention.
 use html
 
 pub class OrderOk {
@@ -9,12 +9,12 @@ pub class OrderOk {
   total: Float
 
   fn render() -> Text {
-    let h = "<div class='card'>";
-    h = h .. "<h1>Order placed</h1>";
-    h = h .. "<p>${self.qty} × ${esc(self.name)} — total € ${self.total}</p>";
-    h = h .. "<p><a href='/orders'>See all orders</a> · <a href='/'>Keep shopping</a></p>";
-    h = h .. "</div>";
-    return h;
+    return `
+      <div class="card">
+        <h1>Order placed</h1>
+        <p>${self.qty} × {{ self.name }} — total € ${self.total}</p>
+        <p><a href="/orders">See all orders</a> · <a href="/">Keep shopping</a></p>
+      </div>`;
   }
 }
 
@@ -25,29 +25,30 @@ pub class OrderRow {
   status: Text
 
   fn render() -> Text {
-    let h = "<tr>";
-    h = h .. "<td>${esc(self.name)}</td>";
-    h = h .. "<td>${self.qty}</td>";
-    h = h .. "<td>€ ${self.total}</td>";
-    h = h .. "<td>${esc(self.status)}</td>";
-    h = h .. "</tr>";
-    return h;
+    return `
+      <tr>
+        <td>{{ self.name }}</td>
+        <td>${self.qty}</td>
+        <td>€ ${self.total}</td>
+        <td>{{ self.status }}</td>
+      </tr>`;
   }
 }
 
 pub class OrdersPage {
-  rows: Text
+  rows: multi Component
 
   fn render() -> Text {
-    let h = "<h1>Orders</h1>";
-    if self.rows == "" {
-      h = h .. "<p>No orders yet — <a href='/'>go buy something</a>.</p>";
-      return h;
+    if len(self.rows) == 0 {
+      return `
+        <h1>Orders</h1>
+        <p>No orders yet — <a href="/">go buy something</a>.</p>`;
     }
-    h = h .. "<table class='orders'>";
-    h = h .. "<tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>";
-    h = h .. "${self.rows}";
-    h = h .. "</table>";
-    return h;
+    return `
+      <h1>Orders</h1>
+      <table class="orders">
+        <tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>
+        ${render_all(self.rows)}
+      </table>`;
   }
 }

@@ -1,13 +1,11 @@
--- orders.controller.wo — the buying flow: stock-checked order creation
+-- orders/controller.wo — the buying flow: stock-checked order creation
 -- (decrement + insert are each WAL-committed before they acknowledge)
 -- and the orders list (ref navigation: o.product.name).
 use framework/http
 use layout
-use orders
 use time
 
 pub class CreateOrder {
-  pad: Int
   fn handle(req: Req) -> Resp {
     let sku = req.params["sku"];
     if sku == nil {
@@ -37,19 +35,19 @@ pub class CreateOrder {
     p.stock = p.stock - qty;
     insert Order { product: p, qty: qty, total: total, placed: time.now(), status: "placed" };
     let page = OrderOk { name: p.name, qty: qty, total: total };
-    return ok_html(app_shell("shop — order placed", page.render()));
+    let shell = AppShell { title: "shop — order placed", content: page.render() };
+    return ok_html(shell.render());
   }
 }
 
 pub class ListOrders {
-  pad: Int
   fn handle(req: Req) -> Resp {
-    let rows = "";
+    let rows: multi Component = [];
     for o in from x in Order select x {
-      let row = OrderRow { name: o.product.name, qty: o.qty, total: o.total, status: o.status };
-      rows = rows .. row.render();
+      push(rows, OrderRow { name: o.product.name, qty: o.qty, total: o.total, status: o.status });
     }
     let page = OrdersPage { rows: rows };
-    return ok_html(app_shell("shop — orders", page.render()));
+    let shell = AppShell { title: "shop — orders", content: page.render() };
+    return ok_html(shell.render());
   }
 }

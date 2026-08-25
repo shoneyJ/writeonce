@@ -1,10 +1,8 @@
--- product_page.controller.wo — the CONTROLLER for /p/:sku.
+-- product_page/controller.wo — the CONTROLLER for /p/:sku.
 use framework/http
 use layout
-use product_page
 
 pub class ShowProduct {
-  pad: Int
   fn handle(req: Req) -> Resp {
     let sku = req.params["sku"];
     if sku == nil {
@@ -16,6 +14,7 @@ pub class ShowProduct {
     }
     let p = hits[0];
     let page = ProductPage { sku: p.sku, name: p.name, price: p.price, stock: p.stock };
-    return ok_html(app_shell("shop — ${p.name}", page.render()));
+    let shell = AppShell { title: "shop — ${p.name}", content: page.render() };
+    return ok_html(shell.render());
   }
 }

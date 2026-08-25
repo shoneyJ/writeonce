@@ -1,0 +1,13 @@
+-- A line ending in `..` continues the expression on the next line —
+-- the one newline suppression in the language (multi-line HTML/text).
+fn main() -> Int {
+  let t = "one" ..
+          " two" ..
+          " three";
+  print(t);
+  let n = 1;
+  let u = "n=${n}" ..
+          " done";
+  print(u);
+  return 0;
+}

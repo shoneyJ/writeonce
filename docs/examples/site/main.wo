@@ -8,167 +8,17 @@
 --
 -- Behind nginx/caddy for writeonce.de: the proxy terminates TLS and
 -- forwards to 127.0.0.1:8080 (the framework speaks HTTP/1.1 keep-alive).
+--
+-- This file is the BOOTSTRAP and nothing else: seed, routes, serve. The
+-- model is types.wo; every feature is a directory holding its view and
+-- its controller.
 use env
 use framework
-use framework/http
 use framework/router
-use html
-
--- Every chapter is a row: slug is the URL, ord orders the nav, body is a
--- server-rendered HTML fragment. Edits (the admin route) persist through
--- the WAL under WO_DATA and replay on restart.
-@table(name: "chapters", index: [slug])
-class Chapter {
-  slug:  Text @unique
-  ord:   Int
-  title: Text
-  body:  Text
-}
-
-fn seed_if_empty() {
-  let n = 0;
-  for c in from x in Chapter take 1 select x {
-    n = n + 1;
-  }
-  if n == 0 {
-    seed_chapters();
-  }
-}
-
--- ---- rendering ---------------------------------------------------------
-
-fn ok_html(body: Text) -> Resp {
-  let h: map<Text, Text> = {};
-  h["content-type"] = "text/html; charset=utf-8";
-  return Resp { status: 200, headers: h, body: body };
-}
-
-fn site_nav() -> Text {
-  let links = link("/ch/hello", "text-gray-700", "Tutorial");
-  links = links .. link("/health", "text-gray-700", "Health");
-  links = links .. link("https://github.com/shoneyj", "text-gray-700", "GitHub");
-  return nav_bar("/", "writeonce.de", links);
-}
-
-fn site_footer() -> Text {
-  return el("div", "footer", "writeonce.de — served by the language it teaches. " .. "One binary: compiler, runtime, database, this page.");
-}
-
-fn shell(title: Text, inner: Text) -> Text {
-  let body = site_nav() .. el("div", "mx-auto max-w-3xl px-4 py-8", inner) .. site_footer();
-  return page(title, body);
-}
-
--- The homepage uses the wider container (go.dev shape); chapter pages
--- keep the reading width above.
-fn shell_wide(title: Text, inner: Text) -> Text {
-  let body = site_nav() .. el("div", "mx-auto max-w-5xl px-4", inner) .. site_footer();
-  return page(title, body);
-}
-
-fn chapter_nav(current: Int) -> Text {
-  let items = "";
-  for c in from x in Chapter order by x.ord select x {
-    let label = "${c.ord}. ${esc(c.title)}";
-    if c.ord == current {
-      items = items .. el("li", "mb-2 font-bold text-gray-900", label);
-    } else {
-      items = items .. el("li", "mb-2", link("/ch/${c.slug}", "", label));
-    }
-  }
-  return el("ul", "list-disc pl-6", items);
-}
-
--- ---- handlers ----------------------------------------------------------
-
-class Home {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    -- hero: tagline + the two CTAs (the go.dev shape, no JS anywhere)
-    let h1 = el("h1", "text-4xl font-bold mb-4", "One language. One runtime.<br>One database. One binary.");
-    let sub = el("p", "text-lg text-gray-700 leading-relaxed mb-6", "writeonce is a language whose compiler, runtime, web server and " .. "database ship as a single never-stopping Linux binary. Ownership-" .. "checked memory, inferred GC where ownership cannot reach, actors " .. "on every core — and the page you are reading is served by it.");
-    let ctas = el("div", "flex items-center justify-center gap-4", btn_link("/ch/hello", "Get started", true) .. btn_link("https://github.com/shoneyj", "View source", false));
-    let hero = el("div", "text-center py-16", h1 .. sub .. ctas);
-
-    -- code showcase: a real flavor of the language
-    let show_head = el("h2", "text-2xl font-bold mb-2 text-center", "An actor per chat room, rows in the built-in database");
-    let show_cap = el("p", "text-sm text-gray-500 text-center mb-4", "No broker, no ORM, no async keyword — ownership moves the message, the WAL makes the row durable.");
-    let showcase = el("div", "mx-auto max-w-3xl mb-8", show_head .. show_cap .. home_snippet());
-
-    -- why-cards (2x2 grid, collapses on small screens)
-    let cards = card("One binary", "woc build emits a self-contained executable: VM, your bytecode, the database engine. Deploys are a file copy; the runtime swaps code in place.");
-    cards = cards .. card("Memory safety, no tax", "Rust-shaped ownership checked at compile time; where ownership cannot express the shape, the compiler infers GC — per shard, no global pause.");
-    cards = cards .. card("The database is built in", "Every class is a table. Inserts are WAL-logged before they acknowledge; restart replays. No server to operate, no connection string.");
-    cards = cards .. card("Actors on every core", "spawn returns an address, send moves ownership. Fibers park on io_uring instead of blocking threads — no async/await, ever.");
-    let grid = el("div", "grid grid-cols-2 gap-6 mb-8", cards);
-
-    -- chapters (the gate's anchor string lives here)
-    let learn = el("h2", "text-2xl font-bold mb-4", "Learn writeonce");
-    let learn_p = el("p", "leading-relaxed mb-4", "The tutorial is written in the language and stored in its tables — work through the chapters in order:");
-    let chapters = el("div", "bg-white rounded-lg border shadow-sm p-6 mb-8", learn .. learn_p .. chapter_nav(0));
-
-    return ok_html(shell_wide("writeonce — learn the language", hero .. showcase .. grid .. chapters));
-  }
-}
-
-class ShowChapter {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    let slug = req.params["slug"];
-    if slug == nil { return not_found(); }
-    let hits = from c in Chapter where c.slug == slug take 1 select c;
-    if len(hits) == 0 {
-      let msg = el("h1", "text-2xl font-bold mb-4", "No such chapter");
-      let back = el("p", "", link("/", "", "Back to the chapters"));
-      let h: map<Text, Text> = {};
-      h["content-type"] = "text/html; charset=utf-8";
-      let nf = shell("writeonce — not found", msg .. back);
-      return Resp { status: 404, headers: h, body: nf };
-    }
-    let c = hits[0];
-    let head = el("h1", "text-3xl font-bold mb-4", "${c.ord}. ${esc(c.title)}");
-    let art = el("div", "bg-white rounded-lg border shadow-sm p-6", head .. c.body);
-    let nav = el("div", "mt-8", el("h2", "text-lg font-bold mb-2", "Chapters") .. chapter_nav(c.ord));
-    return ok_html(shell("writeonce — ${c.title}", art .. nav));
-  }
-}
-
--- POST /admin/ch/:slug — title/body update, form-encoded, bearer-gated.
--- Mechanism (bearer_token, constant-time ct_eq) is the framework's;
--- POLICY — which routes, which token — is this app's, right here.
-class AdminEdit {
-  token: Text
-  fn handle(req: Req) -> Resp {
-    let got = bearer_token(req);
-    if got == nil { return unauthorized(); }
-    if ct_eq("${got}", self.token) == false { return unauthorized(); }
-    let slug = req.params["slug"];
-    if slug == nil { return not_found(); }
-    let hits = from c in Chapter where c.slug == slug take 1 select c;
-    if len(hits) == 0 { return not_found(); }
-    let f = form_values(req);
-    if f == nil { return bad_request("body must be form-encoded (title, body)"); }
-    let title = f["title"];
-    let body = f["body"];
-    if title == nil and body == nil { return bad_request("nothing to update"); }
-    if title != nil {
-      let t = trim("${title}");
-      if t == "" { return bad_request("title must not be empty"); }
-      hits[0].title = t;
-    }
-    if body != nil {
-      hits[0].body = "${body}";
-    }
-    return redirect("/ch/${slug}");
-  }
-}
-
-class Health {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    return ok_text("ok");
-  }
-}
+use home
+use chapter
+use admin
+use health
 
 fn main(args: multi Text) -> Int {
   if len(args) < 1 {
@@ -189,10 +39,10 @@ fn main(args: multi Text) -> Int {
   seed_if_empty();
 
   let app = App { middleware: [], routes: [] };
-  app.use_mw(Mw { m: Logging { pad: 0 } });
-  app.get("/",             Home { pad: 0 });
-  app.get("/health",       Health { pad: 0 });
-  app.get("/ch/:slug",     ShowChapter { pad: 0 });
+  app.use_mw(Mw { m: Logging {} });
+  app.get("/",                Home {});
+  app.get("/health",          Health {});
+  app.get("/ch/:slug",        ShowChapter {});
   app.post("/admin/ch/:slug", AdminEdit { token: "${token}" });
   return app.serve("127.0.0.1", port);
 }

@@ -1,7 +1,10 @@
--- wo-html — server-rendered HTML as plain Text. Three layers, all pure:
---   esc()        HTML-escape untrusted text (the ONLY defense: use it on
---                everything that did not come from your own code)
+-- wo-html — server-rendered HTML as plain Text. Four layers, all pure:
+--   esc()        HTML-escape untrusted text. `{{ }}` in a raw text
+--                literal compiles to a call to this, so display data is
+--                escaped by construction; esc() by hand is the fallback
 --   el()/...     element builders — `el("h1", "text-3xl font-bold", t)`
+--   Component    the view unit: a class with fields + `fn render() ->
+--                Text`, satisfied structurally (iteration 37)
 --   tw_css()     a Tailwind-style utility stylesheet: the same class
 --                names Tailwind popularized, hand-written as one static
 --                sheet, inlined by page() so a page is one self-contained
@@ -11,6 +14,20 @@
 -- take exactly (tag, classes, inner) and pages compose by `..` and by
 -- functions returning Text. That constraint is the demo: an HTML layer
 -- in writeonce is ordinary code, not a template dialect.
+--
+-- ---- the MVC seam this library sits on --------------------------------
+--
+-- MODEL      `@table` rows. Queried in the HANDLER, never here — this
+--            library has no `from ... select` anywhere in it and must
+--            not grow one. A component receives VALUES, not a cursor.
+-- VIEW       components: fields in, Text out, no hidden state and no
+--            globals, so a page is byte-deterministic from its fields.
+-- CONTROLLER the framework's `Handler`: it queries, fills the component's
+--            fields, and answers `ok_html(c.render())`.
+--
+-- The seam is what makes a view testable without a server and a query
+-- testable without markup. Breaking it looks like one convenience —
+-- a component that queries "just this once" — and costs both.
 
 -- HTML-escape: & < > " (the four that matter in text and attributes).
 pub fn esc(t: Text) -> Text {
@@ -39,14 +56,14 @@ pub fn esc(t: Text) -> Text {
 -- CALLER's business: pass esc(user_text) for data, raw markup for
 -- fragments you built yourself.
 pub fn el(tag: Text, cls: Text, inner: Text) -> Text {
-  if cls == "" { return "<${tag}>${inner}</${tag}>"; }
-  return "<${tag} class=\"${cls}\">${inner}</${tag}>";
+  if cls == "" { return `<${tag}>${inner}</${tag}>`; }
+  return `<${tag} class="${cls}">${inner}</${tag}>`;
 }
 
 -- An anchor: href is attribute context, so it is escaped here.
 pub fn link(href: Text, cls: Text, label: Text) -> Text {
-  if cls == "" { return "<a href=\"${esc(href)}\">${label}</a>"; }
-  return "<a href=\"${esc(href)}\" class=\"${cls}\">${label}</a>";
+  if cls == "" { return `<a href="{{ href }}">${label}</a>`; }
+  return `<a href="{{ href }}" class="${cls}">${label}</a>`;
 }
 
 -- A code block: content is ALWAYS escaped — code samples are exactly the
@@ -56,19 +73,19 @@ pub fn code_block(src: Text) -> Text {
 }
 
 pub fn text_input(name: Text, value: Text) -> Text {
-  return "<input type=\"text\" name=\"${esc(name)}\" value=\"${esc(value)}\" class=\"field\">";
+  return `<input type="text" name="{{ name }}" value="{{ value }}" class="field">`;
 }
 
 pub fn text_area(name: Text, value: Text, rows: Int) -> Text {
-  return "<textarea name=\"${esc(name)}\" rows=\"${rows}\" class=\"field\">${esc(value)}</textarea>";
+  return `<textarea name="{{ name }}" rows="${rows}" class="field">{{ value }}</textarea>`;
 }
 
 pub fn submit_btn(label: Text) -> Text {
-  return "<button type=\"submit\" class=\"btn\">${esc(label)}</button>";
+  return `<button type="submit" class="btn">{{ label }}</button>`;
 }
 
 pub fn form_post(action: Text, inner: Text) -> Text {
-  return "<form method=\"POST\" action=\"${esc(action)}\" class=\"flex flex-col gap-2\">${inner}</form>";
+  return `<form method="POST" action="{{ action }}" class="flex flex-col gap-2">${inner}</form>`;
 }
 
 -- A sticky top navigation bar: brand on the left, a prebuilt row of
@@ -149,11 +166,63 @@ pub fn tw_css() -> Text {
 -- One full document: the sheet inlined, viewport set, body handed in.
 -- Self-contained by construction — view-source shows everything.
 pub fn page(title: Text, body: Text) -> Text {
-  let d = "<!doctype html><html><head><meta charset=\"utf-8\">";
-  d = d .. "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
-  d = d .. "<title>${esc(title)}</title>";
-  d = d .. "<style>${tw_css()}</style></head><body>";
-  d = d .. body;
-  d = d .. "</body></html>";
-  return d;
+  -- The whole document as one literal. Every newline here lands
+  -- inside <head>, where whitespace is insignificant; the body hole
+  -- and its closing tags share one line so nothing is inserted into
+  -- the rendered content.
+  return `
+    <!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ title }}</title>
+    <style>${tw_css()}</style>
+    </head><body>${body}</body></html>`;
+}
+
+-- ---- components (iteration 37) ----------------------------------------
+
+-- The view twin of the framework's `Handler`: a class with fields and a
+-- render, satisfied STRUCTURALLY — nothing declares that it implements
+-- this, a class either has `fn render() -> Text` or it does not (a class
+-- missing it is WO-E205 at the use site). Composition is nesting: a
+-- parent's render calls its children's.
+--
+-- A component's fields ARE its inputs — the closure substitute this
+-- language's no-function-values doctrine forces, and the same shape the
+-- framework already proved for handlers. `multi Component` works
+-- directly, so a heterogeneous list of children needs no wrapper record.
+pub interface Component {
+  fn render() -> Text
+}
+
+-- Render children in order. The one place in this library where the
+-- interface is genuinely load-bearing: this function knows nothing about
+-- any of them beyond `render()`, and `multi Component` holds a
+-- heterogeneous list directly — no wrapper record, which the framework's
+-- Mw/Aw shape might lead you to expect.
+pub fn render_all(cs: multi Component) -> Text {
+  let out = "";
+  for c in cs {
+    out = out .. c.render();
+  }
+  return out;
+}
+
+-- Content projection, writeonce-shaped: Angular's `<ng-content>` is a
+-- slot the parent fills, and here a slot is just a pre-rendered `Text`
+-- field. The caller passes `child.render()`, a raw literal, or a
+-- builder's output — the layout never knows which, which is exactly why
+-- it never needs to know the child's type.
+--
+-- Deliberately four slots and no container/width field: a page that
+-- wants its content in a fixed-width column wraps it before passing it
+-- in. One less knob here beats one more.
+pub class Layout {
+  title:   Text
+  nav:     Text
+  content: Text
+  footer:  Text
+
+  fn render() -> Text {
+    return page(self.title, self.nav .. self.content .. self.footer);
+  }
 }

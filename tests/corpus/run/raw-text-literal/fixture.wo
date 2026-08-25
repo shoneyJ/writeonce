@@ -1,0 +1,35 @@
+-- iteration 37: the backtick raw text literal. Markup is written as
+-- markup -- one literal, real newlines, quotes verbatim -- and the
+-- source indentation is removed at compile time, so the served bytes
+-- carry the markup's own nesting and not the method's.
+-- `${...}` interpolates raw; `{{ ... }}` HTML-escapes through the `esc`
+-- in scope (here a local one, which is exactly how a program overrides
+-- wo-html's).
+fn esc(t: Text) -> Text {
+  let out = "";
+  let i = 0;
+  let n = len(t);
+  while i < n {
+    let b = byte_at(t, i);
+    if b == 60 { out = out .. "&lt;"; }
+    else {
+      if b == 62 { out = out .. "&gt;"; }
+      else { out = out .. substr(t, i, 1); }
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+fn main() -> Int {
+  let name = "<script>";
+  let card = `
+    <div class="card">
+      <h3>{{ name }}</h3>
+      <p>${name}</p>
+    </div>`;
+  print(card);
+  let plain = `no newline, no margin rule`;
+  print(plain);
+  return 0;
+}

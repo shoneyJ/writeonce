@@ -34,6 +34,50 @@ machine-readable truth behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-25 — iteration 37, wo-html components (off-chain)
+
+**Implemented last time (2026-08-25):** iteration 37 CLOSED, both
+halves. The grammar half (2026-08-24) added the backtick raw text
+literal — content verbatim, common margin removed at lex time, `${ }`
+raw and `{{ }}` compiling to a call on the `esc` in scope — plus
+WO-E004/WO-E005. The library half (2026-08-25) added `Component`,
+`render_all` and `Layout` to wo-html, moved `ok_html` into
+`framework/http` beside `ok_text`/`ok_json`, and migrated BOTH HTML
+samples onto the component layer.
+
+**Key findings (measured, not asserted):** `multi Component` holds a
+heterogeneous list DIRECTLY — no wrapper record — so the framework's
+`Mw`/`Aw` shape is a local choice, not a language requirement; that is
+what made page components able to own their children. The whole
+escaping desugar needed zero compiler knowledge of HTML: `{{ e }}` is a
+`Call` on an ordinary in-scope `esc`, so typecheck, ownership, codegen,
+the `.wob` format and the VM were all untouched. `{{ }}` was proven
+byte-identical to the hand-written `esc()` calls it replaced, hostile
+input (`< > & "`) included, across all eight migrated builders.
+
+**Learned:** an interface that nothing consumes as a TYPE is
+decoration — `Component` only started earning its place once
+`render_all` and the page components held `multi Component`. And the
+shop template DOES build and run — an earlier note in this repo had that
+wrong, and wrong again about why: gap #1 (`pub` + `@table`) constrains
+neither the build NOR the layout. A class crosses module lines without
+export; only a free `fn` is module-scoped (`WO-E210`).
+
+**Dependencies unblocked:** shop README gap #3 ("no multi-line
+expression or literal") is closed. Separate `.html` templates, if ever
+wanted, now have exactly one honest shape — a COMPILE-TIME include
+feeding the raw-literal machinery; a per-request file read is the
+already-rejected engine.
+
+**Next steps:** the concurrency chain below is untouched by this and
+remains the live queue.
+
+**`.dev/reference` used:** none this slice (Angular's component format
+was studied from its public docs during the 2026-08-23 story write-up;
+no reference project was consulted for the implementation).
+
+---
+
 **The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 31 → 24 → 23 → 32**
 (directive 2026-08-21). Next slice: **iteration 31, actor lifecycle** —
 its spec brainstorm is the next act (four forks in
@@ -244,7 +288,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 32  | [WAL checkpoint](language-runtime-database/refine/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
 | 33  | [Single-file store](language-runtime-database/refine/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/refine/34-crypto-builtins.md)            | ⬜ off-chain but GATES 24 (WS handshake needs SHA-1) — digests + HMAC as vector-verified C builtins (story written 2026-08-22) |
-| 37  | [wo-html components](language-runtime-database/refine/37-wo-html-components.md)      | ⬜ off-chain — MVC-shaped view layer in wo-html (Component interface, layouts/slots, site migrates as acceptance); Angular format studied, client-side half rejected (story written 2026-08-23) |
+| 37  | [wo-html components](language-runtime-database/done/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
 | 35  | [net runtime seams](language-runtime-database/done/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
 | 20  | [Cross-program tables](language-runtime-database/hold/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
 | 21  | [Keypair attach auth](language-runtime-database/hold/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
@@ -316,6 +360,7 @@ Gates at the end of that session: corpus 71/0, `woc` runtest 565/0, every
 
 | Status | Item                                 | Doc                                                              | What actually landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------ | ------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ | iteration 37 — wo-html components | [37](language-runtime-database/done/37-wo-html-components.md) | Two halves. **Grammar (2026-08-24):** the backtick raw text literal — content verbatim, common margin removed at lex time, `${ }` raw and `{{ }}` auto-escaping to a call on the `esc` in scope; WO-E004/WO-E005 added; lexer + one parser desugar only, nothing downstream. **Library (2026-08-25):** `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into `framework/http` beside `ok_text`/`ok_json`, site migrated onto `Layout` + a reused `ChapterNav`, shop onto `AppShell` + `multi Component` children with queries in the controllers; the site was then restructured onto the program template's MVC layout (model / layout / view modules / one controller per feature / bootstrap-only main). `multi Component` needs no wrapper record — the framework's Mw/Aw shape is not a language requirement. Gates: `just site` 11/0, `just web-app` 46/0, `woc-test` 556/0, `oop-e2e` 116/0 |
 | ✅     | Principles                           | [`../00-principles.md`](../00-principles.md)                        | 13 principles, each with a why and a link to the doc that enforces it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ✅     | `wovm` VM core                       | [plan 1](../superpowers/plans/2026-08-01-wob-format-and-vm-core.md) | `.wob` v1 loader with full static validation, register interpreter (computed-goto + ISO-C fallback), arena with size-class free lists, borrow word, RC + budgeted Bacon–Rajan cycle collector, drop-map trap unwinding, containers, builtins, ICALL, CLI. 13 suites × 2 dispatch flavors + CLI smoke, ASan/UBSan clean                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ✅     | `.wob` format contract               | [`oop-vm/00-wob-format.md`](../plan/oop-vm/00-wob-format.md)        | Normative; twinned with `runtime/src/wob.h`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |

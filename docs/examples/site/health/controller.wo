@@ -1,0 +1,9 @@
+-- health.controller.wo — GET /health: the liveness probe the accept
+-- script and any proxy poll. Text, not HTML, on purpose.
+use framework/http
+
+pub class Health {
+  fn handle(req: Req) -> Resp {
+    return ok_text("ok");
+  }
+}
