@@ -28,6 +28,76 @@ rotate or leak. Skip to *Releasing from the pipeline* below.
 **Manual.** Everything from §0 onward — the path for a first release, or
 when the pipeline is broken and you need to ship anyway.
 
+## Making the pipeline ready (first time only)
+
+It does **not** build on your machine, and pushing to `master` does not
+release anything. The job runs on a GitHub-hosted runner, and only a
+`v*` TAG push starts it. Ordinary commits, PRs and branch pushes are
+ignored by this workflow.
+
+```
+ 1  Get the workflow onto GitHub — Actions only sees files in the repo.
+      git checkout master
+      git merge site-homepage          # or open a PR and merge it
+      git push origin master
+
+ 2  Repo -> Actions tab. If it offers to enable workflows, enable them.
+
+ 3  Repo -> Settings -> Actions -> General -> "Allow actions":
+      must permit actions/checkout and ocaml/setup-ocaml.
+      On "Allow select actions", add:  ocaml/setup-ocaml@*
+
+ 4  Same page -> "Workflow permissions". The workflow asks for
+    contents: write explicitly, which is normally enough. If the
+    publish step later fails with 403, come back and select
+    "Read and write permissions".
+
+ 5  REHEARSE before a real tag. Add --draft to the gh release create
+    line in .github/workflows/release.yml, commit, push.
+
+ 6  Fire it with a throwaway tag:
+      git tag -a v0.0.0-test -m "pipeline rehearsal"
+      git push origin v0.0.0-test
+    Note: the tag guard compares the tag to VERSION, so this run is
+    EXPECTED to fail at step "Tag must match VERSION". That is the
+    cheapest proof the guard works. To rehearse the whole job, set
+    VERSION to 0.0.0-test on a scratch branch and tag that instead.
+
+ 7  Watch it: Actions tab, or `gh run watch` once gh is authenticated.
+
+ 8  Read the "Report the glibc floor" step. It prints what the
+    RUNNER-built binaries actually require. Expect 2.35-ish from
+    ubuntu-22.04, versus 2.38 from this dev machine.
+
+ 9  Update docs/examples/site/install/view.wo's supported-systems list
+    to whatever step 8 printed, and the distros that follow from it.
+    Publishing binaries whose floor differs from the page is the one
+    failure a user cannot debug.
+
+10  Clean up the rehearsal:
+      gh release delete v0.0.0-test --yes
+      git push origin :refs/tags/v0.0.0-test
+      git tag -d v0.0.0-test
+
+11  Remove --draft, commit, push.
+
+12  Ship for real:
+      git tag -a v0.1.0 -m "writeonce 0.1.0"
+      git push origin v0.1.0
+
+13  Verify the link a stranger clicks (should print 200):
+      curl -sIL -o /dev/null -w '%{http_code}\n' \
+        https://github.com/shoneyj/writeonce/releases/download/v0.1.0/writeonce-0.1.0-linux-amd64.tar.gz
+
+14  Refresh the site's mirror from $WO_DIST (section 7 below).
+```
+
+Known first-run risks, in the order they are likely to bite:
+`ocaml/setup-ocaml@v3` resolving OCaml 4.14 on the 22.04 image; the
+`objdump` in the glibc-floor step needing `binutils` (present on GitHub
+runners, absent in slim containers); and a 403 on publish, which is
+step 4.
+
 ## Releasing from the pipeline
 
 ```
