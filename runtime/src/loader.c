@@ -177,8 +177,15 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
             BAIL("class %u: truncated", (unsigned)i);
         if (name >= m->const_cnt || m->consts[name].tag != WOB_K_TEXT)
             BAIL("class %u: bad name constant", (unsigned)i);
-        if (flags & ~WO_CLASSF_GC)
+        if (flags & ~WO_CLASSF_ALL)
             BAIL("class %u: unknown flags", (unsigned)i);
+        /* databasev2 2: rows that are neither logged nor resident would have
+         * nowhere to live. woc refuses this at compile time; the loader
+         * refuses it again because what the loader accepts, the interpreter
+         * trusts — this combination must never reach the engine. */
+        if ((flags & WO_CLASSF_VOLATILE) && (flags & WO_CLASSF_RESIDENT_KEYS))
+            BAIL("class %u: durable:false with resident:keys — rows would have "
+                 "nowhere to be read from", (unsigned)i);
         if (fcnt > 65535) BAIL("class %u: too many fields", (unsigned)i);
         if (fcnt > k.len - k.off) BAIL("class %u: truncated kinds", (unsigned)i);
         for (uint32_t j = 0; j < fcnt; j++)

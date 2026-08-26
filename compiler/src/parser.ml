@@ -394,6 +394,16 @@ let parse_table_cfg (st : state) : Ast.table_cfg =
       end
     done
   end;
+  (* databasev2 2: rows that are neither logged nor resident have nowhere to
+     live. Checked here, after the whole argument list is known, because it is
+     a property of the COMBINATION rather than of either argument. The loader
+     refuses it again (runtime/src/wob.h, loader.c) on the principle that what
+     the loader accepts the interpreter trusts — but a compile error is the one
+     a developer can act on. *)
+  if (not !cfg.Ast.durable) && !cfg.Ast.resident = Ast.ResKeys then
+    fail st (peek_pos st) table_code
+      "@table(durable: false, resident: keys): rows would be neither logged \
+       nor resident, so there is nowhere to read them from — pick one";
   !cfg
 
 type type_annotations = {

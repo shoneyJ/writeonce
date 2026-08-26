@@ -13,7 +13,17 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 6u /* v6 (iteration 36): opcodes 42-46 (the Int
+#define WOB_VERSION 7u /* v7 (databasev2 2): two class flag bits —
+ * WO_CLASSF_VOLATILE (@table durable: false) and WO_CLASSF_RESIDENT_KEYS
+ * (@table resident: keys). No layout change: both ride spare bits of the
+ * class descriptor's existing `flags` u32, so the serialized shape is
+ * byte-identical to v6. The bump exists to stop an OLDER runtime reading a
+ * v7 image and silently treating a volatile table as durable — the loader
+ * would also reject the unknown flag bits, but a version refusal names the
+ * real problem. A v6 image is refused by the exact-match check rather than
+ * read with the bits clear, matching how v4-v6 each invalidated their
+ * predecessors.
+ * v6 (iteration 36): opcodes 42-46 (the Int
  * bitwise set BAND/BOR/BXOR/SHL/SHR), trap kind WO_T_SHIFT.
  * v5 (iteration 19): the two missing scalars. New
  * constant tag WOB_K_FLOAT, field kinds WO_K_FLOAT/WO_K_BYTES (WO_K_MAX 5->7),
@@ -562,6 +572,12 @@ typedef struct wo_classdesc {
     const uint32_t *idx_meta;
 } wo_classdesc;
 #define WO_CLASSF_GC 0x01u
+/* databasev2 2. Both describe STORAGE, so both are meaningless on a class that
+   is not a @table and must be 0 there. Spelled as the non-default so a zero
+   flags word means today's behaviour: durable, every row resident. */
+#define WO_CLASSF_VOLATILE 0x02u       /* @table(durable: false) — never logged */
+#define WO_CLASSF_RESIDENT_KEYS 0x04u  /* @table(resident: keys) — rows read from the log */
+#define WO_CLASSF_ALL 0x07u
 
 /* runtime object layout: 16-byte header then one 8-byte slot per field */
 static inline size_t wo_obj_size(const wo_classdesc *c) {

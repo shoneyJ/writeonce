@@ -183,7 +183,8 @@ let dump (img : string) : string =
      set; iteration 19's v5 added the Float constant tag, kinds 6/7 and
      opcodes 34-41). The disassembler tracks the emitter, not a range: an old
      image is a different format and reading it as this one would misrender. *)
-  if ver <> 6 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  (* tracks emit.ml's wob_version and wob.h's WOB_VERSION *)
+  if ver <> 7 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
@@ -259,7 +260,12 @@ let dump (img : string) : string =
     in
     line
       (Printf.sprintf "c%-3d %s flags=%s fields=[%s]" i (kname nm)
-         (if flags land 1 <> 0 then "gc" else "-")
+         (let parts =
+            (if flags land 1 <> 0 then [ "gc" ] else [])
+            @ (if flags land 2 <> 0 then [ "volatile" ] else [])
+            @ (if flags land 4 <> 0 then [ "resident=keys" ] else [])
+          in
+          if parts = [] then "-" else String.concat "+" parts)
          (String.concat ", " fields))
   done;
   (* interfaces + vtable rows *)

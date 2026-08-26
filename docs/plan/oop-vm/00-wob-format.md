@@ -11,11 +11,11 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 6 (iteration 36; see "v6: the Int bitwise set" below — v5 was iteration 19's "v5: Float and Bytes"), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 7 (databasev2 2; see "v7: table storage flags" below — v6 was iteration 36's "v6: the Int bitwise set", v5 iteration 19's "v5: Float and Bytes"), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
 **Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL); tag 2 = f64 as its IEEE 754 bit pattern in an LE u64 (v5). There is no Bytes tag: Bytes has no literal form.
 
-**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
+**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`; **bit1 = `@table(durable: false)`, bit2 = `@table(resident: keys)`** — v7, and 0 in both means the pre-v7 behaviour of durable-and-fully-resident), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
 
 1. `field_names[i]` — constant index of the field's name, or all-ones for "not recorded" (what a hand-built test image writes).
 2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; `0xFFFFFFFD` a nullable scalar (`WO_NIL_SCALAR` nil); `0xFFFFFFFC` a plain `Bool` (json encodes `true`/`false`); `0xFFFFFFFB` a `?Bool` (both); `0xFFFFFFFA` a `?Float` (v5 — nil is `WO_NIL_FLOAT`, not `WO_NIL_SCALAR`); all-ones for none.
@@ -307,3 +307,34 @@ left to fall out accidentally):
   magic, or offsets that don't exactly account for every trailing byte)
   is left untouched and copied as-is — the safe default when it's not
   certain.
+
+## v7: table storage flags (databasev2 2)
+
+The smallest version bump in the format's history: **no layout change at all.**
+Both properties ride spare bits of the class descriptor's existing `flags`
+u32, so a v7 class record is byte-identical in shape to a v6 one.
+
+**What v7 adds**
+
+- `flags` bit1 — `WO_CLASSF_VOLATILE`: the class is a `@table(durable: false)`.
+  Its writes are never staged to the WAL and replay skips its records.
+- `flags` bit2 — `WO_CLASSF_RESIDENT_KEYS`: the class is a
+  `@table(resident: keys)`. Its id map, secondary indexes and unique shadows
+  are resident; its rows are read back from the log by offset.
+- Both are spelled as the **non-default**, so a zero flags word means exactly
+  what every pre-v7 image meant: durable, every row resident. A class that is
+  not a `@table` must have both clear.
+
+**Why bump at all, given nothing moved?** To stop an older runtime reading a
+v7 image and silently treating a volatile table as durable — the one failure
+mode where the program keeps running and quietly disagrees with its own source.
+The loader would in fact also reject it, because the flags mask check
+(`loader.c`) rejects unknown bits and has since v1; but a version refusal names
+the real problem instead of blaming the flags.
+
+**Refused by the loader, independently of the compiler:** bit1 and bit2 set
+together. Rows that are neither logged nor resident have nowhere to live. `woc`
+refuses this at compile time (WO-E102), and the loader refuses it again on the
+standing principle that what the loader accepts, the interpreter trusts. Both
+paths are gate-verified — the loader's by forging the flags word in an
+otherwise valid image, since `woc` will not emit one.

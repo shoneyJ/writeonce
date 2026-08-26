@@ -154,7 +154,10 @@ let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
 
 (* v5 (iteration 19): the Float constant tag, field kinds 6/7, opcodes 34-41,
    builtins 70-83. v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
-let wob_version = 6
+(* MUST track runtime/src/wob.h's WOB_VERSION — the loader is an exact-match
+   check, so a drift here is not a warning, it is every image refused.
+   v7 (databasev2 2): two class flag bits, no layout change. *)
+let wob_version = 7
 
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
@@ -167,6 +170,9 @@ let k_text = 1
 let k_float = 2
 let max_regs = 64
 let classf_gc = 0x01
+(* databasev2 2: spare bits of the same flags word — see runtime/src/wob.h *)
+let classf_volatile = 0x02
+let classf_resident_keys = 0x04
 
 let op_nop = 0
 let op_loadk = 1
@@ -393,6 +399,10 @@ let code_push (c : code) (v : int) : unit =
 type clsrec = {
   cr_name : string;
   cr_gc : bool;
+  (* databasev2 2: storage properties, spelled as the DEFAULT here so a
+     non-table class (union payload records below) trivially gets flags 0 *)
+  cr_durable : bool;
+  cr_resident_keys : bool;
   cr_fields : (string * Ast.field_ty) array;
   cr_methods : string list; (* method names, declaration order *)
   (* iteration 9 Task 4: (unique, column indices) per secondary index —
@@ -4765,6 +4775,14 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
                        cfg.Ast.indexes
                    | None -> ());
                    { cr_name = c.name; cr_gc = Types.is_gc_class syms c.name;
+                     cr_durable =
+                       (match c.Ast.table with
+                        | Some cfg -> cfg.Ast.durable
+                        | None -> true);
+                     cr_resident_keys =
+                       (match c.Ast.table with
+                        | Some cfg -> cfg.Ast.resident = Ast.ResKeys
+                        | None -> false);
                      cr_fields =
                        Array.of_list
                          (List.filter_map
@@ -4802,7 +4820,8 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
                     class_id := SM.add key cid !class_id;
                     incr nclasses;
                     classes :=
-                      { cr_name = key; cr_gc = false; cr_indexes = []; cr_is_table = false;
+                      { cr_name = key; cr_gc = false; cr_durable = true;
+                        cr_resident_keys = false; cr_indexes = []; cr_is_table = false;
                         cr_backlinks = [];
                         cr_fields = Array.of_list vd.Ast.v_fields;
                         cr_methods = [] }
@@ -4846,7 +4865,9 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
         class_id := SM.add name cid !class_id;
         incr nclasses;
         classes :=
-          { cr_name = name; cr_gc = false; cr_fields = Array.of_list fields; cr_methods = [];
+          (* not a @table (a predeclared record), so storage flags stay 0 *)
+          { cr_name = name; cr_gc = false; cr_durable = true; cr_resident_keys = false;
+            cr_fields = Array.of_list fields; cr_methods = [];
             cr_indexes = []; cr_is_table = false; cr_backlinks = [] }
           :: !classes
       end)
@@ -5023,7 +5044,10 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
   Array.iteri
     (fun cid (c : clsrec) ->
       Buf.u32 cls class_name_k.(cid);
-      Buf.u32 cls (if c.cr_gc then classf_gc else 0);
+      Buf.u32 cls
+        ((if c.cr_gc then classf_gc else 0)
+        lor (if c.cr_durable then 0 else classf_volatile)
+        lor (if c.cr_resident_keys then classf_resident_keys else 0));
       Buf.u32 cls (Array.length c.cr_fields);
       Array.iter (fun (_, ty) -> Buf.u8 cls (field_kind p ty)) c.cr_fields;
       let pad = (4 - (Array.length c.cr_fields mod 4)) mod 4 in
