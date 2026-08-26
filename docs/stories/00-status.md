@@ -10,9 +10,14 @@ The single place to learn where this project stands. Organised in six buckets:
 folders** — a doc stays where it was authored, and only its frontmatter, its
 banner and this board change.
 
+**Two tracks** (2026-08-26): [`language-runtime-database/`](language-runtime-database/00-story.md)
+— the language, runtime and database — and [`porch/`](porch/00-story.md), the web
+framework written in it. Each numbers its iterations from 1, so a porch 3 is not
+a language 3; porch stories carry `track: porch` in frontmatter to keep queries
+honest. Track folders are fine; **status** folders are not.
+
 **Status lives in frontmatter, nowhere else** (directive 2026-08-26). Every
-story iteration file sits flat in
-[`language-runtime-database/`](language-runtime-database/00-story.md) and
+story iteration file sits flat in its track folder and
 carries `status:` in its YAML header; the active slice's marker doc sits flat
 in `docs/`. **No directory anywhere encodes state.** This replaces the
 2026-08-20/21 convention under which files moved between `done/`, `refine/`,
@@ -593,6 +598,27 @@ precedence notes for resumption.
 
 **30** — observability, CI, fuzz: named 2026-08-20, still row-only (no
 story file); slots in when scheduled — nothing in the chain depends on it.
+
+### ▸ porch — the web framework track
+
+New 2026-08-26, from [the Fiber v3.5.0 parity study](../plan/exploration/fiber/00-fiber-parity.md).
+Supersedes language iteration 39, now a pointer. All eight are ⬜ `refine` —
+none has an approved spec yet. Ordered by dependency; the first slice is
+deliberately the cheapest so the store pattern and gate shape are proven before
+the runtime and `Resp` are touched.
+
+| # | Iteration | State |
+| --- | --- | --- |
+| 1 | [Store-backed middleware](porch/01-store-backed-middleware.md) | ⬜ **startable today** — rate limiter + idempotency over a `@table`; needs no new primitive, only `time.ticks`. Durable counters are the differentiator over Fiber's in-memory default, so the gate includes a restart |
+| 2 | [Randomness and cookies](porch/02-randomness-and-cookies.md) | ⬜ the foundation. Phase A is **language-track work**: a CSPRNG builtin (id 96+; 89/90 are iteration 31's reserved holes). Then repeated response headers — `Resp.headers` is a `map<Text,Text>` and structurally cannot emit two `Set-Cookie` lines — then `Cookie:` parsing and signed cookies |
+| 3 | [Sessions](porch/03-sessions.md) | ⬜ after 2. Server-side rows keyed by a random id, idle **and** absolute timeout, id rotation on login, revoke-all-for-principal, durable across restart |
+| 4 | [CSRF](porch/04-csrf.md) | ⬜ after 2 + 3. Session-bound tokens, trusted origins as the second layer, opt-in single use, and refusal classes that are distinguishable in logs |
+| 5 | [Routing + response ergonomics](porch/05-routing-response-ergonomics.md) | ⬜ **independent, any time** — `patch`/`options`/`head`/`all`, named routes + URL building, per-route body limit (today `BODY_MAX` is one compile-time number), request ids, `Location`/`Vary`/`Attachment`, and q-value ranking (retires a standing 🔶) |
+| 6 | [Streaming core](porch/06-streaming-core.md) | ⬜ the riskiest and highest-leverage slice: incremental writes + chunked framing + an explicit commit point. `serialize()` always emits `Content-Length` today. Chunked REQUEST bodies are deliberately refused (request smuggling) and that refusal must survive |
+| 7 | [SSE + compression](porch/07-sse-and-compression.md) | ⬜ after 6. SSE fits the actor/fiber model unusually well; compression carries a real fork — pure-`.wo` DEFLATE (now expressible after iteration 36's bit operators) vs a C builtin. CRC32 finally gets its consumer |
+| 8 | [Static files + lifecycle](porch/08-static-and-lifecycle.md) | ⬜ static half after 6. Byte ranges, `Last-Modified`/`Cache-Control`, index resolution, listing off-by-default, shutdown hooks (the ledger's "no user teardown hooks yet"), plus healthcheck/favicon/redirect/rewrite/skip |
+
+---
 
 ⏸ **Held** (2026-08-21, developer decision): 18, 20, 21, 25, 26, 27, 28,
 29 — every story carrying `status: hold` in its frontmatter (25's story

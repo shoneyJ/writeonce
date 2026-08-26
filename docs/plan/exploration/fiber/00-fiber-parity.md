@@ -190,13 +190,16 @@ Not gaps. Each was decided and the reasoning is on file.
 
 ## 7. What this study feeds
 
-[**Iteration 39 — web framework parity**](../../../stories/language-runtime-database/39-web-framework-parity.md)
-takes §0–§2 and the cheap half of §5, in that order, because §0 gates §2 and §1
-gates most of it.
+The **[`porch` track](../../../stories/porch/00-story.md)** — eight iterations
+numbered from 1, which superseded language iteration 39 on the day this study
+was written. §0–§2 and the cheap half of §5 became porch 1–5, in dependency
+order because §0 gates §2 and §1 gates most of it; §3's streaming seam and what
+falls out of it became porch 6–8, so nothing in this study is now unscheduled
+except what the table below hands to someone else.
 
 Explicitly *not* iteration 39's, with owners:
 
-- streaming, SSE, compression, byte ranges (§3) — the parked streaming slice
+- streaming, SSE, compression, byte ranges (§3) — [porch 6](../../../stories/porch/06-streaming-core.md)–[8](../../../stories/porch/08-static-and-lifecycle.md), which unparked them
 - typed binding (§4) — [iteration 29](../../../stories/language-runtime-database/29-compile-time-metaprogramming.md)
 - TTL cache middleware — [iteration 18](../../../stories/language-runtime-database/18-memory-db-features.md)
 - `proxy` — [iteration 38](../../../stories/language-runtime-database/38-content-platform-capabilities.md)

@@ -1,9 +1,31 @@
 ---
 iteration: "39"
-status: refine
+status: hold
 ---
 
-# Iteration 39 — web framework parity: randomness, cookies, and the store-backed middleware chain
+# Iteration 39 — web framework parity *(superseded by the porch track)*
+
+> **⏸ SUPERSEDED 2026-08-26, the same day it was written.** Framework work now
+> lives in its own track: [`docs/stories/porch/`](../porch/00-story.md), numbered
+> from 1. This iteration's content was split across **porch 1–5** and is not
+> planned from here — the sequencing below survives, but as that track's
+> dependency order.
+>
+> | This iteration's goal | Now |
+> | --- | --- |
+> | limiter + idempotency (the cheap first slice) | [porch 1](../porch/01-store-backed-middleware.md) |
+> | random-bytes builtin, cookies, `Resp` repeated headers | [porch 2](../porch/02-randomness-and-cookies.md) |
+> | sessions | [porch 3](../porch/03-sessions.md) |
+> | CSRF | [porch 4](../porch/04-csrf.md) |
+> | method helpers, named routes, body limit, request id, response helpers | [porch 5](../porch/05-routing-response-ergonomics.md) |
+> | *(deferred here, now scheduled)* streaming, SSE, compression, byte ranges | [porch 6](../porch/06-streaming-core.md)–[8](../porch/08-static-and-lifecycle.md) |
+>
+> Kept rather than deleted because the [Fiber study](../../plan/exploration/fiber/00-fiber-parity.md)
+> cites it and because the reasoning below — especially why the randomness
+> blocker comes first — is what the porch track is built on. Original text
+> follows.
+
+## Original scope
 
 > Format: fiberloom `product/story-iteration-template`. Part of
 > [Story — one language, one runtime, one database, one binary](00-story.md).

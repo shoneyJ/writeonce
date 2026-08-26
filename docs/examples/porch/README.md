@@ -12,7 +12,9 @@
 > handler body mentions it.
 
 A web framework **written in writeonce**, consumed as a `[deps]` dependency
-(iteration 15). Spec: `docs/superpowers/specs/2026-08-18-web-framework-design.md` §B.
+(iteration 15). Roadmap: [`docs/stories/porch/`](../../stories/porch/00-story.md)
+— its own track, eight iterations, numbered from 1, derived from
+[the Fiber parity study](../../plan/exploration/fiber/00-fiber-parity.md). Spec: `docs/superpowers/specs/2026-08-18-web-framework-design.md` §B.
 
 ```toml
 [deps]
