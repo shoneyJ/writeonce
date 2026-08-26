@@ -75,13 +75,13 @@ unsafe {
 - **Per-directory watches, not per-file.** Watching individual files wastes descriptors and misses `IN_CREATE`/`IN_DELETE` for new entries. Watch the directory; filter by event `name` in userspace.
 - **Recursive watching is manual.** Walk the tree at init and add a watch per directory. React to `IN_CREATE | IN_ISDIR` by adding a watch for the new subdirectory — and to `IN_MOVED_TO | IN_ISDIR` too.
 - **`fs.inotify.max_user_watches`** defaults to 8192 on most distros. Recursive watches over a big node_modules or target dir exhaust it fast. Filter aggressively before adding.
-- **Editors burst events.** Tmp-file + rename + delete is 3–4 events per logical save. Debounce 100–200 ms with [`timerfd`](./03-timerfd.md).
+- **Editors burst events.** Tmp-file + rename + delete is 3–4 events per logical save. Debounce 100–200 ms with [`timerfd`](03-timerfd.md).
 - **Reading less than a full event is an `EINVAL`.** Use a buffer ≥ `sizeof(inotify_event) + NAME_MAX + 1` (≈ 4 KiB is a safe size).
 - **`wd` is stable per-watch but reused after `rm_watch`.** Keep a `wd → path` map; remove from it on `IN_IGNORED`.
 
 ## Used by
 
-[`07-inotify-content-watcher.md`](../../07-inotify-content-watcher.md) — the Stage-3 hot-reload feature. Future `sub` crate — the register-macro subscription model in [`00-linux.md § Database Subscription`](./00-linux.md#database-subscription).
+`07-inotify-content-watcher.md` — the Stage-3 hot-reload feature. Future `sub` crate — the register-macro subscription model in [`00-linux.md § Database Subscription`](00-linux.md#database-subscription).
 
 ## v1 port source
 

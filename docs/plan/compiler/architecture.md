@@ -154,10 +154,10 @@ Deliberately excluded: `.dev/reference/colibri`, `.dev/reference/llama-cpp`,
 ## 7. Governing docs
 
 - Spec: [`docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md`](../../superpowers/specs/2026-08-01-oop-compiler-vm-design.md)
-- Plan 2 — compiler front: [`2026-08-01-woc-compiler-front.md`](./2026-08-01-woc-compiler-front.md)
-- Plan 3 — emit + e2e + single binary: [`2026-08-01-wob-emit-e2e-single-binary.md`](./2026-08-01-wob-emit-e2e-single-binary.md)
-- Plan 8 — Haxe-parity language surface: [`2026-08-01-haxe-parity-language.md`](./2026-08-01-haxe-parity-language.md)
-- Format contract: [`docs/plan/oop-vm/00-wob-format.md`](../../plan/oop-vm/00-wob-format.md)
+- Plan 2 — compiler front: [`2026-08-01-woc-compiler-front.md`](2026-08-01-woc-compiler-front.md)
+- Plan 3 — emit + e2e + single binary: [`2026-08-01-wob-emit-e2e-single-binary.md`](2026-08-01-wob-emit-e2e-single-binary.md)
+- Plan 8 — Haxe-parity language surface: [`2026-08-01-haxe-parity-language.md`](2026-08-01-haxe-parity-language.md)
+- Format contract: [`docs/plan/oop-vm/00-wob-format.md`](../oop-vm/00-wob-format.md)
 - VM counterpart (shipped): [`docs/superpowers/plans/2026-08-01-wob-format-and-vm-core.md`](../../superpowers/plans/2026-08-01-wob-format-and-vm-core.md)
 
 > **Docs-location note:** compiler plan documents live here in

@@ -8,9 +8,9 @@
 > death notices, and timers as it needs them; the recorded chain
 > "31 → 24" collapses into "24". Story 34's fork is resolved here too
 > (C builtins, full set). Stories:
-> [24](../../stories/language-runtime-database/refine/24-chat-websocket-workload.md) ·
-> [31](../../stories/language-runtime-database/refine/31-actor-lifecycle.md) ·
-> [34](../../stories/language-runtime-database/refine/34-crypto-builtins.md).
+> [24](../../stories/language-runtime-database/24-chat-websocket-workload.md) ·
+> [31](../../stories/language-runtime-database/31-actor-lifecycle.md) ·
+> [34](../../stories/language-runtime-database/34-crypto-builtins.md).
 > Substrate: the landed 8+11 arc
 > ([spec](2026-08-20-shard-fiber-arc-design.md)); every decision below
 > reuses its machinery rather than growing parallel machinery.

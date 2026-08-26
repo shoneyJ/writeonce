@@ -1,8 +1,9 @@
 # The writeonce language surface — everything a `.wo` file may contain
 
-Derived from the front end as it stands on 2026-08-24, by reading
-`compiler/src/lexer.ml`, `parser.ml`, `ast.ml` and `types.ml` — not a
-spec. Where this disagrees with the compiler, the compiler is right.
+Derived from the front end as it stands on 2026-08-24 and re-verified
+against it on 2026-08-26, by reading `compiler/src/lexer.ml`,
+`parser.ml`, `ast.ml` and `types.ml` — not a spec. Where this disagrees
+with the compiler, the compiler is right.
 The normative companions are
 [`08-builtin-surface.md`](../plan/oop-vm/08-builtin-surface.md) (what the
 runtime offers) and [`01-error-catalog.md`](../plan/oop-vm/01-error-catalog.md)
@@ -14,7 +15,9 @@ matching answer to "what will the compiler refuse?", which is just as
 much part of the surface.
 
 Every form listed below was compiled and run against `woc`/`wovm` while
-writing this page, not read off the parser and hoped for.
+writing this page, not read off the parser and hoped for — with the one
+exception §6 calls out by name (`group … by … into` parses and is then
+refused).
 
 ---
 
@@ -33,7 +36,7 @@ writing this page, not read off the parser and hoped for.
 | newline | significant | terminates a statement (or `;`). A line ending in `..` continues on the next — the one newline suppression |
 | build flags | `#if name` / `#else` / `#end` | token-level filter, flag NAMES only (no expressions); nesting allowed; set with `woc -D name` |
 
-**Keywords** (35): `type class interface fn let mut take return if else
+**Keywords** (37): `type class interface fn let mut take return if else
 while for in true false use spawn using pub break continue do const and
 or not inline switch case default typedef try catch nil as INSERT
 SELECT`.
@@ -164,7 +167,7 @@ no `&&`/`||`/`!`/`~` anywhere in the language.
 ```
 from <var> in <source>
   where <expr>            -- zero or more
-  group <expr> by <key> into <gvar>
+  group <expr> by <key> into <gvar>    -- PARSES, THEN REFUSED (see below)
   order by <expr> [desc]
   take <expr>
   select <expr>
@@ -172,9 +175,15 @@ from <var> in <source>
 
 The source is either a table class (`from p in Product`) or a
 navigation (`from s in dept.staff` — a `backlink` or a `multi`). Present
-today: from / where / order / take / select plus group-by aggregation.
-Joins are not in the slice. A query is an expression and is also what
-`for x in <query>` iterates.
+today: **from / where / order / take / select**. A query is an
+expression and is also what `for x in <query>` iterates.
+
+`group … by … into` is the one clause above that is grammar without
+semantics: the parser accepts it (`parser.ml`) and the typechecker then
+rejects it with WO-E250 — "group-by aggregation is not supported yet",
+or "group-by on a navigation query is not supported yet" for the
+navigation form (`types.ml`). It is listed because the syntax is
+settled, not because it runs. Joins are not in the slice at all.
 
 ## 7. Concurrency
 

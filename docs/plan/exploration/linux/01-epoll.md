@@ -68,7 +68,7 @@ unsafe {
 
 ## Used by
 
-Every runtime phase that touches I/O: [`02-event-loop-epoll.md`](../../done/02-event-loop-epoll.md), [`03-hand-rolled-http.md`](../../done/03-hand-rolled-http.md), [`07-inotify-content-watcher.md`](../../07-inotify-content-watcher.md), [`08-sendfile-static-assets.md`](../../08-sendfile-static-assets.md).
+Every runtime phase that touches I/O: `02-event-loop-epoll.md`, `03-hand-rolled-http.md`, `07-inotify-content-watcher.md`, `08-sendfile-static-assets.md`.
 
 ## v1 port source
 

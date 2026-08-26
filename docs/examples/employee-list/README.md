@@ -2,8 +2,8 @@
 
 > **Status: target workload — does not compile on today's toolchain.**
 > Written ahead of iterations
-> [20 (cross-program tables)](../../stories/language-runtime-database/refine/20-cross-program-tables.md)
-> and [21 (keypair attach auth)](../../stories/language-runtime-database/refine/21-keypair-attach-auth.md),
+> [20 (cross-program tables)](../../stories/language-runtime-database/20-cross-program-tables.md)
+> and [21 (keypair attach auth)](../../stories/language-runtime-database/21-keypair-attach-auth.md),
 > the way every acceptance sample here precedes its features. It also leans
 > on 9/9b (the [employee sample](../employee/) it attaches to must run
 > first).

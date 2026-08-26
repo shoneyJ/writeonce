@@ -32,7 +32,7 @@ build path grows a check branch, and the dep-use resolution walk in
 
 **Spec:** [`../specs/2026-08-20-library-kind-internal-design.md`](../specs/2026-08-20-library-kind-internal-design.md)
 (normative). Story:
-[`17-library-projects-internal.md`](../../stories/language-runtime-database/done/17-library-projects-internal.md).
+[`17-library-projects-internal.md`](../../stories/language-runtime-database/17-library-projects-internal.md).
 
 ## Global Constraints
 

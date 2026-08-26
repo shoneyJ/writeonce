@@ -72,23 +72,22 @@ ignored by this workflow.
     Publishing binaries whose floor differs from the page is the one
     failure a user cannot debug.
 
-10  Clean up the rehearsal:
-      gh release delete v0.0.0-test --yes
-      git push origin :refs/tags/v0.0.0-test
-      git tag -d v0.0.0-test
-
-11  Remove --draft, commit, push.
-
-12  Ship for real:
+10  Ship for real:
       git tag -a v0.1.0 -m "writeonce 0.1.0"
       git push origin v0.1.0
 
-13  Verify the link a stranger clicks (should print 200):
+11  Verify the link a stranger clicks (should print 200):
       curl -sIL -o /dev/null -w '%{http_code}\n' \
         https://github.com/shoneyj/writeonce/releases/download/v0.1.0/writeonce-0.1.0-linux-amd64.tar.gz
 
-14  Refresh the site's mirror from $WO_DIST (section 7 below).
+12  Refresh the site's mirror from $WO_DIST (section 7 below).
 ```
+
+There is no rehearsal to clean up and no draft flag to remove: a
+`workflow_dispatch` run creates neither a tag nor a release, and
+`gh release create` in the workflow publishes directly — the file has never
+carried `--draft`. If you *want* a draft first, add `--draft` to that step
+yourself and remember to remove it again.
 
 Known first-run risks, in the order they are likely to bite:
 `ocaml/setup-ocaml@v3` resolving OCaml 4.14 on the 22.04 image; the

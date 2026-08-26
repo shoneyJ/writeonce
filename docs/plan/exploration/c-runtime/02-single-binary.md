@@ -1,6 +1,6 @@
 # 02 — The end goal: the writeonce single binary on this runtime environment
 
-**Context sources:** [`00-plan.md`](./00-plan.md) (the runtime-environment phases, A–B ✅), [`01-architecture.md`](./01-architecture.md) (the one-address trace), `../../../runtime/wo-language.md` ("one binary per project; no runtime to install on the target host"; `.wo` has "its own lexer, parser, analyzer, and bytecode"), [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md)–[`12`](../../12-engine-disk-cutover.md) (the Rust product track this proves out), [`../../../runtime/database/02-wo-language.md`](../../../runtime/database/02-wo-language.md) (catalog + transaction semantics the payload carries).
+**Context sources:** [`00-plan.md`](00-plan.md) (the runtime-environment phases, A–B ✅), [`01-architecture.md`](01-architecture.md) (the one-address trace), `../../../runtime/wo-language.md` ("one binary per project; no runtime to install on the target host"; `.wo` has "its own lexer, parser, analyzer, and bytecode"), `../../09-concurrency-scaleout.md`–`12` (the Rust product track this proves out), `../../../runtime/database/02-wo-language.md` (catalog + transaction semantics the payload carries).
 
 ## The end goal, stated once
 
@@ -80,11 +80,11 @@ Steps 1–2 and 4–6 exist in `wo-rt-c` today with the notes store standing in 
 
 - **`wo-rt-c` (C)** — proves each kernel syscall sequence first: threads/arena (✅), io_uring, WAL, recovery, bench. It will never parse `.wo`; its notes store is the stand-in payload.
 - **`crates/rt` (Rust)** — the product: owns the compiler front-end today (lexer→catalog, Stage 2 shipped) and absorbs each proven kernel sequence per plans 09–12, where ownership makes the shard discipline a compile-time guarantee.
-- **Optional phase G** (named in [`00-plan.md`](./00-plan.md)): splice the [`wo-db`](../../../../prototypes/wo-db/) C++ query engine onto `wo-rt-c` as an end-to-end C-family demonstrator of this document — valuable as proof, never the product.
+- **Optional phase G** (named in [`00-plan.md`](00-plan.md)): splice the `wo-db` C++ query engine onto `wo-rt-c` as an end-to-end C-family demonstrator of this document — valuable as proof, never the product.
 
 ## Cross-references
 
-- [`00-plan.md`](./00-plan.md) — the kernel phases; [`01-architecture.md`](./01-architecture.md) — the one-address trace through the same stack.
+- [`00-plan.md`](00-plan.md) — the kernel phases; [`01-architecture.md`](01-architecture.md) — the one-address trace through the same stack.
 - [`README.md`](../../../../README.md) — the user-facing single-binary promise this document implements.
-- [`../../13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) (13b methods) — the payload-side track.
-- [`../../09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) — shard-key routing and 2PC the contract defers to.
+- `../../13-class-model-live-pricing.md` (13b methods) — the payload-side track.
+- `../../09-concurrency-scaleout.md` — shard-key routing and 2PC the contract defers to.

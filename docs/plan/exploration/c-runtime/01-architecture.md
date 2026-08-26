@@ -1,6 +1,6 @@
 # wo-rt-c architecture — one memory address, two spaces, a million connections
 
-This document defines the runtime's architecture by following **one memory address** through user space, kernel space, and hardware, under a million connections reading and writing it concurrently — then suggests improvements. Companion docs: [`00-plan.md`](./00-plan.md) (the phases that build this), [`README.md`](../../../../runtime/README.md) (phase-0 module map).
+This document defines the runtime's architecture by following **one memory address** through user space, kernel space, and hardware, under a million connections reading and writing it concurrently — then suggests improvements. Companion docs: [`00-plan.md`](00-plan.md) (the phases that build this), [`README.md`](../../../../runtime/README.md) (phase-0 module map).
 
 ## The cast: one address
 
@@ -14,7 +14,7 @@ Three facts define everything that follows:
 
 1. **User space sees a virtual address.** `0x7f3a2c001000` is an entry in this process's page tables; the kernel resolved it to one physical RAM frame at fault time (`MAP_POPULATE` faults it in at boot, before any request).
 2. **The kernel pins the frame.** `mlock` guarantees the physical page is never swapped — a load from this address is always a RAM access, never disk I/O in disguise.
-3. **Exactly one thread owns writes to it.** The address lies inside shard 0's slice; thread 0 is the only code in the process that may store to it ([00-plan.md decision 2](./00-plan.md)). Data exists once — ownership, not copying, is the concurrency model.
+3. **Exactly one thread owns writes to it.** The address lies inside shard 0's slice; thread 0 is the only code in the process that may store to it ([00-plan.md decision 2](00-plan.md)). Data exists once — ownership, not copying, is the concurrency model.
 
 ## The two spaces
 
@@ -55,7 +55,7 @@ The arrows worth staring at: the thread's access to the database (`MOV`) and to 
 
 ## Write path — the address changes
 
-One of the million connections POSTs a new value. Dual-write order per [00-plan.md decision 6](./00-plan.md): RAM first, then the hard drive, ack only after the disk confirms.
+One of the million connections POSTs a new value. Dual-write order per [00-plan.md decision 6](00-plan.md): RAM first, then the hard drive, ack only after the disk confirms.
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +110,7 @@ do { v1 = atomic_load_acquire(&slot->ver);          /* spin only while odd */
 } while (v1 != v2 || (v1 & 1));
 ```
 
-A hot row becomes readable by all N cores **with zero duplication — same physical frame, same address** — and writes stay serial, so ACID isolation is untouched. Cost: two atomic increments per write, a retry loop per read (C11 atomics, no library). Doctrine note: this relaxes "only the owner touches the slice" to "only the owner *writes* the slice"; contrast with [plan 13e's hot-row read replicas](../../13-class-model-live-pricing.md), which solve the same bottleneck by *copying* rows per thread — seqlock is the no-duplication answer the replica design isn't.
+A hot row becomes readable by all N cores **with zero duplication — same physical frame, same address** — and writes stay serial, so ACID isolation is untouched. Cost: two atomic increments per write, a retry loop per read (C11 atomics, no library). Doctrine note: this relaxes "only the owner touches the slice" to "only the owner *writes* the slice"; contrast with `plan 13e's hot-row read replicas`, which solve the same bottleneck by *copying* rows per thread — seqlock is the no-duplication answer the replica design isn't.
 
 ### 2. Registered buffers and files (`IORING_REGISTER_BUFFERS` / `_FILES`)
 
@@ -138,12 +138,12 @@ On multi-socket boxes, bind each shard slice's pages to the owning core's NUMA n
 
 ### Deliberately not suggested
 
-Work stealing (breaks single-writer ACID), shared-heap locking (the doctrine exists to avoid it — and at 1M readers a mutex on the row would serialize everything the seqlock parallelizes), liburing (the prototype's value is the raw syscall sequence), and multi-node distribution (plan 09's single-box stance). See [plan 09 § Non-scope](../../09-concurrency-scaleout.md).
+Work stealing (breaks single-writer ACID), shared-heap locking (the doctrine exists to avoid it — and at 1M readers a mutex on the row would serialize everything the seqlock parallelizes), liburing (the prototype's value is the raw syscall sequence), and multi-node distribution (plan 09's single-box stance). See `plan 09 § Non-scope`.
 
 ## Cross-references
 
-- [`00-plan.md`](./00-plan.md) — phases A–F that build the architecture described here; improvements 1–7 slot into phases C/F or follow them.
-- [`../../docs/plan/09-concurrency-scaleout.md`](../../09-concurrency-scaleout.md) — the thread-per-core doctrine.
+- [`00-plan.md`](00-plan.md) — phases A–F that build the architecture described here; improvements 1–7 slot into phases C/F or follow them.
+- `../../docs/plan/09-concurrency-scaleout.md` — the thread-per-core doctrine.
 - [`../../docs/plan/exploration/linux/07-io_uring.md`](../linux/07-io_uring.md), [`08-mmap.md`](../linux/08-mmap.md) — the two shared-page mechanisms.
-- [`../../docs/plan/13-class-model-live-pricing.md`](../../13-class-model-live-pricing.md) — 13e's read-replica alternative, contrasted in improvement 1.
+- `../../docs/plan/13-class-model-live-pricing.md` — 13e's read-replica alternative, contrasted in improvement 1.
 - [`README.md`](../../../../README.md) — the C/assembly "one address" pedagogy the single-binary story extends to a full runtime.

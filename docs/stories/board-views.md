@@ -6,16 +6,23 @@ is the source of truth**:
 ```yaml
 ---
 iteration: "8"        # immutable id (string: "7b", "9b" exist)
-status: in-progress   # done | in-progress | refine | hold — mirrors its folder
+status: in-progress   # done | in-progress | refine | hold — the ONLY place status lives
 chain: 1              # concurrency-chain position, chain stories only (1–6)
 ---
 ```
 
-The folder move IS the status change: moving a story between `done/`,
-`in-progress/`, `refine/`, `hold/` must update its `status:` in the same
-change — the two never disagree. The prose board
-([`00-status.md`](00-status.md)) stays the standup narrative; these
-queries are the live views over the same facts.
+**Editing `status:` IS the status change.** Story files sit flat in
+`docs/stories/language-runtime-database/`; no directory encodes state, so
+there is nothing to move and nothing that can disagree. This replaced the
+2026-08-20/21 folder scheme on **2026-08-26** — under that scheme a status
+change moved the file, which broke every relative link in and to it, and
+the repo's two link audits were largely the cleanup.
+
+The closed set `status:` may take is `done`, `in-progress`, `refine` (needs
+a brainstorm before it can be planned) and `hold`. A value outside it will
+simply not appear in the lanes below, which is the cheapest possible
+validation. The prose board ([`00-status.md`](00-status.md)) stays the
+standup narrative; these queries are the live views over the same facts.
 
 Adjust the `FROM` path to your vault root (queries below assume the
 vault opens at the repo root).
@@ -60,7 +67,6 @@ WHERE status = "in-progress"
 The Kanban plugin stores board state in its own markdown file — a
 second copy of status. To keep frontmatter the single source of truth:
 **use Dataview for querying; treat any Kanban board as a VIEW, never
-the place status is edited.** Status changes happen by moving the story
-file between folders + updating its `status:` key (one commit); a
-Kanban card drag that only rewrites the Kanban file is a lie the next
-query won't see.
+the place status is edited.** A status change is one edit to one
+`status:` key; a Kanban card drag that only rewrites the Kanban file is a
+lie the next query won't see.

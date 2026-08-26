@@ -85,6 +85,13 @@ first (pure `.wo` cannot express it yet).
 
 ### Transport
 
+> Parity reference: [the Fiber v3.5.0 study](../../plan/exploration/fiber/00-fiber-parity.md)
+> read all 32 of Fiber's middleware packages against this framework on
+> 2026-08-26. **Nine already have a working counterpart here** (CORS, basic
+> auth, key/bearer auth, security headers, ETag, static files, logger, host
+> authorization, recover-as-500). The rows below marked ⛔/⏸ are what it found
+> missing, each with an owner.
+
 | Item | State |
 | --- | --- |
 | HTTP/1.1 parsing | ✅ parses + 400-and-survive; duplicate `Content-Length` rejected outright (RFC 9112 §6.3, slice 2); BODY_MAX bounds headers and body |
@@ -152,7 +159,14 @@ first (pure `.wo` cannot express it yet).
 | --- | --- |
 | base64 | ✅ pure `.wo` (`http/auth.wo`) |
 | SHA-1 · SHA-256 · HMAC-SHA256 | ✅ C runtime builtins (iteration 34, ids 85–87, RFC-vector gated); SHA-512/CRC32 wait for a consumer |
-| Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT HS256) | ⬜ UNBLOCKED (the primitives exist since iteration 34); each is its own slice; **hard stop at JWT HS256** — no RS256, no JOSE zoo |
+| Unlocks — signed cookies, webhook verification, JWT HS256 **verification** | ⬜ genuinely unblocked (integrity only needs iteration 34's HMAC); each its own slice; **hard stop at JWT HS256** — no RS256, no JOSE zoo |
+| Unlocks — CSRF, session integrity, JWT **issuing** | ⛔ **BLOCKED, corrected 2026-08-26.** This row previously read "UNBLOCKED (the primitives exist since iteration 34)" and that was wrong: HMAC lets you *authenticate* a token, not *mint* one, and **writeonce has no source of randomness at all** (no `getrandom`, no CSPRNG builtin — grep the runtime). An HMAC over a guessable session id is a signed guess. A random-bytes builtin is [iteration 39](../../stories/language-runtime-database/39-web-framework-parity.md)'s first goal |
+| Cookies (read + `Set-Cookie`) | ⛔ absent in BOTH directions, and `Resp.headers` is a `map<Text,Text>` so it structurally cannot carry two `Set-Cookie` lines — [iteration 39](../../stories/language-runtime-database/39-web-framework-parity.md) |
+| Sessions · CSRF · rate limiting · idempotency | ⬜ [iteration 39](../../stories/language-runtime-database/39-web-framework-parity.md). Limiter and idempotency need only a `@table` + `time.ticks` and are the cheapest wins available; sessions and CSRF wait on randomness + cookies. `@table` gives all four a **durable** store, where Fiber ships in-memory and expects Redis |
+| Compression · SSE · byte ranges · chunked bodies | ⏸ all four sit on the parked streaming seam (`serialize()` always emits `Content-Length`). Chunked REQUEST bodies are deliberately refused today (`internal/parse.wo:153-157`, request-smuggling note) — that refusal must survive whoever implements them |
+| Typed binding of query/params/form/headers | ⏸ Fiber's `Bind` reflects over struct tags; principle 13 forbids reflection, so the answer is [iteration 29's `@derive`](../../stories/language-runtime-database/29-compile-time-metaprogramming.md). JSON bodies already work via `json.decode(t) as T` |
+| PATCH/OPTIONS/HEAD/ALL helpers · named routes · per-route body limit · request id · `Location`/`Vary`/`Attachment` | ⬜ [iteration 39](../../stories/language-runtime-database/39-web-framework-parity.md) — registration and response sugar; `BODY_MAX = 1048576` is currently one compile-time number for the whole server |
+| `proxy` middleware | ⛔ impossible today — no `net.connect` anywhere in the runtime ([iteration 38](../../stories/language-runtime-database/38-content-platform-capabilities.md)) |
 
 ## Layout and privacy (iteration 17)
 

@@ -1,7 +1,7 @@
 # `@table`, Relations, and Language-Integrated Query — Design
 
 > **Status: proposed** (story iteration 9b). Settles the three forks recorded in
-> [`09b-table-relations-query.md`](../../stories/language-runtime-database/done/09b-table-relations-query.md).
+> [`09b-table-relations-query.md`](../../stories/language-runtime-database/09b-table-relations-query.md).
 > Plan: [`docs/plan/compiler/2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md).
 > Depends on iteration 9's engine plan
 > ([`2026-08-01-db-engine-binding.md`](../plans/2026-08-01-db-engine-binding.md))

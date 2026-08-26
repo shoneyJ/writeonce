@@ -7,32 +7,82 @@ incoming arrows is startable. This board carries the STATES.
 The single place to learn where this project stands. Organised in six buckets:
 **stories** (the narrative arc), **in progress**, **done**, **pending**,
 **discarded**, **learnings**. The buckets are **sections of this board, not
-folders** — a doc stays where it was authored when its work lands; only its
-banner and this board change. ONE exception by directive (2026-08-20):
-story iteration files move physically — landed ones into
-`stories/language-runtime-database/done/`, brainstorm-needing ones into
-`refine/`, held ones into `hold/`, the active slice's stories into
-`stories/language-runtime-database/in-progress/` (both 2026-08-21);
-ready ones stay at the root. Second exception (2026-08-21): the active
-slice's one marker doc lives in `docs/in-progress/` and is deleted when
-the slice lands. Every plan and phase doc opens with a
-`> **Status:**` banner linking back here; normative contracts
-(`plan/oop-vm/`), exploration studies, reference docs and the
-discarded/learnings registers carry none by design.
+folders** — a doc stays where it was authored, and only its frontmatter, its
+banner and this board change.
 
-Update this board in the same change that finishes work — move the item to done
-with _what actually landed_, set the next in-progress item, and record any
-rejection in [`discarded.md`](../plan/discarded.md) with its reason.
+**Status lives in frontmatter, nowhere else** (directive 2026-08-26). Every
+story iteration file sits flat in
+[`language-runtime-database/`](language-runtime-database/00-story.md) and
+carries `status:` in its YAML header; the active slice's marker doc sits flat
+in `docs/`. **No directory anywhere encodes state.** This replaces the
+2026-08-20/21 convention under which files moved between `done/`, `refine/`,
+`hold/` and `in-progress/` — those folders are gone. A status change is now a
+one-line edit, not a move, which is the point: the old scheme broke every
+relative link in and to a file each time its status changed, and the two link
+audits ([`00-link-audit.md`](../00-link-audit.md)) were mostly that.
 
-Statuses: ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold**
+Every plan and phase doc opens with a `> **Status:**` banner linking back here;
+normative contracts (`plan/oop-vm/`), exploration studies, reference docs and
+the discarded/learnings registers carry none by design.
 
-Story files carry YAML frontmatter (`iteration`/`status`/`chain`) — the
-machine-readable truth behind this board; live Obsidian Dataview views:
+Update this board in the same change that finishes work — set the item's
+`status:`, record _what actually landed_ here, set the next in-progress item,
+and record any rejection in [`discarded.md`](../plan/discarded.md) with its
+reason.
+
+Statuses, the closed set `status:` may take: `done` · `in-progress` · `refine`
+(needs a brainstorm before it can be planned) · `hold`. This board renders them
+as ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold**.
+
+Story frontmatter (`iteration`/`status`/`chain`) is the machine-readable truth
+behind this board; live Obsidian Dataview views:
 [`board-views.md`](board-views.md) (Kanban = view only, never edits status).
 
 ---
 
 ## ▶ NEXT PLAN
+
+### Landed 2026-08-25 — packaging + release pipeline (off-chain, no story)
+
+**Implemented last time (2026-08-25):** the toolchain became installable
+by a stranger. `VERSION` as the single source (0.1.0, asserted against
+both binaries by `scripts/mkdist.sh`), `just dist` producing
+`writeonce-<ver>-linux-amd64.tar.gz` + `.sha256` with
+`scripts/install-readme.tmpl.md` inside it, `just install-accept`
+proving a from-scratch project builds against the extracted tarball's
+own binaries, and `.github/workflows/release.yml` publishing on a `v*`
+tag push. Runbook: [`guides/releasing.md`](../guides/releasing.md).
+
+**Key findings (measured, not asserted):** the build host's glibc caps
+what the shipped binaries can import, and that cap becomes every user's
+floor — so `runs-on` is `ubuntu-22.04` (2.35) deliberately, not
+`ubuntu-latest`; built on this dev machine the binaries need
+`GLIBC_2.38`, which would silently exclude Ubuntu 22.04, Debian 12 and
+RHEL 9. `ocaml/setup-ocaml@v3` gives a compiler and opam but **not**
+dune, and pinning `dune.3.14.0` is a downgrade the solver refuses — take
+whatever it provides, since any dune ≥ 3.14 satisfies `(lang dune 3.14)`.
+
+**Learned:** the asset filename is load-bearing. `/install` links one
+exact URL, so the workflow asserts tag = `VERSION` = asset name and
+fails rather than publishing a download button that 404s. A measurement
+that only prints is not a gate — the glibc floor is printed from the
+artefact about to ship, so the claim on the page can be checked against
+a build log instead of trusted.
+
+**Dependencies unblocked:** nothing in the chain; this is the
+distribution seam. It does make `docs/examples/site`'s `/install` page
+truthful, which iteration 37's site restructure had left pointing at an
+asset nobody had built.
+
+**Next steps:** the live slice is iteration 24, untouched by this. CI is
+release-only — no workflow runs the gates per change, which remains the
+open half of iteration 30 (observability, CI, fuzz — still no story
+file).
+
+**`.dev/reference` used:** none — GitHub Actions' own docs and the
+runner images' glibc versions were the only sources.
+
+---
 
 ### Landed 2026-08-25 — iteration 37, wo-html components (off-chain)
 
@@ -78,11 +128,18 @@ no reference project was consulted for the implementation).
 
 ---
 
-**The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 31 → 24 → 23 → 32**
-(directive 2026-08-21). Next slice: **iteration 31, actor lifecycle** —
-its spec brainstorm is the next act (four forks in
-[the story](language-runtime-database/refine/31-actor-lifecycle.md);
-the mailbox-cap/ring decisions now HAVE their mutex-inbox number).
+**The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 🔄 24 (absorbing
+31 + 34) → 23 → 32.** The chain's original order put 31 before 24; the
+2026-08-23 directive absorbed 31 INTO 24, and 34 resolved with it, so
+those three are one slice. **The live slice is iteration 24** — spec and
+plan approved 2026-08-23, executing on branch `chat-ws-lifecycle`, five
+of ten tasks landed. Its running state is the marker doc
+([`2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)),
+which is the file to read for what is done and what is next; stories
+[31](language-runtime-database/31-actor-lifecycle.md) and
+[34](language-runtime-database/34-crypto-builtins.md) keep
+`status: refine` until 24's T10 closeout sets all three to `status: done`
+together.
 
 **Implemented last time (2026-08-21):** **iteration 22 landed — the
 measurement backbone exists and every performance claim is now
@@ -122,7 +179,9 @@ numbers need a real disk.
 machinery), and every future optimization (the gate that catches
 regressions is live).
 
-**Next steps:** 31 (lifecycle spec brainstorm) → 24 (chat) → 23
+**Next steps:** finish 24 (T4 `monitor` id 89, T5 `time.after` id 90 —
+both still literal holes in `wob.h`'s builtin enum; then T8 the chat
+sample, T9 its gate, T10 closeout setting 24/31/34 to `status: done`) → 23
 (io_uring group-commit — target: close the 4.5k→297k durable gap) →
 32 (WAL checkpoint). Held tail resumes on its own precedence notes.
 
@@ -234,7 +293,7 @@ itself, and all six landed:
    quarantine warm-up.
 
 Plan: [`plan/compiler/2026-08-14-logwatcher-executable.md`](../plan/compiler/2026-08-14-logwatcher-executable.md) ·
-Story slice: [`docs/stories/language-runtime-database/done/07-logwatcher-proof.md`](language-runtime-database/done/07-logwatcher-proof.md)
+Story slice: [`docs/stories/language-runtime-database/07-logwatcher-proof.md`](language-runtime-database/07-logwatcher-proof.md)
 
 **Deferred by name, with the measurement that says so:**
 
@@ -268,39 +327,41 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | #   | Iteration                                                                                    | State                        |
 | --- | -------------------------------------------------------------------------------------------- | ---------------------------- | ---- |
-| 1   | [Principles doc](language-runtime-database/done/01-principles-doc.md)                     | ✅                           |
-| 2   | [VM core (`wovm`)](language-runtime-database/done/02-vm-core.md)                          | ✅                           |
-| 3   | [Compiler front (`woc`)](language-runtime-database/done/03-compiler-front.md)             | ✅ (known gaps below)        |
-| 4   | [Single binary end-to-end](language-runtime-database/done/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
-| 5   | [Language surface](language-runtime-database/done/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
-| 6   | [Program mode + stdlib](language-runtime-database/done/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
-| 7   | [log-watcher proof](language-runtime-database/done/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
-| 7b  | [Inferred GC + mark-sweep](language-runtime-database/done/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
-| 8   | [Shard-actor runtime](language-runtime-database/done/08-shard-actor-runtime.md)           | ✅ **landed 2026-08-21** — the arc complete: stages 1+2 (fibers/budget/actors/io_uring plane, shards, envelopes, WO-E222) + stage 3's transparent DB actor (`just db-actor` 8/0, ASan/TSan clean, WAL replay pair) |
-| 9   | [Database engine](language-runtime-database/done/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
-| 9b  | [`@table`, relations, query](language-runtime-database/done/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
-| 19  | [Float + Bytes](language-runtime-database/done/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
-| 11  | [Fibers](language-runtime-database/done/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
-| 22  | [Durability, throughput, scale](language-runtime-database/done/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
-| 31  | [Actor lifecycle](language-runtime-database/refine/31-actor-lifecycle.md) | ⬜ needs a spec first — third in chain (story written 2026-08-21) |
-| 24  | [chat: WebSocket workload](language-runtime-database/refine/24-chat-websocket-workload.md) | ⬜ fourth in chain — the arc's acceptance; after 31 |
-| 23  | [io_uring group-commit](language-runtime-database/refine/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
-| 32  | [WAL checkpoint](language-runtime-database/refine/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
-| 33  | [Single-file store](language-runtime-database/refine/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
-| 34  | [Crypto builtins](language-runtime-database/refine/34-crypto-builtins.md)            | ⬜ off-chain but GATES 24 (WS handshake needs SHA-1) — digests + HMAC as vector-verified C builtins (story written 2026-08-22) |
-| 37  | [wo-html components](language-runtime-database/done/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
-| 35  | [net runtime seams](language-runtime-database/done/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
-| 20  | [Cross-program tables](language-runtime-database/hold/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
-| 21  | [Keypair attach auth](language-runtime-database/hold/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
+| 1   | [Principles doc](language-runtime-database/01-principles-doc.md)                     | ✅                           |
+| 2   | [VM core (`wovm`)](language-runtime-database/02-vm-core.md)                          | ✅                           |
+| 3   | [Compiler front (`woc`)](language-runtime-database/03-compiler-front.md)             | ✅ (known gaps below)        |
+| 4   | [Single binary end-to-end](language-runtime-database/04-single-binary-e2e.md)        | ✅ (known gaps below)        |
+| 5   | [Language surface](language-runtime-database/05-language-surface.md)                 | 🔄 grammar done; **`?T` forced handling ✅ + reject rows ✅ + WO-E205 ✅ (2026-08-18)**; `pub(read)`/`using`/`#if` still ⏸ |
+| 6   | [Program mode + stdlib](language-runtime-database/06-program-mode-stdlib.md)         | ✅ (the surface log-watcher uses) |
+| 7   | [log-watcher proof](language-runtime-database/07-logwatcher-proof.md)                | ✅ **landed 2026-08-15** — executable, not merely compilable: zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat, `LW_SOAK` gate; `just log-watcher` 7/0 |
+| 7b  | [Inferred GC + mark-sweep](language-runtime-database/07b-inferred-gc-mark-sweep.md)  | ✅ **landed 2026-08-18** — `@gc` gone (WO-E104), GC-ness inferred, RC replaced by incremental mark-sweep, `.wob` v4; supersedes iteration 2's RC memory model |
+| 8   | [Shard-actor runtime](language-runtime-database/08-shard-actor-runtime.md)           | ✅ **landed 2026-08-21** — the arc complete: stages 1+2 (fibers/budget/actors/io_uring plane, shards, envelopes, WO-E222) + stage 3's transparent DB actor (`just db-actor` 8/0, ASan/TSan clean, WAL replay pair) |
+| 9   | [Database engine](language-runtime-database/09-database-engine.md)                   | 🔄 engine complete (storage/WAL/indexes/insert-update-delete); reads land with 9b |
+| 9b  | [`@table`, relations, query](language-runtime-database/09b-table-relations-query.md) | 🔄 query surface + relations + FK done (branch query-surface); group-by parked |
+| 19  | [Float + Bytes](language-runtime-database/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
+| 11  | [Fibers](language-runtime-database/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
+| 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
+| 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | 🔄 **absorbed into 24** (directive 2026-08-23) and half landed there: `call` request/response with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), and actor death that traps callers instead of hanging them. Still open: `monitor` and `time.after` — ids **89 and 90 are reserved holes** in `wob.h`, which is the machine-checkable proof of what is left. Supervision trees stay out of v1 |
+| 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | 🔄 **the live slice** (absorbing 31 + 34, directive 2026-08-23) — branch `chat-ws-lifecycle`, 5/10 tasks landed: crypto, bounded mailboxes, WS upgrade, frame codec, `call`/reply + actor death. Pending: `monitor`, `time.after`, the chat sample, its gate, closeout. State lives in [the marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) |
+| 23  | [io_uring group-commit](language-runtime-database/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
+| 32  | [WAL checkpoint](language-runtime-database/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
+| 33  | [Single-file store](language-runtime-database/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
+| 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
+| 38  | [Content platform capabilities](language-runtime-database/38-content-platform-capabilities.md) | ⬜ off-chain, needs a spec — the two capability families no iteration owns, confirmed against `runtime/src/wob.h`: `fs` mutation verbs (six fs builtins, ids 40–45; `append` creates-if-absent, so nothing is ever replaced, truncated, deleted or renamed) and `net.connect` (ids 51–55 + 91–95, no connect, and no `connect()` anywhere in `runtime/src/` — so no OIDC/SMTP/object-store/webhook/federation). Driven by a `docs/examples/vault` content-collaboration workload, in 28's mould. New builtins from 96 (89/90 reserved for 31); no `.wob` bump (`WOB_VERSION 6u`, last moved by 36). Story written 2026-08-26 from the "can it build a Nextcloud?" ask |
+| 39  | [Web framework parity](language-runtime-database/39-web-framework-parity.md) | ⬜ off-chain, needs a spec — from [the Fiber v3.5.0 study](../plan/exploration/fiber/00-fiber-parity.md) (all 32 of its middleware read against `writeonce-serve`; **nine already have a counterpart**). Leads with a **random-bytes builtin**: the framework ledger claimed CSRF/sessions were unblocked by iteration 34's HMAC, but HMAC authenticates a token and cannot mint one — there is no RNG anywhere in the runtime. Then cookies (absent both ways; `Resp.headers` being a map cannot carry two `Set-Cookie` lines), then limiter/idempotency (cheapest wins — `@table` + `time.ticks`, nothing new), sessions, CSRF, and the routing/response sugar. Streaming/SSE/compression, `@derive` binding, TTL cache, `proxy` and metrics all excluded with owners named |
+| 37  | [wo-html components](language-runtime-database/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
+| 35  | [net runtime seams](language-runtime-database/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
+| 20  | [Cross-program tables](language-runtime-database/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
+| 21  | [Keypair attach auth](language-runtime-database/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
-| 26  | [Blue-green deploy](language-runtime-database/hold/26-blue-green-deploy.md)               | ⏸ hold (2026-08-21)          |
-| 27  | [Query grammar corpus](language-runtime-database/hold/27-query-grammar-corpus.md) | ⏸ hold (2026-08-21)          |
-| 28  | [skillhost host workload](language-runtime-database/hold/28-skillhost-host-workload.md) | ⏸ hold (2026-08-21); gaps recorded (branch query-grammar found skillhost needs no new query grammar) |
-| 29  | [Compile-time metaprogramming](language-runtime-database/hold/29-compile-time-metaprogramming.md) | ⏸ hold (2026-08-21)          |
-| 15  | [deps: `wo.toml [deps]`](language-runtime-database/done/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
-| 16  | [web framework](language-runtime-database/done/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/23/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
-| 17  | [library projects + `internal/`](language-runtime-database/done/17-library-projects-internal.md) | ✅ **landed 2026-08-20** — `kind = "library"` in `wo.toml` (default `program`, so every existing manifest is byte-identical; unknown value = WO-E109 exit 2); `woc <dir>` on a library runs the FULL pipeline entry-less and writes nothing, retiring iteration 16's `--emit` workaround; the no-entry build error names the kind; lib+bin dual works. Go's `internal/` rule as **WO-E108** at the consumer's own `use`, dep-boundary-only — the library imports its own interior freely. Framework reorganized: `internal/{parse,serve}.wo` behind the line, `http/form.wo` split out to keep `media_type`/`form_values` public. Driver-only change; VM/`.wob`/GC untouched. `just web-app` **26/0** (3 new checks), every standing gate unchanged |
-| 18  | [framework v2: memory-rich features](language-runtime-database/hold/18-memory-db-features.md) | ⏸ hold (2026-08-21); spec approved + plan authored, both held intact ([spec](../superpowers/specs/2026-08-20-memory-db-features-design.md), [plan](../superpowers/plans/2026-08-20-framework-v2-memory-features.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub rejection expired with the arc (8/11 landed 2026-08-21) — revisit on unhold |
+| 26  | [Blue-green deploy](language-runtime-database/26-blue-green-deploy.md)               | ⏸ hold (2026-08-21)          |
+| 27  | [Query grammar corpus](language-runtime-database/27-query-grammar-corpus.md) | ⏸ hold (2026-08-21)          |
+| 28  | [skillhost host workload](language-runtime-database/28-skillhost-host-workload.md) | ⏸ hold (2026-08-21); gaps recorded (branch query-grammar found skillhost needs no new query grammar) |
+| 29  | [Compile-time metaprogramming](language-runtime-database/29-compile-time-metaprogramming.md) | ⏸ hold (2026-08-21)          |
+| 15  | [deps: `wo.toml [deps]`](language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
+| 16  | [web framework](language-runtime-database/16-web-framework.md) | ✅ **landed 2026-08-19** — writeonce-framework (HTTP/1.1 + router + Handler/Middleware) consumed by web-app through [deps]; h2c parked (§C) behind 8/23/11. **v1 polish landed 2026-08-20** (branch framework-v1): get/post/put/delete_ helpers, 405+Allow, HEAD, Logging middleware, set_header; `just web-app` 16/0; fixed the interp-borrowed-field emitter crash en route. **Auth-in-core landed 2026-08-20**: http/auth.wo (Bearer/Basic, ct_eq, req.principal), web-app dogfoods BearerAuth, gate 17/0 |
+| 17  | [library projects + `internal/`](language-runtime-database/17-library-projects-internal.md) | ✅ **landed 2026-08-20** — `kind = "library"` in `wo.toml` (default `program`, so every existing manifest is byte-identical; unknown value = WO-E109 exit 2); `woc <dir>` on a library runs the FULL pipeline entry-less and writes nothing, retiring iteration 16's `--emit` workaround; the no-entry build error names the kind; lib+bin dual works. Go's `internal/` rule as **WO-E108** at the consumer's own `use`, dep-boundary-only — the library imports its own interior freely. Framework reorganized: `internal/{parse,serve}.wo` behind the line, `http/form.wo` split out to keep `media_type`/`form_values` public. Driver-only change; VM/`.wob`/GC untouched. `just web-app` **26/0** (3 new checks), every standing gate unchanged |
+| 18  | [framework v2: memory-rich features](language-runtime-database/18-memory-db-features.md) | ⏸ hold (2026-08-21); spec approved + plan authored, both held intact ([spec](../superpowers/specs/2026-08-20-memory-db-features-design.md), [plan](../superpowers/plans/2026-08-20-framework-v2-memory-features.md)): TTL cache + @table flags + durable job queue (drain-on-request) + `transaction { }` over the WAL's staged batch; pub/sub rejection expired with the arc (8/11 landed 2026-08-21) — revisit on unhold |
 
 ---
 
@@ -308,14 +369,16 @@ that sequences its tasks. Read one, approve, then the next starts.
 
 | Track    | Item                                                                        | Where                                                      |
 | -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Language | 🔄 [iteration 36 — operator parity](language-runtime-database/in-progress/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
+| Language | 🔄 [iteration 36 — operator parity](language-runtime-database/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
 | Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
 | Runtime  | ✅ **iteration 35 landed 2026-08-23** (branch `framework-v1b`, with framework v1 slice 2 + the serving slice): net deadlines/unix/peer (ids 91–95), fiber pooling, serve_conn + web-app fiber-per-connection — web-app gate 41/0, both WO_IO backends | [design](../superpowers/specs/2026-08-23-net-seams-park-design.md) |
-| Runtime  | 🔄 **iteration 24 (absorbing 31 + 34): chat + actor lifecycle** — spec + plan approved 2026-08-23 (24 absorbs 31 by directive; 34 resolved C-builtins); executing on branch `chat-ws-lifecycle` | [marker](../in-progress/2026-08-23-chat-ws-lifecycle.md) · [plan](../superpowers/plans/2026-08-23-chat-ws-lifecycle.md) |
+| Runtime  | 🔄 **iteration 24 (absorbing 31 + 34): chat + actor lifecycle** — spec + plan approved 2026-08-23 (24 absorbs 31 by directive; 34 resolved C-builtins); executing on branch `chat-ws-lifecycle` | [marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) · [plan](../superpowers/plans/2026-08-23-chat-ws-lifecycle.md) |
 
-The active slice's marker doc lives in [`in-progress/`](../in-progress/) —
-one file, deleted when the slice lands. Everything else pending is the
-concurrency chain (see *Pending* below); the held tail is in `hold/`.
+The active slice's marker doc is
+[`docs/active-slice-2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)
+— one file, deleted when the slice lands. Everything else pending is the
+concurrency chain (see *Pending* below); the held tail is every story
+whose frontmatter reads `status: hold`.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 
@@ -360,7 +423,7 @@ Gates at the end of that session: corpus 71/0, `woc` runtest 565/0, every
 
 | Status | Item                                 | Doc                                                              | What actually landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------ | ------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ | iteration 37 — wo-html components | [37](language-runtime-database/done/37-wo-html-components.md) | Two halves. **Grammar (2026-08-24):** the backtick raw text literal — content verbatim, common margin removed at lex time, `${ }` raw and `{{ }}` auto-escaping to a call on the `esc` in scope; WO-E004/WO-E005 added; lexer + one parser desugar only, nothing downstream. **Library (2026-08-25):** `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into `framework/http` beside `ok_text`/`ok_json`, site migrated onto `Layout` + a reused `ChapterNav`, shop onto `AppShell` + `multi Component` children with queries in the controllers; the site was then restructured onto the program template's MVC layout (model / layout / view modules / one controller per feature / bootstrap-only main). `multi Component` needs no wrapper record — the framework's Mw/Aw shape is not a language requirement. Gates: `just site` 11/0, `just web-app` 46/0, `woc-test` 556/0, `oop-e2e` 116/0 |
+| ✅ | iteration 37 — wo-html components | [37](language-runtime-database/37-wo-html-components.md) | Two halves. **Grammar (2026-08-24):** the backtick raw text literal — content verbatim, common margin removed at lex time, `${ }` raw and `{{ }}` auto-escaping to a call on the `esc` in scope; WO-E004/WO-E005 added; lexer + one parser desugar only, nothing downstream. **Library (2026-08-25):** `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into `framework/http` beside `ok_text`/`ok_json`, site migrated onto `Layout` + a reused `ChapterNav`, shop onto `AppShell` + `multi Component` children with queries in the controllers; the site was then restructured onto the program template's MVC layout (model / layout / view modules / one controller per feature / bootstrap-only main). `multi Component` needs no wrapper record — the framework's Mw/Aw shape is not a language requirement. Gates: `just site` 11/0, `just web-app` 46/0, `woc-test` 556/0, `oop-e2e` 116/0 |
 | ✅     | Principles                           | [`../00-principles.md`](../00-principles.md)                        | 13 principles, each with a why and a link to the doc that enforces it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ✅     | `wovm` VM core                       | [plan 1](../superpowers/plans/2026-08-01-wob-format-and-vm-core.md) | `.wob` v1 loader with full static validation, register interpreter (computed-goto + ISO-C fallback), arena with size-class free lists, borrow word, RC + budgeted Bacon–Rajan cycle collector, drop-map trap unwinding, containers, builtins, ICALL, CLI. 13 suites × 2 dispatch flavors + CLI smoke, ASan/UBSan clean                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ✅     | `.wob` format contract               | [`oop-vm/00-wob-format.md`](../plan/oop-vm/00-wob-format.md)        | Normative; twinned with `runtime/src/wob.h`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -514,7 +577,7 @@ precedence notes for resumption.
    costs). It has never run — no `bench/baseline.json`, no `just db-bench`;
    the arc's stages 1+2 delta is recorded retroactively.
 3. **31** — actor lifecycle
-   ([story](language-runtime-database/refine/31-actor-lifecycle.md),
+   ([story](language-runtime-database/31-actor-lifecycle.md),
    written 2026-08-21): request/response (`send` is one-way and callers
    `sleep` to await), bounded mailboxes (the FIFO only grows), actor
    death/supervision, timers beyond `time.sleep`.
@@ -523,7 +586,7 @@ precedence notes for resumption.
 5. **23** — io_uring group-commit; the WAL's WRITE+FSYNC chains ride the
    arc's per-shard ring (T4); after 22's baseline — the payoff, measured.
 6. **32** — WAL checkpoint
-   ([story](language-runtime-database/refine/32-wal-checkpoint.md),
+   ([story](language-runtime-database/32-wal-checkpoint.md),
    written 2026-08-21): the WAL is append-only forever — snapshot +
    truncate reclaims disk and bounds replay; after 23 (composes with
    group-commit), policy set by 22's aged-store numbers.
@@ -532,9 +595,9 @@ precedence notes for resumption.
 story file); slots in when scheduled — nothing in the chain depends on it.
 
 ⏸ **Held** (2026-08-21, developer decision): 18, 20, 21, 25, 26, 27, 28,
-29 — stories in
-[`hold/`](language-runtime-database/hold/) (25's story file
-removed; its [plan doc](../superpowers/plans/2026-08-01-http-service-layer.md)
+29 — every story carrying `status: hold` in its frontmatter (25's story
+file removed; its
+[plan doc](../superpowers/plans/2026-08-01-http-service-layer.md)
 remains). Half-done branches (ipc-attach, keypair-auth) keep their
 manifests.
 

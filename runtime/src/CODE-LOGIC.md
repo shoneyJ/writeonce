@@ -1,6 +1,8 @@
 # `runtime/src` — how the VM is put together
 
-Written 2026-08-14, when the runtime grew the systems stdlib and json. Read
+Written 2026-08-14, when the runtime grew the systems stdlib and json; the
+file table was brought back in line with `src/` on 2026-08-26 (`park.c` and
+`crypto.c` had arrived with iterations 11/35 and 34 and were missing). Read
 this before changing a file here; the normative contracts are
 [`docs/plan/oop-vm/00-wob-format.md`](../../docs/plan/oop-vm/00-wob-format.md)
 (the `.wob` format, opcodes, builtin ids) and
@@ -22,6 +24,8 @@ the first: constants there and prose there must never disagree.
 | `builtin.h/.c` | the pure builtins: print, containers, text |
 | `sysio.c` | the OS half: `fs`, `time`, `env`, `net`, `proc` |
 | `json.c` | `json.encode` / `json.decode`, driven by class metadata |
+| `park.c/.h` | the park plane (iteration 11 + 35, added after this doc was first written): the raw io_uring ABI mirrored from uapi with no liburing, the epoll fallback, fiber parking and unparking, and the per-call deadlines the `_dl` net members lower to. This is where a blocking builtin becomes "the shard runs someone else" |
+| `crypto.c/.h` | SHA-1, SHA-256, HMAC-SHA256 (iteration 34, builtin ids 85–87): hand-rolled per the no-dependency doctrine, accepted against FIPS 180 / RFC 2202 / RFC 4231 vectors in `test/test_crypto.c` |
 | `main.c` | the CLI: find an image (argument or embedded trailer), build argv, call the entry, map its result to an exit code; post-exit gc pump (a rootless cycle frees everything unreachable, in budgeted slices) |
 
 `builtin.c`'s `wo_builtin` is the single entry point the interpreter calls; it

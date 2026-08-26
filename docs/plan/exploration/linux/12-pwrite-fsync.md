@@ -1,6 +1,6 @@
 # 12 — `pwrite` + `fsync` durability syscalls
 
-The previous cards cover positional I/O ([`09-fallocate.md`](./09-fallocate.md)) and the page cache backstory ([`08-mmap.md`](./08-mmap.md)) but skip the actual durability primitives. This card fills the gap. Every persistent-storage phase (10, 11, 12) leans on these.
+The previous cards cover positional I/O ([`09-fallocate.md`](09-fallocate.md)) and the page cache backstory ([`08-mmap.md`](08-mmap.md)) but skip the actual durability primitives. This card fills the gap. Every persistent-storage phase (10, 11, 12) leans on these.
 
 ## The four syscalls
 
@@ -141,9 +141,9 @@ Writeonce trades the memcpy for the recovery speed and the simpler programming m
 
 ## Used by
 
-- [`docs/plan/10-storage-foundations.md`](../../10-storage-foundations.md) — segment append uses `pwrite` + later `fdatasync`.
-- [`docs/plan/11-wal-and-recovery.md`](../../11-wal-and-recovery.md) — group-commit uses `pwrite` + `fdatasync`; control file uses `fsync` + `rename` + parent-dir `fsync`.
-- [`docs/plan/12-engine-disk-cutover.md`](../../12-engine-disk-cutover.md) — checkpoint uses `fsync` per active segment fd.
+- `docs/plan/10-storage-foundations.md` — segment append uses `pwrite` + later `fdatasync`.
+- `docs/plan/11-wal-and-recovery.md` — group-commit uses `pwrite` + `fdatasync`; control file uses `fsync` + `rename` + parent-dir `fsync`.
+- `docs/plan/12-engine-disk-cutover.md` — checkpoint uses `fsync` per active segment fd.
 
 Pair with [`postgresql/wal.md`](../postgresql/wal.md), [`postgresql/buffer-and-checkpoint.md`](../postgresql/buffer-and-checkpoint.md) for the design context.
 

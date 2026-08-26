@@ -1,6 +1,6 @@
 # 01 — Go's runtime assembly, catalogued
 
-The Go runtime ships ~72 `TEXT` functions in `asm_amd64.s` alone, ~43 in `sys_linux_amd64.s`, and per-architecture variants of both for `386`, `arm`, `arm64`, `loong64`, `mips(64)x`, `ppc64x`, `riscv64`, `s390x`, `wasm`. This doc inventories them by purpose so a reader can map each Go asm concern to the writeonce equivalent (spoiler: usually "Rust stdlib does it"). Follow-on reading: [`02-writeonce-stance.md`](./02-writeonce-stance.md).
+The Go runtime ships ~72 `TEXT` functions in `asm_amd64.s` alone, ~43 in `sys_linux_amd64.s`, and per-architecture variants of both for `386`, `arm`, `arm64`, `loong64`, `mips(64)x`, `ppc64x`, `riscv64`, `s390x`, `wasm`. This doc inventories them by purpose so a reader can map each Go asm concern to the writeonce equivalent (spoiler: usually "Rust stdlib does it"). Follow-on reading: [`02-writeonce-stance.md`](02-writeonce-stance.md).
 
 All paths are inside [`reference/go/src/runtime/`](../../../../.dev/reference/go/src/runtime/).
 
@@ -86,6 +86,6 @@ Hookable entry points for sanitisers. Not relevant to writeonce.
 
 ## What's NOT in asm
 
-Everything else in Go's runtime is plain Go: the scheduler's policy (`proc.go`), the garbage collector (`mgc.go` etc.), `netpoll` dispatch (`netpoll.go` — *Go code*; the platform-specific backends like `netpoll_epoll.go` are also pure Go that call into the asm `epollwait` trampoline). The asm is strictly the three categories in [`00-overview.md`](./00-overview.md): calling-convention-breaking operations, arch-specific instructions, and syscall trampolines.
+Everything else in Go's runtime is plain Go: the scheduler's policy (`proc.go`), the garbage collector (`mgc.go` etc.), `netpoll` dispatch (`netpoll.go` — *Go code*; the platform-specific backends like `netpoll_epoll.go` are also pure Go that call into the asm `epollwait` trampoline). The asm is strictly the three categories in [`00-overview.md`](00-overview.md): calling-convention-breaking operations, arch-specific instructions, and syscall trampolines.
 
 The three categories writeonce **also** needs a solution for — but writeonce gets all three from Rust stdlib + libc. The next doc catalogues those mappings.

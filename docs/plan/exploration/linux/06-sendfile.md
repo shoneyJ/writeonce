@@ -7,7 +7,7 @@ Zero-copy transfer from a file fd to a socket fd. The kernel splices pages direc
 | Path | What |
 | --- | --- |
 | [`reference/linux/fs/read_write.c`](../../../../.dev/reference/linux/fs/read_write.c) | `SYSCALL_DEFINE4(sendfile, ...)` and `SYSCALL_DEFINE4(sendfile64, ...)`. Modern glibc aliases the first to the second; the syscalls are distinguished by the offset type. |
-| [`reference/linux/fs/splice.c`](../../../../.dev/reference/linux/fs/splice.c) | Internally `sendfile` delegates to `splice_direct_to_actor`. Related — see [07-splice.md](./07-splice.md) if you ever need the more general fd-to-fd pipe path. |
+| [`reference/linux/fs/splice.c`](../../../../.dev/reference/linux/fs/splice.c) | Internally `sendfile` delegates to `splice_direct_to_actor`. Related — see `07-splice.md` if you ever need the more general fd-to-fd pipe path. |
 
 ## Man pages
 
@@ -71,7 +71,7 @@ unsafe {
 
 ## Used by
 
-[`08-sendfile-static-assets.md`](../../08-sendfile-static-assets.md) — the `GET /static/...` handler. Future `##ui` SSR output bundles go through the same path.
+`08-sendfile-static-assets.md` — the `GET /static/...` handler. Future `##ui` SSR output bundles go through the same path.
 
 ## v1 port source
 

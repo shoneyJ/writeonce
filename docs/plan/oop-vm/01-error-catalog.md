@@ -1,7 +1,12 @@
 # The `woc` diagnostic catalog — normative reference
 
 Every `WO-E###`/`WO-W###` code the `woc` front end (`compiler/`) actually
-emits, as of plan 2 tasks 2–8 and plan 3 tasks 1–2. Code ranges are reserved
+emits, as of plan 2 tasks 2–8, plan 3 tasks 1–2, and the iterations that
+added codes afterwards — 9b (WO-E250), 15/17 (WO-E106–E109), the
+language-surface-strictness branch (WO-E219/E220), the shard-fiber arc
+(WO-E221/E222), 24 (WO-E226) and 36 (WO-E223). Re-swept against the source
+2026-08-26; the eight codes that sweep found missing are now in the tables
+below. Code ranges are reserved
 per stage (`compiler/src/diag.ml`): `WO-E0xx` lexing, `WO-E1xx` parsing,
 `WO-E2xx` types, `WO-E3xx` ownership, `WO-E4xx` the bytecode emitter,
 `WO-W2xx` warnings from the types stage. This
@@ -26,6 +31,7 @@ half of the story ("moved here" / "borrowed here" / etc.).
 | --- | --- | --- |
 | WO-E001 | an input byte the lexer doesn't recognize as the start of any token. Reported once per bad byte, which is then skipped — one bad byte never stops the whole file. | `unknown character '$'` |
 | WO-E002 | a string literal's backslash escape is the last byte of the file, with no character left to escape (a plain unterminated string with no dangling backslash is *not* an error — rt parity). | `unterminated string escape` |
+| WO-E003 | haxe-parity Task 8 (build flags). Misuse of the token-level `#if`/`#else`/`#end` filter: a `#if` with no flag name, a second `#else` in one section, a stray `#else`/`#end` with nothing open, a `#if` left open at end of file, or an unknown directive word. `Eof` always survives the filter so the parser still terminates after a reported error. Flags are NAMES only — no expressions — and are set with `woc -D <name>`. | ``unknown directive `#unless` — the build-flag directives are #if <flag>, #else, #end`` |
 | WO-E004 | a raw text literal (backtick-delimited) that runs off the end of the file. Reported at the OPENING backtick — unlike a plain `"..."` string this is never silent, because multi-line is this form's normal case and a missing close would swallow every remaining line. | `unterminated raw text literal` |
 | WO-E005 | a raw newline inside a `"..."` or `'...'` string. The scan stops at the newline without consuming it, so the `Newline` token still terminates the statement and only one line is lost. Multi-line text is spelled with a raw literal instead. | ``newline in string literal (use a `...` raw text literal for multi-line text)`` |
 
@@ -38,6 +44,8 @@ half of the story ("moved here" / "borrowed here" / etc.).
 | WO-E103 | haxe-parity Task 2. `inline fn ...` — the haxe keyword verdict table's own reject half of the `inline` row (`const` values are the adopted half). The whole declaration is discarded by the usual top-level recovery, same as any other bad declaration. | `` `inline fn` is rejected — optimization is the compiler's job `` |
 | WO-E106 | iteration 15 (deps, 2026-08-18). A dependency fetch/shape failure, driver-level: missing `git` binary, clone/checkout failure, a locked commit missing from the remote, cache/lock drift (a moved `rev` — the message names both SHAs and points at `woc --update-deps`), a fetched dep that is not a writeonce project, or a dep declaring its own `[deps]` (transitive — refused flat-only). One code; the message names the dependency and the failing step. | `` dependency `niceframework`: lock drift — wo.lock pins <sha> but .wo-deps has <sha> (a moved `rev`?); run `woc --update-deps` or remove .wo-deps/niceframework `` |
 | WO-E107 | iteration 15 (deps). A `[deps]` name collides with a local top-level module directory of the same name — `use <name>` would be ambiguous, so the build refuses instead of silently picking one. | `` dependency `niceframework` collides with the local module directory `niceframework/` `` |
+| WO-E108 | iteration 17 (library kind + `internal/`, 2026-08-20). A `use` path reaches a module under a dependency's `internal/` — Go's rule, enforced at the *consumer's* own `use` and only across the `[deps]` boundary: a library imports its own interior freely. Driver-level (`compiler/bin/main.ml`), reported at the offending `use`. | `` `serve/internal/parse` is internal to the dependency `serve` — a module under `internal/` is the library's own business and cannot be imported across the `[deps]` boundary `` |
+| WO-E109 | iteration 17. An unknown `kind` value in `wo.toml`. Manifest-level: printed directly and exits 2 rather than joining the collector, the same as WO-E106/E107. `program` is the default, so every manifest written before the key existed stays byte-identical. | ``woc: wo.toml: error WO-E109: unknown `kind` value `lib` — expected "program" (the default) or "library"`` |
 | WO-E105 | iteration 5 strictness (2026-08-18). A rejected Haxe keyword used where it would otherwise misparse — or, worst, compile clean (`return super.f()` used to): `extends`/`implements` after a class name, and `extends`/`implements`/`super`/`override`/`cast`/`Dynamic`/`untyped`/`macro`/`extern`/`operator` as an expression head or a top-level declaration head. Each cites the systems-track verdict table's doctrine reason. (`Dynamic`/`untyped` as a *type name* fire WO-E225 with the same doctrine message.) | `` `extends` is rejected: no inheritance, ever — is-a is a tagged union, has-a is composition, polymorphism is structural interfaces (principle 4) `` |
 | WO-E104 | iteration 7b. `@gc` on a class — the annotation is gone: GC-ness is inferred (structural cycles + demand promotion; `woc --dump-gc`). The annotation is skipped for recovery and the class classifies by inference. | `` `@gc` is not a valid annotation: GC-ness is inferred by the compiler (run `woc --dump-gc`). Remove it. `` |
 
@@ -64,6 +72,13 @@ half of the story ("moved here" / "borrowed here" / etc.).
 | WO-E217 | haxe-parity Task 1 (modules). A qualified reference (`alias.name(...)`) names a real declaration in a real, `use`d module, but that declaration has no `pub` marker — private to its own module. | `` `hidden` is not `pub` in module `secret` `` |
 | WO-E218 | haxe-parity Task 1 (modules). A bare (unqualified) name resolves as `pub` in *more than one* used module — "collisions diagnose rather than shadow silently" (the plan's own words): resolution never silently picks a winner among used modules, it fails loudly and names every alias that matched. | `` `thing` is ambiguous — exported `pub` by more than one used module (a, b) `` |
 | WO-E225 | a field's declared type name isn't a builtin scalar, a declared class (typedef records included), a declared interface, or (haxe-parity Task 4) a declared union. Also checked, same shape, on a payload variant's field types. A dotted name whose head is a reserved stdlib namespace (`json.Value`) is accepted as UNKNOWN-BUT-RESERVED — the same plan-9 convention `fs.stat(...)` calls get; any other dotted name is as unknown as a misspelling. Checked once per field declaration, at the field's own position. | `unknown type \`Wdiget\`` |
+| WO-E219 | language-surface-strictness branch. A `pub(read)` field written from outside its declaring class — the marker means readable anywhere, writable only inside. Reported at the write site. | `` field `total` of class `Cart` is pub(read) — readable anywhere, writable only inside `Cart` `` |
+| WO-E220 | language-surface-strictness branch. A name is both a real method of the receiver's class and a `using` extension in scope — an extension never overrides a method, so the collision is refused rather than silently resolved one way. | `` `render` is both a real method of `Page` and a `using` extension — rename one; an extension never overrides a method `` |
+| WO-E221 | the shard-fiber arc (iteration 8+11). A `spawn C { ... }` whose target class declares no `fn receive(msg: M)`, or declares one whose `M` is not a class, record or union. `receive` is an ordinary identifier, not a keyword — declaring it is what makes a class an actor. | `` `spawn Worker { ... }`: no `fn receive` — an actor is a class with `fn receive(msg: M)` where M is a class, record, or union `` |
+| WO-E222 | the shard-fiber arc. A traced (inferred-GC) type, or a type containing one, used as an actor message or as actor state. Aliased object graphs cannot cross shard heaps, and `spawn` placement makes every actor potentially remote, so this is refused statically rather than trapped at the send. | `` message type `Graph` is traced (or contains a traced class) — aliased graphs cannot cross shard heaps; spawn placement makes every actor potentially remote `` |
+| WO-E223 | iteration 36 (operators). A literal shift count outside `0..63` on `<<` or `>>`. A non-literal count is not caught here — the VM traps it at run time (`WOP_SHL`/`WOP_SHR`). | ``shift count is out of range 0..63 for `<<` `` |
+| WO-E226 | iteration 24 (`call`). `call`'s reply type has to survive actor-`M` erasure, so every `fn receive(msg: M)` program-wide must declare the SAME return type, and in v1 that type must be a copyable scalar. Fires when two `receive` declarations disagree, or when the agreed type is not scalar. | `` `call` on `actor Msg` needs one reply type, but `Room` and `Registry` declare different `receive` returns `` |
+| WO-E250 | iteration 9b (the query surface). Every diagnostic the language-integrated query grammar raises, one code: a `from v in C` whose `C` is not a declared table class, a navigation source that is not a `backlink`/`multi` of a table class, and the two not-yet-supported clauses — `group … by … into` on a table query and on a navigation query. The group-by rows are why the clause parses and still cannot run. | ``group-by aggregation is not supported yet`` |
 | WO-W202 *(warning)* | haxe-parity Task 1 (modules). A file's own `use` clause is never actually referenced — neither a bare name resolving through it nor a qualified `alias.name(...)` call — anywhere in that file's surviving parse tree. | `` unused `use fs` `` |
 | WO-W203 *(warning)* | haxe-parity Task 3 review fix (Critical 1). A `switch`'s `default` arm is not textually last — no longer a silent dead-code trap (`default` is lowered last regardless of source position, `Ast.switch_lowering_order`), but still surprising source; fired once per switch, at `default`'s own position. | `` `default` is not the last arm -- a `case` written after it still matches (this compiler evaluates `default` last regardless of source position), which reads as dead code `` |
 
@@ -165,3 +180,15 @@ enumeration, not a dig: `diag.ml` already reserves the numeric ranges,
 so the only open question per stage was *which* reserved codes actually
 fire — answered by exhaustive grep, not inspection of a handful of
 samples.
+
+**The method is sound; re-running it is the maintenance.** The sweep was
+not repeated between plan 3 and 2026-08-26, and eight codes accumulated
+outside the table in that window (WO-E003, E108, E109, E219–E223, E226,
+E250) — one of them, WO-E250, the only diagnostic the entire shipped query
+surface raises. Note the extra indirection the re-sweep had to follow:
+codes are built as `<stage>_prefix ^ "NN"`, so a grep for the literal
+string `WO-E250` finds only the comment beside the constant, never the
+emission. Sweep for `_prefix ^ "` and resolve each constant, plus the
+handful of driver codes that `Printf.eprintf` a literal `WO-E1NN` and exit
+2 without touching the collector at all (WO-E106/E107/E109). Any iteration
+that adds a code adds its row here in the same change.
