@@ -5,7 +5,7 @@
 -- It reaches the chapter nav through `use chapter` and the query through
 -- the model's `Chapters.links()` static — a class crosses module lines,
 -- a free fn does not.
-use serve/http
+use porch/http
 use layout
 use chapter
 

@@ -12,7 +12,7 @@ status: refine
 > find the basic features the web framework lacks). Derived from
 > [the Fiber v3.5.0 parity study](../../plan/exploration/fiber/00-fiber-parity.md),
 > which read Fiber's routing surface, `Req`/`Res` API, binder and all 32 of its
-> `middleware/` packages against `docs/examples/writeonce-serve`. This iteration
+> `middleware/` packages against `docs/examples/porch`. This iteration
 > takes that study's §0–§2 plus the cheap half of §5; the study names an owner
 > for everything it leaves out.
 
@@ -124,7 +124,7 @@ excluded because someone else owns it — the study's §7 is the full map.
 
 Fiber v3.5.0, `.dev/reference/fiber` (gitignored; the study carries the clone
 command). Of its 32 middleware packages, **nine already have a working
-`writeonce-serve` counterpart** — CORS, basic auth, key/bearer auth,
+`porch` counterpart** — CORS, basic auth, key/bearer auth,
 helmet-style security headers, ETag, static files, logger, host authorization,
 and recover-as-500. The framework is further along than its size suggests; the
 gaps are breadth, not foundations, with the single exception of randomness.

@@ -3,7 +3,7 @@
 -- directory = one module, view and controller together. The @tables it
 -- queries live in the root module, which is fine: a CLASS is reachable
 -- across module lines (only free `fn`s are module-scoped).
-use serve/http
+use porch/http
 use layout
 
 pub class ListProducts {

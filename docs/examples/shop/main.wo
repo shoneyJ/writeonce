@@ -4,9 +4,9 @@
 --
 --   WO_DATA=./data ./target/shop 8080     (run from the shop directory:
 --   /assets/* serves from ./assets)
-use serve
-use serve/http
-use serve/router
+use porch
+use porch/http
+use porch/router
 use product_list
 use product_page
 use orders

@@ -1,6 +1,6 @@
 name        = "web-app"
 version     = "0.1.0"
-description = "Storefront sample: consumes writeonce-serve through [deps]; @table persistence; iteration 16's acceptance workload"
+description = "Storefront sample: consumes porch through [deps]; @table persistence; iteration 16's acceptance workload"
 
 [runtime]
 wo = ">= 0.1"
@@ -11,9 +11,14 @@ wo = ">= 0.1"
 # The framework is a real dependency, never a relative path — extraction of
 # the framework to its own repository changes only this URL. The acceptance
 # gate (scripts/web-app-accept.sh) substitutes a run-time file:// remote
-# built from docs/examples/writeonce-serve, so CI never needs the
+# built from docs/examples/porch, so CI never needs the
 # network and this repo never carries .wo-deps/wo.lock artifacts.
-# The [deps] KEY is the module name `use` imports (hyphens are not identifier
-# characters, so the key is `framework` while the repository keeps its name).
+# The [deps] KEY is the module name `use` imports — here `porch`, so the source
+# says `use porch`. The key must be a legal identifier, which per
+# compiler/src/lexer.ml's `is_ident_cont` DOES include `-` (an internal dash is
+# part of the identifier: `a-b` is one name, which is why binary minus needs
+# spaces around it). So a hyphenated key like `wo-serve` would be legal too;
+# `porch` is simply shorter. An earlier version of this comment claimed hyphens
+# were illegal and named a key this file has never used — both wrong.
 [deps]
-serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }

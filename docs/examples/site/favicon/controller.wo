@@ -1,6 +1,6 @@
 -- favicon/controller.wo — GET /favicon.svg. The one route that answers
 -- something other than HTML or text, so it builds its own Resp.
-use serve/http
+use porch/http
 use layout
 
 pub class Favicon {

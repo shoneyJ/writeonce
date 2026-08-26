@@ -1,6 +1,6 @@
 -- health.controller.wo — GET /health: the liveness probe the accept
 -- script and any proxy poll. Text, not HTML, on purpose.
-use serve/http
+use porch/http
 
 pub class Health {
   fn handle(req: Req) -> Resp {

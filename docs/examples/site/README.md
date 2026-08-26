@@ -7,7 +7,7 @@ the whole thing is chapter 9's own example.
 
 ```
 [deps]
-serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 view      = { git = "https://github.com/shoneyj/writeonce-view",             rev = "v0.1.0" }
 ```
 

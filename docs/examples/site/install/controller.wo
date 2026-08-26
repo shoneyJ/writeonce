@@ -1,6 +1,6 @@
 -- install/controller.wo — GET /install. Nothing to query: the page is
 -- static copy, so the controller only wraps it in the shell.
-use serve/http
+use porch/http
 use layout
 
 pub class ShowInstall {

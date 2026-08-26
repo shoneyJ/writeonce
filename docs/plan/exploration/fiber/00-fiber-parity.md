@@ -1,14 +1,14 @@
-# Fiber parity study — what a mainstream Go web framework ships that `writeonce-serve` does not
+# Fiber parity study — what a mainstream Go web framework ships that `porch` does not
 
 Reference: [gofiber/fiber](https://github.com/gofiber/fiber) **v3.5.0**, read
 2026-08-26 from a shallow clone at `.dev/reference/fiber` (gitignored — re-clone
 with `git clone --depth 1 https://github.com/gofiber/fiber .dev/reference/fiber`).
-Read against `docs/examples/writeonce-serve` as it stands the same day.
+Read against `docs/examples/porch` as it stands the same day.
 
 Why Fiber and not Express or Axum: it is the closest structural analogue in the
 reference set. Compiled language, no runtime, one binary, an explicit
 `Ctx`-per-request, and middleware as an ordered chain — the same shape
-`writeonce-serve` already has. Where it differs, the difference is a feature
+`porch` already has. Where it differs, the difference is a feature
 decision rather than a paradigm gap, which is what makes the comparison useful.
 Express would have contributed mostly "you have no closures".
 
@@ -17,8 +17,8 @@ What was actually read: `app.go` (routing methods, the 53-field `Config`),
 (binding), `hooks.go` (lifecycle), and the `Config` struct of every one of the
 **32** packages under `middleware/`.
 
-**Headline: `writeonce-serve` is further along than its size suggests.** Of
-Fiber's 32 middleware packages, 9 already have a working `writeonce-serve`
+**Headline: `porch` is further along than its size suggests.** Of
+Fiber's 32 middleware packages, 9 already have a working `porch`
 counterpart (CORS, basic auth, key/bearer auth, helmet-style security headers,
 ETag, static files, logger, host authorization, recover-as-500). The gaps are
 real but they are mostly *breadth*, and they cluster around four things:
@@ -31,7 +31,7 @@ primitive nobody had noticed**.
 
 ## 0. The blocker the existing ledger gets wrong
 
-`docs/examples/writeonce-serve/README.md`'s crypto row currently reads:
+`docs/examples/porch/README.md`'s crypto row currently reads:
 
 > Unlocks (signed cookies, CSRF, session integrity, webhook verification, JWT
 > HS256) | ⬜ **UNBLOCKED** (the primitives exist since iteration 34)
@@ -64,7 +64,7 @@ This is the study's most valuable single finding and it is the reason iteration
 
 ## 1. Cookies — absent, and foundational
 
-`writeonce-serve` has **no cookie support in either direction**. `Req` has
+`porch` has **no cookie support in either direction**. `Req` has
 `headers: map<Text, Text>` and nothing parses `Cookie:`; `Resp` has
 `headers: map<Text, Text>` and there is no `Set-Cookie` builder — and because
 `Resp.headers` is a *map*, it structurally cannot carry the two `Set-Cookie`
@@ -75,7 +75,7 @@ Fiber, for comparison: `Req.Cookies(key)`, `Res.Cookie(*Cookie)` with
 `ClearCookie`, and a `Cookie` struct carrying Path, Domain, MaxAge, Expires,
 Secure, HTTPOnly, SameSite, Partitioned and SessionOnly.
 
-| Piece | Fiber | writeonce-serve |
+| Piece | Fiber | porch |
 | --- | --- | --- |
 | read request cookies | `Req.Cookies(key)` | — |
 | set a response cookie | `Res.Cookie(&Cookie{...})` | — |
@@ -156,7 +156,7 @@ stdlib doing its job, not a defect.
 
 ## 5. Routing and response ergonomics — mostly sugar, cheap to close
 
-| Gap | Fiber | writeonce-serve |
+| Gap | Fiber | porch |
 | --- | --- | --- |
 | method helpers | Get/Post/Put/Delete/Patch/Head/Options/Trace/Connect/All/Add | `get`/`post`/`put`/`delete_` only — a `Route { method: "PATCH" }` literal works, so this is registration sugar, but its absence is felt |
 | route names + URL building | `Name()`, `GetRouteURL()` | — (no named routes, no reverse routing) |

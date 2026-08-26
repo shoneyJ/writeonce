@@ -3,7 +3,7 @@
 -- The catalogue is static data, not rows, so it lives here on the DATA
 -- side of the feature rather than in the view: the components are handed
 -- values exactly as they would be if this were a table one day.
-use serve/http
+use porch/http
 use view
 use layout
 
@@ -54,9 +54,9 @@ fn catalogue() -> multi PackageInfo {
   let out: multi PackageInfo = [];
 
   push(out, PackageInfo {
-    name:    "serve",
-    summary: "The web framework:  an HTTP/1.1 keep-alive server core, a router with :param captures, and Handler/Middleware structural interfaces.",
-    git:     "https://github.com/shoneyj/writeonce-serve",
+    name:    "porch",
+    summary: "The writeonce web framework: an HTTP/1.1 keep-alive server core, a router with :param captures, and Handler/Middleware structural interfaces. Imported as <code>use porch</code>.",
+    git:     "https://github.com/shoneyj/porch",
     rev:     "v0.1.0",
     what:    `
       <ul class="list-disc pl-6 leading-relaxed">
@@ -67,7 +67,7 @@ fn catalogue() -> multi PackageInfo {
         <li class="mb-2">Auth MECHANISM only — <code>bearer_token</code>, <code>basic_credentials</code>, constant-time <code>ct_eq</code>. Which routes are gated stays your policy.</li>
         <li class="mb-2">Bodies: <code>form_values</code>, <code>multipart_parts</code>, content negotiation, ETags, security headers, CORS, WebSocket frames.</li>
       </ul>`,
-    usage:   code_block("use serve\nuse serve/http\nuse serve/router\n\nclass Hello {\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"hello\");\n  }\n}\n\nfn main(args: multi Text) -> Int {\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\", Hello {});\n  return app.serve(\"127.0.0.1\", 8080);\n}")
+    usage:   code_block("use porch\nuse porch/http\nuse porch/router\n\nclass Hello {\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"hello\");\n  }\n}\n\nfn main(args: multi Text) -> Int {\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\", Hello {});\n  return app.serve(\"127.0.0.1\", 8080);\n}")
   });
 
   push(out, PackageInfo {

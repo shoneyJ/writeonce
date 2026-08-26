@@ -30,7 +30,7 @@ status: refine
   authenticated users, folders and documents as `@table` classes related by
   `ref`/`backlink`, multipart upload intake, content-addressed blobs, share
   grants with expiry, a version chain per document, a trash bucket, an
-  activity feed, and a server-rendered UI over `writeonce-serve` +
+  activity feed, and a server-rendered UI over `porch` +
   `writeonce-view`. Everything above the storage line is expressible on
   today's toolchain and is the part that ships.
 - **`fs` grows the mutation verbs.** The gap is not ergonomic. A blob store
@@ -150,7 +150,7 @@ iteration 36's opcodes 42–46; stdlib builtins are a table row, exactly as
 iteration 35's 91–95 were.
 
 What already exists and needs no new capability, verified against the tree:
-`http/multipart` and `http/auth` in `writeonce-serve`; `sha1`/`sha256`/
+`http/multipart` and `http/auth` in `porch`; `sha1`/`sha256`/
 `hmac_sha256` (builtin ids 85–87) for content addressing, ETags and session
 tokens; `base64_encode`/`decode` and the `Bytes` carrier; `ws_accept` plus
 the pure-`.wo` RFC 6455 frame codec for the activity feed; `Component`/

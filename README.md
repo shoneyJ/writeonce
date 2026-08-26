@@ -33,7 +33,7 @@ program ships as one file that depends only on the system C library.
 
 writeonce is a systems language whose distinguishing feature is the embedded
 database. HTTP/1.1 and WebSockets **do** work today — but as `.wo` libraries you
-consume through `[deps]` (`writeonce-serve` for serving, `writeonce-view` for
+consume through `[deps]` (`porch` for serving, `writeonce-view` for
 HTML), never as runtime features: the runtime stays framework-agnostic on
 purpose. TLS is always terminated by a proxy in front. If you have seen an older
 "writeonce" that served REST from `cargo run`, that was a separate, earlier
@@ -282,13 +282,13 @@ dependencies, declared in the manifest:
 
 ```toml
 [deps]
-serve = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+porch = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 ```
 
 **The `[deps]` key IS the module name** `use` imports — the repository name
 never appears in your source. `woc` fetches each dep (via the `git` binary)
-into `.wo-deps/<name>/`, pins the resolved commit in `wo.lock`, and `use serve`
-(or `use serve/router`) imports its public names like any module. Builds never
+into `.wo-deps/<name>/`, pins the resolved commit in `wo.lock`, and `use porch`
+(or `use porch/router`) imports its public names like any module. Builds never
 touch the network once the lock is satisfied; a moved tag is reported, and
 `woc --update-deps myproject/` refreshes the lock deliberately. Flat
 dependencies only (a dep may not have its own `[deps]`) — honest and small,
@@ -318,7 +318,7 @@ reading first:
   just employee            # compile + run every mode against a durable database
   ```
 
-- **`docs/examples/writeonce-serve/` + `docs/examples/web-app/`** — a web
+- **`docs/examples/porch/` + `docs/examples/web-app/`** — a web
   framework written in writeonce (HTTP/1.1 behind a TLS-terminating proxy,
   router with `:param` captures, interface-based handlers) and a storefront
   consuming it **as a `[deps]` dependency**, with `@table` persistence. Run:

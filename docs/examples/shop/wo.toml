@@ -8,5 +8,5 @@ wo = ">= 0.1"
 # Two library dependencies, the site sample's proven shape. The [deps]
 # KEY is the module name `use` imports.
 [deps]
-serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 view      = { git = "https://github.com/shoneyj/writeonce-view", rev = "v0.1.0" }

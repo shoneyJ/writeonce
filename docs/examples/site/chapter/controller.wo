@@ -1,7 +1,7 @@
 -- chapter/controller.wo — the CONTROLLER for `/ch/:slug`. It queries the
 -- model and fills the view components that sit beside it in this module;
 -- a view receives VALUES, never a cursor.
-use serve/http
+use porch/http
 use layout
 
 pub class ShowChapter {

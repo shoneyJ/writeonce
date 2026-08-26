@@ -1,7 +1,7 @@
 -- orders/controller.wo — the buying flow: stock-checked order creation
 -- (decrement + insert are each WAL-committed before they acknowledge)
 -- and the orders list (ref navigation: o.product.name).
-use serve/http
+use porch/http
 use layout
 use time
 

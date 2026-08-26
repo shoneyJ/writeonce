@@ -7,7 +7,7 @@ status: hold
 
 > **Scope label (2026-08-20): this iteration is FRAMEWORK V2.** Framework
 > v1 is the transport/routing/body/security surface tracked in the
-> [framework README's status ledger](../../examples/writeonce-serve/README.md);
+> [framework README's status ledger](../../examples/porch/README.md);
 > v2 is what the embedded store adds on top. v1 gaps land before or
 > alongside v2 as slices, per the ledger.
 

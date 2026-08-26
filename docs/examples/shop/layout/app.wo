@@ -2,7 +2,7 @@
 -- wrapping every page with the shared header and footer. Styles are NOT
 -- inlined — pages link /assets/style.css (served by static_files), so
 -- markup and styling stay separate files.
-use serve/http
+use porch/http
 use view
 
 -- The app shell as a COMPONENT (writeonce-view's `Component`: fields in, Text

@@ -1,14 +1,22 @@
-# writeonce-serve
-> Renamed 2026-08-25: this library was `writeonce-framework`, imported as
-> `use framework`. Stories, specs and plans dated before that still say the
-> old name — they are dated records and were left as written.
+# porch — the writeonce web framework
+
+> **Named `porch` on 2026-08-26.** Rename history: `writeonce-framework`
+> (`use framework`) → `writeonce-serve` (`use serve`, 2026-08-25) → **`porch`**
+> (`use porch`). Stories, specs, plans and the audit reports dated before each
+> change still say the older name — they are dated records and were left as
+> written, which is the repo's convention.
+>
+> Why `porch`: the structure in front of the house you actually enter through,
+> and in writeonce the house *is* the database. The name appears only in `use`
+> lines and the `[deps]` key — names resolve bare through `use` edges, so no
+> handler body mentions it.
 
 A web framework **written in writeonce**, consumed as a `[deps]` dependency
 (iteration 15). Spec: `docs/superpowers/specs/2026-08-18-web-framework-design.md` §B.
 
 ```toml
 [deps]
-writeonce-serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 ```
 
 ## What it is
@@ -184,7 +192,7 @@ naming the kind, unless a demo `main` is added (lib+bin is allowed).
 - **`internal/` — not importable by a consumer.** The connection-level request
   parser and carry-state record (`parse.wo`) and the serve loop, status text,
   and response serializer (`serve.wo`) live here. A consuming app that writes
-  `use writeonce-serve/internal` gets **WO-E108** at that `use`. The rule
+  `use porch/internal` gets **WO-E108** at that `use`. The rule
   is Go's: a path segment named `internal` is refused across the `[deps]`
   boundary only — the framework's own modules import it freely.
 

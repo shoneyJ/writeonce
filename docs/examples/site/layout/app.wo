@@ -6,7 +6,7 @@
 -- The only thing that varies between pages is the container width, so
 -- that is the one extra slot — and the two widths are named once, here,
 -- instead of as class strings scattered through the controllers.
-use serve/http
+use porch/http
 use view
 
 pub class AppShell {

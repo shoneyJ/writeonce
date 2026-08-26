@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/web-app-accept.sh — iteration 16's acceptance gate. Proves the whole
 # chain at run time, network-free: a temp git remote is built from
-# docs/examples/writeonce-serve, its file:// URL is substituted into a
+# docs/examples/porch, its file:// URL is substituted into a
 # temp copy of docs/examples/web-app, then: fetch -> lock -> build -> serve ->
 # the storefront matrix -> SIGTERM -> restart persistence, plus iteration 17's
 # library-kind and internal/-boundary checks. The repo itself
@@ -33,13 +33,13 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- the framework as a git remote; the app pointed at it ----
-cp -r "$ROOT/docs/examples/writeonce-serve" "$W/fw"
+cp -r "$ROOT/docs/examples/porch" "$W/fw"
 git -C "$W/fw" init -q
 git -C "$W/fw" add -A
 git -C "$W/fw" -c user.email=t@t -c user.name=t commit -qm v01
 git -C "$W/fw" tag v0.1.0
 cp -r "$ROOT/docs/examples/web-app" "$W/app"
-sed -i "s|https://github.com/shoneyj/writeonce-serve|file://$W/fw|" "$W/app/wo.toml"
+sed -i "s|https://github.com/shoneyj/porch|file://$W/fw|" "$W/app/wo.toml"
 printf '[build]\nruntime = "%s"\n' "$WOVM" >> "$W/app/wo.toml"
 
 # ---- 1. fetch + lock + build ----
@@ -63,7 +63,7 @@ fi
 # A consumer reaching past the privacy line is WO-E108 at its own `use`.
 cp -r "$W/app" "$W/app-internal"
 rm -rf "$W/app-internal/target" "$W/app-internal/wo.lock" "$W/app-internal/.wo-deps"
-sed -i '1i use serve/internal' "$W/app-internal/main.wo"
+sed -i '1i use porch/internal' "$W/app-internal/main.wo"
 out="$("$WOC" "$W/app-internal" 2>&1)"; rc=$?
 if [[ "$rc" == "1" ]] && printf '%s' "$out" | grep -q 'WO-E108'; then
   ok "dep boundary: importing serve/internal is WO-E108"

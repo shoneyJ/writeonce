@@ -1,5 +1,5 @@
 -- product_page/controller.wo — the CONTROLLER for /p/:sku.
-use serve/http
+use porch/http
 use layout
 
 pub class ShowProduct {

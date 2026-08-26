@@ -27,7 +27,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- both deps as git remotes; the app pointed at them ----
-cp -r "$ROOT/docs/examples/writeonce-serve" "$W/fw"
+cp -r "$ROOT/docs/examples/porch" "$W/fw"
 cp -r "$ROOT/docs/examples/writeonce-view" "$W/lib"
 for d in "$W/fw" "$W/lib"; do
   git -C "$d" init -q
@@ -36,7 +36,7 @@ for d in "$W/fw" "$W/lib"; do
   git -C "$d" tag v0.1.0
 done
 cp -r "$ROOT/docs/examples/site" "$W/app"
-sed -i "s|https://github.com/shoneyj/writeonce-serve|file://$W/fw|; s|https://github.com/shoneyj/writeonce-view|file://$W/lib|" "$W/app/wo.toml"
+sed -i "s|https://github.com/shoneyj/porch|file://$W/fw|; s|https://github.com/shoneyj/writeonce-view|file://$W/lib|" "$W/app/wo.toml"
 printf '[build]\nruntime = "%s"\n' "$WOVM" >> "$W/app/wo.toml"
 
 # a stand-in release tarball so /dl can be exercised without running
@@ -114,7 +114,7 @@ expect "chapter renders a code sample"  "$(hit /ch/hello)"   200 "fn main"
 expect "escaped interpolation visible"  "$(hit /ch/values)"  200 '${port}'
 expect "unknown chapter is a 404 page"  "$(hit /ch/nope)"    404 "No such chapter"
 expect "install guide renders"          "$(hit /install)"    200 "tar -C /usr/local"
-expect "packages index lists both"      "$(hit /packages)"   200 "/packages/serve"
+expect "packages index lists both"      "$(hit /packages)"   200 "/packages/porch"
 expect "package detail shows its dep"   "$(hit /packages/view)" 200 "writeonce-view"
 expect "unknown package is a 404 page"  "$(hit /packages/nope)" 404 "No such package"
 expect "favicon is served as svg"       "$(hit /favicon.svg)" 200 "<svg"

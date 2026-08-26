@@ -33,7 +33,7 @@ fn ch_containers() -> Text {
 
 fn ch_classes() -> Text {
   let b = el("p", "leading-relaxed mb-4",
-    "Classes hold fields and methods. There are NO function values and NO closures — a " .. "deliberate doctrine: behavior travels as a class satisfying an interface, and " .. "satisfaction is structural (same method name and shape, Go-style, no " .. "<code>implements</code>). This is how the web framework takes handlers.");
+    "Classes hold fields and methods. There are NO function values and NO closures — a " .. "deliberate doctrine: behavior travels as a class satisfying an interface, and " .. "satisfaction is structural (same method name and shape, Go-style, no " .. "<code>implements</code>). This is how <code>porch</code>, the web framework, takes handlers.");
   b = b .. code_block("interface Handler {\n  fn handle(req: Req) -> Resp\n}\n\nclass Hello {\n  greeting: Text\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"\${self.greeting}, \${req.path}\");\n  }\n}\n\n-- any class with a matching handle() satisfies Handler\napp.get(\"/hello\", Hello { greeting: \"hi\" });");
   return b;
 }
@@ -61,14 +61,14 @@ fn ch_actors() -> Text {
 
 fn ch_deps() -> Text {
   let b = el("p", "leading-relaxed mb-4",
-    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: the web framework, and the writeonce-view " .. "library that rendered the page you are reading.");
+    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: <code>porch</code>, the writeonce web framework, and the writeonce-view " .. "library that rendered the page you are reading.");
   b = b .. code_block(`
     [deps]
-    serve     = { git = "https://github.com/shoneyj/writeonce-serve", rev = "v0.1.0" }
+    porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
     view      = { git = "https://github.com/shoneyj/writeonce-view",              rev = "v0.1.0" }`);
   b = b .. code_block(`
-    use serve
-    use serve/http
+    use porch
+    use porch/http
     use view
 
     -- html's builders + tailwind-style utilities, zero JS, no build step:

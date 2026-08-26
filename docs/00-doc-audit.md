@@ -65,13 +65,13 @@ Three of its six entries have shipped:
 > WebSockets, or a UI."
 
 Contradicted 30 lines later by its own §"Worked examples" (`:306-313`), which
-describes `docs/examples/writeonce-serve/` as "a web framework written in
+describes `docs/examples/porch/` as "a web framework written in
 writeonce (HTTP/1.1 …, router with `:param` captures, interface-based
 handlers)" and `just web-app` as its gate. Also contradicted by:
 
 - iteration 16 (web framework) and 37 (wo-html components), both `done/`;
 - `docs/examples/site/` — server-rendered pages, gated by `just site`;
-- WebSockets: `docs/examples/writeonce-serve/http/ws.wo` (`ws_accept`, the 101
+- WebSockets: `docs/examples/porch/http/ws.wo` (`ws_accept`, the 101
   hijack sentinel) and `http/wsframe.wo` (a pure-`.wo` RFC 6455 frame codec),
   both landed per `docs/in-progress/2026-08-23-chat-ws-lifecycle.md` (T6, T7).
 

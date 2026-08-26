@@ -1,5 +1,5 @@
 -- site — writeonce.de: the language tutorial, served BY the language.
--- Full stack in one binary: writeonce-serve ([deps]) for HTTP/routing/
+-- Full stack in one binary: porch ([deps]) for HTTP/routing/
 -- auth, writeonce-view ([deps]) for server-rendered pages with Tailwind-style
 -- utilities, @table + WAL for the chapters themselves. The site is its own
 -- final chapter: /ch/serving shows this file's shape.
@@ -15,9 +15,9 @@
 -- model is types.wo; every feature is a directory holding its view and
 -- its controller.
 use env
-use serve
-use serve/http
-use serve/router
+use porch
+use porch/http
+use porch/router
 use home
 use chapter
 use install

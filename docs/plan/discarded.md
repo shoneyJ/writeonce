@@ -78,7 +78,7 @@ goes to find what took each one's place.
 | `08-sendfile-static-assets.md` | Nothing. `sendfile` is not exposed; static assets are served as `Text` through `net.write` |
 | `15-mcp-streamable-http.md` | [`28-skillhost-host-workload.md`](../stories/language-runtime-database/28-skillhost-host-workload.md) — MCP transport is that story's Blocker B |
 | `16-postgres-mirror.md` | Nothing — the mirror-is-backup doctrine holds, but no iteration owns it and there are no outbound sockets to reach a mirror with ([`refine/38`](../stories/language-runtime-database/38-content-platform-capabilities.md)) |
-| `02-event-loop-epoll.md`, `03-hand-rolled-http.md` | `runtime/src/park.c` (io_uring with an epoll fallback) and the `.wo` framework `writeonce-serve` |
+| `02-event-loop-epoll.md`, `03-hand-rolled-http.md` | `runtime/src/park.c` (io_uring with an epoll fallback) and the `.wo` framework `porch` |
 | `04-cutover-remove-tokio-axum.md` | Completed by the Rust-track removal itself — nothing left to cut over |
 | `runtime/database/03-inmemory-engine.md` | [`database/src/CODE-LOGIC.md`](../../database/src/CODE-LOGIC.md) + [`plan/oop-vm/04-db-binding.md`](oop-vm/04-db-binding.md) |
 | `runtime/database/02-wo-language.md` | [`docs/guides/language-surface.md`](../guides/language-surface.md) |
