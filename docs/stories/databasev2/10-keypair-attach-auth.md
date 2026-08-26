@@ -1,12 +1,18 @@
 ---
-iteration: "21"
+track: databasev2
+iteration: "10"
+was_language_iteration: "21"
 status: hold
 ---
 
-# Iteration 21 — keypair authentication for cross-program attach
+# databasev2 10 — keypair authentication for cross-program attach
+
+> **Moved 2026-08-26** from the language track, where this was iteration 21.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-15.** Promotes iteration 20's identity fork (Info,
 > fork 3) to its own iteration: the name + unix-uid lean is the milestone

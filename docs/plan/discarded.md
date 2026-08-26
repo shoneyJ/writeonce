@@ -72,7 +72,7 @@ goes to find what took each one's place.
 | --- | --- |
 | `09-concurrency-scaleout.md` | [`08-shard-actor-runtime.md`](../stories/language-runtime-database/08-shard-actor-runtime.md) + [`11-fibers.md`](../stories/language-runtime-database/11-fibers.md) — the arc, landed 2026-08-21 |
 | `10-storage-foundations.md`, `11-wal-and-recovery.md` | [`09-database-engine.md`](../stories/language-runtime-database/09-database-engine.md) (typed WAL + replay) and [`22-durability-throughput-scale.md`](../stories/language-runtime-database/22-durability-throughput-scale.md) (the measurements) |
-| `12-engine-disk-cutover.md` | Nothing — RAM stays authoritative by doctrine (principle 7). The disk story is the WAL; reclamation is [`32-wal-checkpoint.md`](../stories/language-runtime-database/32-wal-checkpoint.md) |
+| `12-engine-disk-cutover.md` | Nothing — RAM stays authoritative by doctrine (principle 7). The disk story is the WAL; reclamation is [`databasev2 3, WAL checkpoint`](../stories/databasev2/03-wal-checkpoint.md) |
 | `13-class-model-live-pricing.md` | [`09b-table-relations-query.md`](../stories/language-runtime-database/09b-table-relations-query.md) — `@table`, `ref`/`backlink`, the compiler-checked query surface |
 | `07-inotify-content-watcher.md` | [`07-logwatcher-proof.md`](../stories/language-runtime-database/07-logwatcher-proof.md) — the log-watcher sample polls via `fs.stat`; inotify was never surfaced as a builtin |
 | `08-sendfile-static-assets.md` | Nothing. `sendfile` is not exposed; static assets are served as `Text` through `net.write` |

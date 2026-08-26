@@ -1,12 +1,18 @@
 ---
-iteration: "20"
+track: databasev2
+iteration: "9"
+was_language_iteration: "20"
 status: hold
 ---
 
-# Iteration 20 — cross-program tables: attach to a running program's database
+# databasev2 9 — cross-program tables: attach to a running program's database
+
+> **Moved 2026-08-26** from the language track, where this was iteration 20.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-15**, hence `20`. It follows 9b because a program
 > attaching to another's tables wants the same typed statements and queries
@@ -141,7 +147,7 @@ read or read+write (per-table refinement deferred until a workload needs
 it), and the registration is A's manifest so a grant is a config change +
 restart, not an API. **Superseded as the end state (2026-08-15):**
 identity is a keypair and grants name public keys — iteration
-[21](21-keypair-attach-auth.md) owns that; the uid check is only this
+[21](10-keypair-attach-auth.md) owns that; the uid check is only this
 iteration's bootstrap and must be flagged pre-21 wherever it ships.
 
 **4. What does B's statement actually block on?** B's insert crosses the

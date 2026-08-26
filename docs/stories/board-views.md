@@ -28,12 +28,13 @@ standup narrative; these queries are the live views over the same facts.
 Adjust the `FROM` path to your vault root (queries below assume the
 vault opens at the repo root).
 
-Two tracks now carry iterations, each numbered from 1:
-`language-runtime-database/` (the language, runtime and database) and `porch/`
-(the web framework, added 2026-08-26). Iteration ids therefore repeat across
-tracks — a porch 3 is not a language 3 — so every query below is scoped by
-`FROM` path, and porch stories carry `track: porch` so a combined query can
-still tell them apart.
+Three tracks now carry iterations, each numbered from 1:
+`language-runtime-database/` (the language and runtime), `porch/` (the web
+framework) and `databasev2/` (the database beyond RAM) — the latter two added
+2026-08-26. Iteration ids therefore repeat across tracks, so every query below is
+scoped by `FROM` path; non-language stories carry `track:`, and iterations moved
+between tracks keep `was_language_iteration:` so the old number stays
+searchable.
 
 ## Everything not done, chain order first
 
@@ -78,6 +79,15 @@ second copy of status. To keep frontmatter the single source of truth:
 the place status is edited.** A status change is one edit to one
 `status:` key; a Kanban card drag that only rewrites the Kanban file is a
 lie the next query won't see.
+
+## The databasev2 track
+
+```dataview
+TABLE iteration, status, was_language_iteration AS "was"
+FROM "docs/stories/databasev2"
+WHERE status != "done"
+SORT iteration ASC
+```
 
 ## The porch track
 

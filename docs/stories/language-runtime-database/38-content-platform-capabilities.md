@@ -93,7 +93,7 @@ status: refine
   *does* depend on 28's killable-subprocess work for previews, which is
   exactly why previews are deferred here rather than attempted.
 - **WAL checkpoint and disk reclamation** —
-  [iteration 32](32-wal-checkpoint.md). A metadata store whose boot replays
+  [databasev2 3](../databasev2/03-wal-checkpoint.md). A metadata store whose boot replays
   every write ever made is a real ceiling for this workload, and naming it
   here is the point; fixing it is 32's. This story's gate should record the
   replay time it observes so 32 inherits a number.
@@ -109,7 +109,7 @@ status: refine
   route Nextcloud itself takes is unreachable until `connect` lands.
 - **Full-text search.** The engine indexes equality probes on declared
   columns; there is no prefix scan or FTS. Query-grammar growth is
-  [iteration 27](27-query-grammar-corpus.md)'s.
+  [databasev2 8](../databasev2/08-query-grammar-corpus.md)'s.
 - **TLS** — proxy-terminated, by doctrine, unchanged. The outbound half
   therefore speaks plaintext to a local sidecar or a trusted-network peer,
   and the story says so out loud rather than implying HTTPS clients.
@@ -196,9 +196,9 @@ a wish list. Order: brainstorm the five forks (fork 1 and 2 together, fork
 establish exactly where it blocks, then the fs verbs, then `connect`, each
 with corpus fixtures and its own gate leg. Big enough to want a spec and a
 plan document — this is not a bounded slice like
-[33](33-single-file-db.md).
+[7](../databasev2/07-single-file-db.md).
 
 Precedence: independent of the concurrency chain (stage 3 → 22 → 31 → 24 →
 23 → 32) and startable beside it, with one caveat — the honest disk story
-needs [32](32-wal-checkpoint.md), so if this lands first its gate records
+needs [3](../databasev2/03-wal-checkpoint.md), so if this lands first its gate records
 the replay number rather than claiming the platform is operationally done.

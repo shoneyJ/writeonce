@@ -163,7 +163,7 @@ the slice's marker doc when it landed):
 | Durability | ✅ fsync-per-commit, ack-after-durable; the ack crosses shards only AFTER the owner's fsync (`just db-actor`'s WAL pair). Power-loss rides fdatasync semantics; 22's kill battery is the scripted proof. |
 | Crash recovery | ✅ boot replay, torn-tail drop, index rebuild; replay completes on the primary before any worker serves (main.c boots the engine before the shards). 22 scripts the restart proof. |
 | Concurrency control | ✅ stage 3 — the DB actor serializes every statement; replies are materialized copies, no torn read by construction. Cross-statement snapshots arrive with 18. |
-| Space reclamation | RAM ✅ (deleted rows free their slot — ids never reused, slots are); disk ✖ → [story 32](32-wal-checkpoint.md), end of chain. |
+| Space reclamation | RAM ✅ (deleted rows free their slot — ids never reused, slots are); disk ✖ → [databasev2 story 3](../databasev2/03-wal-checkpoint.md), end of chain. |
 
 - The C proving ground (`docs/plan/exploration/c-runtime/`, phases A–F:
   epoll loops, eventfd mail) is the substrate this lifts into `wovm`.
@@ -174,7 +174,7 @@ the slice's marker doc when it landed):
 - **Gated by the benchmark:** landing the arc means re-running
   [22](22-durability-throughput-scale.md) at the concurrency
   scale it unlocks and recording the before/after delta; it is also
-  where [23](23-io-uring-commit.md) gets a thread to overlap
+  where [4](../databasev2/04-io-uring-commit.md) gets a thread to overlap
   durability against.
 
 ## Proposed Solution

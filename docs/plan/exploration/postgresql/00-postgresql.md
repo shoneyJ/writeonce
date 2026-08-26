@@ -46,7 +46,7 @@ The implementation phases that lean on this material:
 - The Rust-era consumers (plans 10/11/12: storage foundations, WAL and
   recovery, disk cutover) were removed with that track 2026-08-18; their
   ideas shipped in `database/src/` (typed WAL + replay) and the rest wait
-  on [iteration 32](../../../stories/language-runtime-database/32-wal-checkpoint.md)
+  on [databasev2 3](../../../stories/databasev2/03-wal-checkpoint.md)
   (checkpoint) — the wal/buffer cards are its entry material.
 - Current consumers: [constraints-and-grammar](constraints-and-grammar.md)
   (the `@table` PK/FK grammar direction) and

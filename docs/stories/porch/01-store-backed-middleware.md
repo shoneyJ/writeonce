@@ -115,7 +115,7 @@ status: refine
   it.
 - **Distributed limiting across processes.** One program owns its database;
   cross-program state is language
-  [iteration 20](../language-runtime-database/20-cross-program-tables.md).
+  [databasev2 9](../databasev2/09-cross-program-tables.md).
 - **A background expiry sweeper.** No timer exists (`time.after` is still a
   reserved builtin id in `wob.h`). Lazy pruning on access, deliberately.
 - **The TTL cache middleware** — language

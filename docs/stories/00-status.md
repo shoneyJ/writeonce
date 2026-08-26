@@ -10,11 +10,14 @@ The single place to learn where this project stands. Organised in six buckets:
 folders** — a doc stays where it was authored, and only its frontmatter, its
 banner and this board change.
 
-**Two tracks** (2026-08-26): [`language-runtime-database/`](language-runtime-database/00-story.md)
-— the language, runtime and database — and [`porch/`](porch/00-story.md), the web
-framework written in it. Each numbers its iterations from 1, so a porch 3 is not
-a language 3; porch stories carry `track: porch` in frontmatter to keep queries
-honest. Track folders are fine; **status** folders are not.
+**Three tracks** (2026-08-26):
+[`language-runtime-database/`](language-runtime-database/00-story.md) — the
+language and runtime; [`porch/`](porch/00-story.md) — the web framework written
+in it; [`databasev2/`](databasev2/00-story.md) — the database beyond RAM. Each
+numbers its iterations from 1, so a porch 3 is not a language 3; every non-language
+story carries `track:` in frontmatter, and moved ones keep
+`was_language_iteration:` so a search for the old number still finds them. Track
+folders are fine; **status** folders are not.
 
 **Status lives in frontmatter, nowhere else** (directive 2026-08-26). Every
 story iteration file sits flat in its track folder and
@@ -348,19 +351,19 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
 | 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | 🔄 **absorbed into 24** (directive 2026-08-23) and half landed there: `call` request/response with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), and actor death that traps callers instead of hanging them. Still open: `monitor` and `time.after` — ids **89 and 90 are reserved holes** in `wob.h`, which is the machine-checkable proof of what is left. Supervision trees stay out of v1 |
 | 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | 🔄 **the live slice** (absorbing 31 + 34, directive 2026-08-23) — branch `chat-ws-lifecycle`, 5/10 tasks landed: crypto, bounded mailboxes, WS upgrade, frame codec, `call`/reply + actor death. Pending: `monitor`, `time.after`, the chat sample, its gate, closeout. State lives in [the marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) |
-| 23  | [io_uring group-commit](language-runtime-database/23-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
-| 32  | [WAL checkpoint](language-runtime-database/32-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
-| 33  | [Single-file store](language-runtime-database/33-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
+| 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
+| 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
+| 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
 | 38  | [Content platform capabilities](language-runtime-database/38-content-platform-capabilities.md) | ⬜ off-chain, needs a spec — the two capability families no iteration owns, confirmed against `runtime/src/wob.h`: `fs` mutation verbs (six fs builtins, ids 40–45; `append` creates-if-absent, so nothing is ever replaced, truncated, deleted or renamed) and `net.connect` (ids 51–55 + 91–95, no connect, and no `connect()` anywhere in `runtime/src/` — so no OIDC/SMTP/object-store/webhook/federation). Driven by a `docs/examples/vault` content-collaboration workload, in 28's mould. New builtins from 96 (89/90 reserved for 31); no `.wob` bump (`WOB_VERSION 6u`, last moved by 36). Story written 2026-08-26 from the "can it build a Nextcloud?" ask |
 | 39  | [Web framework parity](language-runtime-database/39-web-framework-parity.md) | ⬜ off-chain, needs a spec — from [the Fiber v3.5.0 study](../plan/exploration/fiber/00-fiber-parity.md) (all 32 of its middleware read against `porch`; **nine already have a counterpart**). Leads with a **random-bytes builtin**: the framework ledger claimed CSRF/sessions were unblocked by iteration 34's HMAC, but HMAC authenticates a token and cannot mint one — there is no RNG anywhere in the runtime. Then cookies (absent both ways; `Resp.headers` being a map cannot carry two `Set-Cookie` lines), then limiter/idempotency (cheapest wins — `@table` + `time.ticks`, nothing new), sessions, CSRF, and the routing/response sugar. Streaming/SSE/compression, `@derive` binding, TTL cache, `proxy` and metrics all excluded with owners named |
 | 37  | [wo-html components](language-runtime-database/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
 | 35  | [net runtime seams](language-runtime-database/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
-| 20  | [Cross-program tables](language-runtime-database/20-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
-| 21  | [Keypair attach auth](language-runtime-database/21-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
+| 20  | [Cross-program tables](databasev2/09-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
+| 21  | [Keypair attach auth](databasev2/10-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
 | 26  | [Blue-green deploy](language-runtime-database/26-blue-green-deploy.md)               | ⏸ hold (2026-08-21)          |
-| 27  | [Query grammar corpus](language-runtime-database/27-query-grammar-corpus.md) | ⏸ hold (2026-08-21)          |
+| 27  | [Query grammar corpus](databasev2/08-query-grammar-corpus.md) | ⏸ hold (2026-08-21)          |
 | 28  | [skillhost host workload](language-runtime-database/28-skillhost-host-workload.md) | ⏸ hold (2026-08-21); gaps recorded (branch query-grammar found skillhost needs no new query grammar) |
 | 29  | [Compile-time metaprogramming](language-runtime-database/29-compile-time-metaprogramming.md) | ⏸ hold (2026-08-21)          |
 | 15  | [deps: `wo.toml [deps]`](language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
@@ -591,13 +594,43 @@ precedence notes for resumption.
 5. **23** — io_uring group-commit; the WAL's WRITE+FSYNC chains ride the
    arc's per-shard ring (T4); after 22's baseline — the payoff, measured.
 6. **32** — WAL checkpoint
-   ([story](language-runtime-database/32-wal-checkpoint.md),
+   ([story](databasev2/03-wal-checkpoint.md),
    written 2026-08-21): the WAL is append-only forever — snapshot +
    truncate reclaims disk and bounds replay; after 23 (composes with
    group-commit), policy set by 22's aged-store numbers.
 
 **30** — observability, CI, fuzz: named 2026-08-20, still row-only (no
 story file); slots in when scheduled — nothing in the chain depends on it.
+
+### ▸ databasev2 — the database beyond RAM
+
+New 2026-08-26. **The problem:** RAM is authoritative (principle 7) and nothing
+declares a budget. Rows live in `malloc`'d slabs whose addresses are stable
+forever; there is no eviction, spill or paging anywhere in `database/src/`; the
+WAL never checkpoints so boot replays all history; and durability is one
+process-global `WO_DATA`, so no table can say it matters more than another. An
+allocation failure *is* a clean catchable `WO_T_OOM` — but swap thrash arrives
+first and carries no error signal at all.
+
+**The lever** is per-table storage modes, which is why this track has a grammar
+iteration. Six pending iterations moved here from the language track (their old
+ids in the rows below); four are new. Done database work — 9, 9b, 22 — stays in
+the language arc as v1 history.
+
+| # | Iteration | State |
+| --- | --- | --- |
+| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ **first, and startable today** — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
+| 2 | [`@table` storage modes](databasev2/02-table-storage-modes.md) | ⬜ **the language enrichment** — `mode: ram \| durable \| cold` per table, replacing the global switch. `durable` defaults so nothing changes silently; the compiler refuses a `durable` row holding a `ref` into a `ram` table. `.wob` format change. Grammar is small (`Ast.table_cfg` gains a key); semantics are the iteration |
+| 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
+| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |
+| 5 | [Bounded tables and eviction](databasev2/05-bounded-tables-eviction.md) | ⬜ a declared capacity + refuse/evict/back-pressure, and a process-level pressure signal that sheds **before** the allocator or OS gets involved — turning the invisible failure into a managed one |
+| 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⬜ the iteration that raises the ceiling, and the riskiest. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |
+| 7 | [Single-file store](databasev2/07-single-file-db.md) *(was 33)* | ⬜ `WO_DATA=<path>.db`; driver-only, independent |
+| 8 | [Query grammar from corpora](databasev2/08-query-grammar-corpus.md) *(was 27)* | ⬜ whole-query `count`, `exists`; independent |
+| 9 | [Cross-program tables](databasev2/09-cross-program-tables.md) *(was 20)* | ⏸ hold — attach to a running program's database over local IPC |
+| 10 | [Keypair attach auth](databasev2/10-keypair-attach-auth.md) *(was 21)* | ⏸ hold — program identity as a keypair; needs 9 |
+
+---
 
 ### ▸ porch — the web framework track
 

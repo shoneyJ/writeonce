@@ -1,12 +1,18 @@
 ---
-iteration: "27"
+track: databasev2
+iteration: "8"
+was_language_iteration: "27"
 status: hold
 ---
 
-# Iteration 27 — query grammar, driven by real embedded-DB corpora
+# databasev2 8 — query grammar, driven by real embedded-DB corpora
+
+> **Moved 2026-08-26** from the language track, where this was iteration 27.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-16.** A query-surface iteration in the 9b family: the
 > language-integrated query grows to cover the grammar that *real

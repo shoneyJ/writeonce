@@ -25,7 +25,7 @@ Four consumers already wait on it, none able to proceed:
 (`Sec-WebSocket-Accept` = base64(SHA-1(key + GUID)) — SHA-1
 specifically, not a choice); the framework's ETag/conditional-request
 row (wants a content hash); HMAC-signed tokens the auth core can grow;
-and held [iteration 21](21-keypair-attach-auth.md), whose
+and held [databasev2 10](../databasev2/10-keypair-attach-auth.md), whose
 challenge–response needs primitives that "do not exist" (its demotion
 note). Bytes and base64 landed with iteration 19 — the carriers exist,
 only the digests are missing.

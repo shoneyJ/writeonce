@@ -1,13 +1,19 @@
 ---
-iteration: "32"
+track: databasev2
+iteration: "3"
+was_language_iteration: "32"
 status: refine
 chain: 6
 ---
 
-# Iteration 32 — WAL checkpoint: disk space reclamation and bounded replay
+# databasev2 3 — WAL checkpoint: disk space reclamation and bounded replay
+
+> **Moved 2026-08-26** from the language track, where this was iteration 32.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-21** (stage-3 guarantee refinement found the hole):
 > the WAL is append-only FOREVER — no checkpoint, no truncation exists

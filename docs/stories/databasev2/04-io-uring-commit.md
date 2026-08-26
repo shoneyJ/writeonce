@@ -1,13 +1,19 @@
 ---
-iteration: "23"
+track: databasev2
+iteration: "4"
+was_language_iteration: "23"
 status: refine
 chain: 5
 ---
 
-# Iteration 23 — io_uring group-commit write path
+# databasev2 4 — io_uring group-commit write path
+
+> **Moved 2026-08-26** from the language track, where this was iteration 23.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-15.** The write-path optimization, and deliberately the
 > LAST database performance iteration: it only earns its complexity once

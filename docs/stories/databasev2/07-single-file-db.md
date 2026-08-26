@@ -1,12 +1,18 @@
 ---
-iteration: "33"
+track: databasev2
+iteration: "7"
+was_language_iteration: "33"
 status: refine
 ---
 
-# Iteration 33 — `WO_DATA=<path>.db`: the persistent store as one file
+# databasev2 7 — `WO_DATA=<path>.db`: the persistent store as one file
+
+> **Moved 2026-08-26** from the language track, where this was iteration 33.
+> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
 >
 > **Inserted 2026-08-22** (developer ask: "can the persistent db be in
 > file.db form?"). The truth is already almost there: `WO_DATA=<dir>`
@@ -46,7 +52,7 @@ status: refine
 
 - A paged database file (SQLite's shape) — RAM is authoritative; the
   disk story is the WAL, full stop.
-- Checkpoint/compaction — [iteration 32](32-wal-checkpoint.md)'s; its
+- Checkpoint/compaction — [iteration 32](03-wal-checkpoint.md)'s; its
   rename-swap (write snapshot+tail to a NEW file, fsync, `rename()`
   over the old) is exactly what keeps the single-file promise crash-safe
   when it lands. 33 before or after 32 works; landing 33 first means
