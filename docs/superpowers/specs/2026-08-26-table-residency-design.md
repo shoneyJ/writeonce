@@ -69,7 +69,7 @@ grows two fields beside `table_name` and `indexes`.
 | `durable` | `true`, `false` | `true` | `false` skips the WAL append entirely: no record, no fsync, ack from RAM, table empty after restart. |
 | `resident` | `all`, `keys` | `all` | `keys` keeps the id map, every secondary index and every unique shadow in RAM; rows are read from the log by offset. |
 
-`true`/`false` are already keyword tokens; `all`/`index` are parsed as the same
+`true`/`false` are already keyword tokens; `all`/`keys` are parsed as the same
 bare identifiers the `index:` argument's column list already accepts. No lexer
 change.
 
@@ -98,10 +98,11 @@ indexes are very much resident.
   append the record as today, then record id→offset in the resident map instead
   of retaining the row in a slab. The WAL append is already the durable write;
   this stops discarding its payload.
-- **Read by id** — resident map lookup, then `pread` at the offset, verify CRC,
-  decode into fresh VM values. The decode path already exists
-  (`wo_val_decode_vm` always copies; rows never hand out interior pointers), so
-  the change is where the bytes come from.
+- **Read by id** — resident map lookup, then `scan_record` at the offset (which
+  already `pread`s and verifies the CRC), skip the record header, and `dec_val`
+  each field. Both functions already exist in `wal.c` and are already exercised
+  by replay; the change is that they are called on demand rather than only at
+  boot.
 - **Update** — append a new record, repoint the offset. The superseded record
   becomes garbage, reclaimed by the checkpoint.
 - **Delete** — append a tombstone, drop the id from the map and every index.
@@ -112,20 +113,43 @@ indexes are very much resident.
   O(entire history), which is the honest cost of shipping this before
   [databasev2 3](../../stories/databasev2/03-wal-checkpoint.md).
 
-### Row encoding: the one real rewrite
+### Row encoding: nothing to build — corrected 2026-08-26
 
-A row slot today holds raw pointers. `table.c`'s `WO_K_TEXT` case allocates a
-`db_text` and returns its address as the slot word; owned, multi and map do the
-same. Pointers minted by a dead process are meaningless in a file, so the
-on-disk record must be **self-contained and offset-based**: every heap value
-inlined into the record with internal references expressed as offsets from the
-record's own start.
+**An earlier draft of this section was wrong and claimed the opposite.** It said
+the on-disk record was pointer-bearing and that re-encoding it was "the one real
+rewrite" and the substantive engineering of this iteration. That came from
+reading `table.c`'s `db_val_encode`, which builds the **in-memory slot**, and
+inferring the file format from it. The file format is a *separate* encoding in
+`wal.c`, and it has been flat since iteration 9.
 
-This is confined to `db_val_encode`/`db_val_decode` and the record framing. It
-is the substantive engineering in this iteration and the place to expect the
-bugs. `wal.c` already frames records as `len|crc|payload|mark`, so the framing
-exists; what changes is that the payload must be readable standalone rather than
-only replayable.
+What is already there, verified:
+
+- `wal.c`'s `enc_val` inlines every kind recursively with no pointer anywhere —
+  text and bytes as length-then-bytes, owned as class id then fields, multi as
+  element kind, length, items, map as key kind, value kind, length, pairs.
+  GCREF is never stored and never logged.
+- `dec_val` reads that back and allocates fresh engine-owned values.
+- A record is `WO_WAL_INSERT | class_id | id | <value per field>`, wrapped in
+  the `len|crc|payload|mark` frame.
+- `scan_record(fd, off, …)` already `pread`s the record at an arbitrary offset
+  and verifies its CRC.
+
+So the record is already position-independent, already carries the class id and
+row id, and is already randomly addressable. The in-memory slot representation
+needs **no change at all**, because it was never what reached the file.
+
+**Where the real work is instead: capturing the offset.**
+`wo_wal_append_insert` calls `stage()` into a buffer (opened at 1 MiB in
+`main.c`), so a record's final file offset is not known at append time — only
+when that buffer flushes. Threading an accurate offset back to the caller
+through a buffered writer, and keeping it correct across a partial flush and a
+torn tail, is the delicate piece of this iteration. It is a much better-defined
+problem than the rewrite this section used to describe, and it is bounded to
+`wal.c`'s staging path plus the map that consumes it.
+
+Consequence for the plan: this iteration is cheaper and lower-risk than first
+estimated. The task that was to perform the rewrite is deleted rather than
+reduced.
 
 ### Constraints across the residency boundary
 
@@ -215,7 +239,7 @@ commit as the code. An older image is refused on version rather than misread.
 
 | Alternative | Why not |
 | --- | --- |
-| **`mmap` the row file** | Requires offset-based rows *and* gives up precise ack-after-fsync for the kernel's flush schedule. The repo's own mmap study only ever proposed it read-only for segment lookups. If rows become self-contained anyway, mmap is a possible later optimisation of the read path — recorded, not adopted. |
+| **`mmap` the row file** | Gives up precise ack-after-fsync for the kernel's flush schedule, which is the one guarantee this design will not trade. The repo's own mmap study only ever proposed it read-only for segment lookups. Since records are *already* flat and position-independent, mmap remains available later as a pure read-path optimisation over the same file — recorded, not adopted. |
 | **Buffer pool with dirty-page tracking** | This is the Rust-era phase-12 design in `exploration/postgresql/buffer-and-checkpoint.md` (`CachedRow { bytes, dirty }`, `WO_CACHE_ROWS` LRU) that died with that track. It duplicates the kernel page cache, and the page cache is explicitly the cache this project wants. |
 | **Paged B-tree engine** | Rejected 2026-08-18 and still rejected. Reading rows from the log we already write is not this. |
 | **A three-valued `mode:` enum** | Needs a name per combination. The brainstorm demonstrated that the third name is unwriteable before its mechanism is decided. |

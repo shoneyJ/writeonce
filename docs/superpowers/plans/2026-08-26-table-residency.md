@@ -47,7 +47,7 @@ engine, libc only), the existing `.wob` image format, `tests/corpus` +
   (`docs/plan/oop-vm/00-wob-format.md`) in the same commit.
 - Gates that must be green at the end of every task: `just woc-test`,
   `just wovm-test`, `just oop-e2e`, `just employee`, `just db-actor`.
-  Tasks 6 onward add `just db-bench`.
+  Tasks 5 onward add `just db-bench`.
 
 ---
 
@@ -173,7 +173,7 @@ create fixtures under `tests/corpus/run/`.
 
 **Interfaces:**
 - Consumes: Task 3's descriptor fields.
-- Produces: the observable behaviour Task 8's gate asserts — no WAL growth for
+- Produces: the observable behaviour Task 7's gate asserts — no WAL growth for
   a volatile table, and an empty table after restart.
 
 - [ ] Reach the per-table durability property at the three append sites in
@@ -202,57 +202,47 @@ create fixtures under `tests/corpus/run/`.
 
 ---
 
-## Task 5 — self-contained row records
+## Task 5 — the `resident: keys` read path
 
-**Files:** modify `database/src/table.c` (`db_val_encode` at :56-141,
-`db_val_decode` at :149-), `database/src/table.h` (the `db_text`/`db_rec`/
-`db_multi`/`db_map` shapes), `database/src/wal.c` (record payload framing);
-create a unit suite under `runtime/test/`.
+> **Retraction, 2026-08-26.** This plan originally had a Task 5 that rewrote
+> `db_val_encode`/`db_val_decode` into a "self-contained, offset-based" record
+> format, described as the iteration's one real rewrite. **That task was
+> fictional and has been deleted.** `table.c`'s `db_val_encode` builds the
+> *in-memory slot*; the *file* record is a separate encoding in `wal.c`, and it
+> has been flat since iteration 9: `enc_val` inlines every kind recursively with
+> no pointer anywhere, `dec_val` reads it back into fresh engine values, a record
+> is `WO_WAL_INSERT | class_id | id | <value per field>` inside the
+> `len|crc|payload|mark` frame, and `scan_record(fd, off, …)` already `pread`s
+> and CRC-verifies a record at an arbitrary offset. Nothing about the row
+> encoding needs to change.
+>
+> **The real difficulty is offset capture, and it lives in this task.**
+> `wo_wal_append_insert` calls `stage()` into a buffer (opened at 1 MiB in
+> `main.c:210`), so a record's final file offset is unknown at append time and
+> known only when that buffer flushes. Threading an accurate offset back to the
+> caller through a buffered writer — correct across a partial flush, a failed
+> commit, and a torn tail — is where to expect the bugs.
 
-**Interfaces:**
-- Produces: a record encoding readable standalone from a file, and a decode
-  that materialises VM values from it. Task 6 depends on both.
-
-- [ ] Establish the problem precisely before changing anything: `table.c:70-75`
-  allocates a `db_text` and returns its **address** as the slot word, and the
-  owned/multi/map cases do the same. Pointers minted by a dead process are
-  meaningless in a file. Write this down in `database/src/CODE-LOGIC.md` as the
-  reason the encoding changes.
-- [ ] Define the self-contained record layout: every heap value inlined into
-  the record body, internal references expressed as offsets from the record's
-  own start, so the whole record is position-independent and copyable.
-- [ ] Rewrite `db_val_encode` to emit into a caller-provided buffer in that
-  layout rather than returning pointers, keeping the per-kind structure
-  (scalar/float pass through; text and bytes inline; owned recurses; multi and
-  map recurse element-wise) and keeping the existing refusal of the GCREF kind
-  — the GC bulkhead the engine enforces even though the compiler should have
-  made it impossible.
-- [ ] Rewrite `db_val_decode` to read that layout and allocate fresh VM values,
-  preserving the existing rule that decode always copies and no interior
-  pointer ever escapes.
-- [ ] Keep the in-memory path working: a `resident: all` table still holds rows
-  as it does today. The encoding change is about what reaches the *file*; the
-  resident representation is not this task's subject and must not regress.
-- [ ] Add a unit suite that round-trips every field kind — including a text
-  containing the record's own delimiter bytes, an empty multi, a nested owned
-  record, and a map with text keys — asserting byte-identical recovery.
-- [ ] Add an ASan leg for the new decode path. This is where the bugs are.
-- [ ] Verify: `make -C runtime test`, `make -C runtime test-iso`,
-  `just oop-e2e`, `just employee`, `just db-actor` green; ASan clean.
-- [ ] Commit. Draft: `refactor(db): self-contained, offset-based row records`.
-
----
-
-## Task 6 — the `resident: keys` read path
 
 **Files:** modify `database/src/table.c` / `table.h` (the per-table id map, the
 slab path), `database/src/db.c` (insert/read/update/delete), `database/src/wal.c`
 (boot map rebuild); create fixtures under `tests/corpus/run/`.
 
 **Interfaces:**
-- Consumes: Task 3's descriptor fields, Task 5's encode/decode.
+- Consumes: Task 3's descriptor fields, and `wal.c`'s existing `enc_val`/`dec_val`/`scan_record` — see the note below.
 - Produces: a table whose rows are not resident, serving reads by offset.
 
+- [ ] **Offset capture first, before any map exists.** Make the staging path in
+  `wal.c` able to report the file offset a record will occupy. Decide between
+  computing it as the buffer's base file offset plus the record's position
+  within the buffer, or deferring the report until flush; whichever is chosen,
+  the offset must be wrong in *no* case — a wrong offset reads a neighbouring
+  record and passes its CRC.
+- [ ] Prove offset capture in isolation before it has a consumer: a unit test
+  that appends records straddling a buffer boundary, flushes, then reads each
+  back by its reported offset via `scan_record` and asserts the recovered id
+  matches the one appended. Include a failed-commit case, where no offset must
+  be published for a record that never reached disk.
 - [ ] For a `resident: keys` table, replace the slab retention with an
   id→offset map. Keep every index resident: the id map, each secondary index,
   and each `@unique` shadow. That residency is what makes the arithmetic work
@@ -261,7 +251,7 @@ slab path), `database/src/db.c` (insert/read/update/delete), `database/src/wal.c
 - [ ] Insert: append the record as Task 4 leaves it, then record id→offset
   instead of retaining a slab row.
 - [ ] Read by id: map lookup, `pread` at the offset, verify the CRC the frame
-  already carries, decode via Task 5. Use `pread` and **not** `O_DIRECT` — the
+  already carries, decode via `dec_val`. Use `pread` and **not** `O_DIRECT` — the
   kernel page cache is deliberately the hot copy.
 - [ ] Update: append a new record, repoint the offset. The superseded record
   becomes garbage; do not attempt reclamation here — that is databasev2 3.
@@ -287,13 +277,13 @@ slab path), `database/src/db.c` (insert/read/update/delete), `database/src/wal.c
 
 ---
 
-## Task 7 — the two runtime refusals
+## Task 6 — the two runtime refusals
 
 **Files:** modify `runtime/src/main.c` (the `WO_DATA` block at :199-215),
 plus wherever per-table accounting lands from Task 6.
 
 **Interfaces:**
-- Consumes: Task 3's descriptor fields, Task 6's accounting.
+- Consumes: Task 3's descriptor fields, Task 5's accounting.
 
 - [ ] **Refuse `durable: true` with no `WO_DATA`.** Today `main.c:199` opens a
   WAL only when the variable is set, and `db.c` skips appends when it is not —
@@ -326,7 +316,7 @@ plus wherever per-table accounting lands from Task 6.
 
 ---
 
-## Task 8 — measure, gate, document, close out
+## Task 7 — measure, gate, document, close out
 
 **Files:** modify `scripts/db-bench.py` and `docs/examples/db-bench/`,
 `bench/baseline.json`, `docs/plan/perf-targets.md`,
@@ -378,19 +368,19 @@ was not covered.
 | Format / descriptor / version bump | 3 |
 | `durable: false` skips the WAL | 4 |
 | Replay skips or refuses on mismatch | 4 |
-| Self-contained offset-based records | 5 |
-| Read / update / delete / scan / boot for non-resident | 6 |
-| `@unique` and FK-restrict across the boundary | 6 |
-| Startup refusal: durable with no `WO_DATA` | 7 |
-| Byte budget, default fraction, breach diagnostic | 7 |
-| Proof plan: baseline, amplification, crash battery | 8 |
-| Docs: catalog, language surface, binding contract, CODE-LOGIC | 1, 3, 8 |
+| Self-contained offset-based records | **none — already exists in `wal.c` since iteration 9. Claim retracted 2026-08-26; see the spec section of the same name.** |
+| Read / update / delete / scan / boot for non-resident, incl. offset capture | 5 |
+| `@unique` and FK-restrict across the boundary | 5 |
+| Startup refusal: durable with no `WO_DATA` | 6 |
+| Byte budget, default fraction, breach diagnostic | 6 |
+| Proof plan: baseline, amplification, crash battery | 7 |
+| Docs: catalog, language surface, binding contract, CODE-LOGIC | 1, 3, 7 |
 
 **Gaps found and closed during review:** the spec's escape hatch for an
 intentionally ephemeral run was implied but never stated — added as an explicit
-step in Task 7, because a refusal with no way forward is worse than the silent
+step in Task 6, because a refusal with no way forward is worse than the silent
 loss it replaces. The spec's note that databasev2 3's snapshot should persist
-the offset map is now a recorded step in Task 6 rather than prose only.
+the offset map is now a recorded step in Task 5 rather than prose only.
 
 **Deliberately not in this plan:** checkpoint and compaction (databasev2 3),
 eviction and a resident row cache (databasev2 5), io_uring on the read path
