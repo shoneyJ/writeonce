@@ -468,6 +468,14 @@ let private_name_code = Diag.types_prefix ^ "17"       (* WO-E217 *)
 let use_collision_code = Diag.types_prefix ^ "18"      (* WO-E218 *)
 let unused_use_code = Diag.warning_prefix ^ "202"      (* WO-W202 *)
 
+let dangling_ref_code = Diag.types_prefix ^ "24"
+(* WO-E224 (databasev2 2): a durable table holding a `ref` into a volatile one.
+   The referencing row survives a restart; the referenced row does not, so the
+   stored row id dangles and FK-restrict cannot help — restrict asks "does a
+   row reference this?", and after a restart the answer is a truthful no while
+   the id is still sitting in a durable slot. Provable from the class table, so
+   it fails at compile time rather than becoming a wrong query result. *)
+
 let unknown_type_name_code = Diag.types_prefix ^ "25"  (* WO-E225 *)
 
 (* iteration 36: a LITERAL shift count outside 0..63 — rejected here so
@@ -678,6 +686,19 @@ let rec scalar_name_of (ft : field_ty) : string option =
   | Nullable inner -> scalar_name_of inner
   | Ref _ | Multi _ | Map _ | Backlink _ | Actor _ -> None
 
+(* databasev2 2: the target class of a `ref` field, through any `?` wrapper.
+   Only `Ref` stores a row id, which is why this exists and why the
+   durable/volatile check below looks at nothing else — a `Backlink` is the
+   computed inverse of a ref and stores NO column (ast.ml), so after a restart
+   it resolves to an empty collection, which is a legal state indistinguishable
+   from "nothing references me". Checking backlinks would refuse correct
+   programs. *)
+let rec ref_name_of (ft : field_ty) : string option =
+  match ft with
+  | Ref name -> Some name
+  | Nullable inner -> ref_name_of inner
+  | Scalar _ | Multi _ | Map _ | Backlink _ | Actor _ -> None
+
 (* Checked once per field declaration (not at every access/use site), so
    the diagnostic lands at the field's own declaration position and
    never fires more than once for the same bad field. Runs over the raw
@@ -695,15 +716,42 @@ let check_field_types ~file (syms : symbols) (collector : Diag.Collector.t)
         name
     | _ -> Printf.sprintf "unknown type `%s`" name
   in
+  (* databasev2 2: is this class a table, and is it durable? A non-table
+     declaring class cannot dangle across a restart because it does not
+     survive one, so only a durable TABLE is checked. *)
+  let durable_table (t : Ast.table_cfg option) : bool =
+    match t with Some cfg -> cfg.Ast.durable | None -> false
+  in
+  let volatile_table (name : string) : bool =
+    match StringMap.find_opt name syms.classes with
+    | Some ci -> (match ci.table with Some cfg -> not cfg.Ast.durable | None -> false)
+    | None -> false
+  in
   List.iter (function
     | Ast.Class c ->
         List.iter (fun (f : Ast.field) ->
-          match scalar_name_of f.ty with
-          | Some name when not (is_known_type_name syms name) ->
+          (match scalar_name_of f.ty with
+           | Some name when not (is_known_type_name syms name) ->
+               Diag.Collector.add collector
+                 (Diag.error ~code:unknown_type_name_code ~file
+                    ~line:f.pos.line ~col:f.pos.col
+                    ~message:(unknown_type_msg name) ())
+           | _ -> ());
+          (* databasev2 2: WO-E224. Only the durable -> volatile direction is
+             refused; volatile -> durable is legal (the referencing row is the
+             one that disappears, so nothing is left holding a stale id). *)
+          match ref_name_of f.ty with
+          | Some target when durable_table c.table && volatile_table target ->
               Diag.Collector.add collector
-                (Diag.error ~code:unknown_type_name_code ~file
+                (Diag.error ~code:dangling_ref_code ~file
                    ~line:f.pos.line ~col:f.pos.col
-                   ~message:(unknown_type_msg name) ())
+                   ~message:
+                     (Printf.sprintf
+                        "durable table `%s` cannot hold `ref %s`: `%s` is declared \
+                         `durable: false`, so its rows are gone after a restart and \
+                         this stored row id would dangle — FK restrict cannot catch \
+                         it. Make `%s` durable, or declare `%s` `durable: false` too"
+                        c.name target target target c.name) ())
           | _ -> ()
         ) c.fields
     | Ast.Union u ->

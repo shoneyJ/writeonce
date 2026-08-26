@@ -1,0 +1,39 @@
+-- databasev2 2: the directions that are LEGAL, so WO-E224 cannot quietly
+-- grow over-broad. Three shapes must all compile and run:
+--   1. volatile -> durable ref: the referencing row is the one that
+--      disappears, so nothing is left holding a stale id.
+--   2. a backlink on a durable table whose referencer is volatile: a
+--      backlink stores NO column, so after a restart it resolves to an
+--      empty collection — a legal state, not a dangling id.
+--   3. durable -> durable, the ordinary case.
+
+@table(name: "users", index: [name])
+class User {
+  name: Text
+  visits: backlink Visit.who
+}
+
+@table(name: "visits", durable: false, index: [who])
+class Visit {
+  who: ref User
+  note: Text
+}
+
+@table(name: "audits", index: [who])
+class Audit {
+  who: ref User
+  what: Text
+}
+
+fn main() -> Int {
+  let u = insert User { name: "asha" };
+  insert Visit { who: u, note: "scratch" };
+  insert Audit { who: u, what: "kept" };
+  for v in from x in Visit select x {
+    print("visit ${v.note}");
+  }
+  for a in from x in Audit select x {
+    print("audit ${a.what}");
+  }
+  return 0;
+}

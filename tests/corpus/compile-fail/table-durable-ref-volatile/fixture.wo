@@ -1,0 +1,20 @@
+-- databasev2 2: a durable table may not hold a `ref` into a volatile one.
+-- The referencing row survives a restart; the referenced row does not, so
+-- the stored row id dangles. FK restrict cannot catch it — restrict asks
+-- "does a row reference this?", and after a restart the honest answer is no
+-- while the id is still sitting in a durable slot. WO-E224, at the field.
+
+@table(name: "sessions", durable: false)
+class Session {
+  token: Text
+}
+
+@table(name: "orders", index: [sess])
+class Order {
+  sess: ref Session
+  total: Int
+}
+
+fn main() -> Int {
+  return 0;
+}
