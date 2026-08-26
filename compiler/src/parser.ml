@@ -299,8 +299,20 @@ let skip_paren_args (st : state) : unit =
     done
   end
 
+(* databasev2 2: the retired vocabulary. The brainstorm explored `ram`, `cold`,
+   `tiered`, `paged`, `mmap` and `buffer` as `@table` modes and settled on two
+   keys instead. Naming them here buys a message that says what to write, so a
+   word from a rejected design does not turn into folklore in user code. *)
+let retired_table_words = [ "ram"; "cold"; "tiered"; "paged"; "mmap"; "buffer"; "mode"; "store" ]
+
 let parse_table_cfg (st : state) : Ast.table_cfg =
-  let cfg = ref { Ast.table_name = None; indexes = [] } in
+  let cfg =
+    ref { Ast.table_name = None; indexes = []; durable = true; resident = Ast.ResAll }
+  in
+  (* seen-flags, not `option` fields: both properties have a real default, so
+     absence and "explicitly set to the default" must stay distinguishable for
+     the given-twice check without making the AST carry an option nobody reads *)
+  let saw_durable = ref false and saw_resident = ref false in
   if accept st Token.LParen then begin
     let continue_ = ref true in
     while !continue_ do
@@ -330,9 +342,49 @@ let parse_table_cfg (st : state) : Ast.table_cfg =
            if !cols = [] then
              fail st (peek_pos st) table_code "@table index needs at least one column";
            cfg := { !cfg with Ast.indexes = !cfg.Ast.indexes @ [ List.rev !cols ] }
+         (* databasev2 2: durability, per table. Replaces the process-global
+            WO_DATA all-or-nothing — a scratch table stops paying the fsync a
+            precious one needs. *)
+         | "durable" ->
+           if !saw_durable then
+             fail st (peek_pos st) table_code "@table(durable: ...) given twice";
+           saw_durable := true;
+           (match peek st with
+            | Token.KwTrue ->
+              ignore (advance st);
+              cfg := { !cfg with Ast.durable = true }
+            | Token.KwFalse ->
+              ignore (advance st);
+              cfg := { !cfg with Ast.durable = false }
+            | _ -> unexpected st "`true` or `false` for @table durable")
+         (* databasev2 2: residency, per table. `keys` is the 120-GB-on-32-GB
+            case — indexes resident, rows read from the log by offset. *)
+         | "resident" ->
+           if !saw_resident then
+             fail st (peek_pos st) table_code "@table(resident: ...) given twice";
+           saw_resident := true;
+           let v = expect_ident st "`all` or `keys` for @table resident" in
+           (match v with
+            | "all" -> cfg := { !cfg with Ast.resident = Ast.ResAll }
+            | "keys" -> cfg := { !cfg with Ast.resident = Ast.ResKeys }
+            | "index" ->
+              fail st (peek_pos st) table_code
+                "@table(resident: index) — renamed to `keys` (it collided with \
+                 the `index:` argument); write `resident: keys`"
+            | other ->
+              fail st (peek_pos st) table_code
+                (Printf.sprintf
+                   "unknown @table resident value `%s` (supported: all, keys)" other))
+         | other when List.mem other retired_table_words ->
+           fail st (peek_pos st) table_code
+             (Printf.sprintf
+                "`%s` is not a @table argument — storage is declared with two \
+                 keys: `durable: true|false` and `resident: all|keys`" other)
          | other ->
            fail st (peek_pos st) table_code
-             (Printf.sprintf "unknown @table argument `%s` (supported: name, index)" other));
+             (Printf.sprintf
+                "unknown @table argument `%s` (supported: name, index, durable, \
+                 resident)" other));
         skip_newlines st;
         if not (accept st Token.Comma) then begin
           skip_newlines st;

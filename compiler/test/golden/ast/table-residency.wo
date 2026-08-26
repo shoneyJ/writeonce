@@ -1,0 +1,24 @@
+-- databasev2 2: the two storage arguments. `orders` is the 120-GB-on-32-GB
+-- shape (indexes resident, rows read from the log); `sessions` is scratch
+-- (never logged, gone on restart); `chapters` states neither and must dump
+-- exactly as it did before the arguments existed.
+@table(name: "orders", index: [customer], resident: keys)
+class Order {
+  customer: Text
+  total:    Int
+}
+
+@table(name: "sessions", durable: false)
+class Session {
+  token: Text
+}
+
+@table(name: "chapters", index: [slug])
+class Chapter {
+  slug: Text
+}
+
+@table(name: "scratch_big", durable: false, resident: all)
+class Scratch {
+  k: Text
+}

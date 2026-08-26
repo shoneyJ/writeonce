@@ -535,7 +535,9 @@ let () =
   | [ Ast.Class c ] ->
     check "@table: name and index captured"
       (match c.table with
-      | Some { Ast.table_name = Some "prices"; indexes = [ [ "sku"; "at" ] ] } -> true
+      (* `; _` so databasev2 2's durable/resident fields do not have to be
+         restated here — this check is about name and index capture only *)
+      | Some { Ast.table_name = Some "prices"; indexes = [ [ "sku"; "at" ] ]; _ } -> true
       | _ -> false)
   | _ -> check "@table: exactly one class" false);
   let _, bad_collector = parse_str ~file:"bad-table.wo" "@table(shard_key: sku)\ntype T {\n  id: Id\n}\n" in

@@ -1,0 +1,9 @@
+6:1 CLASS Order @table(name="orders", index=[customer], resident=keys)
+  7:3 FIELD customer: Text
+  8:3 FIELD total: Int
+12:1 CLASS Session @table(name="sessions", durable=false)
+  13:3 FIELD token: Text
+17:1 CLASS Chapter @table(name="chapters", index=[slug])
+  18:3 FIELD slug: Text
+22:1 CLASS Scratch @table(name="scratch_big", durable=false)
+  23:3 FIELD k: Text

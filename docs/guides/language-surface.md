@@ -71,7 +71,7 @@ main(args: multi Text) -> Int`.
 
 | annotation | where | effect |
 | --- | --- | --- |
-| `@table(name: "…", index: [a], index: [b, c])` | on a `class`/`type` | the class IS a WAL-backed table |
+| `@table(name: "…", index: [a], index: [b, c], durable: true\|false, resident: all\|keys)` | on a `class`/`type` | the class IS a table. Every argument is optional. `durable` (default `true`) decides whether writes are WAL-logged at all — `false` is scratch storage, gone on restart. `resident` (default `all`) decides what is kept in memory — `keys` keeps the id map, secondary indexes and unique shadows resident and reads rows back from the log by offset, which is how a table larger than RAM works. Both defaults are exactly the pre-2026-08-26 behaviour. See [principle 7](../00-principles.md) |
 | `@unique` | on a field | uniqueness constraint |
 | `@gc` | on a class | **rejected** — GC-ness is inferred, never declared |
 

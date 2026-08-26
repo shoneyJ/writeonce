@@ -362,7 +362,14 @@ let annotations_header (is_gc : bool) (table : Ast.table_cfg option) : string =
       let index_parts =
         List.map (fun cols -> Printf.sprintf "index=[%s]" (String.concat ", " cols)) t.indexes
       in
-      let parts = name_part @ index_parts in
+      (* databasev2 2: print these ONLY when they differ from the default.
+         Printing them unconditionally would move every pre-existing golden,
+         which is the one thing this iteration is not allowed to do. *)
+      let durable_part = if t.durable then [] else [ "durable=false" ] in
+      let resident_part =
+        match t.resident with Ast.ResAll -> [] | Ast.ResKeys -> [ "resident=keys" ]
+      in
+      let parts = name_part @ index_parts @ durable_part @ resident_part in
       if parts = [] then " @table" else " @table(" ^ String.concat ", " parts ^ ")"
   in
   gc_part ^ table_part

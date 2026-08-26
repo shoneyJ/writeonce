@@ -518,9 +518,23 @@ type method_decl = {
    known keys; anything else inside `@table(...)` is a parse error
    (WO-E1xx), not a silent skip — unlike an unrecognized annotation
    *name*, which does skip silently (rt convention, see parser.ml). *)
+(* databasev2 2: what a table keeps in memory. `ResAll` is every row resident
+   (the default, and what every table did before this existed); `ResKeys` keeps
+   the id map, the secondary indexes and the unique shadows resident and reads
+   rows back from the log by offset. Named `keys` and not `index` on review —
+   `index:` is already an argument key, so the value would have collided. *)
+type residency = ResAll | ResKeys
+
 type table_cfg = {
   table_name : string option;
   indexes : string list list;
+  (* databasev2 2. Both DEFAULT to the pre-existing behaviour, which is what
+     lets every `@table` written before this compile byte-identically:
+     `durable = true` logs to the WAL as always, `resident = ResAll` keeps
+     every row in a slab as always. dump.ml prints them only when they differ
+     from these values, so no golden moves either. *)
+  durable : bool;
+  resident : residency;
 }
 
 type class_decl = {
