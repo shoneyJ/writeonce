@@ -8,11 +8,12 @@ status: hold
 # databasev2 9 — cross-program tables: attach to a running program's database
 
 > **Moved 2026-08-26** from the language track, where this was iteration 20.
-> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> Part of [Story — databasev2: the database beyond RAM](00-story.md). Content unchanged by
 > the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md)
+> — the track this iteration was authored in before the 2026-08-26 move.
 >
 > **Inserted 2026-08-15**, hence `20`. It follows 9b because a program
 > attaching to another's tables wants the same typed statements and queries

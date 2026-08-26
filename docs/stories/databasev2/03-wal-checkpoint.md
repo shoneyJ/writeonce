@@ -9,11 +9,12 @@ chain: 6
 # databasev2 3 — WAL checkpoint: disk space reclamation and bounded replay
 
 > **Moved 2026-08-26** from the language track, where this was iteration 32.
-> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> Part of [Story — databasev2: the database beyond RAM](00-story.md). Content unchanged by
 > the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md)
+> — the track this iteration was authored in before the 2026-08-26 move.
 >
 > **Inserted 2026-08-21** (stage-3 guarantee refinement found the hole):
 > the WAL is append-only FOREVER — no checkpoint, no truncation exists

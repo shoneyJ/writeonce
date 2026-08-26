@@ -14,7 +14,7 @@
 | Fork | Decision |
 | --- | --- |
 | One enum or two keys | **Two keys.** `durable:` and `resident:` answer two different developer questions ("do I need this after a restart?", "does it fit in RAM?"). One enum forces a name for each *combination*, which is what made a third value unreadable. |
-| Mode vocabulary | **`resident: all \| index`** and **`durable: true \| false`**. No `cold`, `tiered`, `paged`, `mmap` or `buffer` in the grammar. |
+| Mode vocabulary | **`resident: all \| keys`** and **`durable: true \| false`**. No `cold`, `tiered`, `paged`, `mmap` or `buffer` in the grammar. |
 | Optional or mandatory | **Optional, both default to today's behaviour** (`durable: true`, `resident: all`). All 28 existing declarations compile unchanged; no goldens reblessed. |
 | Which storage architecture | **One engine, log-structured.** The WAL already holds every row; keep an in-RAM id→offset map and read rows back with `pread`. No second engine. |
 | Row cache | **None in user space.** The kernel page cache is the hot copy — the repo's own stated position in `exploration/postgresql/buffer-and-checkpoint.md`: "`pread` against an fd that already has its page cached is a memcpy… the page cache is the one cache we want", and the reason the engine avoids `O_DIRECT`. |
@@ -67,19 +67,21 @@ grows two fields beside `table_name` and `indexes`.
 | Argument | Values | Default | Meaning |
 | --- | --- | --- | --- |
 | `durable` | `true`, `false` | `true` | `false` skips the WAL append entirely: no record, no fsync, ack from RAM, table empty after restart. |
-| `resident` | `all`, `index` | `all` | `index` keeps the id map and every secondary index in RAM; rows are read from the log by offset. |
+| `resident` | `all`, `keys` | `all` | `keys` keeps the id map, every secondary index and every unique shadow in RAM; rows are read from the log by offset. |
 
 `true`/`false` are already keyword tokens; `all`/`index` are parsed as the same
 bare identifiers the `index:` argument's column list already accepts. No lexer
 change.
 
-**One wart, surfaced rather than buried:** `resident: index` puts the word
-`index` in value position while `index:` is also a key, so
-`@table(index: [customer], resident: index)` reads awkwardly on first
-encounter. The parser distinguishes them structurally and there is no
-ambiguity, but a reviewer may prefer `resident: keys` or `resident: index_only`.
-Flagged for the review of this document; the mechanism is unaffected either
-way.
+**Named `keys`, not `index`, on review (2026-08-26).** An earlier draft used
+the value `index`, which put `index` in value position while `index:` is also a
+key — `@table(index: [customer], resident: index)` read awkwardly (that line is
+the rejected spelling, quoted). `keys` also
+puts both values on one axis: `all` and `keys` each answer "what row data stays
+resident", where `all`/`index` mixed a quantity with a structure name. Neither
+`all` nor `keys` is a keyword or a builtin (`key_at`/`val_at` exist; bare `keys`
+does not). `resident: none` was considered and rejected as overclaiming — the
+indexes are very much resident.
 
 ### The four combinations
 
@@ -87,12 +89,12 @@ way.
 | --- | --- | --- |
 | `true` | `all` | Today's behaviour. The default. Reads at memory speed. |
 | `false` | `all` | Volatile scratch: sessions, rate-limit counters, idempotency keys. Skips the 66× fsync cost. What porch 1–3 need. |
-| `true` | `index` | The 120 GB case. Rows in the log, indexes resident, `pread` on read. |
-| `false` | `index` | **Refused at compile time.** Rows would have nowhere to be read from. |
+| `true` | `keys` | The 120 GB case. Rows in the log, indexes resident, `pread` on read. |
+| `false` | `keys` | **Refused at compile time.** Rows would have nowhere to be read from. |
 
 ### Read, write and recovery paths
 
-- **Insert** — unchanged for `resident: all`. For `resident: index`: encode and
+- **Insert** — unchanged for `resident: all`. For `resident: keys`: encode and
   append the record as today, then record id→offset in the resident map instead
   of retaining the row in a slab. The WAL append is already the durable write;
   this stops discarding its payload.
@@ -136,7 +138,7 @@ only replayable.
 - **Foreign-key restrict works unchanged.** It is a secondary-index probe, and
   secondary indexes are resident.
 - **`ref` navigation works unchanged**, at the cost of a `pread` per hop.
-- **A `resident: all` table may hold a `ref` into a `resident: index` table**
+- **A `resident: all` table may hold a `ref` into a `resident: keys` table**
   and vice versa — both are durable, so neither evaporates. This is the case
   that a `durable: false` table genuinely breaks, below.
 
@@ -145,7 +147,7 @@ only replayable.
 Four refusals, each a catalogued `WO-E1xx` diagnostic added in the same change
 as the code — not afterwards:
 
-1. `durable: false` with `resident: index` — the meaningless combination.
+1. `durable: false` with `resident: keys` — the meaningless combination.
 2. An unknown value for either argument, or either argument given twice.
 3. **A `durable: true` table holding a `ref` into a `durable: false` table.**
    A persistent row cannot reference one that evaporates on restart; FK restrict
@@ -229,7 +231,7 @@ Acceptance is the story's Given/When/Then list; this is how each is exercised.
   unchanged; no golden reblessed.
 - **Volatility** — a `durable: false` table produces no WAL growth (measured,
   not asserted) and is empty after restart while durable siblings replay intact.
-- **Residency correctness** — a `resident: index` table larger than the
+- **Residency correctness** — a `resident: keys` table larger than the
   configured budget returns every row correctly by id, byte-identical including
   every heap-valued column, and scans in full.
 - **Constraints across the boundary** — `@unique` refuses a duplicate whose
@@ -240,8 +242,8 @@ Acceptance is the story's Given/When/Then list; this is how each is exercised.
 - **Runtime refusals** — `durable: true` with no `WO_DATA` fails at startup;
   a budget breach names the table and the annotation.
 - **Crash safety** — `kill -9` mid-append and mid-checkpoint on a
-  `resident: index` table; replay loses no acked write and no row appears twice.
-- **Performance** — new baseline rows for the `resident: index` read path with
+  `resident: keys` table; replay loses no acked write and no row appears twice.
+- **Performance** — new baseline rows for the `resident: keys` read path with
   its amplification versus resident, published in `perf-targets.md` as a number
   a developer can plan around; and a regression check that resident tables did
   not move.

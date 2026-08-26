@@ -9,11 +9,12 @@ chain: 5
 # databasev2 4 — io_uring group-commit write path
 
 > **Moved 2026-08-26** from the language track, where this was iteration 23.
-> Part of [Story — the database beyond RAM](../language-runtime-database/00-story.md). Content unchanged by
+> Part of [Story — databasev2: the database beyond RAM](00-story.md). Content unchanged by
 > the move; its dependencies are restated in that track index.
 
 > Format: fiberloom `product/story-iteration-template`. Part of
-> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md).
+> [Story — one language, one runtime, one database, one binary](../language-runtime-database/00-story.md)
+> — the track this iteration was authored in before the 2026-08-26 move.
 >
 > **Inserted 2026-08-15.** The write-path optimization, and deliberately the
 > LAST database performance iteration: it only earns its complexity once
@@ -96,7 +97,7 @@ chain: 5
 - **io_uring for reads.** For a fully-resident table reads never touch a
   descriptor, so there is nothing to accelerate on the read path. This is a
   write-durability optimization, full stop. **Note (2026-08-26):** principle 7's
-  residency half was amended, so a table declaring `resident: index`
+  residency half was amended, so a table declaring `resident: keys`
   ([databasev2 2](02-table-storage-modes.md)) *does* `pread` rows from the log —
   and accelerating that read path with io_uring becomes a real, separate
   question. It is not this iteration's, and it should not be folded in: this

@@ -22,7 +22,7 @@ status: refine
 > **⚠ Superseded in part, 2026-08-26.** The brainstorm settled on a different
 > shape than this document describes: one log-structured engine where the WAL
 > *is* the row store, with residency declared per table (`resident: all` /
-> `resident: index`) rather than a three-valued `mode:` enum including `cold`.
+> `resident: keys`) rather than a three-valued `mode:` enum including `cold`.
 > Principle 7 was amended accordingly — the log is authoritative, residency is
 > the declaration. This file is rewritten once the grammar is approved; read the
 > [track index](00-story.md) and `docs/00-principles.md` §7 as current.
