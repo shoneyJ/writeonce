@@ -604,7 +604,7 @@ story file); slots in when scheduled — nothing in the chain depends on it.
 
 ### ▸ databasev2 — the database beyond RAM
 
-New 2026-08-26. **The problem:** RAM is authoritative (principle 7) and nothing
+New 2026-08-26. **The problem:** rows were resident unconditionally and nothing
 declares a budget. Rows live in `malloc`'d slabs whose addresses are stable
 forever; there is no eviction, spill or paging anywhere in `database/src/`; the
 WAL never checkpoints so boot replays all history; and durability is one

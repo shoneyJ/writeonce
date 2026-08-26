@@ -116,7 +116,7 @@ status: refine
 - **A plugin/app ecosystem.** In-runtime recompile is
   [iteration 26](26-blue-green-deploy.md)'s; nothing here loads
   code at run time.
-- **Scale claims.** RAM is authoritative (64 MiB arena by default,
+- **Scale claims.** Rows are resident by default (64 MiB arena default,
   `WO_HEAP_MB`), so this is a team-scale platform and the README states the
   row ceiling it was measured at.
 

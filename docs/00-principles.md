@@ -68,17 +68,42 @@ binary embeds its own source, so prod is always self-describing.
 events; a database that is also the app must not blink.
 *Enforced by:* [the blue-green spec](superpowers/specs/2026-08-03-blue-green-vm-design.md).
 
-## 7. RAM is authoritative; the WAL makes it durable
+## 7. The log is authoritative; residency is a declared per-table policy
 
-All reads serve from memory. Every mutation is WAL-logged and fsynced
-before acknowledgment; boot replays the log. Mirrors (Postgres) are
-reconstructible backups that reads and acks never depend on.
-*Why:* one source of truth with predictable latency; durability is a
-sequential append, not a storage engine bolted to the side.
+**Amended 2026-08-26.** This principle read "RAM is authoritative; the WAL
+makes it durable. All reads serve from memory." The durability half was never
+under strain and is unchanged. The residency half was false for a real
+workload, so it is now a declaration rather than a law.
+
+**Durability, unconditional:** every mutation is WAL-logged and fsynced before
+acknowledgment; boot replays the log; a torn tail is dropped whole by CRC; an
+ack means the commit reached disk. Mirrors (Postgres) are reconstructible
+backups that reads and acks never depend on. None of this is per-table and
+none of it is negotiable.
+
+**Residency, declared:** what a table keeps in memory is stated at the
+declaration site. The default keeps every row resident and serves reads at
+memory speed. A table that cannot fit says so, and then only its indexes are
+resident while rows are read from the log by offset — the kernel page cache is
+the hot copy, which is why the engine uses `pread` and deliberately not
+`O_DIRECT`.
+
+*Why the amendment:* the original wording is right for a knowledge-management
+app and simply false for a 120 GB order table on a 32 GB host. A doctrine a
+real workload cannot satisfy does not get followed, it gets ignored — and the
+failure it produced was an OOM kill, which is the least debuggable outcome
+available. The fix keeps one storage engine and one source of truth: the log
+*is* the database, and RAM is how much of it you choose to serve fast. What was
+rejected in 2026-08-18 and stays rejected is a *second* engine — a paged
+B-tree with its own buffer pool ([`plan/discarded.md`](plan/discarded.md)).
+Reading rows from the log we already write is not that.
+
 *Enforced by:* [the db-engine binding plan](superpowers/plans/2026-08-01-db-engine-binding.md)
-(typed WAL + boot replay, shipped); the mirror-is-backup doctrine is
-recorded in [`plan/discarded.md`](plan/discarded.md) (the Rust-era WAL
-and mirror plans 11/16 were removed with that track 2026-08-18).
+(typed WAL + boot replay, shipped); the residency declaration and its
+enforcement are [databasev2 2](stories/databasev2/02-table-storage-modes.md);
+the mirror-is-backup doctrine is recorded in
+[`plan/discarded.md`](plan/discarded.md) (the Rust-era WAL and mirror plans
+11/16 were removed with that track 2026-08-18).
 
 ## 8. Samples force the grammar
 

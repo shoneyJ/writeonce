@@ -1,0 +1,286 @@
+# databasev2 2 — table residency: the log as row store (for review)
+
+> **Status:** design approved in brainstorm 2026-08-26, pending review of this
+> document. Implements [databasev2 2](../../stories/databasev2/02-table-storage-modes.md),
+> which is rewritten to match once this is approved. Amends
+> [principle 7](../../00-principles.md) — already applied.
+>
+> Driving requirement, from the developer: **a 120 GB order table on a 32 GB
+> host.** Not a tuning problem; no eviction policy fixes it. Small data-driven
+> applications are well served by today's resident default and must not regress.
+
+## Decisions taken (the brainstorm's forks, settled)
+
+| Fork | Decision |
+| --- | --- |
+| One enum or two keys | **Two keys.** `durable:` and `resident:` answer two different developer questions ("do I need this after a restart?", "does it fit in RAM?"). One enum forces a name for each *combination*, which is what made a third value unreadable. |
+| Mode vocabulary | **`resident: all \| index`** and **`durable: true \| false`**. No `cold`, `tiered`, `paged`, `mmap` or `buffer` in the grammar. |
+| Optional or mandatory | **Optional, both default to today's behaviour** (`durable: true`, `resident: all`). All 28 existing declarations compile unchanged; no goldens reblessed. |
+| Which storage architecture | **One engine, log-structured.** The WAL already holds every row; keep an in-RAM id→offset map and read rows back with `pread`. No second engine. |
+| Row cache | **None in user space.** The kernel page cache is the hot copy — the repo's own stated position in `exploration/postgresql/buffer-and-checkpoint.md`: "`pread` against an fd that already has its page cached is a memcpy… the page cache is the one cache we want", and the reason the engine avoids `O_DIRECT`. |
+| `@unique` on a non-resident table | **Allowed; its index is unconditionally resident.** Settled here rather than deferred — see Constraints. |
+| Budget unit | **Bytes** (estimated resident footprint). Rows is the meaningless unit: a text-heavy row and an Int-only row differ by an order of magnitude, so a row count cannot bound RAM. |
+| Rejected architectures | `mmap` and a buffer pool stay out — see Alternatives rejected. `discarded.md`'s paged-engine rejection is amended to *partly revisited*, not reversed. |
+
+## The problem, read off the engine
+
+Facts, each verified in source rather than assumed:
+
+- Rows live in `malloc`'d slabs of `DB_SLAB_ROWS` (256), allocated as a table
+  grows and freed only at table teardown. The free-slot list recycles removed
+  slots, so a delete-heavy table plateaus; a growing table only grows.
+- **The ceiling is process RSS and nothing declares it.** `WO_HEAP_MB`
+  (default 64 MiB) bounds the VM object arena; table storage is separate
+  `malloc`. No knob says "this database may use at most N".
+- No eviction, spill, paging or LRU exists anywhere in `database/src`.
+- **Durability is process-global.** `main.c` opens one `shard-0.wal` when
+  `WO_DATA` is set. `db.c` guards every WAL append with a null check on
+  `vm->rt.wal`, so with no `WO_DATA` **every table is silently volatile** — a
+  program can declare nothing and lose everything.
+- An allocation failure is clean: every `malloc` in the row encoder is checked
+  and `DB_ERR_OOM` maps to `WO_T_OOM`, a catchable trap. The dangerous exit is
+  the one *before* that — swap thrash, which carries no error signal at all.
+
+The measurements that bound the design, from iteration 22: durable inserts
+≈4.5k/s against RAM ≈297k/s (the 66× fsync gap); reads 1.3M ops/s at p50 1µs
+after the index probe landed. The read number is what a resident table buys and
+what must not regress for tables that keep it.
+
+### Why the arithmetic works
+
+A 120 GB table at ~500 B/row is ≈240M rows. An id→offset entry is 16 bytes, so
+the resident index is **≈3.8 GB** — comfortable inside 32 GB with room for two
+secondary indexes of similar cost. That ratio is the whole design: **indexes
+stay resident, rows do not.** It buys roughly two orders of magnitude of table
+size, not infinity, and the spec says so plainly because a design sold as
+unlimited gets deployed as if it were.
+
+## The design
+
+### Grammar
+
+Two new `@table` arguments, both optional. The parser's argument loop already
+matches `name` and `index` and rejects anything else with a catalogued
+diagnostic; these are two more arms and an updated message. `Ast.table_cfg`
+grows two fields beside `table_name` and `indexes`.
+
+| Argument | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `durable` | `true`, `false` | `true` | `false` skips the WAL append entirely: no record, no fsync, ack from RAM, table empty after restart. |
+| `resident` | `all`, `index` | `all` | `index` keeps the id map and every secondary index in RAM; rows are read from the log by offset. |
+
+`true`/`false` are already keyword tokens; `all`/`index` are parsed as the same
+bare identifiers the `index:` argument's column list already accepts. No lexer
+change.
+
+**One wart, surfaced rather than buried:** `resident: index` puts the word
+`index` in value position while `index:` is also a key, so
+`@table(index: [customer], resident: index)` reads awkwardly on first
+encounter. The parser distinguishes them structurally and there is no
+ambiguity, but a reviewer may prefer `resident: keys` or `resident: index_only`.
+Flagged for the review of this document; the mechanism is unaffected either
+way.
+
+### The four combinations
+
+| `durable` | `resident` | Status |
+| --- | --- | --- |
+| `true` | `all` | Today's behaviour. The default. Reads at memory speed. |
+| `false` | `all` | Volatile scratch: sessions, rate-limit counters, idempotency keys. Skips the 66× fsync cost. What porch 1–3 need. |
+| `true` | `index` | The 120 GB case. Rows in the log, indexes resident, `pread` on read. |
+| `false` | `index` | **Refused at compile time.** Rows would have nowhere to be read from. |
+
+### Read, write and recovery paths
+
+- **Insert** — unchanged for `resident: all`. For `resident: index`: encode and
+  append the record as today, then record id→offset in the resident map instead
+  of retaining the row in a slab. The WAL append is already the durable write;
+  this stops discarding its payload.
+- **Read by id** — resident map lookup, then `pread` at the offset, verify CRC,
+  decode into fresh VM values. The decode path already exists
+  (`wo_val_decode_vm` always copies; rows never hand out interior pointers), so
+  the change is where the bytes come from.
+- **Update** — append a new record, repoint the offset. The superseded record
+  becomes garbage, reclaimed by the checkpoint.
+- **Delete** — append a tombstone, drop the id from the map and every index.
+- **Scan** — a sequential walk of the log, which is the case log-structured
+  storage is best at. Cost changes from memory-speed to sequential-disk; the
+  query surface is unchanged in *meaning* and materially different in *cost*.
+- **Boot** — replay rebuilds the offset map by scanning the log. Correct, and
+  O(entire history), which is the honest cost of shipping this before
+  [databasev2 3](../../stories/databasev2/03-wal-checkpoint.md).
+
+### Row encoding: the one real rewrite
+
+A row slot today holds raw pointers. `table.c`'s `WO_K_TEXT` case allocates a
+`db_text` and returns its address as the slot word; owned, multi and map do the
+same. Pointers minted by a dead process are meaningless in a file, so the
+on-disk record must be **self-contained and offset-based**: every heap value
+inlined into the record with internal references expressed as offsets from the
+record's own start.
+
+This is confined to `db_val_encode`/`db_val_decode` and the record framing. It
+is the substantive engineering in this iteration and the place to expect the
+bugs. `wal.c` already frames records as `len|crc|payload|mark`, so the framing
+exists; what changes is that the payload must be readable standalone rather than
+only replayable.
+
+### Constraints across the residency boundary
+
+- **`@unique` is allowed, and its index is unconditionally resident.** A shadow
+  check cannot scan slabs that are not there, so correctness requires the unique
+  column's index in RAM. Cost is one hash entry per row — the same order as the
+  id map, so a unique column roughly doubles the resident index. Stated at the
+  declaration so the developer can see what they bought. Silently checking only
+  resident rows is the one outcome that must never ship.
+- **Foreign-key restrict works unchanged.** It is a secondary-index probe, and
+  secondary indexes are resident.
+- **`ref` navigation works unchanged**, at the cost of a `pread` per hop.
+- **A `resident: all` table may hold a `ref` into a `resident: index` table**
+  and vice versa — both are durable, so neither evaporates. This is the case
+  that a `durable: false` table genuinely breaks, below.
+
+### What the compiler enforces
+
+Four refusals, each a catalogued `WO-E1xx` diagnostic added in the same change
+as the code — not afterwards:
+
+1. `durable: false` with `resident: index` — the meaningless combination.
+2. An unknown value for either argument, or either argument given twice.
+3. **A `durable: true` table holding a `ref` into a `durable: false` table.**
+   A persistent row cannot reference one that evaporates on restart; FK restrict
+   cannot save it and the dangling reference is provable from the class table.
+   This is the highest-value check in the iteration.
+4. A `cold`, `tiered`, `ram` or other retired mode word — refused with a message
+   naming the two real arguments, so the vocabulary explored during the
+   brainstorm does not become folklore.
+
+### What the runtime enforces
+
+- **`durable: true` with no `WO_DATA` is a startup refusal.** Today this
+  combination silently loses everything, which is the worst failure mode in the
+  current engine. A program that declares durability and is given nowhere to put
+  it must not start. This is independent of residency and is arguably the most
+  valuable single line in the spec.
+- **A byte budget that exists by default, breached loudly.** The budget bounds
+  estimated resident footprint across all tables. On breach the program refuses
+  with a message naming the largest offending table and the exact annotation to
+  add, so the 120 GB developer meets a diagnostic at 32 GB rather than the OOM
+  killer.
+
+  **The default must not be "no budget"** — that was a contradiction in the
+  first draft of this spec: a budget nobody sets cannot produce the diagnostic
+  that is this design's main deliverable, and the ERP developer would still meet
+  the OOM killer. So the default is a **fraction of host-detected available
+  memory**, overridable by an environment variable and by a per-program
+  declaration. Choosing that fraction is the one number this spec cannot supply:
+  it comes from [databasev2 1](../../stories/databasev2/01-ram-ceiling-measurement.md)'s
+  swap-onset measurement, which is why 1 sequences before 2. Until 1 lands,
+  implement the mechanism with a conservative placeholder fraction and treat the
+  value as unset rather than settled.
+
+  Consequence to accept deliberately: a program that today grows past that
+  fraction and survives on a large host will now refuse. That is the intended
+  behaviour change — it converts an invisible slide into swap into a startup
+  error — but it *is* a behaviour change, and it is the second of the two
+  breaks listed under Migration.
+- `WO_DATA` remains the data-directory location. It stops being the durability
+  switch; the declaration is.
+
+### Format
+
+The class descriptor carries both properties, so the runtime never re-derives
+them. This moves `WOB_VERSION` (currently 6) and the format contract in the same
+commit as the code. An older image is refused on version rather than misread.
+
+## Why this shape
+
+- **It keeps one engine and one source of truth.** The log *is* the database.
+  Nothing here adds a second storage system, which is what the 2026-08-18
+  rejection was actually about.
+- **It costs nothing for tables that do not use it.** A `resident: all` table
+  takes the same path it takes today. The 1.3M ops/s read baseline is the
+  regression gate, and a measurable regression there is grounds to reject the
+  implementation rather than tune it.
+- **The failure mode becomes a diagnostic.** Two of the three exits
+  characterised in databasev2 1 — swap thrash and the OOM killer — are replaced
+  by a refusal that names the fix.
+- **It is declared, not automatic.** No threshold heuristic, no performance
+  cliff the compiler cannot explain. Consistent with a language whose thesis is
+  that the compiler tells you the truth.
+
+## Alternatives rejected
+
+| Alternative | Why not |
+| --- | --- |
+| **`mmap` the row file** | Requires offset-based rows *and* gives up precise ack-after-fsync for the kernel's flush schedule. The repo's own mmap study only ever proposed it read-only for segment lookups. If rows become self-contained anyway, mmap is a possible later optimisation of the read path — recorded, not adopted. |
+| **Buffer pool with dirty-page tracking** | This is the Rust-era phase-12 design in `exploration/postgresql/buffer-and-checkpoint.md` (`CachedRow { bytes, dirty }`, `WO_CACHE_ROWS` LRU) that died with that track. It duplicates the kernel page cache, and the page cache is explicitly the cache this project wants. |
+| **Paged B-tree engine** | Rejected 2026-08-18 and still rejected. Reading rows from the log we already write is not this. |
+| **A three-valued `mode:` enum** | Needs a name per combination. The brainstorm demonstrated that the third name is unwriteable before its mechanism is decided. |
+| **Automatic spill at a threshold** | No annotation needed, but unpredictable cliffs and magic the compiler cannot explain. |
+| **Disk-backed by default** | Costs every application the 1µs read, including the small ones explicitly said to be well served today. |
+
+## Proof plan
+
+Acceptance is the story's Given/When/Then list; this is how each is exercised.
+
+- **Compatibility** — all 28 existing `@table` declarations compile untouched;
+  `just employee`, `just db-actor`, `just web-app`, `just site`, `oop-accept`
+  unchanged; no golden reblessed.
+- **Volatility** — a `durable: false` table produces no WAL growth (measured,
+  not asserted) and is empty after restart while durable siblings replay intact.
+- **Residency correctness** — a `resident: index` table larger than the
+  configured budget returns every row correctly by id, byte-identical including
+  every heap-valued column, and scans in full.
+- **Constraints across the boundary** — `@unique` refuses a duplicate whose
+  conflicting row is not resident; FK restrict refuses a delete whose only
+  referrer is not resident. Corpus fixtures, both.
+- **Compiler refusals** — a `compile-fail` fixture per diagnostic, each pinning
+  the exact code.
+- **Runtime refusals** — `durable: true` with no `WO_DATA` fails at startup;
+  a budget breach names the table and the annotation.
+- **Crash safety** — `kill -9` mid-append and mid-checkpoint on a
+  `resident: index` table; replay loses no acked write and no row appears twice.
+- **Performance** — new baseline rows for the `resident: index` read path with
+  its amplification versus resident, published in `perf-targets.md` as a number
+  a developer can plan around; and a regression check that resident tables did
+  not move.
+- **Sanitisers** — ASan on the new decode path, which is where the bugs are.
+
+## Out of scope
+
+- **Checkpoint and compaction** — [databasev2 3](../../stories/databasev2/03-wal-checkpoint.md).
+  This spec's boot cost is O(history) until 3 lands, and 3's snapshot should
+  persist the offset map so boot stops rescanning. That coupling is stated in
+  both documents.
+- **Eviction policy and a resident row cache** — [databasev2 5](../../stories/databasev2/05-bounded-tables-eviction.md).
+  This design needs neither: rows are either all resident or none are.
+- **io_uring on the read path** — a real question that only exists after this
+  lands; noted in [databasev2 4](../../stories/databasev2/04-io-uring-commit.md),
+  not folded into it.
+- **Per-shard residency** — the owner shard owns the store and the log. A
+  `durable: false` table arguably need not live on the owner at all, which would
+  be dramatically faster and a different consistency story. Recorded as a
+  candidate, deliberately not decided here.
+- **Migrating an existing dataset between settings**, and a WAL written when a
+  table had different settings: refuse clearly on mismatch, do not convert.
+- **`transaction { }` and `@table` feature flags** — language iteration 18,
+  approved spec, left whole.
+
+## Migration
+
+Nothing to convert. Both arguments default to present behaviour, so every
+existing program, manifest, corpus fixture and golden compiles and runs
+unchanged.
+
+**Two deliberate behaviour changes**, both converting a silent failure into a
+loud one, and both listed here so neither arrives as a surprise:
+
+1. `durable: true` (the default) with no `WO_DATA` becomes a startup refusal.
+   Today it silently discards every write.
+2. Total estimated resident footprint crossing the default budget fraction
+   becomes a startup or insert refusal. Today the program slides into swap with
+   no signal and is eventually killed.
+
+Both are opt-out-able by explicit declaration. Neither is a data-format change,
+so a rollback is a binary swap with no migration.

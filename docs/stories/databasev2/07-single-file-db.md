@@ -17,7 +17,7 @@ status: refine
 > **Inserted 2026-08-22** (developer ask: "can the persistent db be in
 > file.db form?"). The truth is already almost there: `WO_DATA=<dir>`
 > holds exactly ONE file (`shard-0.wal`) — the entire persistent state,
-> since RAM is authoritative and no data pages exist. This iteration
+> since the log is the whole store and no data pages exist. This iteration
 > makes the surface say so: point `WO_DATA` at a file and THAT file is
 > the store. Small, driver-only, independent of the concurrency chain.
 
@@ -50,7 +50,7 @@ status: refine
 
 ## Out Of Scope
 
-- A paged database file (SQLite's shape) — RAM is authoritative; the
+- A paged database file (SQLite's shape) — still rejected; the
   disk story is the WAL, full stop.
 - Checkpoint/compaction — [iteration 32](03-wal-checkpoint.md)'s; its
   rename-swap (write snapshot+tail to a NEW file, fsync, `rename()`

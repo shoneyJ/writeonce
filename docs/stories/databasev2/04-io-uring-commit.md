@@ -93,9 +93,14 @@ chain: 5
 - **io_uring for the network/accept path.** This iteration is the WAL write
   path only; the socket side is the shard-actor runtime's and the network
   layer's concern.
-- **io_uring for reads.** RAM is authoritative — reads never touch a
-  descriptor (phase-B doctrine), so there is nothing to accelerate on the
-  read path. This is a write-durability optimization, full stop.
+- **io_uring for reads.** For a fully-resident table reads never touch a
+  descriptor, so there is nothing to accelerate on the read path. This is a
+  write-durability optimization, full stop. **Note (2026-08-26):** principle 7's
+  residency half was amended, so a table declaring `resident: index`
+  ([databasev2 2](02-table-storage-modes.md)) *does* `pread` rows from the log —
+  and accelerating that read path with io_uring becomes a real, separate
+  question. It is not this iteration's, and it should not be folded in: this
+  one is about the commit path and its acceptance is a durability number.
 - **Registered buffers / fixed files / SQPOLL tuning** beyond what the
   benchmark shows is worth it. Start with the plain submit/complete model;
   add ring features only when 22's number says a specific one pays.

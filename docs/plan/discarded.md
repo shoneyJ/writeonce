@@ -43,7 +43,7 @@ Status board: [`00-status.md`](../stories/00-status.md) · Doctrine: [`../00-pri
 | **Self-hosted `.wo` deploy logic** | Bootstrap problem — the deploy path cannot be written in the language whose deployment it implements. Recorded as a much-later possibility. |
 | **Script-based / destructive schema migrations (v1)** | Additive-only auto-diff is what makes rollback unconditional: the previous version ignores fields and classes it never knew. Destructive changes reject at propose time. |
 | **Portability abstractions over Linux** | Targeting one kernel lets the runtime use its sharpest primitives directly instead of the lowest common denominator. Principle 9. |
-| **Mirrors on the commit path** | The Postgres mirror is a reconstructible backup. RAM is authoritative; reads and acks never depend on it. Principle 7. |
+| **Mirrors on the commit path** | The Postgres mirror is a reconstructible backup. Reads and acks never depend on it — the log is authoritative. Principle 7. |
 
 ## Process / docs
 
@@ -72,7 +72,7 @@ goes to find what took each one's place.
 | --- | --- |
 | `09-concurrency-scaleout.md` | [`08-shard-actor-runtime.md`](../stories/language-runtime-database/08-shard-actor-runtime.md) + [`11-fibers.md`](../stories/language-runtime-database/11-fibers.md) — the arc, landed 2026-08-21 |
 | `10-storage-foundations.md`, `11-wal-and-recovery.md` | [`09-database-engine.md`](../stories/language-runtime-database/09-database-engine.md) (typed WAL + replay) and [`22-durability-throughput-scale.md`](../stories/language-runtime-database/22-durability-throughput-scale.md) (the measurements) |
-| `12-engine-disk-cutover.md` | Nothing — RAM stays authoritative by doctrine (principle 7). The disk story is the WAL; reclamation is [`databasev2 3, WAL checkpoint`](../stories/databasev2/03-wal-checkpoint.md) |
+| `12-engine-disk-cutover.md` | **Partly revisited 2026-08-26.** The disk story is still the WAL and a paged B-tree with its own buffer pool stays rejected. But principle 7's *residency* half was amended: a table may now declare that only its indexes are resident and its rows are read from the log by offset — [databasev2 2](../stories/databasev2/02-table-storage-modes.md). Reclamation remains [`databasev2 3, WAL checkpoint`](../stories/databasev2/03-wal-checkpoint.md) |
 | `13-class-model-live-pricing.md` | [`09b-table-relations-query.md`](../stories/language-runtime-database/09b-table-relations-query.md) — `@table`, `ref`/`backlink`, the compiler-checked query surface |
 | `07-inotify-content-watcher.md` | [`07-logwatcher-proof.md`](../stories/language-runtime-database/07-logwatcher-proof.md) — the log-watcher sample polls via `fs.stat`; inotify was never surfaced as a builtin |
 | `08-sendfile-static-assets.md` | Nothing. `sendfile` is not exposed; static assets are served as `Text` through `net.write` |
