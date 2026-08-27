@@ -1,196 +1,180 @@
 ---
 track: databasev2
 iteration: "2"
-status: refine
+status: in-progress
 ---
 
-# databasev2 2 — `@table` storage modes: durability becomes a language decision
+# databasev2 2 — per-table storage: `durable` and `resident`
 
 > Part of [Story — databasev2: the database beyond RAM](00-story.md).
-> Needs [1](01-ram-ceiling-measurement.md) — a mode's default should follow from
-> a measurement, not a preference.
+> Spec: [`2026-08-26-table-residency-design.md`](../../superpowers/specs/2026-08-26-table-residency-design.md)
+> · plan: [`2026-08-26-table-residency.md`](../../superpowers/plans/2026-08-26-table-residency.md).
 >
-> **The developer's ask, and the language enrichment this track exists for.**
-> Today durability is one environment variable for a whole process: `WO_DATA` is
-> set and every `@table` is WAL-logged, or it is not and none are
-> (`runtime/src/main.c`). Real applications are not uniform. A session table, a
-> rate-limit counter and a page cache are resident and disposable; an orders
-> table is resident and precious; an audit log is precious and rarely read. One
-> global switch forces "everything is precious" or "nothing is", and the
-> developer pays for the wrong one either way.
+> **The language enrichment this track exists for.** Before this, durability was
+> one environment variable for a whole process: `WO_DATA` set and every `@table`
+> is WAL-logged, or unset and none are (`runtime/src/main.c`, and `db.c` guards
+> each append on the WAL pointer). Real applications are not uniform — a session
+> table and a rate-limit counter are disposable, an orders table is precious, a
+> 120 GB audit table does not fit in RAM at all. One global switch forces
+> "everything is precious" or "nothing is", and the developer pays for the wrong
+> one either way.
+>
+> **Rewritten 2026-08-27** to match what was designed and built. Two earlier
+> drafts of this file described a three-valued `mode:` enum including `cold`;
+> that design was replaced during the brainstorm and the history is at the
+> bottom.
 
-> **⚠ Superseded in part, 2026-08-26.** The brainstorm settled on a different
-> shape than this document describes: one log-structured engine where the WAL
-> *is* the row store, with residency declared per table (`resident: all` /
-> `resident: keys`) rather than a three-valued `mode:` enum including `cold`.
-> Principle 7 was amended accordingly — the log is authoritative, residency is
-> the declaration. This file is rewritten once the grammar is approved; read the
-> [track index](00-story.md) and `docs/00-principles.md` §7 as current.
+## The design, as built
 
-## Goals
+Two optional `@table` arguments, because the developer is answering two
+independent questions — *do I need this after a restart?* and *does it fit in
+RAM?* A single enum would have forced a name for every combination, which is
+what made the third value unwriteable before its mechanism existed.
 
-- **Move the storage decision to the declaration site.** `@table(mode: ...)`,
-  chosen per table, in the source, where the person who knows what the data is
-  worth is already writing. An operations runbook is the wrong place for a fact
-  the compiler could hold.
-- **Three modes, each earning its existence.** `ram` — resident, never logged,
-  gone on restart. `durable` — today's behaviour, resident and ack-after-fsync,
-  and the **default** so every existing program is byte-identical. `cold` —
-  durable and not required to be resident, declared here and *implemented* in
-  [6](06-cold-tiering.md), because a mode with no engine behind it is a promise.
-- **Make the compiler enforce what the mode means.** This is the part that makes
-  it a language feature rather than a config key. A program that inserts into a
-  `ram` table and expects the row after a restart is stating a contradiction, and
-  the compiler is the right place to say so — at minimum for the cases it can
-  see statically, with the diagnostic catalogued like every other.
-- **Let the engine act on it.** `ram` tables skip the WAL write entirely, which
-  is not merely a saving — it is the 66× gap iteration 22 measured (4.5k durable
-  vs 297k RAM inserts/s) becoming available per table instead of per process.
-  They also become the first candidates to shed under pressure, which is what
-  [5](05-bounded-tables-eviction.md) builds on.
-- **Keep principle 7 intact and say why.** RAM stays authoritative for every
-  table that says so. `cold` is a declared, per-table exception a developer opts
-  into with the trade visible at the declaration.
+| Argument | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `durable` | `true`, `false` | `true` | `false` skips the WAL append entirely: no record, no fsync, ack from RAM, table empty after restart |
+| `resident` | `all`, `keys` | `all` | `keys` keeps the id map, secondary indexes and unique shadows resident; rows are read back from the log by offset |
 
-## Phases
+Both default to the pre-existing behaviour, which is why all 28 `@table`
+declarations in the repository compiled unchanged and no golden moved.
+`durable: false` with `resident: keys` is refused — rows would be neither
+logged nor resident, so there would be nowhere to read them from.
 
-### Phase A — the grammar
+The engine stays **one log-structured store**. The WAL already held every row;
+this iteration stops discarding the payload. No second engine, no user-space row
+cache — the kernel page cache is the hot copy, which is the position
+`exploration/postgresql/buffer-and-checkpoint.md` already argued and the reason
+the engine avoids `O_DIRECT`.
 
-- Extend the `@table` argument parser with `mode:`. The path is already cut:
-  the argument loop matches `name` and `index` and rejects anything else with a
-  catalogued diagnostic (`unknown @table argument ... (supported: name, index)`),
-  so this is one more arm plus an updated message.
-- Extend `Ast.table_cfg` — today `{ table_name; indexes }` — with the mode, and
-  give it the default so every existing `@table` keeps its meaning.
-- Reject the incoherent cases at parse time: `mode` given twice, an unknown mode
-  name. Both belong in the same diagnostic family as the existing `@table`
-  errors, and both go in the error catalog **in this change**, not later — that
-  catalog went stale once by exactly that omission.
-- Verify: golden AST fixtures for each mode; `woc-test` green; every existing
-  `@table` in every sample parses unchanged.
+Principle 7 was amended for this: the log is authoritative, residency is a
+declared per-table policy. Durability is untouched and unconditional.
 
-### Phase B — the mode reaches the image and the engine
+## Progress
 
-- Carry the mode through the class descriptor into the `.wob` image so the
-  runtime knows it without re-deriving anything. This is a format change, so it
-  moves `WOB_VERSION` and the format contract in the same commit as the code.
-- The engine consults it at the one choke point that already exists: the
-  `INDEX HOOK` / WAL staging site in `wo_row_insert` / `wo_row_remove`, which
-  `database/src/CODE-LOGIC.md` names as the only place storage may be mutated.
-  A `ram` table stages nothing.
-- Replay must skip records for tables that are now `ram` — a WAL written when a
-  table was `durable` and replayed after the source changed is a real
-  migration case, and silently resurrecting rows into a `ram` table would be
-  worse than refusing.
-- Verify: a `ram` table's inserts produce no WAL growth (measured, not assumed);
-  a `durable` table is byte-identical to today; a mode change across a restart
-  is handled explicitly rather than by accident.
+| # | Task | State |
+| --- | --- | --- |
+| 1 | grammar: both arguments, defaults preserve behaviour | ✅ `69b7ce2` |
+| 2 | WO-E224: refuse a durable `ref` into a volatile table | ✅ `753e6c4` |
+| 3 | `.wob` v7: the class descriptor carries both properties | ✅ `7e68c99` |
+| 4 | `durable: false` skips the WAL append and replay | ✅ `dd67e31` |
+| 5a | `wo_wal_next_offset` — exact record offsets | ✅ `ac7d8af` |
+| 5b | `wo_wal_read_row_at` — a row from a log offset | ✅ `d0c370c` |
+| 5c | the id→offset map + drop-payload-keep-index | ⬜ **not written up** |
+| 5d | rewiring `wo_row_ptr`'s call sites, slab scans, `@unique`/FK across the boundary | ⬜ not written up |
+| 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
+| 7 | measure, gate, document, close out | ⬜ |
 
-### Phase C — the compiler's enforcement
+**The `durable` half is complete and usable.** A volatile table is a full table
+in-process — same indexes, same `@unique`, same FK restrict, same query surface
+— and is simply empty after a restart. That is what
+[porch 1–3](../porch/01-store-backed-middleware.md) need for sessions,
+rate-limit counters and idempotency keys.
 
-- Decide how far static checking goes (fork 2) and implement that much. The
-  floor: `WO_DATA` set with every table `ram` is a program that asked for a data
-  directory it will never write to — worth a warning at least.
-- The interesting case is a `ram` table participating in a `ref`/`backlink`
-  relation with a `durable` one. A durable row holding a foreign key into a
-  table that evaporates on restart is a dangling reference by construction, and
-  FK-restrict cannot save it. This is the check most worth having, and it is
-  statically visible from the class table.
-- Verify: corpus `compile-fail` fixtures for each refusal; each carries the
-  exact `WO-E###` the catalog now documents.
-
-### Phase D — prove it on a real workload
-
-- Give `docs/examples/employee` or the `db-bench` sample a mixed schema — at
-  least one `ram` table and one `durable` — and gate the distinction: after a
-  restart, the durable rows are present and the ram rows are gone. That single
-  assertion is the whole feature.
-- Extend the durability legs of `just db-bench` so the per-table write-path
-  saving appears as a baseline number, not a claim.
-- Verify: `just employee`, `just db-actor`, `just db-bench`, `oop-accept` green.
-
-### Phase E — document the contract
-
-- The `@table` mode surface in the language-surface guide and the db-binding
-  contract; the new diagnostics in the error catalog; the mode's effect on
-  replay in `database/src/CODE-LOGIC.md`.
-- Verify: `just linkcheck` clean; the language-surface guide's `@table` row
-  matches what the parser actually accepts.
+**The `resident: keys` half has its read path but no storage behind it.**
+Offsets can be captured and rows can be read back from them; nothing yet stores
+a table that way.
 
 ## Acceptance Criteria
 
-- **Given** every existing `@table` declaration in the repository, **when** it is
-  compiled after this change, **then** behaviour is byte-identical — `durable`
-  is the default and nothing opts in silently.
-- **Given** a table declared `mode: ram`, **when** rows are inserted with
-  `WO_DATA` set, **then** the WAL does not grow, and after a restart the table is
-  empty while `durable` tables in the same program replay intact.
-- **Given** `mode: ram` and a measured insert workload, **when** it runs against
-  the same shape as a `durable` table, **then** the write-path saving is visible
-  in `bench/baseline.json` — the per-table half of iteration 22's 66× gap.
-- **Given** an unknown mode name or `mode:` given twice, **when** it is compiled,
-  **then** it fails with the catalogued diagnostic naming the legal modes.
-- **Given** a `durable` table holding a `ref` into a `ram` table, **when** it is
-  compiled, **then** the compiler refuses (or warns, per fork 2) — a persistent
-  row cannot reference one that evaporates.
-- **Given** a WAL containing records for a table whose source now says `ram`,
-  **when** the program starts, **then** the situation is handled explicitly
-  (refuse, or skip and report) and never by silently loading rows into a table
-  declared not to have any.
-- **Given** the `.wob` format change, **when** an image from the previous version
-  is loaded, **then** the loader refuses it clearly on the version rather than
-  misreading a descriptor.
+Met:
+
+- **Given** every existing `@table` declaration, **when** compiled, **then**
+  behaviour is byte-identical. ✅ verified as `git diff` over
+  `compiler/test/golden/` being empty after a `WOC_BLESS` run — a green test
+  run alone proves nothing, since blessing rewrites every golden.
+- **Given** `durable: false` with `WO_DATA` set, **when** rows are inserted,
+  **then** the WAL does not grow and the table is empty after a restart while
+  durable siblings replay. ✅ measured: 50 inserts wrote 1500 bytes durable and
+  **0** volatile. Measured against the file's non-zero prefix, because the file
+  is `fallocate`'d to 1 MiB and its size proves nothing.
+- **Given** an unknown value, a repeated argument, a retired design word, or the
+  refused combination, **when** compiled, **then** WO-E102 with a message
+  naming what to write instead. ✅
+- **Given** a `durable` table holding a `ref` into a volatile one, **when**
+  compiled, **then** WO-E224 naming both classes and both escapes. ✅ The
+  reverse direction and every `backlink` shape stay legal, pinned by a run
+  fixture so the check cannot grow over-broad.
+- **Given** a WAL holding records for a class the source now declares volatile,
+  **when** the program starts, **then** it refuses, exits 2, names the class,
+  and is **not** reported as corruption. ✅
+- **Given** a v6 image, **when** loaded, **then** refused on version rather
+  than misread. ✅
+
+Outstanding:
+
+- **Given** a `resident: keys` table larger than any plausible resident budget,
+  **when** rows are read by id and scanned, **then** every row is byte-identical
+  including heap-valued columns. *(needs 5c/5d)*
+- **Given** `@unique` on a `resident: keys` table, **when** a duplicate arrives
+  whose conflicting row is not resident, **then** it is refused. *(5d — the
+  correctness core; a constraint that silently checks only resident rows must
+  never ship)*
+- **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
+  **then** it refuses. *(task 6 — today this combination silently discards
+  every write)*
+- **Given** the resident footprint crossing the budget, **when** it does,
+  **then** a refusal naming the table and the annotation. *(task 6)*
+- **Given** the `resident: all` read baseline, **when** re-measured, **then**
+  inside tolerance — no cost for a feature not used. *(task 7)*
 
 ## Out Of Scope
 
-- **Implementing `cold`.** Declared here so the mode set is settled and the
-  format carries it; the engine behaviour is [6](06-cold-tiering.md). Until then
-  a `cold` declaration must be refused rather than silently treated as
-  `durable` — accepting a mode that does nothing is how a feature becomes a lie.
-- **Per-table capacity limits and eviction** — [5](05-bounded-tables-eviction.md).
-  This iteration says what a table *is*; that one says how much of it there may
-  be.
-- **`@table` feature flags and `transaction { }`** — language
-  [iteration 18](../language-runtime-database/18-memory-db-features.md), whose
-  spec is approved and deliberately left whole.
-- **Per-table WAL files.** One log, one writer, shard 0 — the invariant stage 3
-  established and [7](07-single-file-db.md) depends on. Modes decide *whether* a
-  table logs, never *where*.
-- **Migrating an existing dataset between modes.** A schema-change story, and
-  the repo already records destructive migrations as a recorded future.
-- **Encryption at rest, compression of the WAL.** Neither has a consumer.
+- **Checkpoint and compaction** — [3](03-wal-checkpoint.md). Boot rebuilds the
+  offset map by scanning the log until that lands, which is O(all history);
+  3's snapshot should persist the map.
+- **Eviction and a resident row cache** — [5](05-bounded-tables-eviction.md).
+  This iteration's tables are either fully resident or keys-only.
+- **io_uring on the read path** — a real question that only exists after this;
+  noted in [4](04-io-uring-commit.md), deliberately not folded in.
+- **`transaction { }` and `@table` feature flags** — language
+  [iteration 18](../language-runtime-database/18-memory-db-features.md),
+  approved spec, left whole.
+- **Per-shard residency for volatile tables** — a volatile table has no WAL, so
+  it arguably need not live on the owner shard at all. Faster, and a different
+  consistency story. Recorded as a candidate, not decided.
+- **Converting an existing dataset between settings.** Refuse on mismatch, do
+  not convert — implemented in task 4.
 
-## Info
+## Info — the forks, settled
 
-The grammar surface this touches, read from the source: the parser's `@table`
-argument loop and its `unknown @table argument` failure; `Ast.table_cfg` as
-`{ table_name : string option; indexes : string list list }`; and the class
-descriptor in `runtime/src/wob.h` that the loader validates. Adding a key is
-genuinely small — the semantics are the iteration.
+1. **Two keys, not one enum.** An enum needs a name per *combination*, and the
+   brainstorm demonstrated the third name is unwriteable before its mechanism is
+   decided.
+2. **`keys`, not `index`.** `index:` is already an argument key, so
+   `@table(index: [c], resident: index)` read badly. `all`/`keys` also put both
+   values on one axis — what row data stays resident. `resident: none` was
+   rejected as overclaiming, since the indexes are very much resident.
+3. **Optional with `durable` defaulting true**, not mandatory. Mandatory would
+   have touched 28 declarations, 13 corpus fixtures and 3 goldens; the README
+   already says nothing is API-stable, so making it mandatory at 1.0 stays
+   available.
+4. **`@unique` on `resident: keys` is allowed**, with its index unconditionally
+   resident. Roughly doubles the resident index; stated at the declaration so
+   the cost is visible.
+5. **The budget is bytes, not rows** — a text-heavy row and an Int-only row
+   differ by an order of magnitude, so a row count cannot bound RAM.
 
-Forks the spec must settle:
+## History — two corrections worth keeping
 
-1. **What are the modes called?** `ram` / `durable` / `cold` is descriptive of
-   mechanism. `scratch` / `persistent` / `archived` is descriptive of intent and
-   is what a developer reasons about. The names are the API and are hard to
-   change later; leaning the intent-shaped set for the first two if a
-   short-enough pair can be found, since a developer choosing a mode is thinking
-   about what the data is *for*, not about where it sits.
-2. **How hard does the compiler push?** Three levels: warn on the suspicious
-   cases; refuse the provably-broken ones (a `durable`→`ram` `ref`); or a full
-   dataflow check that an insert into a `ram` table is never expected to persist.
-   The third is not statically decidable in general. Leaning: refuse the
-   relation case (provable, high value), warn on the `WO_DATA`-with-no-durable-
-   table case, and stop there.
-3. **What is the default, and does it depend on iteration 1?** `durable` keeps
-   every existing program identical, which is nearly decisive. But if iteration
-   1's numbers show the WAL write dominating a workload nobody wanted durable,
-   there is an argument for making the choice mandatory — no default, every
-   `@table` states its mode. That is a bigger source change and a better
-   language; the fork is whether the churn is worth it now or at 1.0.
-4. **Does `mode: ram` imply anything about the actor/DB-actor path?** Stage 3
-   marshals worker-shard statements to shard 0 because the owner shard holds the
-   store and the WAL. A `ram` table has no WAL — so does it still need to live on
-   the owner? A per-shard `ram` table would be dramatically faster and a
-   different consistency story. Tempting, out of scope here, and worth recording
-   as a candidate rather than deciding in passing.
+**The three-mode design was replaced.** Earlier drafts had
+`mode: ram | durable | cold`. `cold` conflated two independent properties and
+could not be named honestly before its mechanism existed, and the developer's
+120 GB-on-32 GB case showed the real axis was residency. Replaced by two keys,
+and principle 7 amended rather than worked around.
+
+**The "one real rewrite" was fiction.** The spec claimed the on-disk record was
+pointer-bearing and that re-encoding it was this iteration's substantive
+engineering. That came from reading `table.c`'s `db_val_encode` — which builds
+the *in-memory slot* — and inferring the file format from it. `wal.c`'s
+`enc_val` has been flat since iteration 9. The task was deleted, not reduced.
+
+**The opposite half then turned out to be genuinely deep.** With the format
+fine, the plan's storage steps still read as plumbing. Measured instead:
+`wo_row_ptr` returns a `db_row *` into a slab and has 11 call sites, `table.c`
+has 37 slab references, `db.c:105-181` walks slabs for scans, `enc_val`
+serialises *from* the slab, and **no operation exists that drops a row's payload
+while keeping its index entries**. Hence the 5a–5d split. 5c and 5d need their
+own write-ups, and the two open design questions for 5c are whether the id hash
+stores offsets in place of slot indices or gains a parallel map, and what the
+new operation does about the unique shadows, which currently point at slots.

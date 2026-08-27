@@ -76,42 +76,49 @@ disposable*; an orders table wants *resident and durable*; an audit log wants
 *durable and rarely read*. One global switch cannot express that, so it forces
 either "everything is precious" or "nothing is".
 
-Extending `@table` with a storage mode moves the decision into the language,
-where the compiler can act on it:
+Extending `@table` moves the decision into the language, where the compiler can
+act on it. **Two keys, not one enum** — the developer is answering two
+independent questions, and an enum would need a name for every combination:
 
-- **`ram`** — resident, never WAL-logged, gone on restart. The compiler knows
-  no durability code is needed; the engine knows these rows are the first
-  candidates to shed under pressure; and — the part that matters — a program
-  that expects a `ram` table to survive a restart is now stating something the
-  compiler can refuse.
-- **`durable`** — today's behaviour: resident and WAL-logged, ack after fsync.
-- **`cold`** — durable, and *not* required to be resident. This is the mode that
-  actually raises the ceiling, and it is the one with real design work behind it
-  (iteration [6](06-cold-tiering.md)).
+- **`durable: true | false`** (default `true`). `false` skips the WAL append
+  entirely: no record, no fsync, ack from RAM, table empty after restart. The
+  compiler can then refuse a program that stores a durable `ref` into such a
+  table, because that id would dangle across a restart (WO-E224).
+- **`resident: all | keys`** (default `all`). `keys` keeps the id map, the
+  secondary indexes and the unique shadows resident and reads rows back from
+  the log by offset. This is the key that raises the ceiling — and the
+  arithmetic is why it works: 240M rows × 16 B of index ≈ 3.8 GB resident for a
+  120 GB table.
 
-The grammar change is small and the surface is already the right shape:
-`Ast.table_cfg` is `{ table_name; indexes }`, the parser's argument match
-already rejects unknown keys with a catalogued diagnostic
-(`unknown @table argument ... (supported: name, index)`), and adding one more
-key follows the path `index` already cut. The *semantics* are the work, not the
-syntax — which is exactly why it gets its own iteration
-([2](02-table-storage-modes.md)) and why it comes after the measurement.
+`durable: false` with `resident: keys` is refused: rows would be neither logged
+nor resident, so there would be nowhere to read them from.
 
-This is also the honest answer to "does this break principle 7?" It does not.
-RAM stays authoritative **for the tables that say so**. `cold` is a declared
-exception a developer opts into per table, with the trade written at the
-declaration site rather than buried in an operations runbook.
+The grammar change was small, as predicted — `Ast.table_cfg` gained two fields
+and the parser's argument match two arms. The *semantics* were the work, which
+is why iteration 2 is 7 tasks rather than one.
+
+**Does this break principle 7?** It amends it, deliberately, and the amendment
+is applied: the **log** is authoritative and residency is a declared per-table
+policy. Durability is untouched and unconditional — ack after fsync, replay
+whole-or-nothing, torn tails dropped by CRC. What stays rejected is a *second*
+engine: a paged B-tree with its own buffer pool. Reading rows from the log we
+already write is not that.
+
+An earlier draft of this section proposed a three-valued `mode:` enum including
+`cold`. That name conflated durability with residency and could not be defined
+before its mechanism existed; the history is in
+[iteration 2](02-table-storage-modes.md).
 
 ## The sequence
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
 | 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | what actually happens from 50% RAM to OOM — swap onset, latency cliff, trap behaviour, `kill -9` survival | nothing; extends iteration 22's harness |
-| 2 | [`@table` storage modes](02-table-storage-modes.md) | the grammar: `mode: ram \| durable \| cold`, per table, replacing the global `WO_DATA` all-or-nothing | 1 for its defaults |
+| 2 | [per-table storage](02-table-storage-modes.md) | the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. **In progress — the `durable` half is done** | 1 for the budget default |
 | 3 | [WAL checkpoint](03-wal-checkpoint.md) *(was language 32)* | snapshot + truncate: disk reclaimed, replay bounded | 4 composes |
 | 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | close the 66× durable/RAM write gap (4.5k vs 297k inserts/s) | the arc (landed) |
 | 5 | [Bounded tables and eviction](05-bounded-tables-eviction.md) | a capacity a `ram` table may not exceed, and what happens when it does | 2 |
-| 6 | [Cold tiering](06-cold-tiering.md) | rows that leave RAM and come back — the iteration that raises the ceiling | 2, 3, 5 |
+| 6 | [Cold tiering](06-cold-tiering.md) | ⚠ **largely superseded by 2** — `resident: keys` is the ceiling-raiser. Its premise (a user-space resident working set) was rejected in favour of the kernel page cache. Revisit only with a measurement showing the page cache insufficient | — |
 | 7 | [Single-file store](07-single-file-db.md) *(was language 33)* | `WO_DATA=<path>.db` — a file path IS the store | independent |
 | 8 | [Query grammar from corpora](08-query-grammar-corpus.md) *(was language 27)* | whole-query `count`, `exists` | independent |
 | 9 | [Cross-program tables](09-cross-program-tables.md) *(was language 20)* | attach to a running program's database over local IPC | independent |
@@ -125,11 +132,15 @@ declaration site rather than buried in an operations runbook.
 9 ──▶ 10
 ```
 
-Order rationale: **1 before 2** because a mode's default should follow from a
-measurement, not a guess. **3 and 4 before 6** because tiering onto a log that
-never truncates would make the disk problem worse, not better. **5 before 6**
-because eviction from a bounded resident table is the simpler half of the same
-mechanism, and getting the policy right there de-risks the hard half.
+Order rationale: **1 before 2** because the budget default should follow from a
+measurement, not a guess. **3 and 4 matter to 2** for the same reason tiering
+onto a never-truncating log would have: `resident: keys` rebuilds its offset map
+by scanning the whole log at boot until 3's snapshot persists it.
+
+Amended 2026-08-27: the original rationale sequenced **6** as the ceiling-raiser
+after 3, 4 and 5. `resident: keys` took that role into iteration 2, so 6 is
+largely superseded and 5 is no longer a prerequisite for anything on the
+critical path.
 
 ## What this track does NOT own
 

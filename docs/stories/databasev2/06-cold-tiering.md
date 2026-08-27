@@ -11,6 +11,28 @@ status: refine
 > [3](03-wal-checkpoint.md) so the log this builds on does not grow forever,
 > and [5](05-bounded-tables-eviction.md) for the policy machinery.
 >
+> **⚠ LARGELY SUPERSEDED 2026-08-27 by [iteration 2](02-table-storage-modes.md).**
+> This iteration was written to implement a `cold` mode. That mode no longer
+> exists: the brainstorm replaced it with `resident: all | keys`, and
+> **`resident: keys` is the ceiling-raising mechanism** — indexes resident, rows
+> read from the log by offset. It is iteration 2's tasks 5c/5d, not this file's.
+>
+> Its premise was also specifically *rejected*, not merely relocated. This
+> iteration assumed a **user-space resident working set** with faulting and an
+> eviction policy from [iteration 5](05-bounded-tables-eviction.md). The spec
+> chose the opposite: no user-space row cache at all, because the kernel page
+> cache already is one and a `pread` against a cached page is a memcpy — the
+> position `exploration/postgresql/buffer-and-checkpoint.md` already argued and
+> the reason the engine avoids `O_DIRECT`.
+>
+> **What may still be left:** if measurement after 5c/5d shows the page cache
+> insufficient for some workload, a user-space working set becomes arguable
+> again — but only with that number in hand, which is the opposite of how this
+> file was written. Until then treat the design questions below as answered
+> elsewhere and the phases as void. Its genuinely durable contribution is its
+> fork list, especially "does the language surface the fault cost at the *use*
+> site" — still open, and still the largest question about what writeonce is.
+>
 > **The iteration that actually raises the ceiling, and the one most likely to
 > go wrong.** Everything before it makes the limit visible, declared and
 > managed. This one removes it — for tables that opt in — and in doing so
