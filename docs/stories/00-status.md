@@ -139,9 +139,15 @@ no reference project was consulted for the implementation).
 **The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 🔄 24 (absorbing
 31 + 34) → 23 → 32.** The chain's original order put 31 before 24; the
 2026-08-23 directive absorbed 31 INTO 24, and 34 resolved with it, so
-those three are one slice. **The live slice is iteration 24** — spec and
-plan approved 2026-08-23, executing on branch `chat-ws-lifecycle`, five
-of ten tasks landed. Its running state is the marker doc
+those three are one slice. **Iteration 24 is nine of ten tasks landed and MERGED TO MASTER
+on 2026-08-27** (fast-forward, `ed5334d`): T1 crypto, T2 bounded mailboxes,
+T3 call/reply, T4 `monitor` + T5 `time.after` (ids 89/90 — the reserved holes
+are now filled), T6 ws upgrade, T7 frame codec, T8 chat sample, T9 the chat
+gate. Verified on master: chat 11 checks 0 failures at the full 1000-client
+soak, runtime battery 36 suites 0 fail, compiler 556 checks 0 fail, corpus
+119 checks 0 fail. Only **T10 closeout** remains — which is what still holds
+stories 24/31/34 open. Finishing T9 exposed and fixed a real runtime bug,
+split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md). Its running state is the marker doc
 ([`2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)),
 which is the file to read for what is done and what is next; stories
 [31](language-runtime-database/31-actor-lifecycle.md) and
