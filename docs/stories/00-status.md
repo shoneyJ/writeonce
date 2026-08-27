@@ -76,8 +76,8 @@ Int-only `Item`; `growth N int|text` in the db-bench sample, reading its OWN
 the value *at* a boundary; `growth-verify`, which asserts the survivor of a
 crash is a contiguous intact prefix; and two harness legs — four footprint legs
 under a rootless cgroup v2 cap, a `ceiling` leg that deliberately dies at the cap
-and then replays, and a `randread` leg that reads an oversized table randomly.
-133 checks, 0 failures.
+and then replays, a `randread` leg that reads an oversized table randomly, and a
+`replay` leg that times boot against history length. 148 checks, 0 failures.
 
 **Key findings (measured, not asserted):** per-row footprint is **96.5–100 B**
 Int-only and **320.6–324 B** text-heavy — **3.3×**, not the "order of magnitude"
@@ -92,7 +92,10 @@ collapse": 900 000 rows inside a 64 MiB cap with swap finished in **148 s
 against 150 s uncapped** — ~1%, on a real disk swap file with no zram. Also
 measured: **ack-after-fsync holds through an OOM kill** — ~40 000 rows came back
 as an intact prefix, no holes, not read as corruption. And the pattern the swap
-leg was missing: **random reads over an oversized table collapse 273×.**
+leg was missing: **random reads over an oversized table collapse 273×.** Plus
+replay: **≈5.5 µs per WAL record**, and **1.9× the boot cost for an identical
+live dataset** once each row has been updated once (110 → 211 ms for the same
+20 000 rows) — boot replays **history, not data**.
 
 **Learned:** an append-mostly workload never re-touches its cold pages, so swap
 costs it nothing — and the opposite pattern was then measured on the same day.
@@ -118,8 +121,15 @@ still NOT delivered — `bench/baseline.json` times no replay.
 number bounds demand-paged anonymous memory through swap (4 KiB per fault, no
 readahead); `pread` through the page cache should beat it, and **the entire value
 of `resident: keys` rests on how much** — if it is not materially better than
-swapping, the design buys nothing the kernel was not already doing. Still absent:
-a replay baseline for iteration 3.
+swapping, the design buys nothing the kernel was not already doing.
+
+Iteration 3 now HAS its before, and a correction: it planned to use "22's
+aged-store replay numbers", which never existed — 22 proved restart correctness
+and never timed it. Also recorded there, before it could be rediscovered late:
+**compaction invalidates every `resident: keys` offset**, since it rewrites the
+log and moves every record. Not stale-but-readable — an arbitrary byte in a
+rewritten file. So compaction cannot be a pure file operation that ignores
+in-memory table state.
 
 **`.dev/reference` used:** none. Sources were the kernel's own interfaces —
 cgroup v2 `memory.max`/`memory.swap.max`, `/proc/self/status`, `/proc/swaps` and
@@ -693,7 +703,7 @@ the language arc as v1 history.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | 🔄 **MEASURED 2026-08-27** — `readiness: ready`, `status: in-progress` (iteration 3 replay baseline still undelivered), forks settled, harness landed (**133 checks**). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Also measured: **random reads over an oversized table collapse 273×** (1.85M vs 6 771 reads/s, p99 1 µs vs 487 µs) — so the two access patterns sit ~270× apart under the same pressure, and departure is a **step, not a curve**. Outstanding: iteration 3's replay baseline. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
+| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ✅ **MEASURED 2026-08-27** — `readiness: ready`, `status: done`; forks settled, harness landed (**148 checks**). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Also measured: **random reads over an oversized table collapse 273×** (1.85M vs 6 771 reads/s, p99 1 µs vs 487 µs) — so the two access patterns sit ~270× apart under the same pressure, and departure is a **step, not a curve**. Replay measured too: **≈5.5 µs/record, 1.9× history penalty** (10M records ≈ 55 s of boot) — iteration 3's missing "before", now gated. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
 | 2 | [per-table storage: `durable` and `resident`](databasev2/02-table-storage-modes.md) | 🔄 **the language enrichment — the `durable` half is DONE and usable.** Two optional `@table` keys, `durable: true\|false` and `resident: all\|keys`, both defaulting to today's behaviour (all 28 existing declarations compile unchanged, no golden moved). Landed: the grammar, WO-E224 (a durable `ref` into a volatile table is refused), `.wob` v7 carrying both properties in spare `flags` bits, `durable: false` actually skipping the WAL (measured: 50 inserts → 1500 bytes durable, **0** volatile) with a mode-mismatch startup refusal, plus offset capture and read-a-row-from-an-offset. Outstanding: 5c/5d (the id→offset map and rewiring `wo_row_ptr`'s 11 call sites, slab scans and `@unique`/FK across the boundary — not yet written up), the two runtime refusals, and closeout. [spec](../superpowers/specs/2026-08-26-table-residency-design.md) · [plan](../superpowers/plans/2026-08-26-table-residency.md) |
 | 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
 | 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ **`readiness: ready` — the one startable iteration in the repo** (four forks confirmed settled 2026-08-20). Close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |

@@ -56,6 +56,14 @@ chain: 6
 - **Given** the iteration-22 restart benchmark re-run after checkpoint
   lands, **when** replay time is measured on an aged store, **then**
   the bounded-replay improvement is recorded as a before/after delta.
+  **The "before" now EXISTS** (databasev2 1, 2026-08-27): `db-bench`'s
+  `replay` leg measures **≈5.5 µs per WAL record**, and — the number
+  this iteration is actually about — **1.9× the boot cost for an
+  identical live dataset** once the same rows have been updated once
+  each (20 000 rows: 110 ms at 20 000 records, 211 ms at 40 000). Boot
+  cost tracks **history, not data**, which is exactly what a checkpoint
+  collapses. Metrics: `replay.inserts.*`, `replay.history.*`,
+  `replay.history_penalty_x`.
 - **Given** writes arriving while a checkpoint runs (the DB actor
   serializes statements; the checkpoint must not stall them beyond the
   stated budget), **when** the mixed load completes, **then** every ack
@@ -101,6 +109,29 @@ Forks the spec must settle:
 ## Proposed Solution
 
 Brainstorm → spec → plan after 23 lands (the write path it composes
-with) using 22's aged-store replay numbers as the policy input; extend
+with). **Correction (2026-08-27):** this said "using 22's aged-store
+replay numbers as the policy input", but iteration 22 produced no such
+numbers — it proved restart *correctness* and never timed it, and
+`bench/baseline.json` carried zero replay metrics until databasev2 1
+added them. The policy input is the `replay` leg's ≈5.5 µs/record and
+its 1.9× history penalty. Extend
 `04-db-binding.md`'s WAL section with the snapshot format the way the
 record grammar is documented today.
+## Hazard: compaction invalidates every `resident: keys` offset
+
+Surfaced while refining this iteration and recorded here so it is not
+rediscovered late. [Iteration 2](02-table-storage-modes.md)'s
+`resident: keys` stores a **WAL byte offset per row** and reads the row
+back with `pread` at that offset. Compaction — whichever of the two
+shapes below wins — **rewrites the log and moves every record**, so
+every stored offset becomes wrong. Not stale-but-readable: pointing at
+an arbitrary byte in a rewritten file, which is a correctness fault,
+not a performance one.
+
+So the two iterations are coupled and the coupling has to be designed,
+not discovered: either compaction rebuilds the offset map as it
+rewrites (it knows both addresses, so this is the cheap direction), or
+the snapshot persists the map and compaction is forbidden while any
+`resident: keys` table is live. **The first is almost certainly right**,
+but it means compaction cannot be written as a pure file operation that
+ignores in-memory table state.

@@ -467,7 +467,7 @@ fn usage() -> Int {
   print_err("usage: db-bench <mode>");
   print_err("  all N | seed N | read N | query N | write N | wal N");
   print_err("  mix N C | msgrate N | growth N int|text | growth-verify");
-  print_err("  randread N R");
+  print_err("  randread N R | replayseed N M | boot");
   print_err("  verify | verify-acked M");
   return 2;
 }
@@ -531,6 +531,41 @@ fn self_rss_kb() -> Int {
 -- larger than RAM. No RNG in the language and none needed: i*2654435761 mod n
 -- is a Weyl sequence, deterministic and spread, so the two legs read the SAME
 -- key order and only residency differs.
+-- databasev2 1, for iteration 3: the replay "before".
+--
+-- `boot` does NOTHING. That is the point: with WO_DATA set the runtime replays
+-- the whole WAL before main runs, so the process's wall time IS the replay cost
+-- plus a fixed startup. Any mode that touches rows would mix its own work into
+-- the number.
+fn boot_mode() -> Int {
+  print("booted");
+  return 0;
+}
+
+-- Build a store with N live rows and N+M total WAL records: M updates on top of
+-- N inserts. The live dataset is IDENTICAL for any M -- only the history grows.
+-- That is iteration 3's whole case: with no checkpoint, boot replays HISTORY,
+-- not data, so a long-lived row that has been updated a thousand times costs a
+-- thousand records at every boot forever.
+fn replayseed_mode(n: Int, m: Int) -> Int {
+  let bref = insert Bucket { tag: "replay" };
+  let i = 1;
+  while i <= n {
+    insert Item { k: i, v: item_v(i), bucket: bref };
+    i = i + 1;
+  }
+  let j = 0;
+  while j < m {
+    let key = 1 + (j * 2654435761) % n;
+    for r in from x in Item where x.k == key take 1 select x {
+      r.v = r.v + 1;
+    }
+    j = j + 1;
+  }
+  print("replayseeded ${n} ${m}");
+  return 0;
+}
+
 fn randread_mode(n: Int, r: Int) -> Int {
   let bref = insert Bucket { tag: "randread" };
   let i = 1;
@@ -648,6 +683,9 @@ fn main(args: multi Text) -> Int {
   if args[0] == "growth-verify" {
     return growth_verify();
   }
+  if args[0] == "boot" {
+    return boot_mode();
+  }
   if len(args) < 2 {
     return usage();
   }
@@ -685,6 +723,17 @@ fn main(args: multi Text) -> Int {
       return usage();
     }
     return growth_mode(n, args[2]);
+  }
+  if args[0] == "replayseed" {
+    if len(args) < 3 {
+      return usage();
+    }
+    let mm = parse_int(args[2]);
+    if mm == nil or mm < 0 {
+      print_err("db-bench: <m> must be zero or more");
+      return 2;
+    }
+    return replayseed_mode(n, mm);
   }
   if args[0] == "randread" {
     if len(args) < 3 {

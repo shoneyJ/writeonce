@@ -1,7 +1,7 @@
 ---
 track: databasev2
 iteration: "1"
-status: in-progress
+status: done
 readiness: ready
 ---
 
@@ -114,10 +114,10 @@ workload. Reading *randomly* across a table larger than the cap collapses
 | footprint metric = **median of marginals**, doublings counted separately | ✅ |
 | `ceiling` leg: dies at the cap, then replay must be intact | ✅ gated |
 | `randread` leg: control vs over-cap, same key order | ✅ gated |
-| baseline + tolerance policy | ✅ 133 checks; footprint at ±10%, kill-timing metrics at ±100% |
+| baseline + tolerance policy | ✅ 148 checks; footprint at ±10%, kill-timing metrics at ±100% |
 | `perf-targets.md` §5 | ✅ |
 | **resident-footprint fraction for [iteration 2](02-table-storage-modes.md)** | ⬜ **not delivered — the premise it rested on is false**, see Outstanding |
-| **replay/restart baseline for [iteration 3](03-wal-checkpoint.md)** | ⬜ not delivered |
+| `boot` + `replayseed N M` + the `replay` leg — [iteration 3](03-wal-checkpoint.md)'s "before" | ✅ **≈5.5 µs/record, 1.9× history penalty** |
 | `randread N R` + the `randread` leg — random reads over an oversized table | ✅ **273x collapse measured** |
 
 ## Measured
@@ -174,6 +174,24 @@ while swap-in does not. **That is a hypothesis, not a result.** The honest
 reading is that 273× bounds what *swapping* costs, and iteration 2 must measure
 its own read path rather than inherit this number.
 
+Replay, and it is iteration 3's whole case — same live dataset, different
+history length:
+
+| Shape | Records | WAL | Replay | Per record |
+| --- | --- | --- | --- | --- |
+| N inserts | 20 000 | 980 035 B | **110 ms** | 5.5 µs |
+| N inserts + N updates | 40 000 | 1 960 035 B | **211 ms** | 5.3 µs |
+
+**20 000 live rows either way. 1.9× the boot cost.** Per-record cost is flat
+(5.5 vs 5.3 µs), so replay is linear in **records, not rows** — boot replays
+*history*. A row updated a thousand times costs a thousand records at every boot,
+forever, because nothing ever collapses them. Process startup (3.5 ms on an
+empty store) is subtracted, so these are replay, not spawn.
+
+Extrapolated at 5.5 µs/record: **10M records ≈ 55 s of boot, 100M ≈ 9 minutes.**
+That is the number [iteration 3](03-wal-checkpoint.md) exists to bound, and it
+had no "before" until now.
+
 **The finding that matters most is the swap leg succeeding.** It did not fail,
 did not warn, and returned 0. A deployment in that state looks healthy while
 serving from disk. That is the exit with no error signal, and it is why
@@ -211,11 +229,15 @@ Met:
   the degradation is quantified. ✅ **273× throughput, ~480× p99**, both legs
   reading the same key order with all reads resolving. This closes the gap the
   swap leg left, and it is the pattern `resident: keys` creates.
+- **Given** a store with history, **when** it boots, **then** replay cost is
+  recorded so iteration 3 has a before. ✅ **≈5.5 µs/record**, flat across
+  shapes, and **1.9× boot cost for an identical dataset** once each row has been
+  updated once. Startup subtracted via an empty store.
 
 Outstanding:
 
 - **The resident-footprint fraction for iteration 2's budget default. NOT
-  delivered, and the premise is false.** It was to be derived from the
+  delivered, and the premise is false** — a finding, not a gap. It was to be derived from the
   swap-onset point — but there is no onset: swap-off jumps straight from
   working to SIGKILL, and swap-on shows no degradation to detect an onset in.
   **Iteration 2 must pick its budget on other grounds** (host RAM fraction, or
@@ -228,9 +250,7 @@ Outstanding:
   approach their 512 MiB cap, but the departure itself is measured by the
   `randread` leg as a **step, not a curve** — 1 µs resident, 487 µs over-cap.
   There is no gentle departure to find; residency is close to binary.
-- **A replay/restart baseline for iteration 3.** Not delivered; `growth` exercises
-  `WO_DATA` but nothing times replay. Cheap to add, still absent from
-  `bench/baseline.json`.
+- Nothing else. Both remaining gaps closed 2026-08-27.
 
 ## Out Of Scope
 

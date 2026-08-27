@@ -140,7 +140,7 @@ before its mechanism existed; the history is in
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Also measured: the **273× random-read collapse** over an oversized table. Outstanding: a replay baseline | nothing; extends iteration 22's harness |
+| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Also measured: the **273× random-read collapse** over an oversized table, and replay at **≈5.5 µs/record with a 1.9× history penalty** — iteration 3's "before" | nothing; extends iteration 22's harness |
 | 2 | [per-table storage](02-table-storage-modes.md) | the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. **In progress — the `durable` half is done** | 1 for the budget default |
 | 3 | [WAL checkpoint](03-wal-checkpoint.md) *(was language 32)* | snapshot + truncate: disk reclaimed, replay bounded | 4 composes |
 | 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | close the 66× durable/RAM write gap (4.5k vs 297k inserts/s) | the arc (landed) |

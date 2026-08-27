@@ -234,6 +234,7 @@ def tolerance_for(key):
     if key.startswith("growth."): return 100
     if key.startswith("ceiling."): return 100
     if key.startswith("randread."): return 100
+    if key.startswith("replay."): return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -379,6 +380,8 @@ RAND_N = 60000 if QUICK else 200000
 RAND_R = 20000 if QUICK else 40000
 RAND_CAP_MB = 6 if QUICK else 14      # over-cap: holds roughly a third of the rows
 RAND_FIT_MB = 256                     # control: same mechanism, cap simply does not bind
+REPLAY_N = 20000 if QUICK else 100000
+REPLAY_BOOTS = 3                      # median of 3; boot is timed, so noise matters
 
 def ceiling(metrics):
     """The ceiling itself, and the durability claim across it.
@@ -513,6 +516,113 @@ def randread(metrics):
            f"({res['resident']} -> {res['overcap']} reads/sec)")
 
 
+
+def wal_used(data_dir):
+    """Bytes actually written across the store's WAL files.
+
+    The non-zero prefix, NOT the file size: shard WALs are fallocate'd to
+    1 MiB up front, so getsize reports 1048576 for an empty store and proves
+    nothing. Same reason scripts/residency-accept.sh measures it this way."""
+    total = 0
+    for name in sorted(os.listdir(data_dir)):
+        with open(os.path.join(data_dir, name), "rb") as f:
+            total += len(f.read().rstrip(b"\x00"))
+    return total
+
+
+def time_boot(data_dir):
+    """Median wall-clock ms of `boot`, which does nothing at all.
+
+    With WO_DATA set the runtime replays the entire WAL BEFORE main runs, so a
+    mode that does no work measures replay plus a fixed process startup. Any
+    mode that touched rows would fold its own cost in. Median of REPLAY_BOOTS
+    because this is wall-clock on a shared box."""
+    env = dict(os.environ); env["WO_DATA"] = data_dir
+    samples = []
+    for _ in range(REPLAY_BOOTS):
+        t0 = time.monotonic()
+        pr = subprocess.run([BIN, "boot"], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, env=env, timeout=900)
+        if pr.returncode != 0:
+            return None
+        samples.append((time.monotonic() - t0) * 1000.0)
+    return sorted(samples)[len(samples) // 2]
+
+
+def replay(metrics):
+    """The replay baseline databasev2 3 has no "before" for.
+
+    bench/baseline.json carried zero metrics for replay, restart, boot or
+    recovery. Iteration 22 proved restart CORRECTNESS; it never timed it, so
+    iteration 3's "bounded replay" claim had nothing to measure against.
+
+    Two shapes with the SAME live dataset and different history lengths:
+      - inserts: N inserts, N records
+      - history: N inserts + N updates, 2N records, same N live rows
+    The live data is identical; only the log is longer. That is iteration 3's
+    entire case: with no checkpoint, boot replays HISTORY rather than DATA, so a
+    row updated a thousand times costs a thousand records at every boot,
+    forever. history_penalty_x is the headline -- the boot cost of history that
+    a checkpoint would collapse.
+
+    Startup is subtracted using an empty store, so the reported ms is replay,
+    not process spawn."""
+    empty = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.replay.empty")
+    shutil.rmtree(empty, ignore_errors=True); os.makedirs(empty, exist_ok=True)
+    base_ms = time_boot(empty)
+    shutil.rmtree(empty, ignore_errors=True)
+    if base_ms is None:
+        bad("replay: empty-store boot failed", "cannot establish the startup floor")
+        return
+    metrics["replay.startup_ms"] = int(round(base_ms))
+    ok(f"replay: empty-store startup floor {base_ms:.1f} ms (subtracted below)")
+
+    res = {}
+    for legname, updates in (("inserts", 0), ("history", REPLAY_N)):
+        data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.replay.{legname}")
+        shutil.rmtree(data, ignore_errors=True); os.makedirs(data, exist_ok=True)
+        env = dict(os.environ); env["WO_DATA"] = data
+        sr = subprocess.run([BIN, "replayseed", str(REPLAY_N), str(updates)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            env=env, timeout=900)
+        key = f"replay.{legname}"
+        if sr.returncode != 0:
+            bad(f"{key}: seed failed", f"rc={sr.returncode}")
+            shutil.rmtree(data, ignore_errors=True); return
+        wal = wal_used(data)
+        boot_ms = time_boot(data)
+        shutil.rmtree(data, ignore_errors=True)
+        if boot_ms is None:
+            bad(f"{key}: boot failed", "replay did not complete")
+            return
+        records = REPLAY_N + updates
+        rep_ms = max(boot_ms - base_ms, 0.0)
+        metrics[f"{key}.ms"] = int(round(rep_ms))
+        metrics[f"{key}.records"] = records
+        metrics[f"{key}.wal_bytes"] = wal
+        # NANOseconds, integer: us_per_record rounded 5.5 and 5.3 to 6 and 5,
+        # which is too coarse for the one number iteration 3 exists to improve
+        metrics[f"{key}.ns_per_record"] = int(round(rep_ms * 1e6 / records))
+        res[legname] = (rep_ms, wal, records)
+        ok(f"{key}: {rep_ms:.0f} ms replaying {records} records "
+           f"({rep_ms*1000.0/records:.1f} us/record), WAL {wal} B")
+
+    ins_ms, ins_wal, _ = res["inserts"]
+    his_ms, his_wal, _ = res["history"]
+    # premise check: an update MUST cost a WAL record, or the two shapes are
+    # the same measurement and history_penalty_x means nothing
+    if his_wal < ins_wal * 1.5:
+        bad("replay: updates are not appending WAL records",
+            f"history WAL {his_wal} B vs inserts {ins_wal} B -- expected ~2x")
+        return
+    ok(f"replay: {REPLAY_N} updates doubled the log ({ins_wal} -> {his_wal} B) "
+       f"with the live row count unchanged")
+    penalty = his_ms / max(ins_ms, 1.0)
+    metrics["replay.history_penalty_x"] = round(penalty, 2)
+    ok(f"replay: identical dataset, {penalty:.2f}x the boot cost from history alone "
+       f"({ins_ms:.0f} -> {his_ms:.0f} ms) -- what a checkpoint would collapse")
+
+
 def main():
     # --check <results.json>: gate-only evaluation of a recorded run — the
     # gate-bites smoke doctors a copy and this mode must FAIL on it
@@ -528,6 +638,7 @@ def main():
     growth(metrics)
     ceiling(metrics)
     randread(metrics)
+    replay(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS_DIR, f"run-{stamp}{'-quick' if QUICK else ''}.json")

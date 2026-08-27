@@ -189,3 +189,30 @@ read path rather than inherit this figure.
 Gated as `db-bench`'s `randread` leg, which gates the **ratio** — the absolute
 reads/sec of the over-cap half is the box's swap device, while the factor between
 two runs differing only in their cap is the engine's.
+
+### Replay: boot cost tracks history, not data
+
+Two stores with the **same 20 000 live rows** and different history lengths.
+Process startup (3.5 ms, empty store) is subtracted, so these are replay:
+
+| Shape | Records | WAL used | Replay | Per record |
+| --- | --- | --- | --- | --- |
+| N inserts | 20 000 | 980 035 B | **110 ms** | 5.5 µs |
+| N inserts + N updates | 40 000 | 1 960 035 B | **211 ms** | 5.3 µs |
+
+**1.9× the boot cost for an identical dataset.** Per-record cost is flat, so
+replay is linear in **records**, not rows. An update appends a record and nothing
+ever collapses it, so a row updated a thousand times costs a thousand records at
+every boot, forever.
+
+Extrapolated at 5.5 µs/record: **10M records ≈ 55 s of boot, 100M ≈ 9 minutes.**
+
+This is the "before" databasev2 3 lacked — `bench/baseline.json` carried no
+replay, restart, boot or recovery metric at all, because iteration 22 proved
+restart *correctness* and never timed it. Gated as `db-bench`'s `replay` leg:
+`replay.inserts.*`, `replay.history.*`, `replay.history_penalty_x`. Per-record
+cost is stored in **nanoseconds** — as µs it rounded 5.5 and 5.3 to 6 and 5,
+which is too coarse for the one number a checkpoint is meant to improve.
+
+WAL bytes are measured as the file's **non-zero prefix**, never its size: shard
+WALs are `fallocate`'d to 1 MiB, so an empty store reports 1048576.
