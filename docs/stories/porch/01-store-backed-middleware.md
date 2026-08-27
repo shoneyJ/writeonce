@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "1"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 1 — store-backed middleware: rate limiting and idempotency

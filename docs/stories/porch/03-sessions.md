@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "3"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 3 — sessions: server-side state, revocable, durable

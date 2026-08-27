@@ -1,6 +1,7 @@
 ---
 iteration: "9b"
 status: done
+readiness: ready
 ---
 
 # Iteration 9b — `@table`, relations, and language-integrated query

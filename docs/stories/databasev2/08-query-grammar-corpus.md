@@ -3,6 +3,7 @@ track: databasev2
 iteration: "8"
 was_language_iteration: "27"
 status: hold
+readiness: refine
 ---
 
 # databasev2 8 — query grammar, driven by real embedded-DB corpora

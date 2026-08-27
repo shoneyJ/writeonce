@@ -2,7 +2,8 @@
 track: databasev2
 iteration: "7"
 was_language_iteration: "33"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # databasev2 7 — `WO_DATA=<path>.db`: the persistent store as one file

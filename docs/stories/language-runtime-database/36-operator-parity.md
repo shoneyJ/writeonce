@@ -1,6 +1,7 @@
 ---
 iteration: "36"
 status: in-progress
+readiness: ready
 ---
 
 # Iteration 36 — operator parity: `not`, bitwise, hex literals, compound assigns

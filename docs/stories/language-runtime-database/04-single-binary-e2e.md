@@ -1,6 +1,7 @@
 ---
 iteration: "4"
 status: done
+readiness: ready
 ---
 
 # Iteration 4 — single binary end-to-end

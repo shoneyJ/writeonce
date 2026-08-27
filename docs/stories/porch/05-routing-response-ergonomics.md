@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "5"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 5 — routing and response ergonomics: the parity that is merely missing

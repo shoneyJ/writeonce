@@ -1,6 +1,7 @@
 ---
 iteration: "29"
 status: hold
+readiness: refine
 ---
 
 # Iteration 29 — compile-time metaprogramming (derive from the class table)

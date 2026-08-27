@@ -1,6 +1,7 @@
 ---
 iteration: "15"
 status: done
+readiness: ready
 ---
 
 # Iteration 15 — dependencies: `wo.toml [deps]`, git fetch, `wo.lock`

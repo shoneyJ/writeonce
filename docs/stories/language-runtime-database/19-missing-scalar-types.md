@@ -1,6 +1,7 @@
 ---
 iteration: "19"
 status: done
+readiness: ready
 ---
 
 # Iteration 19 — the missing scalar types: Float and Bytes

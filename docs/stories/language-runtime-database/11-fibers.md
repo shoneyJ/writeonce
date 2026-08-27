@@ -1,6 +1,7 @@
 ---
 iteration: "11"
 status: done
+readiness: ready
 chain: 1
 ---
 

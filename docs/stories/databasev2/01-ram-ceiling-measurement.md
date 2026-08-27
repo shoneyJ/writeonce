@@ -1,7 +1,8 @@
 ---
 track: databasev2
 iteration: "1"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # databasev2 1 — the RAM ceiling: measure the breaking point before designing for it

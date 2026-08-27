@@ -1,6 +1,7 @@
 ---
 iteration: "35"
 status: done
+readiness: ready
 ---
 
 # Iteration 35 — `net` runtime seams: timeouts, Unix sockets, peer address

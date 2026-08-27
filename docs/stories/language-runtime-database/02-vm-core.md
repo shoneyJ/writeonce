@@ -1,6 +1,7 @@
 ---
 iteration: "2"
 status: done
+readiness: ready
 ---
 
 # Iteration 2 — VM core (`wovm`)

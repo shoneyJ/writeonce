@@ -3,6 +3,7 @@ track: databasev2
 iteration: "10"
 was_language_iteration: "21"
 status: hold
+readiness: refine
 ---
 
 # databasev2 10 — keypair authentication for cross-program attach

@@ -2,7 +2,8 @@
 track: databasev2
 iteration: "3"
 was_language_iteration: "32"
-status: refine
+status: pending
+readiness: refine
 chain: 6
 ---
 

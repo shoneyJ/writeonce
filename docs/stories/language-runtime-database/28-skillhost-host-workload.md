@@ -1,6 +1,7 @@
 ---
 iteration: "28"
 status: hold
+readiness: refine
 ---
 
 # Iteration 28 — skillhost: a host-shaped workload, and the capability gaps it exposes

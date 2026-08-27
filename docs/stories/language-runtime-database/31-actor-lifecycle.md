@@ -1,6 +1,7 @@
 ---
 iteration: "31"
-status: refine
+status: in-progress
+readiness: ready
 chain: 3
 ---
 

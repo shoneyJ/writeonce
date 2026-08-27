@@ -1,6 +1,7 @@
 ---
 iteration: "37"
 status: done
+readiness: ready
 ---
 
 # Iteration 37 — wo-html components: an MVC-shaped view layer (Angular's format, studied)

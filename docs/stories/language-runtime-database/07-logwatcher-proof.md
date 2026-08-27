@@ -1,6 +1,7 @@
 ---
 iteration: "7"
 status: done
+readiness: ready
 ---
 
 # Iteration 7 — log-watcher proof workload

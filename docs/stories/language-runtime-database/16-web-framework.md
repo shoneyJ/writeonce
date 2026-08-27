@@ -1,6 +1,7 @@
 ---
 iteration: "16"
 status: done
+readiness: ready
 ---
 
 # Iteration 16 — the web framework: a `.wo` library, HTTP/1.1 behind a proxy

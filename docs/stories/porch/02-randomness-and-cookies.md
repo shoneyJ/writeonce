@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "2"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 2 — randomness and cookies: the foundation three iterations stand on

@@ -1,6 +1,7 @@
 ---
 iteration: "1"
 status: done
+readiness: ready
 ---
 
 # Iteration 1 — the principles doc

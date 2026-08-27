@@ -1,6 +1,7 @@
 ---
 iteration: "3"
 status: done
+readiness: ready
 ---
 
 # Iteration 3 — compiler front (`woc`)

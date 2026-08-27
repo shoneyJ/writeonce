@@ -38,9 +38,26 @@ Update this board in the same change that finishes work — set the item's
 and record any rejection in [`discarded.md`](../plan/discarded.md) with its
 reason.
 
-Statuses, the closed set `status:` may take: `done` · `in-progress` · `refine`
-(needs a brainstorm before it can be planned) · `hold`. This board renders them
-as ✅ **done** · 🔄 **in progress** · ⬜ **pending** · ⏸ **hold**.
+**Two frontmatter axes** (2026-08-27), deliberately orthogonal:
+
+- `status` — where the WORK is: `done` · `in-progress` · `pending` · `hold`.
+  Rendered here as ✅ · 🔄 · ⬜ · ⏸.
+- `readiness` — whether the DESIGN is settled: `ready` (brainstorm complete,
+  decisions LOCKED — a spec approved or the forks confirmed) · `refine` (open
+  forks; cannot be planned yet).
+
+`status: refine` is retired: it meant both "not started" and "design not
+settled", so a held iteration with an approved spec was indistinguishable from
+one nobody had thought about. **The startable set is `readiness: ready` and
+`status: pending`.**
+
+**As of the 2026-08-27 sweep that set has exactly one member:**
+[databasev2 4, io_uring group-commit](databasev2/04-io-uring-commit.md) — its
+four forks were confirmed settled on 2026-08-20 and nothing has started. Across
+47 iterations: 19 done, 5 in-progress, 15 pending, 8 hold; 27 `ready`, 20
+`refine`. So of the 15 pending items only **one** can be planned without a
+brainstorm first — which is the number this second axis exists to surface, and
+it was invisible while one key carried both meanings.
 
 Story frontmatter (`iteration`/`status`/`chain`) is the machine-readable truth
 behind this board; live Obsidian Dataview views:
@@ -351,19 +368,13 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
 | 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | 🔄 **absorbed into 24** (directive 2026-08-23) and half landed there: `call` request/response with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), and actor death that traps callers instead of hanging them. Still open: `monitor` and `time.after` — ids **89 and 90 are reserved holes** in `wob.h`, which is the machine-checkable proof of what is left. Supervision trees stay out of v1 |
 | 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | 🔄 **the live slice** (absorbing 31 + 34, directive 2026-08-23) — branch `chat-ws-lifecycle`, 5/10 tasks landed: crypto, bounded mailboxes, WS upgrade, frame codec, `call`/reply + actor death. Pending: `monitor`, `time.after`, the chat sample, its gate, closeout. State lives in [the marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) |
-| 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
-| 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
-| 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
 | 38  | [Content platform capabilities](language-runtime-database/38-content-platform-capabilities.md) | ⬜ off-chain, needs a spec — the two capability families no iteration owns, confirmed against `runtime/src/wob.h`: `fs` mutation verbs (six fs builtins, ids 40–45; `append` creates-if-absent, so nothing is ever replaced, truncated, deleted or renamed) and `net.connect` (ids 51–55 + 91–95, no connect, and no `connect()` anywhere in `runtime/src/` — so no OIDC/SMTP/object-store/webhook/federation). Driven by a `docs/examples/vault` content-collaboration workload, in 28's mould. New builtins from 96 (89/90 reserved for 31); no `.wob` bump (`WOB_VERSION 6u`, last moved by 36). Story written 2026-08-26 from the "can it build a Nextcloud?" ask |
 | 39  | [Web framework parity](language-runtime-database/39-web-framework-parity.md) | ⬜ off-chain, needs a spec — from [the Fiber v3.5.0 study](../plan/exploration/fiber/00-fiber-parity.md) (all 32 of its middleware read against `porch`; **nine already have a counterpart**). Leads with a **random-bytes builtin**: the framework ledger claimed CSRF/sessions were unblocked by iteration 34's HMAC, but HMAC authenticates a token and cannot mint one — there is no RNG anywhere in the runtime. Then cookies (absent both ways; `Resp.headers` being a map cannot carry two `Set-Cookie` lines), then limiter/idempotency (cheapest wins — `@table` + `time.ticks`, nothing new), sessions, CSRF, and the routing/response sugar. Streaming/SSE/compression, `@derive` binding, TTL cache, `proxy` and metrics all excluded with owners named |
 | 37  | [wo-html components](language-runtime-database/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
 | 35  | [net runtime seams](language-runtime-database/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
-| 20  | [Cross-program tables](databasev2/09-cross-program-tables.md)        | ⏸ hold (2026-08-21); channel done (branch ipc-attach keeps its manifest) |
-| 21  | [Keypair attach auth](databasev2/10-keypair-attach-auth.md)          | ⏸ hold (2026-08-21); crypto+handshake done (branch keypair-auth keeps its manifest) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
 | 26  | [Blue-green deploy](language-runtime-database/26-blue-green-deploy.md)               | ⏸ hold (2026-08-21)          |
-| 27  | [Query grammar corpus](databasev2/08-query-grammar-corpus.md) | ⏸ hold (2026-08-21)          |
 | 28  | [skillhost host workload](language-runtime-database/28-skillhost-host-workload.md) | ⏸ hold (2026-08-21); gaps recorded (branch query-grammar found skillhost needs no new query grammar) |
 | 29  | [Compile-time metaprogramming](language-runtime-database/29-compile-time-metaprogramming.md) | ⏸ hold (2026-08-21)          |
 | 15  | [deps: `wo.toml [deps]`](language-runtime-database/15-deps-package-manager.md) | ✅ **landed 2026-08-18** (branch web-framework): [deps] inline tables, git-binary fetch, wo.lock pinning, offline-when-locked, --update-deps, WO-E106/E107; `just deps-accept` 8/0 |
@@ -619,12 +630,12 @@ the language arc as v1 history.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ **first, and startable today** — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
+| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ `readiness: refine` — its three forks are open, so despite being first it is NOT startable without a brainstorm — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
 | 2 | [per-table storage: `durable` and `resident`](databasev2/02-table-storage-modes.md) | 🔄 **the language enrichment — the `durable` half is DONE and usable.** Two optional `@table` keys, `durable: true\|false` and `resident: all\|keys`, both defaulting to today's behaviour (all 28 existing declarations compile unchanged, no golden moved). Landed: the grammar, WO-E224 (a durable `ref` into a volatile table is refused), `.wob` v7 carrying both properties in spare `flags` bits, `durable: false` actually skipping the WAL (measured: 50 inserts → 1500 bytes durable, **0** volatile) with a mode-mismatch startup refusal, plus offset capture and read-a-row-from-an-offset. Outstanding: 5c/5d (the id→offset map and rewiring `wo_row_ptr`'s 11 call sites, slab scans and `@unique`/FK across the boundary — not yet written up), the two runtime refusals, and closeout. [spec](../superpowers/specs/2026-08-26-table-residency-design.md) · [plan](../superpowers/plans/2026-08-26-table-residency.md) |
 | 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
-| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |
+| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ **`readiness: ready` — the one startable iteration in the repo** (four forks confirmed settled 2026-08-20). Close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |
 | 5 | [Bounded tables and eviction](databasev2/05-bounded-tables-eviction.md) | ⬜ a declared capacity + refuse/evict/back-pressure, and a process-level pressure signal that sheds **before** the allocator or OS gets involved — turning the invisible failure into a managed one |
-| 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⬜ the iteration that raises the ceiling, and the riskiest. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |
+| 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⚠ **largely superseded by 2** — `resident: keys` took the ceiling-raising role; its user-space-working-set premise was rejected for the kernel page cache. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |
 | 7 | [Single-file store](databasev2/07-single-file-db.md) *(was 33)* | ⬜ `WO_DATA=<path>.db`; driver-only, independent |
 | 8 | [Query grammar from corpora](databasev2/08-query-grammar-corpus.md) *(was 27)* | ⬜ whole-query `count`, `exists`; independent |
 | 9 | [Cross-program tables](databasev2/09-cross-program-tables.md) *(was 20)* | ⏸ hold — attach to a running program's database over local IPC |

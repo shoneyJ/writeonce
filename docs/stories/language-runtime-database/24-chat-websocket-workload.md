@@ -1,6 +1,7 @@
 ---
 iteration: "24"
 status: in-progress
+readiness: ready
 chain: 4
 ---
 

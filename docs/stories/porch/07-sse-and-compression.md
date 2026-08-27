@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "7"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 7 — server-sent events and compression

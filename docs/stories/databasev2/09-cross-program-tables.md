@@ -3,6 +3,7 @@ track: databasev2
 iteration: "9"
 was_language_iteration: "20"
 status: hold
+readiness: refine
 ---
 
 # databasev2 9 — cross-program tables: attach to a running program's database

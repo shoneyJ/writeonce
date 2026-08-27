@@ -1,7 +1,8 @@
 ---
 track: databasev2
 iteration: "5"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # databasev2 5 — bounded tables and eviction: a declared budget, and back-pressure before the cliff

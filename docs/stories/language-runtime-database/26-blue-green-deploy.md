@@ -1,6 +1,7 @@
 ---
 iteration: "26"
 status: hold
+readiness: ready
 ---
 
 # Iteration 26 — blue-green in-runtime deployment

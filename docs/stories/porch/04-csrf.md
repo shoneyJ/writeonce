@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "4"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 4 — CSRF: tokens that are unguessable, bound, and spendable once

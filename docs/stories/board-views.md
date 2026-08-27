@@ -7,7 +7,8 @@ is the source of truth**:
 ---
 track: porch          # OMITTED on language-runtime-database stories
 iteration: "8"        # immutable id, LOCAL TO ITS TRACK (string: "7b", "9b" exist)
-status: in-progress   # done | in-progress | refine | hold — the ONLY place status lives
+status: in-progress   # done | in-progress | pending | hold — where the WORK is
+readiness: ready      # ready | refine — whether the DESIGN is settled
 chain: 1              # concurrency-chain position, chain stories only (1–6)
 ---
 ```
@@ -19,10 +20,23 @@ there is nothing to move and nothing that can disagree. This replaced the
 change moved the file, which broke every relative link in and to it, and
 the repo's two link audits were largely the cleanup.
 
-The closed set `status:` may take is `done`, `in-progress`, `refine` (needs
-a brainstorm before it can be planned) and `hold`. A value outside it will
-simply not appear in the lanes below, which is the cheapest possible
-validation. The prose board ([`00-status.md`](00-status.md)) stays the
+**Two axes, since 2026-08-27.** They are orthogonal and conflating them is
+what `refine` used to do:
+
+- `status` — where the WORK is: `done`, `in-progress`, `pending`, `hold`.
+- `readiness` — whether the DESIGN is settled: `ready` means the brainstorm is
+  complete and the decisions are LOCKED (a spec is approved, or the forks were
+  confirmed); `refine` means open forks remain and it cannot be planned yet.
+
+`status: refine` is retired. It meant both "not started" and "design not
+settled", so a held iteration with an approved spec (language 18, 26) was
+indistinguishable from one nobody had thought about. Those are now
+`status: hold` + `readiness: ready`, and the genuinely unthought ones are
+`readiness: refine`. A value outside either closed set simply will not appear
+in the lanes below, which is the cheapest possible validation.
+
+**The useful query is `readiness: ready` + `status: pending`** — design locked,
+work not started. That is the startable set. The prose board ([`00-status.md`](00-status.md)) stays the
 standup narrative; these queries are the live views over the same facts.
 
 Adjust the `FROM` path to your vault root (queries below assume the
@@ -108,4 +122,25 @@ TABLE rows.file.link AS story, rows.iteration AS iteration, rows.status AS statu
 FROM "docs/stories"
 WHERE iteration AND status != "done"
 GROUP BY track
+```
+
+## Startable: design locked, work not started
+
+The set to pick from. Anything here has its decisions made and needs no
+brainstorm.
+
+```dataview
+TABLE track, iteration
+FROM "docs/stories"
+WHERE readiness = "ready" AND status = "pending"
+SORT track ASC, iteration ASC
+```
+
+## Needs a brainstorm before it can be planned
+
+```dataview
+TABLE track, iteration, status
+FROM "docs/stories"
+WHERE readiness = "refine"
+SORT track ASC, iteration ASC
 ```

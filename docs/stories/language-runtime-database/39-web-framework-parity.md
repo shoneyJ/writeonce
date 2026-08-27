@@ -1,6 +1,7 @@
 ---
 iteration: "39"
 status: hold
+readiness: refine
 ---
 
 # Iteration 39 — web framework parity *(superseded by the porch track)*

@@ -1,7 +1,8 @@
 ---
 track: databasev2
 iteration: "6"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # databasev2 6 — cold tiering: rows that leave RAM and come back

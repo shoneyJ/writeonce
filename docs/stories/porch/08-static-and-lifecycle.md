@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "8"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 8 — static files, lifecycle hooks, and the small middleware everyone ships

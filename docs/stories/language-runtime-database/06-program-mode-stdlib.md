@@ -1,6 +1,7 @@
 ---
 iteration: "6"
 status: done
+readiness: ready
 ---
 
 # Iteration 6 — program mode + systems stdlib

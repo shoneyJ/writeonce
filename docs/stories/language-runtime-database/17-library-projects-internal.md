@@ -1,6 +1,7 @@
 ---
 iteration: "17"
 status: done
+readiness: ready
 ---
 
 # Iteration 17 — library projects and dependency privacy (`kind`, `internal/`)

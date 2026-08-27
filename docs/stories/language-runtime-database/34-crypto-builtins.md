@@ -1,6 +1,7 @@
 ---
 iteration: "34"
-status: refine
+status: in-progress
+readiness: ready
 ---
 
 # Iteration 34 — crypto builtins: digests and HMAC in the runtime

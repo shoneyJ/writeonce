@@ -2,6 +2,7 @@
 track: databasev2
 iteration: "2"
 status: in-progress
+readiness: ready
 ---
 
 # databasev2 2 — per-table storage: `durable` and `resident`
@@ -60,8 +61,8 @@ declared per-table policy. Durability is untouched and unconditional.
 | 4 | `durable: false` skips the WAL append and replay | ✅ `dd67e31` |
 | 5a | `wo_wal_next_offset` — exact record offsets | ✅ `ac7d8af` |
 | 5b | `wo_wal_read_row_at` — a row from a log offset | ✅ `d0c370c` |
-| 5c | the id→offset map + drop-payload-keep-index | ⬜ **not written up** |
-| 5d | rewiring `wo_row_ptr`'s call sites, slab scans, `@unique`/FK across the boundary | ⬜ not written up |
+| 5c | shared borrow/release accessor, then id→offset storage | 🔄 step 1 ✅ `2e347de` (pure refactor, `db-bench --quick` 85/0); offset storage next |
+| 5d | rewire the readers: remaining `wo_row_ptr` sites (6 table.c, 2 db.c, 2 wal.c), slab scans, FK restrict, `@unique` across the boundary | ⬜ scope recorded |
 | 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
 | 7 | measure, gate, document, close out | ⬜ |
 

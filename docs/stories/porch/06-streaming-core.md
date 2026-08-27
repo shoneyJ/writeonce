@@ -1,7 +1,8 @@
 ---
 track: porch
 iteration: "6"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # porch 6 — streaming core: the seam three iterations wait on

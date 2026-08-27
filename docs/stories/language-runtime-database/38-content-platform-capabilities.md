@@ -1,6 +1,7 @@
 ---
 iteration: "38"
-status: refine
+status: pending
+readiness: refine
 ---
 
 # Iteration 38 — content collaboration workload: the file-mutation and outbound-socket gaps

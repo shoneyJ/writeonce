@@ -1,6 +1,7 @@
 ---
 iteration: "7b"
 status: done
+readiness: ready
 ---
 
 # Iteration 7b — inferred GC + incremental mark-sweep

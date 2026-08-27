@@ -1,6 +1,7 @@
 ---
 iteration: "18"
 status: hold
+readiness: ready
 ---
 
 # Iteration 18 — framework v2: memory-rich features over the embedded database

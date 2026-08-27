@@ -1,6 +1,7 @@
 ---
 iteration: "5"
 status: done
+readiness: ready
 ---
 
 # Iteration 5 — language surface (Haxe-parity adoptions)
