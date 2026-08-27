@@ -154,7 +154,7 @@ Outstanding:
    resident. Roughly doubles the resident index; stated at the declaration so
    the cost is visible.
 5. **The budget is bytes, not rows** — a text-heavy row and an Int-only row
-   differ by an order of magnitude, so a row count cannot bound RAM.
+   differ by 3.3× (measured, databasev2 1), so a row count cannot bound RAM.
 
 ## History — two corrections worth keeping
 

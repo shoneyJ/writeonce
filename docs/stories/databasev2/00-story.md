@@ -44,7 +44,14 @@ The bill comes due at the ceiling. Read from the engine as it stands:
 Worth being precise, because the failure mode determines the fix — and the good
 news is that the engine's own behaviour is clean:
 
-**An allocation failure is a catchable trap, not a crash.** Every `malloc` in
+**Corrected 2026-08-27 by measurement.** This section used to open "an
+allocation failure is a catchable trap, not a crash", and that is true only of
+the VM arena. Table storage has no ceiling, and with `vm.overcommit_memory = 0`
+its `malloc` never fails — the process is **SIGKILLed** (rc=137, measured at
+360 000 rows under a 64 MiB cap). The checked path below is real, but it is the
+arena's, not the store's. See [iteration 1](01-ram-ceiling-measurement.md).
+
+Every `malloc` in
 the row encoder is checked and jumps to an `oom` label; `DB_ERR_OOM` maps to
 `WO_T_OOM`, which a program can `try`/`catch`. So a writeonce program that runs
 out of memory *refuses the insert* rather than corrupting or dying. That is a
@@ -61,9 +68,22 @@ battery proves that much.
 
 So the honest problem statement is not "malloc fails". It is: **there is no
 declared budget, no back-pressure as the budget is approached, and no way to
-distinguish data that must be resident from data that merely is.** Iteration
-[1](01-ram-ceiling-measurement.md) exists to replace this paragraph with
-numbers before anything is designed on top of it.
+distinguish data that must be resident from data that merely is.**
+
+**Iteration [1](01-ram-ceiling-measurement.md) has now measured this
+(2026-08-27), and it strengthened the statement rather than softening it.** A row
+costs **96.5–100 B** Int-only and **320.6–324 B** text-heavy (3.3× apart, so no
+single per-row number can bound RAM). At the ceiling the engine has exactly two
+behaviours and **neither one tells anybody**: without swap the process is
+**SIGKILLed on signal 9** — table storage has no checked ceiling, and under
+`vm.overcommit_memory = 0` its `malloc` succeeds and the kernel kills on page
+touch — and with swap it **keeps returning 0 while serving from disk**, finishing
+900 000 rows in 148 s against 150 s uncapped. Durability is the one thing that
+does hold: acked writes came back as an intact prefix across an OOM kill.
+
+That is why "back-pressure at exhaustion" is not a design option. Exhaustion
+either kills without warning or never arrives. Only a **declared threshold** can
+speak in time.
 
 ## The lever: per-table storage modes
 
@@ -113,7 +133,7 @@ before its mechanism existed; the history is in
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | what actually happens from 50% RAM to OOM — swap onset, latency cliff, trap behaviour, `kill -9` survival | nothing; extends iteration 22's harness |
+| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Outstanding: the random-read-over-cap collapse, and a replay baseline | nothing; extends iteration 22's harness |
 | 2 | [per-table storage](02-table-storage-modes.md) | the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. **In progress — the `durable` half is done** | 1 for the budget default |
 | 3 | [WAL checkpoint](03-wal-checkpoint.md) *(was language 32)* | snapshot + truncate: disk reclaimed, replay bounded | 4 composes |
 | 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | close the 66× durable/RAM write gap (4.5k vs 297k inserts/s) | the arc (landed) |

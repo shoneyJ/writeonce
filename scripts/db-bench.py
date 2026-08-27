@@ -225,6 +225,14 @@ def tolerance_for(key):
     mix*: scheduling-dependent small counts. read/query + all .sN.*:
     machine jitter, and at post-index-µs scale a 1µs histogram step on a
     7µs p50 is already 14%."""
+    # databasev2 1: footprint is a STRUCTURAL number -- 96.5 vs 320.6 B/row
+    # reproduced to <2% across runs -- so it gets a tight tolerance and is the
+    # one growth metric worth gating. The doubling COUNT and the latency
+    # samples are allowed to move: doublings depend on where N lands relative
+    # to a pow2 rehash, and at 1us p50 a single histogram step is already 100%.
+    if ".bytes_per_row" in key: return 10
+    if key.startswith("growth."): return 100
+    if key.startswith("ceiling."): return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -248,6 +256,183 @@ def write_baseline(metrics):
     json.dump(base, open(BASELINE, "w"), indent=1, sort_keys=True)
     ok(f"baseline written ({len(base) - 1} metrics)")
 
+# ---- databasev2 1: the RAM ceiling -----------------------------------------
+
+GROWTH_N = 20000 if QUICK else 200000
+GROWTH_SHAPES = ("int", "text")
+
+
+def cap_wrapper(mem_mb, swap_mb):
+    """systemd-run --user --scope argv prefix that caps memory rootlessly, or
+    None when the mechanism is unavailable.
+
+    cgroup v2 with the `memory` controller delegated to the user slice is the
+    only mechanism used. `ulimit -v` is deliberately NOT a fallback: it bounds
+    address space, not resident set, which is the wrong quantity for an engine
+    that mallocs slabs, and ASan's huge virtual reservations trip it long
+    before real memory pressure. When the cap is unavailable the legs are
+    SKIPPED and say so -- never silently run uncapped, because "it survived on
+    a 32 GiB workstation" measures the workstation."""
+    if not shutil.which("systemd-run"):
+        return None
+    try:
+        with open("/proc/self/cgroup") as f:
+            mine = f.readline().strip().split(":")[-1]
+        ctl = f"/sys/fs/cgroup{os.path.dirname(mine)}/cgroup.controllers"
+        if "memory" not in open(ctl).read().split():
+            return None
+    except OSError:
+        return None
+    return ["systemd-run", "--user", "--scope", "--quiet",
+            "-p", f"MemoryMax={mem_mb}M", "-p", f"MemorySwapMax={swap_mb}M", "--"]
+
+
+def parse_growth(lines):
+    """(rows, rss_kb) samples plus per-decile read p50/p99, from the sample's
+    own `growthrss` / `growthN` lines. RSS is read by the SAMPLE, not polled
+    here: the driver polls every 250 ms and would miss the value AT a decile
+    boundary, and per-row footprint is this iteration's headline number."""
+    pts, lat = [], {}
+    for l in lines:
+        f = l.split()
+        if f and f[0] == "growthrss" and len(f) == 4:
+            pts.append((int(f[2]), int(f[3])))
+        elif f and f[0].startswith("growth") and len(f) == 5 and f[0][6:].isdigit():
+            lat[int(f[0][6:])] = (int(f[3]), int(f[4]))
+    return pts, lat
+
+
+def bytes_per_row(pts):
+    """Steady-state marginal footprint = MEDIAN of the per-interval marginals.
+
+    Not a two-point slope: the id hash and index buckets are open-addressing
+    pow2 and DOUBLE periodically, so a two-point slope lands arbitrarily on or
+    off a doubling and swings 2x (measured: 96 vs 205 B/row for the same shape).
+    The median rejects those steps; they are reported separately as `doublings`
+    because a transient RSS step is exactly what a resident-footprint budget
+    must leave headroom for."""
+    marg = sorted((k1 - k0) * 1024.0 / (r1 - r0)
+                  for (r0, k0), (r1, k1) in zip(pts, pts[1:]) if r1 > r0)
+    if not marg:
+        return None, 0
+    med = marg[len(marg) // 2]
+    doublings = sum(1 for m in marg if m > med * 1.5)
+    return med, doublings
+
+
+def growth(metrics):
+    """Per-shape footprint and the read-latency curve, under a rootless cap,
+    with swap ON and OFF.
+
+    What this leg actually measures is FOOTPRINT. It does not reach the cap:
+    GROWTH_N rows need far less than the 512 MiB cap, so both swap legs are
+    identical by construction and p99_departure_decile is legitimately 0.
+    The ceiling itself is ceiling() below -- keep the two separate, because a
+    footprint regression and a ceiling-behaviour change are different faults.
+
+    Two earlier claims in this docstring were measured FALSE and are recorded
+    in docs/stories/databasev2/01-ram-ceiling-measurement.md: swap-off is not
+    a "clean checked-malloc" path (it is SIGKILL, rc=137), and swap-on is not
+    "latency collapse" (900k rows finished in 148s capped-with-swap vs 150s
+    uncapped -- an append-mostly workload never re-touches its cold pages)."""
+    wrap = cap_wrapper(512, 0)
+    if wrap is None:
+        ok("growth: SKIPPED -- no rootless cgroup v2 memory cap on this host")
+        metrics["growth.available"] = 0
+        return
+    metrics["growth.available"] = 1
+    for shape in GROWTH_SHAPES:
+        for legname, swap_mb in (("noswap", 0), ("swap", 256)):
+            w = cap_wrapper(512, swap_mb)
+            env = dict(os.environ)
+            argv = w + [BIN, "growth", str(GROWTH_N), shape]
+            pr = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, env=env, timeout=900)
+            lines = pr.stdout.splitlines()
+            pts, lat = parse_growth(lines)
+            key = f"growth.{shape}.{legname}"
+            if not pts:
+                bad(f"{key}: produced no samples", (lines[-1] if lines else "no output"))
+                continue
+            bpr, doublings = bytes_per_row(pts)
+            metrics[f"{key}.bytes_per_row"] = int(round(bpr))
+            metrics[f"{key}.doublings"] = doublings
+            metrics[f"{key}.rows"] = pts[-1][0]
+            metrics[f"{key}.rss_kb"] = pts[-1][1]
+            if lat:
+                last = max(lat)
+                metrics[f"{key}.read_p50us"] = lat[last][0]
+                metrics[f"{key}.read_p99us"] = lat[last][1]
+                # the curve's departure point: first decile whose p99 exceeds
+                # 4x the first decile's, as a MEASURED sample not an estimate
+                first = lat[min(lat)][1]
+                dep = next((d for d in sorted(lat) if lat[d][1] > max(first, 1) * 4), 0)
+                metrics[f"{key}.p99_departure_decile"] = dep
+            ok(f"{key}: {int(round(bpr))} B/row steady, {doublings} doubling step(s), "
+               f"{pts[-1][0]} rows in {pts[-1][1]} KiB")
+
+
+
+CEIL_N, CEIL_CAP_MB = 60000, 8
+
+def ceiling(metrics):
+    """The ceiling itself, and the durability claim across it.
+
+    Sized so the process CANNOT fit: 60k Int rows need ~9.7 MiB resident
+    (96.5 B/row measured, plus a ~3.9 MiB base) under an 8 MiB cap, swap off.
+    Two things are under test and the second is the one that matters:
+
+      1. HOW it dies. Measured: SIGKILL, rc=137 -- not a refusal. Table
+         storage has no checked ceiling, and under vm.overcommit_memory=0
+         malloc succeeds and the process dies TOUCHING the pages, so it never
+         gets the chance to report failure. (The VM object arena is the
+         opposite: WO_HEAP_MB is checked and traps.) rc is asserted, not
+         recorded as a metric -- when databasev2 2's byte budget lands this
+         should become a checked refusal, and the gate must not fail on that
+         improvement.
+
+      2. WHAT SURVIVES. With WO_DATA set, replay must yield a contiguous
+         intact prefix: rows 1..M present with the right v, no holes, and not
+         reported as corruption. M is wherever the kill landed -- the SHAPE of
+         the survivor is the claim, not its size, so rows_recovered carries a
+         wide tolerance. This is ack-after-fsync holding in the one shutdown
+         path that skips every cleanup handler."""
+    wrap = cap_wrapper(CEIL_CAP_MB, 0)
+    if wrap is None:
+        ok("ceiling: SKIPPED -- no rootless cgroup v2 memory cap on this host")
+        return
+    data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.ceiling")
+    shutil.rmtree(data, ignore_errors=True); os.makedirs(data, exist_ok=True)
+    env = dict(os.environ); env["WO_DATA"] = data
+    pr = subprocess.run(wrap + [BIN, "growth", str(CEIL_N), "int"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, env=env, timeout=900)
+    if pr.returncode == 0:
+        bad("ceiling: process SURVIVED the cap",
+            f"{CEIL_N} rows fit under {CEIL_CAP_MB} MiB -- footprint changed, resize the leg")
+        shutil.rmtree(data, ignore_errors=True); return
+    # subprocess returncode is NEGATIVE for signal death (-9 = SIGKILL); 137
+    # is the SHELL spelling of the same event (128+9). Getting this backwards
+    # once labelled a SIGKILL as a "checked refusal", which is the exact
+    # distinction this leg exists to report.
+    if pr.returncode < 0:
+        sig = -pr.returncode
+        how = f"killed by signal {sig}" + (" (SIGKILL -- no checked refusal)" if sig == 9 else "")
+    else:
+        how = f"exited {pr.returncode} (checked refusal)"
+    ok(f"ceiling: died at the cap, {how}")
+    vr = subprocess.run([BIN, "growth-verify"], stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, text=True, env=env, timeout=900)
+    m = re.search(r"^growthverify (\d+)$", vr.stdout, re.M)
+    if vr.returncode == 0 and m and int(m.group(1)) > 0:
+        metrics["ceiling.rows_recovered"] = int(m.group(1))
+        ok(f"ceiling: durable prefix intact across the kill -- {m.group(1)} rows, no holes")
+    else:
+        bad("ceiling: durable prefix broken across the kill",
+            (vr.stdout.strip().splitlines() or ["no output"])[-1][:160])
+    shutil.rmtree(data, ignore_errors=True)
+
+
 def main():
     # --check <results.json>: gate-only evaluation of a recorded run — the
     # gate-bites smoke doctors a copy and this mode must FAIL on it
@@ -260,6 +445,8 @@ def main():
     build()
     metrics = campaign()
     durability(metrics)
+    growth(metrics)
+    ceiling(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS_DIR, f"run-{stamp}{'-quick' if QUICK else ''}.json")

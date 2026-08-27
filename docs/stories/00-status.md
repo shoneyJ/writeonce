@@ -67,6 +67,57 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-27 — databasev2 1, the RAM ceiling measured
+
+**Implemented last time (2026-08-27):** databasev2 1 refined (three forks
+settled) and implemented. A text-heavy `Wide` reference shape beside the
+Int-only `Item`; `growth N int|text` in the db-bench sample, reading its OWN
+`/proc/self/status` RSS at each decile because the driver's 250 ms poll misses
+the value *at* a boundary; `growth-verify`, which asserts the survivor of a
+crash is a contiguous intact prefix; and two harness legs — four footprint legs
+under a rootless cgroup v2 cap, and a `ceiling` leg that deliberately dies at
+the cap and then replays. 121 checks, 0 failures.
+
+**Key findings (measured, not asserted):** per-row footprint is **96.5–100 B**
+Int-only and **320.6–324 B** text-heavy — **3.3×**, not the "order of magnitude"
+three docs asserted. Read as the median of per-decile marginals, never a
+two-point slope: index doublings make a two-point read swing 2× (96 vs 205 B/row
+for one shape). **Two predictions in the iteration's own premise were wrong.**
+The ceiling is not a catchable `WO_T_OOM` for table storage — it is **SIGKILL,
+signal 9**, because `vm.overcommit_memory = 0` lets `malloc` succeed and the
+kernel kills on page *touch*, so the checked path never runs (the VM arena is
+the opposite: `WO_HEAP_MB` is checked and traps). And swap is not "latency
+collapse": 900 000 rows inside a 64 MiB cap with swap finished in **148 s
+against 150 s uncapped** — ~1%, on a real disk swap file with no zram. Also
+measured: **ack-after-fsync holds through an OOM kill** — ~40 000 rows came back
+as an intact prefix, no holes, not read as corruption.
+
+**Learned:** an append-mostly workload never re-touches its cold pages, so swap
+costs it nothing — the collapse belongs to *random reads* over an oversized
+table, which is precisely the pattern iteration 2's `resident: keys` creates and
+is **still unmeasured**. The RAM ceiling therefore has two shapes and neither
+announces itself: without swap the process vanishes on signal 9, with swap it
+keeps returning 0 while serving from disk. That is the argument for a budget
+that fires at a declared threshold instead of at exhaustion.
+
+**Dependencies unblocked — one, by *removing* it:** iteration 2's
+resident-footprint budget default was to be derived from "swap onset". **There is
+no onset.** Swap-off jumps straight from working to SIGKILL; swap-on shows no
+degradation to detect. Iteration 2 must pick its budget on other grounds rather
+than wait on a number this slice cannot produce. Iteration 3's replay baseline is
+still NOT delivered — `bench/baseline.json` times no replay.
+
+**Next steps:** the read-heavy-over-cap leg is the single most valuable
+follow-up, and it is what makes `p99_departure_decile` mean anything (the
+footprint legs never approach their 512 MiB cap, so it is legitimately 0 today).
+Then iteration 2's 5c/5d.
+
+**`.dev/reference` used:** none. Sources were the kernel's own interfaces —
+cgroup v2 `memory.max`/`memory.swap.max`, `/proc/self/status`, `/proc/swaps` and
+`vm.overcommit_memory`.
+
+---
+
 ### Landed 2026-08-25 — packaging + release pipeline (off-chain, no story)
 
 **Implemented last time (2026-08-25):** the toolchain became installable
@@ -620,8 +671,11 @@ declares a budget. Rows live in `malloc`'d slabs whose addresses are stable
 forever; there is no eviction, spill or paging anywhere in `database/src/`; the
 WAL never checkpoints so boot replays all history; and durability is one
 process-global `WO_DATA`, so no table can say it matters more than another. An
-allocation failure *is* a clean catchable `WO_T_OOM` — but swap thrash arrives
-first and carries no error signal at all.
+allocation failure is a clean catchable `WO_T_OOM` **only in the VM arena** —
+table storage has no ceiling and is SIGKILLed instead (measured, databasev2 1).
+Where swap exists the ceiling may never announce itself at all: an append-mostly
+900k-row run finished *at uncapped speed* inside a 64 MiB cap (148 s vs 150 s),
+serving from disk with no error signal.
 
 **The lever** is per-table storage modes, which is why this track has a grammar
 iteration. Six pending iterations moved here from the language track (their old
@@ -630,7 +684,7 @@ the language arc as v1 history.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ `readiness: refine` — its three forks are open, so despite being first it is NOT startable without a brainstorm — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
+| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | 🔄 **MEASURED 2026-08-27** — `readiness: ready`, `status: in-progress` (two criteria outstanding), forks settled, harness landed (121 checks). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Outstanding: the **random-read-over-cap** collapse (unmeasured, and it is `resident: keys`'s own access pattern) and iteration 3's replay baseline. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
 | 2 | [per-table storage: `durable` and `resident`](databasev2/02-table-storage-modes.md) | 🔄 **the language enrichment — the `durable` half is DONE and usable.** Two optional `@table` keys, `durable: true\|false` and `resident: all\|keys`, both defaulting to today's behaviour (all 28 existing declarations compile unchanged, no golden moved). Landed: the grammar, WO-E224 (a durable `ref` into a volatile table is refused), `.wob` v7 carrying both properties in spare `flags` bits, `durable: false` actually skipping the WAL (measured: 50 inserts → 1500 bytes durable, **0** volatile) with a mode-mismatch startup refusal, plus offset capture and read-a-row-from-an-offset. Outstanding: 5c/5d (the id→offset map and rewiring `wo_row_ptr`'s 11 call sites, slab scans and `@unique`/FK across the boundary — not yet written up), the two runtime refusals, and closeout. [spec](../superpowers/specs/2026-08-26-table-residency-design.md) · [plan](../superpowers/plans/2026-08-26-table-residency.md) |
 | 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
 | 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ **`readiness: ready` — the one startable iteration in the repo** (four forks confirmed settled 2026-08-20). Close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |

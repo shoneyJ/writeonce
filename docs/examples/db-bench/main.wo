@@ -1,3 +1,4 @@
+use fs
 use time
 
 -- db-bench — iteration 22's load generator. Every measured mode prints
@@ -465,8 +466,133 @@ fn all_mode(n: Int) -> Int {
 fn usage() -> Int {
   print_err("usage: db-bench <mode>");
   print_err("  all N | seed N | read N | query N | write N | wal N");
-  print_err("  mix N C | msgrate N | verify | verify-acked M");
+  print_err("  mix N C | msgrate N | growth N int|text | growth-verify");
+  print_err("  verify | verify-acked M");
   return 2;
+}
+
+-- databasev2 1: the process's own resident size, in KiB. Read here rather
+-- than sampled by the driver because the driver polls /proc every 250 ms and
+-- would miss the value AT a decile boundary; per-row footprint is the headline
+-- number of this iteration and deserves an exact reading, not a nearby one.
+-- Absence is nil by stdlib convention, so a kernel without VmRSS reports 0
+-- and the driver treats the leg as unavailable rather than as zero growth.
+fn self_rss_kb() -> Int {
+  let st = try fs.read_all("/proc/self/status", 16384) catch (e) "";
+  let i = index_of(st, "VmRSS:");
+  if i < 0 {
+    return 0;
+  }
+  let rest = substr(st, i + 6, 24);
+  let n = 0;
+  let j = 0;
+  while j < len(rest) {
+    let c = byte_at(rest, j);
+    if c >= 48 and c <= 57 {
+      n = n * 10 + (c - 48);
+    } else {
+      if n > 0 {
+        return n;
+      }
+    }
+    j = j + 1;
+  }
+  return n;
+}
+
+-- databasev2 1: growth N SHAPE — insert N rows of one reference shape,
+-- sampling read latency as the table grows so the driver can plot the CURVE
+-- rather than two endpoints. Reports one metric line per decile so the point
+-- at which p99 leaves its baseline is a MEASURED sample, not an estimate.
+--
+-- SHAPE is "int" (Item: two Ints plus a ref, all inline slot words) or "text"
+-- (Wide: three Text columns, each a separate db_text allocation on top of the
+-- slab slot). Per-row footprint differs by an order of magnitude between them,
+-- which is exactly why the driver reports the two separately and never a single
+-- "bytes per row".
+--
+-- The memory CAP is the driver's job (systemd-run --user --scope), not this
+-- program's: the sample just grows and reports, so the same binary serves the
+-- swap-off and swap-on legs unchanged.
+-- after the process is OOM-killed mid-insert, the durable prefix must be
+-- intact: rows 1..M all present with the right v and no holes. M is whatever
+-- survived -- the claim under test is the SHAPE of the survivor, not its size,
+-- because a SIGKILL can land between any two inserts.
+fn growth_verify() -> Int {
+  let seen: map<Int, Int> = {};
+  let maxk = 0;
+  for r in from x in Item select x {
+    set(seen, r.k, r.v);
+    if r.k > maxk {
+      maxk = r.k;
+    }
+  }
+  let i = 1;
+  while i <= maxk {
+    if has(seen, i) == false {
+      print_err("growth-verify: hole at ${i} below max ${maxk}");
+      return 3;
+    }
+    if get(seen, i) != item_v(i) {
+      print_err("growth-verify: row ${i} v ${get(seen, i)} != ${item_v(i)}");
+      return 3;
+    }
+    i = i + 1;
+  }
+  print("growthverify ${maxk}");
+  return 0;
+}
+
+fn growth_mode(n: Int, shape: Text) -> Int {
+  let wide = shape == "text";
+  if wide == false and shape != "int" {
+    print_err("db-bench: growth SHAPE must be `int` or `text`");
+    return 2;
+  }
+  let step = n / 10;
+  if step < 1 {
+    step = 1;
+  }
+  let bref = insert Bucket { tag: "growth" };
+  let pad = "0123456789abcdef0123456789abcdef";
+  let i = 1;
+  while i <= n {
+    if wide {
+      insert Wide { k: i, a: "a${i}${pad}", b: "b${i}${pad}", note: "n${i}${pad}${pad}" };
+    } else {
+      insert Item { k: i, v: item_v(i), bucket: bref };
+    }
+    -- at each decile, sample the read path against what is resident NOW
+    if i % step == 0 {
+      let h: map<Int, Int> = {};
+      let probes = 200;
+      let pt0 = time.ticks();
+      let j = 0;
+      while j < probes {
+        let key = 1 + (j * step) % i;
+        let o0 = time.ticks();
+        if wide {
+          for r in from x in Wide where x.k == key take 1 select x {
+            hist_add(h, time.ticks() - o0);
+          }
+        } else {
+          for r in from x in Item where x.k == key take 1 select x {
+            hist_add(h, time.ticks() - o0);
+          }
+        }
+        j = j + 1;
+      }
+      let pel = time.ticks() - pt0;
+      -- op name carries the decile so the driver keys each sample distinctly
+      report("growth${i / step}", probes, pel, h);
+      -- rows and resident KiB at this decile: the driver divides to get the
+      -- per-row footprint for THIS shape
+      print("growthrss ${i / step} ${i} ${self_rss_kb()}");
+    }
+    i = i + 1;
+  }
+  print("growthdone ${n}");
+  return 0;
 }
 
 fn main(args: multi Text) -> Int {
@@ -475,6 +601,9 @@ fn main(args: multi Text) -> Int {
   }
   if args[0] == "verify" {
     return verify();
+  }
+  if args[0] == "growth-verify" {
+    return growth_verify();
   }
   if len(args) < 2 {
     return usage();
@@ -507,6 +636,12 @@ fn main(args: multi Text) -> Int {
   }
   if args[0] == "msgrate" {
     return msgrate_mode(n);
+  }
+  if args[0] == "growth" {
+    if len(args) < 3 {
+      return usage();
+    }
+    return growth_mode(n, args[2]);
   }
   if args[0] == "mix" {
     if len(args) < 3 {

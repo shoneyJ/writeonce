@@ -23,6 +23,20 @@ class Meta {
   val: Int
 }
 
+-- databasev2 1: the TEXT-HEAVY reference shape. `Item` above is the Int-only
+-- reference as it stands (two Ints plus a ref, all inline slot words), so this
+-- is its counterpart: every row drags a separate db_text allocation per Text
+-- column on top of its slab slot. Per-row footprint differs by an order of
+-- magnitude between the two, which is why a single "bytes per row" number is
+-- meaningless and the growth mode reports the two shapes separately.
+@table(name: "wide", index: [k])
+class Wide {
+  k:    Int
+  a:    Text
+  b:    Text
+  note: Text
+}
+
 -- mix actors dump their per-op histograms here (kind 0 = read,
 -- 1 = write); main scans and merges — exact aggregate percentiles,
 -- and the merge itself dogfoods the store.

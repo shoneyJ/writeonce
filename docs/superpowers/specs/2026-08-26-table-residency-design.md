@@ -19,7 +19,7 @@
 | Which storage architecture | **One engine, log-structured.** The WAL already holds every row; keep an in-RAM id→offset map and read rows back with `pread`. No second engine. |
 | Row cache | **None in user space.** The kernel page cache is the hot copy — the repo's own stated position in `exploration/postgresql/buffer-and-checkpoint.md`: "`pread` against an fd that already has its page cached is a memcpy… the page cache is the one cache we want", and the reason the engine avoids `O_DIRECT`. |
 | `@unique` on a non-resident table | **Allowed; its index is unconditionally resident.** Settled here rather than deferred — see Constraints. |
-| Budget unit | **Bytes** (estimated resident footprint). Rows is the meaningless unit: a text-heavy row and an Int-only row differ by an order of magnitude, so a row count cannot bound RAM. |
+| Budget unit | **Bytes** (estimated resident footprint). Rows is the meaningless unit: a text-heavy row and an Int-only row differ by 3.3× (measured, databasev2 1), so a row count cannot bound RAM. |
 | Rejected architectures | `mmap` and a buffer pool stay out — see Alternatives rejected. `discarded.md`'s paged-engine rejection is amended to *partly revisited*, not reversed. |
 
 ## The problem, read off the engine
@@ -37,9 +37,15 @@ Facts, each verified in source rather than assumed:
   `WO_DATA` is set. `db.c` guards every WAL append with a null check on
   `vm->rt.wal`, so with no `WO_DATA` **every table is silently volatile** — a
   program can declare nothing and lose everything.
-- An allocation failure is clean: every `malloc` in the row encoder is checked
-  and `DB_ERR_OOM` maps to `WO_T_OOM`, a catchable trap. The dangerous exit is
-  the one *before* that — swap thrash, which carries no error signal at all.
+- An allocation failure is clean *in principle*: every `malloc` in the row
+  encoder is checked and `DB_ERR_OOM` maps to `WO_T_OOM`. **Corrected 2026-08-27
+  by measurement (databasev2 1): that path does not fire in practice.** With
+  `vm.overcommit_memory = 0`, `malloc` succeeds and the process is SIGKILLed
+  when it touches the pages — measured rc=137 at 360 000 rows under a 64 MiB
+  cgroup cap. The checked-trap path belongs to the VM arena (`WO_HEAP_MB`,
+  verified `trap 4 ... out of memory`), not to table storage, which has no
+  ceiling at all. This makes the byte budget below the ONLY mechanism by which
+  table storage can acquire one.
 
 The measurements that bound the design, from iteration 22: durable inserts
 ≈4.5k/s against RAM ≈297k/s (the 66× fsync gap); reads 1.3M ops/s at p50 1µs
