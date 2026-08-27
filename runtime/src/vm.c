@@ -447,6 +447,33 @@ static void *shard_main(void *arg) {
         } else {
             int rc = wo_io_wait(vm); /* parked fibers AND the wake eventfd */
             if (rc == WO_IO_STOP) {
+                /* iteration 40 — THE DRAIN GUARANTEE. A message sent before
+                 * the stop flag is observed must be delivered and run before
+                 * the engine stops.
+                 *
+                 * NEXT_RUNNABLE() already states this contract for a worker
+                 * holding a live fiber: it returns 2 and keeps draining "so
+                 * queued shutdown messages (close frames!) still run". This
+                 * branch — the IDLE worker, empty run queue, waiting on the
+                 * plane — used to reap and break instead, abandoning whatever
+                 * sat in its inbox for wo_engine_stop() to free wholesale.
+                 *
+                 * An actor between messages is exactly that idle case, which
+                 * is why a WARM server hid the bug: warm shards had live
+                 * fibers and took the correct path. Measured 2026-08-27 on a
+                 * fresh server: 5 of 16 SIGTERM drains left a WebSocket
+                 * client at EOF with no close frame and no diagnostic.
+                 *
+                 * The window belongs to the PRIMARY and closes when it sets
+                 * eng_shutdown (after main returns), so honour it here and
+                 * only exit when the primary says so. Yield on an empty poll:
+                 * a tight loop would burn a core per shard and starve the very
+                 * actors the drain exists to let run. */
+                if (!eng_shutdown) {
+                    (void)wo_vm_adopt(vm);
+                    if (!vm->qhead) sched_yield();
+                    continue;
+                }
                 fib_reap_all(vm);
                 break;
             }

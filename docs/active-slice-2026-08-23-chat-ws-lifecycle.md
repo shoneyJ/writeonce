@@ -52,7 +52,7 @@ surfaces as "no listener". `runtime/build/wovm_asan` bit the same way. **Rebuild
 both after any branch switch** (`just woc-build`, `make -C runtime wovm-asan`)
 before believing a gate failure.
 
-**The remaining failure is a real bug and is NOT fixed** —
+**The remaining failure was a real bug and is now FIXED** (iteration 40) —
 [`2026-08-27-chat-drain-finding.md`](2026-08-27-chat-drain-finding.md). On a
 *fresh* server the SIGTERM drain leaves a client at EOF with no close frame in
 5 of 16 runs. Traced: main → Registry → Room → Writer; the Registry runs but
@@ -63,15 +63,17 @@ gate had been hiding it by draining a server the soak had already warmed.
 
 ## Pending
 
-- 🔴 **The drain guarantee — the one blocker.** A `send` issued before the
-  stop flag must be delivered before the engine stops. `main` cannot park
-  after the flag (a park unwinds), so it spins, and **spinning is not a
-  barrier** — the evidence says the Room's shard never adopts its inbox, not
-  that it adopts it late. This is a semantic guarantee belonging to the actor
-  lifecycle (31), not a tuning parameter: it wants a stated rule in the
-  runtime lifecycle docs and a corpus fixture, not a bigger spin count.
-  **Nothing else in the slice should land before this**, because the drain is
-  half of what "actor lifecycle" means.
+- ✅ **The drain guarantee — FIXED, and split into its own iteration**
+  ([40](stories/language-runtime-database/40-shutdown-drain-guarantee.md),
+  chain 3 with 31). It was a runtime semantic, not a task in a sample's gate.
+  Root cause: `NEXT_RUNNABLE()` already stated the contract — "a WORKER on stop
+  keeps DRAINING … so queued shutdown messages (close frames!) still run" — but
+  `shard_main`'s IDLE branch contradicted it, reaping and breaking on
+  `WO_IO_STOP` and abandoning its inbox for teardown to free. An actor between
+  messages is exactly that idle case, which is why a warm soak server hid it.
+  One branch now honours the primary's drain window, yielding on an empty poll
+  so the drain cannot starve the actors it exists to let run. **20 of 20 fresh
+  server drains clean, from 5 in 16 failing.**
 - ⬜ **T9 remainder** — the 1k soak has only been run trimmed
   (`CHAT_SOAK=20`); run it at the default 1000 once the drain is fixed.
 - ⬜ **T10 closeout** — stories 24/31/34 → `status: done` with banners (note the
