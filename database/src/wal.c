@@ -450,6 +450,85 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     return 0;
 }
 
+/* databasev2 2: materialise a row straight from a log offset.
+ *
+ * The offset twin of wo_row_read (table.c): same out-gate contract — every
+ * value handed back is a FRESH VM allocation, never a pointer into anything
+ * the engine owns — but resolved from a file position instead of the id hash.
+ * This is what a `resident: keys` table's read path will call once 5c gives
+ * it an id->offset map; nothing calls it yet, deliberately.
+ *
+ * Two decode stages, because the record and the VM speak different dialects:
+ * dec_val yields ENGINE-owned slots (db_text and friends, exactly what a slab
+ * row holds), then wo_val_decode_vm copies each into the VM. The engine slots
+ * are scratch and are always freed before returning, on every path. */
+int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
+                       uint32_t *class_out, uint64_t *id_out, uint64_t *out_vals,
+                       const char **msg) {
+    uint32_t len = 0;
+    uint8_t *payload = NULL;
+    if (scan_record(w->fd, off, &len, &payload) != 0) {
+        *msg = "no intact record at that offset";
+        return -1;
+    }
+    rbuf r = {payload, payload + len, 0};
+    uint8_t kind = rd_u8(&r);
+    uint32_t cid = rd_u32(&r);
+    uint64_t id = rd_u64(&r);
+    if (r.bad || cid >= db->class_cnt) {
+        free(payload);
+        *msg = "record header is malformed";
+        return -1;
+    }
+    /* A REMOVE tombstone carries no field payload. Handing one back as a row
+     * would be the worst failure available here — the caller would read a
+     * deleted row as live — so it is refused explicitly, not decoded. */
+    if (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE) {
+        free(payload);
+        *msg = "record at that offset is a tombstone, not a row";
+        return -1;
+    }
+    const wo_classdesc *c = &db->classes[cid];
+    uint64_t *slots = c->field_cnt ? calloc(c->field_cnt, sizeof *slots) : NULL;
+    if (c->field_cnt && !slots) {
+        free(payload);
+        *msg = "out of memory reading a row";
+        return -2;
+    }
+    int rc = 0;
+    uint32_t done = 0;
+    for (; done < c->field_cnt; done++) {
+        if (dec_val(&r, db, c->kinds[done], &slots[done]) != 0) {
+            *msg = "record at that offset does not decode";
+            rc = -1;
+            break;
+        }
+    }
+    if (rc == 0 && (size_t)(r.end - r.p) != 0) { /* trailing bytes = corrupt */
+        *msg = "record at that offset has trailing bytes";
+        rc = -1;
+    }
+    if (rc == 0) {
+        int ok = 1;
+        for (uint32_t i = 0; i < c->field_cnt; i++) {
+            out_vals[i] = wo_val_decode_vm(db, rt, c->kinds[i], slots[i], &ok, msg);
+            if (!ok) {
+                rc = -2;
+                break;
+            }
+        }
+    }
+    /* engine slots are scratch: free every one that was built, on EVERY path */
+    for (uint32_t i = 0; i < done; i++) wo_db_val_free(db, c->kinds[i], slots[i]);
+    free(slots);
+    free(payload);
+    if (rc == 0) {
+        if (class_out) *class_out = cid;
+        if (id_out) *id_out = id;
+    }
+    return rc;
+}
+
 int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return errno == ENOENT ? 0 : -1; /* no WAL yet = fresh boot */

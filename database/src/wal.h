@@ -110,6 +110,25 @@ int64_t wo_wal_replay(const char *path, wo_db *db);
  * callers and the 156 WAL unit checks are untouched. */
 int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid);
 
+/* databasev2 2: read one row straight from a log offset — the offset twin of
+ * wo_row_read. [out_vals] must have room for the class's field_cnt values and
+ * receives FRESH VM allocations (the out-gate: always copies). [class_out] and
+ * [id_out] are optional. Offsets come from wo_wal_next_offset, recorded at
+ * append time.
+ *
+ *   0  ok
+ *  -1  no intact record at that offset, a malformed header, a record that
+ *      does not decode, trailing bytes, or a REMOVE tombstone (which carries
+ *      no fields — refused rather than decoded, since returning a deleted row
+ *      as live is the worst outcome available here)
+ *  -2  out of memory (*msg set)
+ *
+ * Nothing in the engine calls this yet: it is the read half of `resident:
+ * keys`, landed ahead of the storage change so it can be tested alone. */
+int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
+                       uint32_t *class_out, uint64_t *id_out, uint64_t *out_vals,
+                       const char **msg);
+
 /* Offline verification (no engine): scan [path], count intact records.
  * *intact_bytes (optional) = where the intact prefix ends. -1 = open
  * failure. */

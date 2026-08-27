@@ -439,6 +439,97 @@ static void test_offset_after_failed_commit(void) {
     wo_rt_destroy(&rt);
 }
 
+
+/* databasev2 2 (5b): read rows back BY OFFSET and deep-compare.
+ *
+ * The point is not that a record parses — test_offset_capture already showed
+ * the offsets are right. The point is that the VALUES come back intact,
+ * including a nil Text, and that the two refusal paths refuse instead of
+ * handing back something plausible. */
+static void test_read_row_at(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/readat.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    enum { N = 24 };
+    uint64_t ids[N], offs[N];
+    const char *labels[N];
+
+    for (int i = 0; i < N; i++) {
+        /* every third row has a NIL Text, so the nil path is covered */
+        wo_str *s = NULL;
+        if (i % 3 != 0) {
+            char lbl[24];
+            int ln = snprintf(lbl, sizeof lbl, "row-%d", i);
+            s = wo_str_new(&rt, lbl, (uint32_t)ln);
+            T_CHECK(s != NULL);
+        }
+        uint64_t vals[2] = {(uint64_t)(i * 3 + 1), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        labels[i] = (i % 3 != 0) ? "set" : "nil";
+        offs[i] = wo_wal_next_offset(&w);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        if (s) wo_str_free(&rt, s);
+    }
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* read each row back by offset and compare field by field */
+    for (int i = 0; i < N; i++) {
+        uint64_t got[2] = {0, 0};
+        uint32_t cid = 0xFFFFFFFFu;
+        uint64_t id = 0;
+        T_EQ(wo_wal_read_row_at(&w, &db, &rt, offs[i], &cid, &id, got, &msg), 0);
+        T_EQ(cid, 0u);
+        T_EQ(id, ids[i]);
+        T_EQ(got[0], (uint64_t)(i * 3 + 1));
+        if (labels[i][0] == 'n') {
+            T_EQ(got[1], 0u); /* nil Text stays nil through the round trip */
+        } else {
+            wo_str *back = (wo_str *)(uintptr_t)got[1];
+            T_CHECK(back != NULL);
+            char want[24];
+            int wl = snprintf(want, sizeof want, "row-%d", i);
+            T_EQ((int)back->len, wl);
+            T_EQ(memcmp(back->data, want, (size_t)wl), 0);
+            wo_str_free(&rt, back); /* out-gate: the VM value is ours to free */
+        }
+    }
+
+    /* refusal 1: a tombstone is refused, not decoded as a live row */
+    T_EQ(wo_row_remove(&db, 0, ids[0]), 0);
+    uint64_t tomb_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_remove(&w, 0, ids[0]), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    {
+        uint64_t got[2] = {0, 0};
+        T_EQ(wo_wal_read_row_at(&w, &db, &rt, tomb_off, NULL, NULL, got, &msg), -1);
+    }
+
+    /* refusal 2: a wrong offset (mid-record) refuses rather than returning a
+     * neighbouring row -- the silent-wrong-row failure this guards */
+    {
+        uint64_t got[2] = {0, 0};
+        T_EQ(wo_wal_read_row_at(&w, &db, &rt, offs[5] + 3u, NULL, NULL, got, &msg), -1);
+    }
+
+    /* refusal 3: past the end of the intact prefix */
+    {
+        uint64_t got[2] = {0, 0};
+        T_EQ(wo_wal_read_row_at(&w, &db, &rt, w.off + 4096u, NULL, NULL, got, &msg), -1);
+    }
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
@@ -447,6 +538,7 @@ int main(void) {
     test_float_bytes_replay();
     test_offset_capture();
     test_offset_after_failed_commit();
+    test_read_row_at();
     test_crash_battery();
     /* leave the dir for a failed run's forensics only */
     if (!t_fail) {

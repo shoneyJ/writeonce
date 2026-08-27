@@ -202,7 +202,32 @@ create fixtures under `tests/corpus/run/`.
 
 ---
 
-## Task 5 — the `resident: keys` read path
+## Task 5 — the `resident: keys` read path (split into 5a–5d)
+
+> **SPLIT 2026-08-27, after 5a shipped.** This task was written as if the
+> storage side were plumbing on existing functions. It is not, and that was
+> measured rather than guessed: `wo_row_ptr` returns a `db_row *` into a slab
+> and has **11 call sites**; `table.c` has 37 slab references; the query path
+> walks slabs directly (`db.c:105-181`); `enc_val` serialises *from* the slab,
+> so an insert must materialise, append, commit and only then drop the payload;
+> and **no operation exists that drops a row's payload while keeping its index
+> entries** — `wo_row_remove` removes from the indexes too.
+>
+> Note this is the *opposite* half from the earlier retraction. The record
+> FORMAT genuinely needed nothing (retracted, correctly). The record STORAGE
+> genuinely is deep, and leaving the step list reading as light plumbing was
+> the residual error.
+>
+> | Sub-task | Scope | State |
+> | --- | --- | --- |
+> | **5a** | `wo_wal_next_offset` — exact record offsets, unit-proven | ✅ landed `ac7d8af` |
+> | **5b** | `wo_wal_read_row_at` — materialise a row from an offset into VM values. **Zero storage change**, so it is additive and independently testable | this section |
+> | **5c** | the id→offset map for `resident: keys` classes, plus the missing drop-payload-keep-index operation | not started |
+> | **5d** | rewiring `wo_row_ptr`'s call sites, the slab scans, and `@unique`/FK across the residency boundary | not started |
+>
+> Only 5b is described below. 5c and 5d need their own task write-ups once 5b
+> has shown what the read path actually costs.
+
 
 > **Retraction, 2026-08-26.** This plan originally had a Task 5 that rewrote
 > `db_val_encode`/`db_val_decode` into a "self-contained, offset-based" record
@@ -232,50 +257,40 @@ slab path), `database/src/db.c` (insert/read/update/delete), `database/src/wal.c
 - Consumes: Task 3's descriptor fields, and `wal.c`'s existing `enc_val`/`dec_val`/`scan_record` — see the note below.
 - Produces: a table whose rows are not resident, serving reads by offset.
 
-- [ ] **Offset capture first, before any map exists.** Make the staging path in
-  `wal.c` able to report the file offset a record will occupy. Decide between
-  computing it as the buffer's base file offset plus the record's position
-  within the buffer, or deferring the report until flush; whichever is chosen,
-  the offset must be wrong in *no* case — a wrong offset reads a neighbouring
-  record and passes its CRC.
-- [ ] Prove offset capture in isolation before it has a consumer: a unit test
-  that appends records straddling a buffer boundary, flushes, then reads each
-  back by its reported offset via `scan_record` and asserts the recovered id
-  matches the one appended. Include a failed-commit case, where no offset must
-  be published for a record that never reached disk.
-- [ ] For a `resident: keys` table, replace the slab retention with an
-  id→offset map. Keep every index resident: the id map, each secondary index,
-  and each `@unique` shadow. That residency is what makes the arithmetic work
-  (≈3.8 GB of index for a 120 GB table) and what makes the constraints
-  correct.
-- [ ] Insert: append the record as Task 4 leaves it, then record id→offset
-  instead of retaining a slab row.
-- [ ] Read by id: map lookup, `pread` at the offset, verify the CRC the frame
-  already carries, decode via `dec_val`. Use `pread` and **not** `O_DIRECT` — the
-  kernel page cache is deliberately the hot copy.
-- [ ] Update: append a new record, repoint the offset. The superseded record
-  becomes garbage; do not attempt reclamation here — that is databasev2 3.
-- [ ] Delete: append a tombstone, drop the id from the map and from every
-  index.
-- [ ] Scan: walk the log sequentially rather than issuing one `pread` per row,
-  because a sequential walk is the case this layout is best at and a per-row
-  read would make scans pathological.
-- [ ] Boot: rebuild the id→offset map by replaying the log. Correct, and
-  O(entire history) — record that cost in the iteration and note that
-  databasev2 3's snapshot must persist the map so boot stops rescanning.
-- [ ] Confirm the constraints hold across the boundary, with a fixture each:
-  `@unique` refuses a duplicate whose conflicting row is not resident, and
-  FK-restrict refuses a delete whose only referrer is not resident. These two
-  are the correctness core; a constraint that silently checks only resident
-  rows must never ship.
-- [ ] Confirm `ref` navigation still works, at the cost of a read per hop.
-- [ ] Add a fixture: a table whose row count exceeds any plausible resident
-  budget, read back by id and scanned in full, byte-identical.
-- [ ] Verify: `just oop-e2e`, `just employee`, `just db-actor` green; ASan
-  clean; **`just db-bench` shows the `resident: all` read baseline unmoved**.
-- [ ] Commit. Draft: `feat(db): resident:keys — rows read from the log by offset`.
+### 5b — read a row from an offset
 
----
+**Files:** modify `database/src/wal.c` (beside `scan_record` at :272 and
+`dec_val` at :167), `database/src/wal.h`; extend `runtime/test/test_wal.c`.
+
+**Interfaces:**
+- Consumes: 5a's `wo_wal_next_offset`, plus the already-public
+  `wo_val_decode_vm` and `wo_db_val_free` (`table.h:183-187`).
+- Produces: `wo_wal_read_row_at`, which 5c's map consumes as its read path.
+
+- [ ] Add `wo_wal_read_row_at` in `wal.c`, mirroring `wo_row_read`'s contract
+  (`table.c:721`) but resolving from a file offset instead of the id hash:
+  `scan_record` the record, parse the `kind | class_id | id` header, `dec_val`
+  each field into engine-owned slots, convert each to a fresh VM value with
+  `wo_val_decode_vm`, then free the engine slots. The out-gate rule is
+  unchanged — always a copy, never a pointer into anything.
+- [ ] Return distinguishable outcomes: 0 ok, -1 no intact record at that
+  offset or a record whose kind carries no payload (a REMOVE tombstone), -2
+  OOM with `*msg` set. Silently treating a tombstone as a row would be the
+  worst failure available here.
+- [ ] Free every engine slot on **every** path including the partial-decode
+  error path, matching what `dec_val`'s own callers already do at `wal.c:204`.
+  ASan is the check, not inspection.
+- [ ] Do not change any storage behaviour. Nothing calls this yet; it is
+  additive, which is the whole point of separating it from 5c.
+- [ ] Unit-test it against 5a's offsets: insert rows of mixed kinds
+  (scalar, Text, and a nil Text), record each offset, then read every row
+  back **by offset** and deep-compare field by field to what was inserted.
+  Include a read at a deliberately wrong offset and at a tombstone, asserting
+  the documented refusals rather than a crash.
+- [ ] Verify: `make -C runtime test` and `test-iso`, both ASan+UBSan clean;
+  `just oop-e2e`, `just residency`, `just employee`, `just db-actor`
+  unchanged, since nothing calls the new function yet.
+- [ ] Commit. Draft: `feat(db): wo_wal_read_row_at — materialise a row from a log offset`.
 
 ## Task 6 — the two runtime refusals
 
