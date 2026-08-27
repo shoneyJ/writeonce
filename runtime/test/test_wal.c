@@ -323,12 +323,130 @@ static void test_float_bytes_replay(void) {
     wo_rt_destroy(&rt);
 }
 
+
+/* databasev2 2: offset capture. wo_wal_next_offset must name exactly where a
+ * record lands, so a resident:keys table can read it back by that offset
+ * later. A wrong offset is the worst possible bug here: it reads a
+ * NEIGHBOURING record, which passes its own CRC and returns the wrong row
+ * silently. So this asserts the recovered id per record, not just that a
+ * record parses.
+ *
+ * Covers the two awkward cases the design called out: records straddling a
+ * buffer growth (stage() doubles from 4096, so 400 rows with Text payloads
+ * cross it repeatedly), and a batch spanning several commits. */
+static void test_offset_capture(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/offsets.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    enum { N = 400 };
+    uint64_t ids[N], offs[N];
+
+    /* commit in uneven batches so offsets are exercised both mid-buffer and
+     * immediately after a flush reset len to 0 */
+    for (int i = 0; i < N; i++) {
+        char lbl[32];
+        int ln = snprintf(lbl, sizeof lbl, "label-%d-padding", i);
+        wo_str *s = wo_str_new(&rt, lbl, (uint32_t)ln);
+        uint64_t vals[2] = {(uint64_t)i, (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        /* BEFORE the append: this is the contract */
+        offs[i] = wo_wal_next_offset(&w);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        wo_str_free(&rt, s);
+        if (i % 7 == 6) T_EQ(wo_wal_commit(&w), 0);
+    }
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* offsets must be strictly increasing and inside the written region */
+    for (int i = 1; i < N; i++) T_CHECK(offs[i] > offs[i - 1]);
+
+    /* read each record back BY ITS REPORTED OFFSET and check the id matches:
+     * payload is [kind u8][class u32][id u64], after the 8-byte len+crc head */
+    int checked = 0;
+    for (int i = 0; i < N; i++) {
+        uint8_t head[8], body[13];
+        T_EQ((int)pread(w.fd, head, 8, (off_t)offs[i]), 8);
+        T_EQ((int)pread(w.fd, body, 13, (off_t)(offs[i] + 8)), 13);
+        T_EQ(body[0], WO_WAL_INSERT);
+        uint32_t cid;
+        uint64_t rid;
+        memcpy(&cid, body + 1, 4);
+        memcpy(&rid, body + 5, 8);
+        T_EQ(cid, 0u);
+        T_EQ(rid, ids[i]);
+        checked++;
+    }
+    T_EQ(checked, N);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 2: an offset reported for a record whose commit FAILED must
+ * never be trusted. Simulated by closing the fd under the wal so pwrite
+ * fails: the offset accessor must not have advanced past the durable tail,
+ * so a later successful commit reuses the same place. */
+static void test_offset_after_failed_commit(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/offfail.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    uint64_t vals[2] = {7u, 0u};
+    uint64_t id1 = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id1 != 0);
+    uint64_t at1 = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id1), 0);
+
+    /* break the fd, so the commit cannot succeed */
+    int saved = dup(w.fd);
+    T_CHECK(saved >= 0);
+    close(w.fd);
+    w.fd = -1;
+    T_CHECK(wo_wal_commit(&w) != 0);
+    /* The DURABLE TAIL is what must not move. `next_offset` legitimately
+     * points PAST the still-staged record (off unchanged, len still holding
+     * it) — asserting otherwise was this test's own first mistake. The
+     * invariant that matters: off is untouched, so the record still lands at
+     * the offset already reported for it. */
+    T_EQ(w.off, at1);
+
+    /* restore and commit for real: the record lands exactly where promised */
+    w.fd = saved;
+    T_EQ(wo_wal_commit(&w), 0);
+    uint8_t body[13];
+    T_EQ((int)pread(w.fd, body, 13, (off_t)(at1 + 8)), 13);
+    uint64_t rid;
+    memcpy(&rid, body + 5, 8);
+    T_EQ(rid, id1);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
     test_roundtrip_replay();
     test_torn_tail();
     test_float_bytes_replay();
+    test_offset_capture();
+    test_offset_after_failed_commit();
     test_crash_battery();
     /* leave the dir for a failed run's forensics only */
     if (!t_fail) {

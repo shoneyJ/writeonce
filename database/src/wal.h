@@ -53,6 +53,25 @@ typedef struct wo_wal {
     size_t len, cap;
 } wo_wal;
 
+/* databasev2 2: the file offset the NEXT staged record will occupy.
+ *
+ * Exact, and knowable at append time — no deferral to flush is needed, which
+ * is what the design spec feared. `off` is the durable tail and `len` the
+ * bytes staged but not yet written, and wo_wal_commit pwrites the whole batch
+ * AT `off` before advancing it, so a record staged now lands at off+len.
+ *
+ * Correct across the two awkward cases:
+ *   - a failed commit leaves `off` unadvanced and `len` intact, so the batch
+ *     is rewritten from the same place and previously-reported offsets stay
+ *     valid;
+ *   - a torn tail is handled by wo_wal_open, which positions `off` at the end
+ *     of the INTACT prefix, so offsets are always relative to validated data.
+ *
+ * Call it BEFORE the append whose offset you want, and only trust the value
+ * after the matching wo_wal_commit returns 0 — a record whose commit failed
+ * was never durable and its offset must not be recorded anywhere. */
+static inline uint64_t wo_wal_next_offset(const wo_wal *w) { return w->off + w->len; }
+
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;
  * a filesystem without fallocate still works). Positions the write offset
  * at the end of the INTACT record prefix — an existing file is scanned the
