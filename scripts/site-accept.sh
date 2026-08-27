@@ -56,6 +56,11 @@ fi
 
 PORT=$((8500 + RANDOM % 400))
 DATA="$W/data"; mkdir -p "$DATA"
+# stable, tailable server log — the per-run temp dir is deleted on exit
+SRVLOG="/tmp/site.log"
+: > "$SRVLOG"
+echo "server log: $SRVLOG  (tail -F \"$SRVLOG\" to follow)"
+
 
 hit() { # path [method] [data] [token] -> "STATUS|BODY" (redirects not followed)
   python3 - "$PORT" "$1" "${2:-GET}" "${3:-}" "${4:-}" <<'PYEOF'
@@ -97,7 +102,8 @@ expect() { # name got want_status want_substr
 }
 
 serve() {
-  SITE_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/site" "$PORT" >>"$W/srv.out" 2>&1 &
+  printf '\n===== serve — port %s =====\n' "$PORT" >>"$SRVLOG"
+  SITE_TOKEN=s3cr3t WO_DATA="$DATA" "$W/app/target/site" "$PORT" >>"$SRVLOG" 2>&1 &
   SRV=$!
   for _ in $(seq 1 40); do
     [[ "$(hit /health 2>/dev/null)" == 200* ]] && return 0

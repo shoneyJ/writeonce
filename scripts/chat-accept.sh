@@ -27,6 +27,17 @@ ulimit -n 8192 2>/dev/null || true
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/chat-accept.XXXXXX")"
 SRV=""
+# The example's server log lives at a STABLE path so a developer can
+# `tail -F /tmp/chat.log` while this runs. It used to go to the per-run temp
+# dir, which cleanup() deletes on exit — so there was nothing left to read and
+# nothing to follow live. Truncated once here, then APPENDED by every leg with
+# a banner, so one file holds the whole run in order.
+SRVLOG="/tmp/chat.log"
+: > "$SRVLOG"
+LEG=0
+LEGFROM=1
+echo "server log: $SRVLOG  (tail -F \"$SRVLOG\" to follow)"
+
 cleanup() {
   # kill EVERY server this run started, not merely the most recent $SRV: a leg
   # that dies before clearing SRV used to orphan a listener, which then broke
@@ -111,10 +122,17 @@ PYEOF
 
 serve() { # serve PORT [env...] — start + wait for THIS server's listener line
   PORT="$1"; shift
-  : > "$W/srv.out"   # stale 'listening' lines from an earlier leg lie
-  "$@" "$W/app/target/chat" "$PORT" >>"$W/srv.out" 2>&1 &
+  LEG=$((LEG + 1))
+  printf '\n===== leg %d — port %s — %s =====\n' "$LEG" "$PORT" "${*:-default env}" >>"$SRVLOG"
+  # readiness is searched only in THIS leg's slice: the log is appended, never
+  # truncated, so a 'listening' line from an earlier leg would lie
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  "$@" "$W/app/target/chat" "$PORT" >>"$SRVLOG" 2>&1 &
   SRV=$!
-  for _ in $(seq 1 80); do grep -q listening "$W/srv.out" 2>/dev/null && return 0; sleep 0.1; done
+  for _ in $(seq 1 80); do
+    tail -n "+$LEGFROM" "$SRVLOG" 2>/dev/null | grep -q listening && return 0
+    sleep 0.1
+  done
   return 1
 }
 
@@ -400,10 +418,11 @@ if [[ -x "$ASAN" ]]; then
   kill -TERM "$SRV" 2>/dev/null
   for _ in $(seq 1 60); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
   SRV=""
-  if [[ "$r" == *functional-ok* ]] && ! grep -q "AddressSanitizer\|LeakSanitizer" "$W/srv.out"; then
+  if [[ "$r" == *functional-ok* ]] \
+     && ! tail -n "+$LEGFROM" "$SRVLOG" | grep -q "AddressSanitizer\|LeakSanitizer"; then
     ok "ASan run clean (functional + drain, zero leaks)"
   else
-    bad "asan" "$(grep -m1 -E 'ERROR|SUMMARY' "$W/srv.out" || echo "$r")"
+    bad "asan" "$(tail -n "+$LEGFROM" "$SRVLOG" | grep -m1 -E 'ERROR|SUMMARY' || echo "$r")"
   fi
 else
   bad "asan" "runtime/build/wovm_asan missing — make -C runtime wovm-asan"

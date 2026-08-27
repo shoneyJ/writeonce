@@ -83,9 +83,19 @@ else
 fi
 
 DATA="$W/data"; mkdir -p "$DATA"
-WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >"$W/srv.out" 2>&1 &
+# stable, tailable server log: the per-run temp dir is deleted on exit, so a
+# developer had nothing to follow. `tail -F /tmp/web-app.log` while this runs.
+SRVLOG="/tmp/web-app.log"
+: > "$SRVLOG"
+echo "server log: $SRVLOG  (tail -F \"$SRVLOG\" to follow)"
+printf '===== boot — port %s =====\n' "$PORT" >>"$SRVLOG"
+LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$SRVLOG" 2>&1 &
 SRV=$!
-for _ in $(seq 1 40); do grep -q listening "$W/srv.out" 2>/dev/null && break; sleep 0.1; done
+for _ in $(seq 1 40); do
+  tail -n "+$LEGFROM" "$SRVLOG" 2>/dev/null | grep -q listening && break
+  sleep 0.1
+done
 
 # one tiny HTTP client; python is already a repo test dependency
 hit() { # method path [body] [auth: yes|no] [content-type] -> "STATUS|BODY"
@@ -467,7 +477,8 @@ for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { stopped=0; break; }; sl
 SRV=""
 
 # ---- 15. restart persistence (WAL replay) ----
-WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$W/srv.out" 2>&1 &
+printf '\n===== restart (WAL replay) — port %s =====\n' "$PORT" >>"$SRVLOG"
+WA_TOKEN=s3cr3t WA_IDLE_MS=600 WO_DATA="$DATA" "$W/app/target/web-app" "$PORT" >>"$SRVLOG" 2>&1 &
 SRV=$!
 sleep 0.5
 expect "product survives a restart (WAL)" "$(hit GET /products)" 200 '"name":"mug"'
