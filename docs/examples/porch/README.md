@@ -75,7 +75,11 @@ porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 - **TLS: none, anywhere.** Deploy behind nginx/caddy; the proxy terminates
   TLS+ALPN and gives browsers HTTP/2 while this backend speaks HTTP/1.1
   keep-alive. See the web-app sample's README for the nginx sketch.
-- `Content-Length` bodies only (no chunked encoding), no WebSockets/SSE,
+- `Content-Length` bodies only (no chunked encoding); **WebSockets ARE
+  supported since 2026-08-27** — `ws_accept` (`http/ws.wo`) performs the RFC
+  6455 handshake and hands back the hijacked `net.Conn`, and `http/wsframe.wo`
+  is a pure-`.wo` frame codec; `docs/examples/chat` is the worked example and
+  `just chat` its gate. **SSE is still absent**, and so is chunked encoding.
   JSON-first (no templates). Form-encoded bodies parse through
   `form_values(req)` (`+` and `%XX` decoded, nil on any other
   content-type); multipart/form-data through `multipart_parts(req)`
@@ -130,6 +134,7 @@ first (pure `.wo` cannot express it yet).
 | Content negotiation | ✅ `media_type(req)` request-side; `accepts(req, mtype)` response-side (exact, type/*, */*; q-values stripped not ranked — ranking waits for an app serving alternates) — slice 2 |
 | Trusted-proxy client IP | 🔶 `client_ip(req)` parses X-Forwarded-For; `net.peer(fd)` (iteration 35) exposes the peer — the verify middleware is now a pure-`.wo` candidate slice |
 | Status/header setting · redirects | ✅ builders + `set_header` |
+| WebSockets · pub/sub | ✅ **2026-08-27 (iteration 24)** — `ws_accept` does the RFC 6455 handshake and hands back the hijacked `net.Conn`; `http/wsframe.wo` is a pure-`.wo` frame codec. Rooms/presence/broadcast are actors in `docs/examples/chat`, gated by `just chat` (11 checks, 1000-client soak, both `WO_IO` backends, ASan clean). No SSE |
 | Lazy body streaming + backpressure · streaming responses · explicit commit point | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
 | ETag + conditional requests | ✅ `etag_for` (quoted base64 SHA-256) + `with_etag` (If-None-Match → 304) over iteration 34's digest builtins — slice 2 |
 
@@ -140,7 +145,7 @@ first (pure `.wo` cannot express it yet).
 | Ordered middleware chain | ✅ registration order, `?Resp` short-circuits |
 | Request-scoped context | ✅ `req.ctx` map (slice 2): middleware writes, handlers read; identity stays in `principal` |
 | Guaranteed teardown | 🔶 every fd closes on every path (gate-proven); no user teardown hooks yet |
-| Cancellation into pending storage ops | ⏸ UNBLOCKED by the arc (8/11 landed 2026-08-21) — stays parked until its own slice |
+| Cancellation into pending storage ops | ⏸ **unblocked, not built.** The arc landed 2026-08-21 and iteration 24 (2026-08-27) added the lifecycle a cancellation would ride — `call` with a catchable trap when the callee dies, bounded mailboxes, `monitor`, and `time.after` for a deadline. Nothing here consumes them yet; it stays parked until its own slice |
 | Panic recovery | 🔶 trap = 500 and the server survives ✅; "rolls back the transaction" is framework v2 (needs `transaction { }`, iteration 18) |
 
 ### Storage integration (the differentiator — framework v2 territory)

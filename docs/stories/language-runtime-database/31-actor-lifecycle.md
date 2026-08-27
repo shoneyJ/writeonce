@@ -1,6 +1,6 @@
 ---
 iteration: "31"
-status: refine
+status: done
 chain: 3
 ---
 
@@ -15,6 +15,22 @@ chain: 3
 > **stage 3 → 22 → 31 → 24 → 23 → 32**: chat
 > ([iteration 24](24-chat-websocket-workload.md)) cannot be written
 > honestly without these four mechanisms.
+
+> **✅ LANDED 2026-08-27 — INSIDE [24](24-chat-websocket-workload.md)**, per
+> the 2026-08-23 directive that absorbed it. All four mechanisms shipped:
+> `call`/reply with a typed scalar reply (id 88, WO-E226), **bounded mailboxes**
+> (`WO_MAILBOX`, default 1024, fail-fast with a catchable `WO_T_ACTOR`),
+> **actor death** that traps callers instead of hanging them, `monitor`
+> (id 89) and `time.after` (id 90). Ids 89 and 90 were reserved holes in
+> `wob.h`; they are filled.
+>
+> **A fifth mechanism was added that this story did not anticipate**: the
+> shutdown drain guarantee, [40](40-shutdown-drain-guarantee.md). It is
+> lifecycle semantics — this story gave actors a death notice, 40 gives the
+> program a shutdown that does not lose mail — and it was found by measurement
+> while proving 24's gate, not by review.
+>
+> How each piece works: `runtime/src/CODE-LOGIC.md`, "Actor lifecycle".
 
 ## Why this iteration exists
 

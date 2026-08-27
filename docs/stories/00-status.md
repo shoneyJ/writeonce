@@ -50,6 +50,56 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-27 — iteration 24, chat + actor lifecycle (absorbing 31 + 34)
+
+**Implemented last time (2026-08-27):** the slice closed and merged to master
+(`ed5334d`, fast-forward). T4 `monitor` + T5 `time.after` (ids 89/90) had
+landed on the branch; this session merged master in (adopting the `porch`
+rename), finished T8/T9, fixed the gate, found and fixed a runtime bug, and did
+T10. Iterations 31 and 34 land inside it.
+
+**Key findings (measured, not asserted):** finishing the gate mattered more than
+finishing the sample. Making **every leg start its own server** — instead of the
+drain leg inheriting the soak's warmed one — exposed that **5 of 16**
+fresh-server SIGTERM drains left a client at EOF with no close frame and no
+diagnostic. Traced to `shard_main`: `NEXT_RUNNABLE()` already stated the
+contract ("a WORKER on stop keeps DRAINING … close frames!") but the **idle**
+branch reaped and broke, abandoning its inbox. An actor between messages is
+exactly that idle case. Split out as
+[40](language-runtime-database/40-shutdown-drain-guarantee.md); **20 of 20
+clean** after. Also measured: the fd check had been core-count dependent — lazy
+per-shard init takes one `io_uring` + one `eventfd` per shard, capped at
+`nproc`, so 26 → 44 on a 20-core box read as a leak. **1000 connections left it
+at 44**, which settled it.
+
+**Learned:** three of the four gate failures were **stale build artifacts**, not
+code. A branch switch leaves `compiler/_build/` and `runtime/build/` holding the
+other branch's binaries, and a `woc` emitting `.wob` v7 against a v6 runtime
+surfaces only as "no listener" — rebuild both before believing a gate failure.
+And a gate that reuses another leg's server is not merely untidy: it hid a real
+bug, and when its own leg failed it orphaned a listener that broke the *next*
+run. Example apps now log to `/tmp/<app>.log` so a developer can `tail -F` them.
+
+**Dependencies unblocked:** PUBSUB2 (WebSockets + pub/sub, rejected until this
+point) is done; the porch ledger's WebSocket rows are ✅ and its cancellation row
+is unblocked-not-built. Chain position 4 is complete, so **the chain's next link
+is [databasev2 4](databasev2/04-io-uring-commit.md)** (io_uring group-commit).
+Still blocked: CSRF and sessions — iteration 34 shipped HMAC but **there is
+still no RNG**, and HMAC authenticates a token without being able to mint one,
+which is [39](language-runtime-database/39-web-framework-parity.md)'s leading
+item.
+
+**Next steps:** databasev2 4, or databasev2 2's outstanding 5c/5d. One debt is
+named rather than hidden: iteration 40's guarantee is proven only by the chat
+gate — nothing in `runtime/test/` drives `wo_engine_start`/`wo_engine_stop` and
+no corpus fixture can trigger a stop, so pinning it lower needs new
+multithreaded test infrastructure.
+
+**`.dev/reference` used:** none this slice. The sources were RFC 6455, RFC
+3174/4231 for the digest vectors, and the kernel's own interfaces for the drain.
+
+---
+
 ### Landed 2026-08-25 — packaging + release pipeline (off-chain, no story)
 
 **Implemented last time (2026-08-25):** the toolchain became installable
@@ -148,7 +198,7 @@ soak, runtime battery 36 suites 0 fail, compiler 556 checks 0 fail, corpus
 119 checks 0 fail. Only **T10 closeout** remains — which is what still holds
 stories 24/31/34 open. Finishing T9 exposed and fixed a real runtime bug,
 split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md). Its running state is the marker doc
-([`2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)),
+(the marker doc, deleted at closeout per the convention),
 which is the file to read for what is done and what is next; stories
 [31](language-runtime-database/31-actor-lifecycle.md) and
 [34](language-runtime-database/34-crypto-builtins.md) keep
@@ -355,8 +405,8 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 19  | [Float + Bytes](language-runtime-database/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
 | 11  | [Fibers](language-runtime-database/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
 | 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
-| 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | 🔄 **absorbed into 24** (directive 2026-08-23) and half landed there: `call` request/response with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), and actor death that traps callers instead of hanging them. Still open: `monitor` and `time.after` — ids **89 and 90 are reserved holes** in `wob.h`, which is the machine-checkable proof of what is left. Supervision trees stay out of v1 |
-| 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | 🔄 **the live slice** (absorbing 31 + 34, directive 2026-08-23) — branch `chat-ws-lifecycle`, 5/10 tasks landed: crypto, bounded mailboxes, WS upgrade, frame codec, `call`/reply + actor death. Pending: `monitor`, `time.after`, the chat sample, its gate, closeout. State lives in [the marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) |
+| 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | ✅ **LANDED 2026-08-27 inside 24** (directive 2026-08-23). All four mechanisms: `call`/reply with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), actor death that traps callers instead of hanging them, **`monitor` (89)** and **`time.after` (90)** — the reserved holes in `wob.h` are filled. A fifth mechanism it did not anticipate came out of proving the gate: the shutdown drain guarantee, [40](language-runtime-database/40-shutdown-drain-guarantee.md). Supervision trees stay out of v1 |
+| 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | ✅ **LANDED 2026-08-27** (absorbing 31 + 34) — all ten tasks; merged to master `ed5334d`. `just chat` **11 checks, 0 failures** at the full 1000-client soak: handshake, functional matrix on both `WO_IO` backends and on one shard, the soak, the fd invariant, the SIGTERM drain, `WO_MAILBOX=8` backpressure, ASan clean. Finishing its gate found a real runtime bug, split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md) |
 | 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
 | 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
 | 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
@@ -387,13 +437,16 @@ that sequences its tasks. Read one, approve, then the next starts.
 | Language | 🔄 [iteration 36 — operator parity](language-runtime-database/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
 | Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
 | Runtime  | ✅ **iteration 35 landed 2026-08-23** (branch `framework-v1b`, with framework v1 slice 2 + the serving slice): net deadlines/unix/peer (ids 91–95), fiber pooling, serve_conn + web-app fiber-per-connection — web-app gate 41/0, both WO_IO backends | [design](../superpowers/specs/2026-08-23-net-seams-park-design.md) |
-| Runtime  | 🔄 **iteration 24 (absorbing 31 + 34): chat + actor lifecycle** — spec + plan approved 2026-08-23 (24 absorbs 31 by directive; 34 resolved C-builtins); executing on branch `chat-ws-lifecycle` | [marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) · [plan](../superpowers/plans/2026-08-23-chat-ws-lifecycle.md) |
 
-The active slice's marker doc is
-[`docs/active-slice-2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)
-— one file, deleted when the slice lands. Everything else pending is the
-concurrency chain (see *Pending* below); the held tail is every story
-whose frontmatter reads `status: hold`.
+**No slice is active.** Iteration 24 landed 2026-08-27 and its marker doc was
+deleted per the convention. Everything pending is the concurrency chain (see
+*Pending* below) — **the chain's next link is
+[databasev2 4](databasev2/04-io-uring-commit.md)** (chain 5, the io_uring
+group-commit write path, `was_language_iteration: 23`), which now has iteration
+22's fsync-per-commit numbers in hand, plus databasev2 1's finding that the
+write path is *not* where memory pressure bites (appending under a cap costs
+~1%, random reads 273×). The held tail is every story whose frontmatter reads
+`status: hold`.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 

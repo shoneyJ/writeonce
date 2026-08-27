@@ -1,6 +1,6 @@
 ---
 iteration: "24"
-status: in-progress
+status: done
 chain: 4
 ---
 
@@ -18,6 +18,34 @@ chain: 4
 > before [iteration 31](31-actor-lifecycle.md) (request/response,
 > bounded mailboxes, actor death, timers). Iteration 19 LANDED
 > 2026-08-20, so Bytes is available for frame parse/serialize.
+
+> **✅ LANDED 2026-08-27** (branch `chat-ws-lifecycle`, merged to master
+> `ed5334d`). Ten tasks: crypto (T1), bounded mailboxes (T2), `call`/reply and
+> actor death (T3), `monitor` (T4), `time.after` (T5), the WS upgrade seam
+> (T6), the pure-`.wo` frame codec (T7), the chat sample (T8), the gate (T9),
+> this closeout (T10). It absorbed [31](31-actor-lifecycle.md) and
+> [34](34-crypto-builtins.md), which land with it.
+>
+> **Gate — `just chat`, 11 checks, 0 failures** at the full 1000-client soak:
+> handshake with an independently recomputed accept-key, the functional matrix
+> (presence, broadcast, room isolation, leave) on **both** `WO_IO` backends and
+> on a single shard, the 1k hot-room soak, the fd invariant, the SIGTERM drain,
+> `WO_MAILBOX=8` backpressure, and an ASan run with zero leaks. Battery
+> alongside: runtime 36 suites 0 fail, compiler 556 checks, corpus 119 checks.
+> The sample logs to `/tmp/chat.log`.
+>
+> **Two disclosed deviations from the spec.** `monitor` takes **three**
+> arguments (`watched, observer, msg`) rather than two, because the caller may
+> be `main`, which has no mailbox and cannot be an implicit observer. And a
+> `call` reply is a **typed scalar** in v1 — which is what let the agreement be
+> checked at compile time (WO-E226) instead of carried as a tagged value.
+>
+> **What finishing the gate found.** Making every leg start its own server
+> exposed a real runtime bug the warmed soak server had been hiding: on a fresh
+> server, 5 of 16 SIGTERM drains left a client at EOF with no close frame. It
+> was not this sample's fault — the fix is an engine guarantee, split out as
+> [40](40-shutdown-drain-guarantee.md). Design notes:
+> [`docs/examples/chat/CODE-LOGIC.md`](../../examples/chat/CODE-LOGIC.md).
 
 ## Why this iteration exists
 
