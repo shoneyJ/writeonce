@@ -24,6 +24,14 @@ chain: 5
 > would optimize a number nobody had measured, against a runtime that
 > couldn't use it.
 >
+> **Supporting evidence for staying last (iteration 1, 2026-08-27):** the write
+> path is *not* where memory pressure bites. Inserting 900 000 rows inside a
+> 64 MiB cap with swap cost **~1%** (148 s vs 150 s uncapped), because appending
+> never re-touches its cold pages. Random *reads* over the same oversized table
+> cost **273×**. So the pressure is on the read path, and the io_uring question
+> that may actually matter is the one iteration 2 deferred here — io_uring for
+> `resident: keys` row reads — not group-commit for writes.
+>
 > **No spec exists yet.** ~~The forks in *Info* are genuine decisions.~~
 >
 > **REFINED 2026-08-20: the four forks are SETTLED as their recorded

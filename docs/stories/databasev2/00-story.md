@@ -45,26 +45,36 @@ Worth being precise, because the failure mode determines the fix — and the goo
 news is that the engine's own behaviour is clean:
 
 **Corrected 2026-08-27 by measurement.** This section used to open "an
-allocation failure is a catchable trap, not a crash", and that is true only of
-the VM arena. Table storage has no ceiling, and with `vm.overcommit_memory = 0`
-its `malloc` never fails — the process is **SIGKILLed** (rc=137, measured at
-360 000 rows under a 64 MiB cap). The checked path below is real, but it is the
-arena's, not the store's. See [iteration 1](01-ram-ceiling-measurement.md).
+allocation failure is a catchable trap, not a crash". That is true only of the VM
+object arena, whose `WO_HEAP_MB` ceiling is checked and does trap
+(`trap 4 … out of memory`, exit 1). **Table storage has no ceiling at all** —
+details below, measured. See [iteration 1](01-ram-ceiling-measurement.md).
 
 Every `malloc` in
 the row encoder is checked and jumps to an `oom` label; `DB_ERR_OOM` maps to
-`WO_T_OOM`, which a program can `try`/`catch`. So a writeonce program that runs
-out of memory *refuses the insert* rather than corrupting or dying. That is a
-much better starting position than most engines have.
+`WO_T_OOM`, which a program can `try`/`catch`. On paper a writeonce program that
+runs out of memory *refuses the insert* rather than corrupting or dying.
 
-**But the trap is almost never what a real deployment hits first.** Long before
-`malloc` returns NULL, the box starts swapping, and a RAM-authoritative database
-on swap is the worst of both worlds: it has paid for in-memory data structures
-and is now serving them from disk with no read path designed for that. On a
-cgroup-limited host the OOM killer arrives instead, and an external `SIGKILL` is
-the one shutdown path that skips every guarantee the WAL was written to provide —
-though ack-after-fsync means acked writes still survive; iteration 22's `kill -9`
-battery proves that much.
+**Measured 2026-08-27: that code does not run.** Under
+`vm.overcommit_memory = 0` — the Linux default — `malloc` **succeeds** and the
+kernel kills the process when it later *touches* the pages. So the checked path
+never gets a NULL to check. It is not dead code in principle, just unreachable in
+the configuration everything actually runs in. What a deployment gets instead,
+both exits measured under a cgroup cap:
+
+- **swap off: `SIGKILL`, signal 9.** No trap, no message. An external `SIGKILL`
+  is the one shutdown path that skips every guarantee the WAL was written to
+  provide — though ack-after-fsync holds: ~40 000 rows came back as a contiguous
+  intact prefix, no holes, not read as corruption. Iteration 22's `kill -9`
+  battery proved this for an external kill; iteration 1 proved it for the OOM
+  killer.
+- **swap on: exit 0.** The process finishes, returns success, and serves from
+  disk. The price depends entirely on access pattern: appending pays **~1%**
+  (148 s vs 150 s uncapped for 900 000 rows) because cold pages are written once
+  and never re-read, while random reads across the table pay **273×** (1 851 166
+  vs 6 771 reads/s; p99 1 µs vs 487 µs). "A RAM-authoritative database on swap is
+  the worst of both worlds" is therefore true of the **read** path specifically,
+  not of writes.
 
 So the honest problem statement is not "malloc fails". It is: **there is no
 declared budget, no back-pressure as the budget is approached, and no way to

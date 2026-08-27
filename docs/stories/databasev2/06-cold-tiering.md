@@ -29,7 +29,16 @@ readiness: refine
 > **What may still be left:** if measurement after 5c/5d shows the page cache
 > insufficient for some workload, a user-space working set becomes arguable
 > again — but only with that number in hand, which is the opposite of how this
-> file was written. Until then treat the design questions below as answered
+> file was written.
+>
+> **That question now has a reference point (iteration 1, 2026-08-27).** Random
+> reads over a table larger than RAM measured **273× slower** than resident
+> (1 851 166 vs 6 771 reads/s; p99 1 µs vs 487 µs) — but that is the *kernel's
+> swap* path: demand-paged anonymous memory, 4 KiB per fault, no readahead. It is
+> the number `resident: keys` must **beat**, since it `pread`s through the page
+> cache, which gets readahead and a shared cache. So this file revives if and
+> only if 5c/5d measures the page-cache path landing near 273× rather than well
+> below it. Until that measurement exists, neither outcome is assumed. Until then treat the design questions below as answered
 > elsewhere and the phases as void. Its genuinely durable contribution is its
 > fork list, especially "does the language surface the fault cost at the *use*
 > site" — still open, and still the largest question about what writeonce is.

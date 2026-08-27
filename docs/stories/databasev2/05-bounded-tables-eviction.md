@@ -5,11 +5,12 @@ status: pending
 readiness: refine
 ---
 
-# databasev2 5 — bounded tables and eviction: a declared budget, and back-pressure before the cliff
+# databasev2 5 — bounded tables and eviction: a declared budget, and back-pressure at a declared threshold
 
 > Part of [Story — databasev2: the database beyond RAM](00-story.md).
 > Needs [2](02-table-storage-modes.md) for the mode a bound attaches to, and
-> [1](01-ram-ceiling-measurement.md) for the numbers that set a sane default.
+> [1](01-ram-ceiling-measurement.md), whose numbers landed 2026-08-27 and
+> **corrected this iteration's framing** — see the third goal.
 >
 > **The simpler half of the hard problem, done first on purpose.** Evicting from
 > a bounded resident table and evicting to disk are the same policy question with
@@ -28,10 +29,36 @@ readiness: refine
   refusal (trap, let the caller decide), and back-pressure (make the writer
   wait). Each is right for a different table, which argues for the policy being
   declared rather than chosen for the developer.
-- **Back-pressure before the cliff, not at it.** The dangerous exit iteration 1
-  characterises is swap thrash, which arrives with **no error signal at all**.
-  A budget that is enforced at 100% has already lost; the value is in acting at
-  a threshold, while there is still headroom to act.
+- **Back-pressure at a declared threshold — because there is no cliff to be
+  before.** This goal was written expecting a gradient to detect. Iteration 1
+  measured (2026-08-27) that no such gradient exists, which makes the goal
+  *stronger*, not weaker:
+  - Exceeding RAM **without** swap is **SIGKILL, signal 9** — no trap, no
+    diagnostic. Table storage has no checked ceiling, and under
+    `vm.overcommit_memory = 0` its `malloc` succeeds and the kernel kills on
+    page touch, so the checked path never runs.
+  - Exceeding RAM **with** swap returns **exit 0** and keeps serving from disk.
+    An append-mostly workload pays **~1%** (148 s vs 150 s uncapped for 900k
+    rows), so "swap thrash" — which this goal previously named as the dangerous
+    exit — is not what happens on the write path at all.
+  - Read latency does not *depart*, it **steps**: 1 µs resident to 487 µs
+    over-cap with nothing in between.
+
+  So there is no early-warning signal anywhere to react to — not an error, not a
+  latency knee. A budget enforced at 100% has not merely "already lost"; it can
+  never fire, because the process is dead or silently fine. **Only a declared
+  threshold can speak, and it must be declared in bytes** — footprint is
+  96.5–100 B/row Int-only against 320.6–324 B/row text-heavy, **3.3× apart**, so
+  a row count cannot bound RAM. Leave headroom for index doublings, which are
+  transient RSS steps (measured at ~24k and ~48k rows): a budget without headroom
+  fires during a rehash instead of at a real threshold.
+- **Eviction policy QUALITY is decisive, not incidental.** Iteration 1 measured
+  random reads over an oversized table at **273× slower** than resident
+  (1 851 166 vs 6 771 reads/s; p99 1 µs vs 487 µs). That is the cost of getting
+  the resident set wrong, so the gap between a good policy and a careless one is
+  not a few percent — it is the difference between a working system and an
+  unusable one. Whatever policy ships must be measured against that spread, not
+  merely shown to be correct.
 - **Eviction that respects the engine's actual invariants.** Rows have stable
   addresses forever, the free-slot list recycles slots, ids are never reused, and
   every secondary index and unique shadow must stay consistent with the slab.

@@ -249,9 +249,15 @@ commit as the code. An older image is refused on version rather than misread.
   takes the same path it takes today. The 1.3M ops/s read baseline is the
   regression gate, and a measurable regression there is grounds to reject the
   implementation rather than tune it.
-- **The failure mode becomes a diagnostic.** Two of the three exits
-  characterised in databasev2 1 — swap thrash and the OOM killer — are replaced
-  by a refusal that names the fix.
+- **The failure mode becomes a diagnostic.** Both exits **as measured** in
+  databasev2 1 (2026-08-27) are replaced by a refusal that names the fix — and
+  the measurement made this argument stronger than the draft that named "swap
+  thrash and the OOM killer". What actually happens is **SIGKILL signal 9** with
+  swap off (no trap: overcommit lets `malloc` succeed, the kernel kills on page
+  touch, so the checked path never runs) or **exit 0 while serving from disk**
+  with swap on. Neither is a diagnostic; one is silence and the other is a
+  corpse. A declared budget is the only way this engine can say anything at all
+  before either.
 - **It is declared, not automatic.** No threshold heuristic, no performance
   cliff the compiler cannot explain. Consistent with a language whose thesis is
   that the compiler tells you the truth.
