@@ -5,14 +5,13 @@ class Note {
 }
 
 class Sink {
-  pad: Int
   fn receive(msg: Note) {
     print(msg.text);
   }
 }
 
 fn main() -> Int {
-  let a = spawn Sink { pad: 0 };
+  let a = spawn Sink {};
   let n = Note { text: "gone" };
   send(a, n);
   print(n.text);

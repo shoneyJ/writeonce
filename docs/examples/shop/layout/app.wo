@@ -1,0 +1,50 @@
+-- layout/app.wo — the app shell (app.html's analog): one full document
+-- wrapping every page with the shared header and footer. Styles are NOT
+-- inlined — pages link /assets/style.css (served by static_files), so
+-- markup and styling stay separate files.
+use porch/http
+use view
+
+-- The app shell as a COMPONENT (writeonce-view's `Component`: fields in, Text
+-- out), the same shape as writeonce-view's own `Layout` — two slots instead of
+-- four, and its own document rather than `page()`'s, because this
+-- template deliberately LINKS a stylesheet instead of inlining one.
+-- That is the whole reason it is not just `Layout`: markup and styling
+-- stay separate files here.
+pub class AppShell {
+  title:   Text
+  content: Text
+
+  fn render() -> Text {
+    return `
+      <!doctype html>
+      <html>
+      <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>{{ self.title }}</title>
+      <link rel="stylesheet" href="/assets/style.css">
+      </head>
+      <body>
+        ${header()}
+        <main class="site-main">${self.content}</main>
+        ${footer()}
+      </body>
+      </html>`;
+  }
+}
+
+-- `ok_html` is the FRAMEWORK's (http/types.wo, beside ok_text/ok_json):
+-- a status line and a content-type is transport, not rendering, and both
+-- HTML samples had hand-rolled the identical four lines.
+
+pub fn html_error(status: Int, title: Text, msg: Text) -> Resp {
+  let content = `
+    <h1>{{ title }}</h1>
+    <p>{{ msg }}</p>
+    <p><a href="/">Back to products</a></p>`;
+  let shell = AppShell { title: "shop — ${title}", content: content };
+  let h: map<Text, Text> = {};
+  h["content-type"] = "text/html; charset=utf-8";
+  return Resp { status: status, headers: h, body: shell.render() };
+}

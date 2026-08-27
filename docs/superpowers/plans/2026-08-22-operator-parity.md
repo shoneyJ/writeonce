@@ -21,7 +21,7 @@ time), `not` at the unary level beside minus.
 (`runtime/src/`), dune + just gates.
 
 **Spec:** the story IS the spec —
-`docs/stories/language-runtime-database/refine/36-operator-parity.md`
+`docs/stories/language-runtime-database/36-operator-parity.md`
 (story-19 deviation precedent: decisions recorded normatively there,
 reasoning-under-the-code lands in CODE-LOGIC.md as part of this plan).
 
@@ -240,7 +240,7 @@ frontmatter and folder in the same change), `docs/stories/00-status.md`
   CODE-LOGIC.md on both sides for the decisions that live in code
   (arithmetic SHR, trap-not-mask, `not` as EQ-zero, parse-time
   compound-assign desugar and its double-eval contract); story file
-  moved to `done/` with `status: done` and a landing blockquote in the
+  set to `status: done` with a landing blockquote in the
   story-15/16 voice; standup entry in `00-status.md` answering the six
   questions (reference project: `.dev/reference/go`).
 - [ ] Commit.

@@ -1,0 +1,53 @@
+-- home/view.wo — the VIEW for `/`. A component: fields in, Text out.
+-- Everything on this page is static copy EXCEPT the chapter list, so
+-- the one field is that list's already-built component — content
+-- projection, the same slot pattern writeonce-view's `Layout` uses. HomePage
+-- therefore knows nothing about chapters, the Chapter table, or how the
+-- nav decides which entry is current.
+use view
+
+pub class HomePage {
+  chapter_nav: Component
+
+  fn render() -> Text {
+    -- hero: tagline + the two CTAs (the go.dev shape, no JS anywhere)
+    let h1 = el("h1", "text-4xl font-bold mb-4", "One language. One runtime.<br>One database. One binary.");
+    let sub = el("p", "text-lg text-gray-700 leading-relaxed mb-6", "writeonce is a language whose compiler, runtime, web server and " .. "database ship as a single never-stopping Linux binary. Ownership-" .. "checked memory, inferred GC where ownership cannot reach, actors " .. "on every core — and the page you are reading is served by it.");
+    let ctas = el("div", "flex items-center justify-center gap-4", btn_link("/ch/hello", "Get started", true) .. btn_link("https://github.com/shoneyJ/writeonce", "View source", false));
+    let hero = el("div", "text-center py-16", h1 .. sub .. ctas);
+
+    -- code showcase: a real flavor of the language
+    let show_head = el("h2", "text-2xl font-bold mb-2 text-center", "An actor per chat room, rows in the built-in database");
+    let show_cap = el("p", "text-sm text-gray-500 text-center mb-4", "No broker, no ORM, no async keyword — ownership moves the message, the WAL makes the row durable.");
+    let showcase = el("div", "mx-auto max-w-3xl mb-8", show_head .. show_cap .. home_snippet());
+
+    -- why-cards (2x2 grid, collapses on small screens)
+    let cards = card("One binary", "woc build emits a self-contained executable: VM, your bytecode, the database engine. Deploys are a file copy; the runtime swaps code in place.");
+    cards = cards .. card("Memory safety, no tax", "Rust-shaped ownership checked at compile time; where ownership cannot express the shape, the compiler infers GC — per shard, no global pause.");
+    cards = cards .. card("The database is built in", "Every class is a table. Inserts are WAL-logged before they acknowledge; restart replays. No server to operate, no connection string.");
+    cards = cards .. card("Actors on every core", "spawn returns an address, send moves ownership. Fibers park on io_uring instead of blocking threads — no async/await, ever.");
+    let grid = el("div", "grid grid-cols-2 gap-6 mb-8", cards);
+
+    -- chapters (the gate's anchor string lives here)
+    let learn = el("h2", "text-2xl font-bold mb-4", "Learn writeonce");
+    let learn_p = el("p", "leading-relaxed mb-4", "The tutorial is written in the language and stored in its tables — work through the chapters in order:");
+    let chapters = el("div", "bg-white rounded-lg border shadow-sm p-6 mb-8", learn .. learn_p .. self.chapter_nav.render());
+
+    return hero .. showcase .. grid .. chapters;
+  }
+}
+
+-- The homepage's code showcase: a real flavor of the language — an
+-- actor per chat room, rows in the built-in database, one binary.
+-- Page copy, so it lives with the page, not with the seed data.
+fn home_snippet() -> Text {
+  let s = "@table\nclass Message {\n  room: Text\n  body: Text\n}\n\n";
+  s = s .. "class Room {\n  name: Text\n  fn receive(msg: Post) {\n";
+  s = s .. "    insert Message { room: self.name, body: msg.body };\n";
+  s = s .. "    print(\"[\${self.name}] \${msg.body}\");\n  }\n}\n\n";
+  s = s .. "fn main() -> Int {\n";
+  s = s .. "  let general: actor Post = spawn Room { name: \"general\" };\n";
+  s = s .. "  send(general, Post { body: \"hello, writeonce\" });\n";
+  s = s .. "  time.sleep(50);\n  return 0;\n}";
+  return code_block(s);
+}

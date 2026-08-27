@@ -25,7 +25,7 @@ toolchain may invoke). Acceptance via a shell gate over local `file://`
 remotes — the suite stays network-free.
 
 **Spec:** [`../specs/2026-08-18-web-framework-design.md`](../specs/2026-08-18-web-framework-design.md)
-section A (normative). Story: [`15-deps-package-manager.md`](../../stories/language-runtime-database/done/15-deps-package-manager.md).
+section A (normative). Story: [`15-deps-package-manager.md`](../../stories/language-runtime-database/15-deps-package-manager.md).
 
 ## Global Constraints
 

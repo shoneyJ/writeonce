@@ -1,0 +1,47 @@
+/* shop/assets/style.css — one real stylesheet, sectioned per feature.
+   Served by static_files/controller.wo; AppShell links it. This file is
+   the .scss stand-in: the language ships no preprocessor, so styles are
+   plain CSS kept OUT of the markup code. */
+
+/* ---- layout (app.wo, header.wo, footer.wo) ---- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #f9fafb; color: #111827; line-height: 1.6; }
+.site-header { display: flex; align-items: center; justify-content: space-between;
+  padding: .75rem 1.5rem; background: #fff; border-bottom: 1px solid #e5e7eb;
+  position: sticky; top: 0; }
+.brand { font-size: 1.25rem; font-weight: 700; color: #111827; text-decoration: none; }
+.site-nav a { margin-left: 1rem; color: #2563eb; text-decoration: none; }
+.site-nav a:hover { text-decoration: underline; }
+.site-main { max-width: 64rem; margin: 0 auto; padding: 2rem 1rem; }
+.site-footer { border-top: 1px solid #e5e7eb; color: #6b7280; font-size: .875rem;
+  padding: 2rem 1rem; text-align: center; margin-top: 4rem; }
+h1 { margin-bottom: 1rem; }
+
+/* ---- product_list ---- */
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: .5rem;
+  padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.card h3 { margin-bottom: .5rem; }
+.card h3 a { color: #111827; text-decoration: none; }
+.card h3 a:hover { color: #2563eb; }
+.price { font-weight: 700; }
+.stock { color: #6b7280; font-size: .875rem; }
+.stock.out { color: #b91c1c; font-weight: 700; }
+
+/* ---- product_page ---- */
+.card.detail { max-width: 28rem; }
+.card.detail form { margin-top: 1rem; display: flex; flex-direction: column; gap: .5rem; }
+.card.detail label { font-size: .875rem; color: #374151; }
+.field { display: block; width: 100%; border: 1px solid #e5e7eb; border-radius: .25rem;
+  padding: .5rem; font-size: .875rem; }
+.btn { background: #2563eb; color: #fff; border: 0; border-radius: .25rem;
+  padding: .5rem 1rem; font-weight: 700; cursor: pointer; }
+.btn:hover { background: #1d4ed8; }
+
+/* ---- orders ---- */
+table.orders { width: 100%; border-collapse: collapse; background: #fff;
+  border: 1px solid #e5e7eb; border-radius: .5rem; }
+table.orders th, table.orders td { text-align: left; padding: .5rem .75rem;
+  border-bottom: 1px solid #e5e7eb; }
+table.orders th { background: #f9fafb; font-size: .875rem; color: #374151; }

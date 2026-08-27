@@ -70,7 +70,7 @@ unsafe {
 
 ## Used by
 
-[`02-event-loop-epoll.md`](../../done/02-event-loop-epoll.md) — housekeeping timers. [`07-inotify-content-watcher.md`](../../07-inotify-content-watcher.md) — 150 ms debounce window after an inotify burst. Future subscription phase — keepalive pings to long-lived connections.
+`02-event-loop-epoll.md` — housekeeping timers. `07-inotify-content-watcher.md` — 150 ms debounce window after an inotify burst. Future subscription phase — keepalive pings to long-lived connections.
 
 ## v1 port source
 

@@ -1,14 +1,16 @@
 # employee — the database track's acceptance workload
 
-> **Status: target workload — does not compile on today's toolchain.**
-> This sample is written *ahead of* the features it exercises, exactly as
-> log-watcher was written ahead of iterations 5–7: the sample is the test,
-> and the plans compile toward it. It becomes buildable when iteration 9
-> (engine: [`2026-08-01-db-engine-binding.md`](../../superpowers/plans/2026-08-01-db-engine-binding.md))
+> **Status: shipped — this is the database track's acceptance gate.** Run it
+> with `just employee`. The sample was written *ahead of* the features it
+> exercises, exactly as log-watcher was written ahead of iterations 5–7: the
+> sample is the test, and the plans compiled toward it. Both landed — iteration
+> 9 (engine: [`2026-08-01-db-engine-binding.md`](../../superpowers/plans/2026-08-01-db-engine-binding.md))
 > and iteration 9b (query surface:
-> [`2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md))
-> land. Normative semantics:
+> [`2026-08-15-employee-relations-query.md`](../../plan/compiler/2026-08-15-employee-relations-query.md)).
+> Normative semantics:
 > [the 9b spec](../../superpowers/specs/2026-08-15-table-relations-query-design.md).
+> One clause below is still ahead of the compiler and marked where it appears:
+> `group … by … into` parses and is then refused by the typechecker.
 
 Two `@table` classes and every 9b feature load-bearing:
 

@@ -93,7 +93,7 @@ unsafe {
 
 ## Used by
 
-Phase 3 of the database series — see [`docs/runtime/database/03-inmemory-engine.md`](../../../runtime/database/03-inmemory-engine.md) § Linux Tuning Checklist. The relational B+ tree, the LSM memtables' on-disk segments, and the document store's arenas all live behind `mmap`.
+Phase 3 of the database series — see `docs/runtime/database/03-inmemory-engine.md` § Linux Tuning Checklist. The relational B+ tree, the LSM memtables' on-disk segments, and the document store's arenas all live behind `mmap`.
 
 ## v1 port source
 

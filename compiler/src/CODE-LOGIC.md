@@ -295,3 +295,62 @@ a keyword, and visibility is name resolution at compile time.
   The `0x`/`0b` prefix commits only when a real base digit follows, so
   `0xg` stays `Int 0` + `Ident` — a parse error at its own position, no
   new lexer diagnostic. `_` separators are consumed only BETWEEN digits.
+
+## The raw text literal (iteration 37)
+
+Multi-line markup used to be impossible to write: a statement ends at a
+newline, so a page was one `h = h .. "<...>"` statement per line, every
+attribute single-quoted to dodge `\"`, and every piece of data wrapped
+in a hand-written `esc()` call. Backtick literals replace all three.
+Things worth knowing before editing them:
+
+- **It is a LEXER form, not a node.** A backtick literal emits exactly
+  the `Token.Str` (no holes) or `Token.InterpStr` (holes) a `"..."`
+  string emits, so `types.ml`, `owner.ml`, `emit.ml`, the `.wob` format
+  and the VM are all untouched — nothing downstream can tell the two
+  spellings apart. That is the whole reason the feature is small. A
+  design that introduced a `Markup`/`Element` AST variant instead would
+  have had to teach five files about it.
+- **No escape processing at all inside.** Quotes and backslashes are
+  content, which is the point. The cost is that the form cannot express
+  a literal backtick, a literal `${`, or a literal `{{` — those are
+  written by concatenating an ordinary `"..."` string with `..`. One
+  greppable door beats inventing an escape character for the one form
+  whose selling point is not having any. (`docs/examples/site/content.wo`
+  keeps two `code_block` samples as escaped `"..."` strings for exactly
+  this reason: they contain `\${`.)
+- **The margin is stripped at LEX time**, so the constant pool holds the
+  dedented text and there is no runtime cost. Java's text-block rule:
+  one newline right after the opening backtick is dropped, the smallest
+  leading whitespace run across non-blank lines is removed from every
+  line, and a whitespace-only closing line loses its whitespace but
+  keeps its newline. A literal with no newline is left alone — eating
+  the leading spaces of `` `  hi` `` would be a surprise, not a service.
+  The measuring pass runs over a SHADOW string where each hole is one
+  non-whitespace sentinel byte, so `    {{ x }}` counts as indent 4 and
+  as a non-blank line.
+- **`{{ e }}` desugars to `esc(${e})`, resolved by ordinary name
+  lookup.** `desugar_interp` in `parser.ml` builds a `Call` on an
+  `Ident "esc"` — precisely what a developer wrote by hand before. The
+  compiler learns nothing about HTML, `esc` stays writeonce-view's ordinary
+  `pub fn`, a typo'd field inside the hole is a normal name/type error,
+  and a locally defined `esc` shadows deliberately (a custom escaper is
+  a feature). `${ }` inside the same literal stays raw — that is the
+  greppable door for markup you built yourself. The one place the
+  desugar leaks: with no `esc` in scope the program fails on a name it
+  never typed, so `emit.ml`'s WO-E403 message carries a hint for that
+  one name.
+- **`{{` is special ONLY inside a backtick literal.** Inside `"..."` it
+  is still two braces, so CSS and JS text in existing samples lexes
+  byte-identically.
+- **WO-E005 closed a real hole.** The string scanner's catch-all used to
+  append a raw newline like any other byte, so a forgotten closing quote
+  silently swallowed the rest of the file with no diagnostic. Now the
+  scan stops at the newline WITHOUT consuming it — the `Newline` token
+  still terminates the statement, so recovery costs one line instead of
+  the file. The rt-parity silence for a plain unterminated string with
+  no newline is untouched, and `runner.ml` still pins it.
+- **The `..` line continuation stays.** A line ending in `..` still
+  swallows its newline. Raw literals took over the multi-line-markup job
+  that motivated it, but it remains the general way to spread a long
+  concatenation over several lines and has its own corpus fixture.

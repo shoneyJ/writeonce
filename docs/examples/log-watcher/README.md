@@ -6,17 +6,17 @@ ported file for file, per the approved
 (Part 4). A single-binary systems daemon: log-tail watcher, cron.d
 supervisor, flock/pgrep probes, hand-rolled MCP-over-HTTP server, JSONL
 detection sink. Program mode (`fn main`, blocking legal, one shard) plus the
-five builtin stdlib modules — `fs`, `proc`, `net`, `time`, `json` — carry
+stdlib modules it needs — `fs`, `proc`, `net`, `time`, `json`, `env` — carry
 all of it; read each `.wo` next to its `.hx` sibling.
 
-> **Status: design artifact — the spec's forcing function.** The systems
-> track is approved, pre-implementation. Today's `woc` (milestone 1)
-> recovers the `class`/`fn` skeletons in these files (`--dump-ast` lists
-> every Watcher method) but diagnoses the adopted surface as WO-E101:
-> `use`, `typedef`, standalone union aliases (`type CronResult = …`),
-> `pub(read)`, `switch`, `try`. This sample exists to force that grammar
-> (the blog/ecommerce/pricing precedent) and becomes the track's acceptance
-> test: it compiles and detects a real silent death when the track ships.
+> **Status: shipped — the systems track's acceptance gate.** Run it with
+> `just log-watcher` (`just log-watcher::build` / `::soak 60` for the rest).
+> Landed with iteration 7 on 2026-08-15: executable, not merely compilable —
+> zero ASan leaks in all three modes, SIGTERM ends parked syscalls, fds flat,
+> `LW_SOAK` gate. The sample existed to force the grammar it uses (the
+> blog/ecommerce/pricing precedent), and every form it needed — `use`,
+> `typedef`, standalone union aliases (`type CronResult = …`), `pub(read)`,
+> `switch`, `try` — is now shipped surface.
 
 ## The mapping
 

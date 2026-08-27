@@ -6,8 +6,8 @@
 >
 > **Status: APPROVED 2026-08-20** (developer review); ⏸ on hold
 > (2026-08-21, developer decision — story iteration 18 sits in
-> `stories/language-runtime-database/hold/`). Decisions were settled in
-> [the iteration](../../stories/language-runtime-database/hold/18-memory-db-features.md);
+> its story carries `status: hold`). Decisions were settled in
+> [the iteration](../../stories/language-runtime-database/18-memory-db-features.md);
 > this spec makes them buildable. The plan is authored
 > ([framework v2 plan](../plans/2026-08-20-framework-v2-memory-features.md))
 > and held with it.

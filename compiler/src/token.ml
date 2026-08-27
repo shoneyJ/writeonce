@@ -23,6 +23,13 @@
 type str_part =
   | SText of string (* literal text, escapes already applied *)
   | SExpr of string (* raw, unlexed source of one `${...}`'s body *)
+  (* iteration 37: the escaping half of the raw text literal. Same raw,
+     unlexed payload as SExpr -- what differs is only what the parser
+     wraps it in: `${...}` desugars to a bare Interp, `{{...}}` to an
+     `esc(Interp ...)` call. Produced ONLY by a backtick raw literal;
+     inside a "..." string `{{` stays two literal braces, so CSS and JS
+     text in existing samples lexes byte-identically. *)
+  | SEsc of string (* raw, unlexed source of one `{{...}}`'s body *)
 
 type kind =
   (* literals *)

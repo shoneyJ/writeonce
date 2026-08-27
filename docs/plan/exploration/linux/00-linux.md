@@ -8,18 +8,18 @@ Each primitive has its own numbered file with the kernel source path (into [`ref
 
 | # | Primitive | Used by |
 | --- | --- | --- |
-| [01](./01-epoll.md)         | `epoll` — event-driven I/O multiplexing | every runtime phase |
-| [02](./02-eventfd.md)       | `eventfd` — counter as fd, cross-flow wake | phase 02, subscription wakeup |
-| [03](./03-timerfd.md)       | `timerfd` — timers as fds | phase 02, phase 07 debounce |
-| [04](./04-signalfd.md)      | `signalfd` — signals as fds, graceful shutdown | phase 04 |
-| [05](./05-inotify.md)       | `inotify` — filesystem events as fds | phase 07, future register! subscription |
-| [06](./06-sendfile.md)      | `sendfile` — zero-copy file → socket | phase 08 |
-| [07](./07-io_uring.md)      | `io_uring` — async I/O ring buffers | phase 3 (WAL fsync), future HTTP |
-| [08](./08-mmap.md)          | `mmap` + `madvise` — memory-mapped files, page-cache hints | phase 3 (storage engine) |
-| [09](./09-fallocate.md)     | `fallocate` + `pread` + `pwritev2` — positional I/O & pre-allocation | phase 3 (WAL + SSTables) |
-| [10](./10-pidfd.md)         | `pidfd` — process as fd, race-free supervision | future supervisor |
-| [11](./11-memfd_create.md)  | `memfd_create` — anonymous shared memory | phase 3 (index build) |
-| [12](./12-pwrite-fsync.md)  | `pwrite` + `fsync`/`fdatasync`/`sync_file_range`/`posix_fadvise` — durability barriers | phases 10, 11, 12 (storage foundations, WAL, engine cutover) |
+| [01](01-epoll.md)         | `epoll` — event-driven I/O multiplexing | every runtime phase |
+| [02](02-eventfd.md)       | `eventfd` — counter as fd, cross-flow wake | phase 02, subscription wakeup |
+| [03](03-timerfd.md)       | `timerfd` — timers as fds | phase 02, phase 07 debounce |
+| [04](04-signalfd.md)      | `signalfd` — signals as fds, graceful shutdown | phase 04 |
+| [05](05-inotify.md)       | `inotify` — filesystem events as fds | phase 07, future register! subscription |
+| [06](06-sendfile.md)      | `sendfile` — zero-copy file → socket | phase 08 |
+| [07](07-io_uring.md)      | `io_uring` — async I/O ring buffers | phase 3 (WAL fsync), future HTTP |
+| [08](08-mmap.md)          | `mmap` + `madvise` — memory-mapped files, page-cache hints | phase 3 (storage engine) |
+| [09](09-fallocate.md)     | `fallocate` + `pread` + `pwritev2` — positional I/O & pre-allocation | phase 3 (WAL + SSTables) |
+| [10](10-pidfd.md)         | `pidfd` — process as fd, race-free supervision | future supervisor |
+| [11](11-memfd_create.md)  | `memfd_create` — anonymous shared memory | phase 3 (index build) |
+| [12](12-pwrite-fsync.md)  | `pwrite` + `fsync`/`fdatasync`/`sync_file_range`/`posix_fadvise` — durability barriers | phases 10, 11, 12 (storage foundations, WAL, engine cutover) |
 
 The list below is the original overview kept for context and for a handful of adjacent primitives (`fanotify`, `splice`/`tee`) that don't yet have their own reference card.
 

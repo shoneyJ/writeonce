@@ -1,11 +1,12 @@
--- site/content.wo — the tutorial chapters, seeded into the Chapter table
--- on first boot (main.wo's seed_if_empty). Bodies are HTML fragments
--- BUILT with the wo-html dep — prose in el(), code samples through
+-- content.wo — the tutorial chapters, seeded into the Chapter table on
+-- first boot (types.wo's seed_if_empty). Model CONTENT, so it sits in
+-- the root module beside types.wo: it inserts rows. Bodies are HTML fragments
+-- BUILT with the writeonce-view dep — prose in el(), code samples through
 -- code_block() which escapes them. Editing a chapter later (the admin
 -- route) overwrites body/title in place; the WAL keeps the edit across
 -- restarts, which is exactly chapter 6's lesson demonstrated by the
 -- site that teaches it.
-use html
+use view
 
 fn ch_hello() -> Text {
   let b = el("p", "leading-relaxed mb-4",
@@ -32,7 +33,7 @@ fn ch_containers() -> Text {
 
 fn ch_classes() -> Text {
   let b = el("p", "leading-relaxed mb-4",
-    "Classes hold fields and methods. There are NO function values and NO closures — a " .. "deliberate doctrine: behavior travels as a class satisfying an interface, and " .. "satisfaction is structural (same method name and shape, Go-style, no " .. "<code>implements</code>). This is how the web framework takes handlers.");
+    "Classes hold fields and methods. There are NO function values and NO closures — a " .. "deliberate doctrine: behavior travels as a class satisfying an interface, and " .. "satisfaction is structural (same method name and shape, Go-style, no " .. "<code>implements</code>). This is how <code>porch</code>, the web framework, takes handlers.");
   b = b .. code_block("interface Handler {\n  fn handle(req: Req) -> Resp\n}\n\nclass Hello {\n  greeting: Text\n  fn handle(req: Req) -> Resp {\n    return ok_text(\"\${self.greeting}, \${req.path}\");\n  }\n}\n\n-- any class with a matching handle() satisfies Handler\napp.get(\"/hello\", Hello { greeting: \"hi\" });");
   return b;
 }
@@ -60,16 +61,26 @@ fn ch_actors() -> Text {
 
 fn ch_deps() -> Text {
   let b = el("p", "leading-relaxed mb-4",
-    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: the web framework, and the wo-html " .. "library that rendered the page you are reading.");
-  b = b .. code_block("[deps]\nframework = { git = \"https://github.com/shoneyj/writeonce-framework\", rev = \"v0.1.0\" }\nhtml      = { git = \"https://github.com/shoneyj/wo-html\",              rev = \"v0.1.0\" }");
-  b = b .. code_block("use framework\nuse framework/http\nuse html\n\n-- html's builders + tailwind-style utilities, zero JS, no build step:\nlet body = el(\"h1\", \"text-3xl font-bold\", \"Hello\");\nreturn ok_html(page(\"Hello\", body));");
+    "Dependencies are git repositories pinned in <code>wo.toml</code>; <code>wo.lock</code> " .. "records the exact revision, and locked builds work offline. The [deps] KEY names the " .. "module you <code>use</code>. This site has two: <code>porch</code>, the writeonce web framework, and the writeonce-view " .. "library that rendered the page you are reading.");
+  b = b .. code_block(`
+    [deps]
+    porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
+    view      = { git = "https://github.com/shoneyj/writeonce-view",              rev = "v0.1.0" }`);
+  b = b .. code_block(`
+    use porch
+    use porch/http
+    use view
+
+    -- html's builders + tailwind-style utilities, zero JS, no build step:
+    let body = el("h1", "text-3xl font-bold", "Hello");
+    return ok_html(page("Hello", body));`);
   return b;
 }
 
 fn ch_serving() -> Text {
   let b = el("p", "leading-relaxed mb-4",
     "The whole stack of this site: routes with <code>:param</code> captures, a middleware " .. "chain, handler classes, <code>@table</code> persistence, and server-rendered HTML — " .. "one binary behind a proxy. This is the site's own main, abbreviated:");
-  b = b .. code_block("fn main(args: multi Text) -> Int {\n  seed_if_empty();\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging { pad: 0 } });\n  app.get(\"/\",            Home { pad: 0 });\n  app.get(\"/ch/:slug\",    ShowChapter { pad: 0 });\n  app.post(\"/admin/ch/:slug\", AdminEdit { token: token });\n  return app.serve(\"127.0.0.1\", port);\n}");
+  b = b .. code_block("fn main(args: multi Text) -> Int {\n  seed_if_empty();\n  let app = App { middleware: [], routes: [] };\n  app.use_mw(Mw { m: Logging {} });\n  app.get(\"/\",            Home {});\n  app.get(\"/ch/:slug\",    ShowChapter {});\n  app.post(\"/admin/ch/:slug\", AdminEdit { token: token });\n  return app.serve(\"127.0.0.1\", port);\n}");
   b = b .. el("p", "leading-relaxed mt-4",
     "The admin route checks its bearer token in the handler — mechanism lives in the " .. "framework (<code>bearer_token</code>, constant-time <code>ct_eq</code>), POLICY stays " .. "in the app. Try editing this chapter: " .. "<code>curl -X POST -H \"authorization: Bearer ...\" -d \"title=...&amp;body=...\" /admin/ch/serving</code>.");
   return b;

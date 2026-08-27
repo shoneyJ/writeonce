@@ -79,4 +79,4 @@ Slotted pages are the answer when those assumptions break. Until then, the frami
 - `docs/plan/10-storage-foundations.md` (Rust-era, removed 2026-08-18) — record framing borrows the **header + checksum** pattern from `bufpage.h`.
 - `docs/plan/12-engine-disk-cutover.md` (Rust-era, removed 2026-08-18) — when reading rows back from disk, CRC verification is the silent-corruption safety net the page header gives Postgres.
 
-Pair with [`wal.md`](./wal.md) for the LSN convention and [`buffer-and-checkpoint.md`](./buffer-and-checkpoint.md) for the dirty-page semantics that pages need.
+Pair with [`wal.md`](wal.md) for the LSN convention and [`buffer-and-checkpoint.md`](buffer-and-checkpoint.md) for the dirty-page semantics that pages need.

@@ -185,8 +185,15 @@ inferred). The developer writes no memory annotations for either.
 
 ## Run status
 
-Iteration 7b is landing in phases (plan:
+Iteration 7b landed 2026-08-18 (plan:
 [`../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md`](../../superpowers/plans/2026-08-18-inferred-gc-mark-sweep.md)).
+This sample compiles and runs on today's toolchain — `woc
+docs/examples/gc-cycle/` then `./docs/examples/gc-cycle/target/gc-cycle`.
+
+> **It has no `just` recipe.** The plan's phase 4 checked off a
+> `just gc-cycle` acceptance that never landed; the sample is the one
+> compiling example in the repo with no gate behind it. Run it by hand,
+> and see the plan's 2026-08-26 disclosure note.
 
 **Phase 1 (landed).** The inference pass classifies each class; `woc --dump-gc
 docs/examples/gc-cycle` prints:

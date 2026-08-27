@@ -1,0 +1,15 @@
+-- iteration 37: the backtick raw text literal. One token per literal,
+-- content verbatim (no escape processing), common margin removed at
+-- lex time, two hole forms -- ${} raw and {{}} escaped.
+fn page(name: Text) -> Text {
+  let one = `<div>hi</div>`
+  let verbatim = `a"b\n`
+  let block = `
+    <div class="card">
+      many
+      line
+    </div>
+  `
+  let holes = `<p>${name}{{ name }}</p>`
+  return block
+}

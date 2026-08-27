@@ -1,0 +1,12 @@
+-- install/controller.wo — GET /install. Nothing to query: the page is
+-- static copy, so the controller only wraps it in the shell.
+use porch/http
+use layout
+
+pub class ShowInstall {
+  fn handle(req: Req) -> Resp {
+    let page = InstallPage {};
+    let shell = reading_shell("writeonce — install", page.render());
+    return ok_html(shell.render());
+  }
+}

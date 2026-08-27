@@ -21,7 +21,6 @@ class Job {
 -- round-robin, so with two writers at default shards one lands off the
 -- primary — the RPC path under test.
 class Writer {
-  pad: Int
   fn receive(msg: Job) {
     insert Note { tag: "w", val: msg.n };
     let total = 0;
@@ -33,8 +32,8 @@ class Writer {
 }
 
 fn main() -> Int {
-  let a: actor Job = spawn Writer { pad: 0 };
-  let b: actor Job = spawn Writer { pad: 1 };
+  let a: actor Job = spawn Writer {};
+  let b: actor Job = spawn Writer {};
   send(a, Job { n: 1 });
   send(b, Job { n: 2 });
   -- no request/response surface yet (iteration 31): poll until both rows

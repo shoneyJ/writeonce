@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Scan every .md in repo, extract links, report broken local targets + bad anchors."""
+"""Scan every repo-authored .md, extract links, report broken local targets + bad anchors.
+
+`.dev/` and `.superpowers/` are excluded: both are gitignored, per-developer
+material this repo does not author -- vendored plugin-skill copies and cloned
+reference projects (whose own docs use site-build-relative links that cannot
+resolve on disk). Including them made the gate report the same ~23 failures
+forever, which is a gate nobody reads. Everything the repo actually ships is
+still scanned.
+"""
 import os, re, sys, urllib.parse
 from collections import defaultdict
 
 ROOT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
 
-SKIP_DIRS = {".git", "node_modules", "_build", "target", "dist"}
+SKIP_DIRS = {".git", "node_modules", "_build", "target", "dist", ".dev", ".superpowers"}
 
 INLINE = re.compile(r'(?<!!)\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)')
 REFDEF = re.compile(r'^\s{0,3}\[([^\]]+)\]:\s*<?(\S+)>?', re.M)

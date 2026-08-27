@@ -18,6 +18,12 @@ Native speed — the big one. Everything is interpreted: ~40× behind Go on raw 
 
 ## Verification 2026-08-20
 
+> **Read the 2026-08-26 re-verification at the bottom before quoting anything
+> from this section.** Eight of its rows have since been overtaken by shipped
+> work. The section is kept as written — it is a dated measurement, and
+> rewriting it would destroy the record of what was true when the iteration
+> order was re-sequenced against it.
+
 Every claim above was checked against the tree. **26 of 27 hold. One number
 does not, and two problems are worse than stated.**
 
@@ -79,7 +85,7 @@ the number or produce the benchmark.
 | 22's battery never run | 22 is ⬜ "needs a spec first"; no `bench/baseline.json`, no `just db-bench`; `runtime/bench/` is the retired C prototype's harness |
 | TSan covers one demo | only `scripts/fibers-accept.sh` builds and runs `wovm_tsan` |
 | no fuzzing, no CI | no `.github/`, no fuzz target |
-| one framework, five samples, one consumer | exact: `writeonce-framework`; employee, employee-list, fibers, gc-cycle, log-watcher; `web-app` |
+| one framework, five samples, one consumer | exact: `writeonce-serve`; employee, employee-list, fibers, gc-cycle, log-watcher; `web-app` |
 
 ### Consequence
 
@@ -87,3 +93,41 @@ The iteration order in
 [`stories/language-runtime-database/00-story.md`](stories/language-runtime-database/00-story.md)
 was re-sequenced against these findings on 2026-08-20 — Seq only, no `#`
 renumbered, no file moved. See that table's second re-sequencing note.
+
+---
+
+## Re-verification 2026-08-26
+
+Re-run against the tree, reading source rather than documents. **Eight rows
+have been overtaken by shipped work; the rest still hold.** Overtaken:
+
+| 2026-08-20 row | What the source says now |
+| --- | --- |
+| "no `Float`, no `Bytes`" | `types.ml`'s `builtin_scalars` is `["Int"; "Bool"; "Text"; "Timestamp"; "Id"; "Float"; "Bytes"]` — iteration 19, plus the `float`/`trunc` bridges and the `bytes_*`/`base64_*` builtins |
+| "`send` is one-way — `WO_B_SEND=69` is the last builtin (`WO_B_MAX 69u`)" | `WO_B_MAX` is `95u`; `WO_B_CALL = 88` is a send that parks the caller for a typed scalar reply (iteration 24, WO-E226) |
+| "no crypto primitives" | `WO_B_SHA1 = 85`, `WO_B_SHA256 = 86`, `WO_B_HMAC_SHA256 = 87`; `runtime/src/crypto.c`, vector-accepted in `test_crypto.c` (iteration 34) |
+| "unbounded mailboxes, no backpressure" | mailboxes are capped (`WO_MAILBOX`, default 1024) with a sender-side reserve and a catchable `WO_T_ACTOR` trap on overflow |
+| "no supervision, links, actor death" | **partly** overtaken: actor death landed with `call` — a dead or mid-call callee traps the caller instead of hanging it. `monitor` (id 89) and `time.after` (id 90) are still literal holes in the builtin enum; supervision trees remain absent |
+| "22's battery never run — no `bench/baseline.json`, no `just db-bench`" | `bench/baseline.json` exists with the campaign's metrics, `just db-bench`/`db-bench-quick` are recipes, `bench/results/` holds the runs, iteration 22 is done |
+| "no fuzzing, **no CI**" | `.github/workflows/release.yml` builds, verifies and publishes on a `v*` tag. Fuzzing is still absent, and CI is release-only — nothing runs the gates per change, which is iteration 30's remaining half |
+| "one framework, five samples, one consumer" | two libraries (`writeonce-serve`, `writeonce-view`) and 13 samples, 8 of them gated |
+| "The multi-shard DB gap is structural" (Understated) | closed by the arc's stage 3: the string `"database engine not initialized"` no longer exists in `runtime/src/`, worker statements marshal to the owner shard, and `just db-actor` gates it |
+
+Still true, re-checked at the source: interpreted-only with no JIT and no SIMD;
+the ceilings correction (`WO_STACK_SLOTS 4096`, `WO_MAX_REGS 64`,
+`WO_MAX_FRAMES 256`, `WO_MAX_SHARDS 64`); no generics beyond `multi`/`map`; no
+closures or function values; byte strings with no Unicode awareness; traps and
+`try` instead of Result values; `switch` without destructuring; round-robin
+placement with no work stealing; no timers beyond `time.sleep`; no TLS; no
+HTTP/2; observability is `print`/stderr with no counters, tracing or profiler; no
+debugger and no LSP; deps are git-rev-only with no registry, semver or transitive
+resolution; blue-green and migrations are futures; TSan covers one demo. And
+**`map<K,V>` lookup is still a linear scan** — `runtime/src/cont.h` says so in
+its own header comment, which keeps it the compute problem this document argued
+it was.
+
+Two capability gaps this re-run named that the original critique did not, now
+[iteration 38](stories/language-runtime-database/38-content-platform-capabilities.md):
+`fs` has six builtins (ids 40–45) and can create, grow and read a file but never
+replace, truncate, delete or rename one; and there is no `net.connect` anywhere
+in `runtime/src/`, so no program can open an outbound connection.

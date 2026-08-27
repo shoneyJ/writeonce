@@ -55,6 +55,32 @@ let unknown_char_code = Diag.lexing_prefix ^ "01" (* WO-E001 *)
 let unterminated_escape_code = Diag.lexing_prefix ^ "02" (* WO-E002 *)
 let directive_code = Diag.lexing_prefix ^ "03" (* WO-E003: #if/#else/#end misuse *)
 
+(* iteration 37, the raw text literal (backtick-delimited, verbatim
+   content, no backslash escapes). Two codes, because the two shapes
+   are genuinely different situations:
+
+   WO-E004 — a raw literal that runs off the end of the file. Unlike a
+   plain "..." string (silent, rt parity, see above), this one IS
+   reported: multi-line is the raw literal's normal case, so a missing
+   closing backtick would otherwise swallow every remaining line of the
+   file with nothing to show for it. Reported at the OPENING backtick,
+   which is the only position that helps -- EOF tells the reader
+   nothing about which literal never closed.
+
+   WO-E005 — a raw newline inside a "..." or '...' string. This used to
+   be accepted silently: the string scanner's catch-all appended the
+   newline like any other byte, so a forgotten closing quote ate the
+   rest of the file with no diagnostic at all. Nothing in the repo ever
+   relied on it (zero of the .wo sources span a line inside quotes) and
+   the backtick literal is now the spelling for multi-line text, so the
+   accident becomes an error. The scan stops at the newline WITHOUT
+   consuming it, so the Newline token is still emitted and the
+   statement terminates -- one diagnostic, and the next line parses
+   normally instead of being swallowed. The rt-parity silence for a
+   plain unterminated string with no newline is untouched. *)
+let unterminated_raw_code = Diag.lexing_prefix ^ "04" (* WO-E004 *)
+let newline_in_string_code = Diag.lexing_prefix ^ "05" (* WO-E005 *)
+
 (* haxe-parity Task 8: build flags. `woc -D name` fills this before any
    tokenize call; undefined flags are false. A module-level ref because the
    compiler is a single-shot process — tests that care set it explicitly
@@ -269,6 +295,126 @@ let preprocess (collector : Diag.Collector.t) ~(file : string)
   go toks;
   List.rev !out
 
+(* ---- the raw literal's margin rule (iteration 37) -------------------
+
+   A render() body is written at its method's indentation, but that
+   indentation is an artifact of the SOURCE, not of the markup -- nobody
+   wants six leading spaces on every line of the served HTML. So the
+   common margin is removed here, at lex time: the constant pool holds
+   the dedented text, no downstream stage ever sees the source
+   indentation, and the whole rule costs nothing at run time.
+
+   The rule (Java's text blocks, which solved exactly this):
+     - one newline immediately after the opening backtick is dropped,
+       so the first markup line can start on its own line;
+     - the smallest leading run of spaces/tabs across all non-blank
+       lines is removed from every line (characters counted, tabs NOT
+       expanded -- mixing them is the author's problem, and expanding
+       would need a tab width the language does not have);
+     - a whitespace-only final line (the usual case: the closing
+       backtick sits on its own line) loses its whitespace but keeps
+       its newline.
+   A literal with no newline in it is left completely alone -- there is
+   no margin to speak of, and silently eating the leading spaces of
+   `  hi` would be a surprise, not a service.
+
+   Holes do not disturb any of this. A line's indentation is by
+   definition the run of whitespace at its start, and the only thing
+   that can split a line across segments is a hole, which ends that run
+   -- so an indentation run always lives whole inside one SText. The
+   measuring pass replaces each hole with a single non-whitespace
+   sentinel byte so that a line that is `    {{ x }}` correctly counts
+   as indent 4 and as NON-blank. *)
+
+let is_indent_char c = c = ' ' || c = '\t'
+
+let segments_shadow (segs : Token.str_part list) : string =
+  let b = Buffer.create 64 in
+  List.iter
+    (function
+      | Token.SText s -> Buffer.add_string b s
+      | Token.SExpr _ | Token.SEsc _ -> Buffer.add_char b '\001')
+    segs;
+  Buffer.contents b
+
+let min_indent (shadow : string) : int =
+  let m = ref max_int in
+  List.iter
+    (fun line ->
+      let n = String.length line in
+      let i = ref 0 in
+      while !i < n && is_indent_char line.[!i] do
+        incr i
+      done;
+      (* a blank (or whitespace-only) line never sets the margin *)
+      if !i < n && !i < !m then m := !i)
+    (String.split_on_char '\n' shadow);
+  if !m = max_int then 0 else !m
+
+let strip_margin (k : int) (segs : Token.str_part list) : Token.str_part list =
+  if k = 0 then segs
+  else begin
+    let at_line_start = ref true in
+    let one seg =
+      match seg with
+      | Token.SExpr _ | Token.SEsc _ ->
+        at_line_start := false;
+        seg
+      | Token.SText s ->
+        let n = String.length s in
+        let b = Buffer.create n in
+        let i = ref 0 in
+        while !i < n do
+          if !at_line_start then begin
+            let dropped = ref 0 in
+            while !dropped < k && !i < n && is_indent_char s.[!i] do
+              incr dropped;
+              incr i
+            done;
+            at_line_start := false
+          end
+          else begin
+            let c = s.[!i] in
+            Buffer.add_char b c;
+            if c = '\n' then at_line_start := true;
+            incr i
+          end
+        done;
+        Token.SText (Buffer.contents b)
+    in
+    (* fold_left, not List.map: `one` carries state across segments and
+       List.map's application order is unspecified. *)
+    List.rev (List.fold_left (fun acc seg -> one seg :: acc) [] segs)
+  end
+
+let drop_trailing_margin (segs : Token.str_part list) : Token.str_part list =
+  match List.rev segs with
+  | Token.SText s :: rest_rev ->
+    let n = String.length s in
+    let i = ref n in
+    while !i > 0 && is_indent_char s.[!i - 1] do
+      decr i
+    done;
+    (* only a run that directly follows a newline is a closing line *)
+    if !i < n && !i > 0 && s.[!i - 1] = '\n' then
+      List.rev (Token.SText (String.sub s 0 !i) :: rest_rev)
+    else segs
+  | _ -> segs
+
+let dedent (segs : Token.str_part list) : Token.str_part list =
+  let shadow = segments_shadow segs in
+  if not (String.contains shadow '\n') then segs
+  else begin
+    let segs =
+      match segs with
+      | Token.SText s :: rest when String.length s > 0 && s.[0] = '\n' ->
+        Token.SText (String.sub s 1 (String.length s - 1)) :: rest
+      | _ -> segs
+    in
+    let k = min_indent (segments_shadow segs) in
+    drop_trailing_margin (strip_margin k segs)
+  end
+
 let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
     Token.t list =
   let lx = make src in
@@ -277,6 +423,14 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
   let last_is_newline () =
     match !out with
     | { Token.kind = Token.Newline; _ } :: _ -> true
+    | _ -> false
+  in
+  (* A line ending in `..` continues on the next line — the ONE newline
+     suppression in the language, so multi-line markup/text builds read
+     as one expression (the shop template's ask; story 37 rides it). *)
+  let last_is_dotdot () =
+    match !out with
+    | { Token.kind = Token.DotDot; _ } :: _ -> true
     | _ -> false
   in
   let report_unknown line col c =
@@ -288,6 +442,18 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
     Diag.Collector.add collector
       (Diag.error ~code:unterminated_escape_code ~file ~line ~col
          ~message:"unterminated string escape" ())
+  in
+  let report_unterminated_raw line col =
+    Diag.Collector.add collector
+      (Diag.error ~code:unterminated_raw_code ~file ~line ~col
+         ~message:"unterminated raw text literal" ())
+  in
+  let report_newline_in_string line col =
+    Diag.Collector.add collector
+      (Diag.error ~code:newline_in_string_code ~file ~line ~col
+         ~message:
+           "newline in string literal (use a `...` raw text literal for \
+            multi-line text)" ())
   in
   let running = ref true in
   while !running do
@@ -307,7 +473,8 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
       end
       else if c = '\n' then begin
         ignore (advance lx);
-        if not (last_is_newline ()) then emit Token.Newline line col
+        if not (last_is_newline ()) && not (last_is_dotdot ()) then
+          emit Token.Newline line col
       end
       else if c = ' ' || c = '\t' || c = '\r' then ignore (advance lx)
       else if c = '"' || c = '\'' then begin
@@ -374,12 +541,77 @@ let tokenize (collector : Diag.Collector.t) ~(file : string) (src : string) :
             | None ->
               report_unterminated_escape esc_line esc_col;
               scanning := false)
+          | Some '\n' ->
+            (* WO-E005. Deliberately NOT consumed: the outer loop turns
+               it into the Newline token that terminates the statement,
+               so recovery is one bad line rather than the rest of the
+               file. *)
+            report_newline_in_string lx.line lx.col;
+            scanning := false
           | Some other ->
             ignore (advance lx);
             Buffer.add_char buf other
         done;
         flush_text ();
         (match List.rev !parts with
+        | [] -> emit (Token.Str "") line col
+        | [ Token.SText s ] -> emit (Token.Str s) line col
+        | segs -> emit (Token.InterpStr segs) line col)
+      end
+      else if c = '`' then begin
+        (* iteration 37: the raw text literal. Everything up to the
+           closing backtick is content -- newlines included, and with NO
+           escape processing at all, which is the whole point: markup
+           carries quotes and backslashes verbatim. A literal backtick
+           (or a literal `{{`) is written by concatenating an ordinary
+           "..." string with `..`; that door is one greppable operator,
+           which beats inventing an escape character for the one form
+           whose selling point is not having any.
+
+           Two hole forms, and ONLY here -- inside "..." a `{{` is still
+           two literal braces, so existing CSS/JS text is untouched:
+             ${ expr }   raw, exactly like a "..." string's hole
+             {{ expr }}  HTML-escaped (the parser wraps it in esc()) *)
+        ignore (advance lx);
+        let buf = Buffer.create 64 in
+        let parts = ref [] in
+        let flush_text () =
+          parts := Token.SText (Buffer.contents buf) :: !parts;
+          Buffer.clear buf
+        in
+        let scanning = ref true in
+        while !scanning do
+          match peek lx with
+          | None ->
+            report_unterminated_raw line col;
+            scanning := false
+          | Some '`' ->
+            ignore (advance lx);
+            scanning := false
+          | Some '$' when peek_at lx 1 = Some '{' ->
+            flush_text ();
+            ignore (advance lx);
+            ignore (advance lx);
+            parts := Token.SExpr (read_interp_expr lx) :: !parts
+          | Some '{' when peek_at lx 1 = Some '{' ->
+            flush_text ();
+            ignore (advance lx);
+            ignore (advance lx);
+            (* read_interp_expr stops at the first `}` at depth 0 and
+               consumes it -- the second one closes this hole. Reusing it
+               means brace depth and nested string literals are already
+               handled, so `{{ Point{x:1}.x }}` scans correctly. *)
+            let raw = read_interp_expr lx in
+            (match peek lx with
+            | Some '}' -> ignore (advance lx)
+            | _ -> report_unterminated_raw line col);
+            parts := Token.SEsc raw :: !parts
+          | Some other ->
+            ignore (advance lx);
+            Buffer.add_char buf other
+        done;
+        flush_text ();
+        (match dedent (List.rev !parts) with
         | [] -> emit (Token.Str "") line col
         | [ Token.SText s ] -> emit (Token.Str s) line col
         | segs -> emit (Token.InterpStr segs) line col)

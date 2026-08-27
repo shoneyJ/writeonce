@@ -1,0 +1,139 @@
+# NOTE: this workflow has never run. Authored 2026-08-25 and not
+# executable locally — the first real tag push is its first test.
+# Expect to adjust the toolchain step if the pinned OCaml/dune version
+# is not available on the runner image.
+
+name: release
+
+# Fires only on a version tag, so nothing is published by an ordinary
+# push. `workflow_dispatch` is a DRY RUN: it builds, verifies and reports
+# the glibc floor, but skips the tag guard (there is no tag) and skips
+# publishing. Use it to rehearse before tagging anything.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# The ONE line that replaces `gh auth login`: it widens the automatic
+# GITHUB_TOKEN so this job may write releases. No PAT, no secret to
+# rotate, and the token dies with the job.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # DELIBERATE, not a default. The release binaries link glibc
+    # dynamically, so the build host's glibc caps which symbol versions
+    # they can import — and that cap becomes the minimum glibc every
+    # user needs. Built on 24.04 (glibc 2.39) the floor is 2.39;
+    # built here on 22.04 (2.35) it is 2.35, which is the difference
+    # between excluding and including Ubuntu 22.04, Debian 12 and
+    # RHEL 9. Raise this image only with a reason, and update the
+    # supported-systems list in docs/examples/site/install/view.wo in
+    # the same change.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-ocaml gives a compiler and opam. It does NOT give dune —
+      # dune is an ordinary opam package, and this project has no .opam
+      # file for it to infer one from, so nothing pulls it in. The first
+      # run failed here with `dune: command not found`.
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '4.14'
+
+      # setup-ocaml may already have installed a dune (it uses one for its
+      # own cache), in which case asking for an exact older version is a
+      # DOWNGRADE the solver refuses — which is how the pinned
+      # `dune.3.14.0` failed. So: use whatever is there, and only install
+      # if there is nothing. Any dune >= 3.14 satisfies this project's
+      # `(lang dune 3.14)`.
+      - name: Ensure dune is available
+        run: |
+          opam exec -- dune --version || opam install -y dune
+          echo "dune: $(opam exec -- dune --version)"
+
+      # The tag is the release's identity; VERSION is what the binaries
+      # report. If they disagree the download URL would name a version
+      # nobody can install. mkdist.sh already guards VERSION against the
+      # binaries; this guards the tag against VERSION.
+      - name: Tag must match VERSION
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(cat VERSION)"
+          [ "$tag" = "$ver" ] || {
+            echo "tag $GITHUB_REF_NAME does not match VERSION $ver" >&2
+            exit 1
+          }
+
+      # `opam exec --` because mkdist.sh calls dune internally; without
+      # the opam environment on PATH the script cannot find it.
+      - name: Build the tarball
+        run: opam exec -- ./scripts/mkdist.sh
+
+      # The site links one exact filename. If mkdist ever changes its
+      # naming, the download button 404s for every visitor — so fail
+      # here instead.
+      - name: Asset name must match what the site links
+        run: |
+          ver="$(cat VERSION)"
+          asset="writeonce-${ver}-linux-amd64.tar.gz"
+          test -f "dist/$asset"
+          grep -q "$asset" docs/examples/site/install/view.wo || {
+            echo "$asset is not the filename /install links" >&2
+            exit 1
+          }
+
+      - name: Verify the digest
+        run: cd dist && sha256sum -c "writeonce-$(cat ../VERSION)-linux-amd64.tar.gz.sha256"
+
+      # Prove the ARTEFACT works, using the binaries inside it rather
+      # than the ones just built in the tree. This is what catches a
+      # tarball that packaged the wrong thing.
+      - name: Smoke-test the extracted toolchain
+        run: |
+          ver="$(cat VERSION)"
+          tmp="$(mktemp -d)"
+          tar -C "$tmp" -xzf "dist/writeonce-${ver}-linux-amd64.tar.gz"
+          export PATH="$tmp/writeonce/bin:$PATH"
+          woc version
+          wovm --version
+          mkdir -p "$tmp/hello"
+          cd "$tmp/hello"
+          printf 'name    = "hello"\nversion = "0.1.0"\n\n[runtime]\nwo = ">= 0.1"\n' > wo.toml
+          printf 'fn main() -> Int {\n  print("hello, writeonce");\n  return 0;\n}\n' > main.wo
+          woc .
+          out="$(./target/hello)"
+          [ "$out" = "hello, writeonce" ] || { echo "got: $out" >&2; exit 1; }
+
+      # Record the real glibc floor of what is about to ship, so the
+      # claim on /install can be checked against a build log rather
+      # than trusted.
+      - name: Report the glibc floor
+        run: |
+          ver="$(cat VERSION)"
+          tmp="$(mktemp -d)"
+          tar -C "$tmp" -xzf "dist/writeonce-${ver}-linux-amd64.tar.gz"
+          for b in "$tmp"/writeonce/bin/*; do
+            printf '%s needs %s\n' "$(basename "$b")" \
+              "$(objdump -T "$b" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)"
+          done
+
+      # gh is preinstalled on GitHub runners and reads GH_TOKEN from the
+      # environment, so there is no `gh auth login` anywhere in this file.
+      # Skipped on workflow_dispatch: a dry run must never publish.
+      - name: Publish
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="$(cat VERSION)"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/writeonce-${ver}-linux-amd64.tar.gz" \
+            "dist/writeonce-${ver}-linux-amd64.tar.gz.sha256" \
+            --title "writeonce ${ver}" \
+            --generate-notes

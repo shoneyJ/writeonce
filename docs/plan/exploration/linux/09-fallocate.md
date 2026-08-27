@@ -2,7 +2,7 @@
 
 `fallocate` pre-allocates disk space for a file without writing any bytes — lets the filesystem commit to a contiguous extent, so later writes don't fragment and can't fail mid-operation due to disk pressure. `pread` / `pwritev2` read and write at an explicit offset without touching the file's cursor — letting many concurrent readers share one fd safely.
 
-Together they form the backbone of the storage engine's on-disk layout: segment files are pre-allocated to their target size at creation, then written into via `pwritev2`; readers hit them via `pread` or `mmap` (see [08-mmap.md](./08-mmap.md)).
+Together they form the backbone of the storage engine's on-disk layout: segment files are pre-allocated to their target size at creation, then written into via `pwritev2`; readers hit them via `pread` or `mmap` (see [08-mmap.md](08-mmap.md)).
 
 ## Kernel source
 
@@ -89,7 +89,7 @@ unsafe {
 
 ## Used by
 
-Phase 3 of the database series — WAL pre-allocation, SSTable extent reservation, segment punching for compaction. Also [`07-io_uring.md`](./07-io_uring.md) pairs beautifully with positional I/O: `IORING_OP_WRITE` / `IORING_OP_READ` take an offset, so they're `pwrite`/`pread` under the hood.
+Phase 3 of the database series — WAL pre-allocation, SSTable extent reservation, segment punching for compaction. Also [`07-io_uring.md`](07-io_uring.md) pairs beautifully with positional I/O: `IORING_OP_WRITE` / `IORING_OP_READ` take an offset, so they're `pwrite`/`pread` under the hood.
 
 ## v1 port source
 

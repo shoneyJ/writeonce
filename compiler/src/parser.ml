@@ -1332,6 +1332,19 @@ and parse_primary (st : state) : Ast.expr =
 and desugar_interp (st : state) (pos : Ast.pos) (segs : Token.str_part list) : Ast.expr =
   let mk_str s = { Ast.id = fresh_id st; pos; kind = Ast.StrLit s } in
   let mk_interp inner = { Ast.id = fresh_id st; pos; kind = Ast.Interp inner } in
+  (* iteration 37: `{{ e }}` in a raw text literal IS `esc(${e})` -- the
+     desugar builds exactly the call a developer writes by hand today
+     (docs/examples/shop/**/view.wo used `${esc(...)}` throughout), so
+     every later stage sees only Call/Interp/StrLit/Concat nodes it
+     already handles. No new AST variant, no new builtin, no VM change,
+     and a typo'd field inside the hole is an ordinary name/type error.
+     `esc` resolves by ordinary lookup (wo-html's `pub fn esc`, in scope
+     after `use html`); a locally defined `esc` shadows it deliberately
+     -- a custom escaper is a feature, not a collision. *)
+  let mk_esc inner =
+    let callee = { Ast.id = fresh_id st; pos; kind = Ast.Ident "esc" } in
+    { Ast.id = fresh_id st; pos; kind = Ast.Call (callee, [ mk_interp inner ]) }
+  in
   let parse_segment_expr (raw : string) : Ast.expr =
     let sub_collector = Diag.Collector.create () in
     let sub_toks = Lexer.tokenize sub_collector ~file:st.file raw in
@@ -1362,7 +1375,8 @@ and desugar_interp (st : state) (pos : Ast.pos) (segs : Token.str_part list) : A
       (function
         | Token.SText "" -> None
         | Token.SText s -> Some (mk_str s)
-        | Token.SExpr raw -> Some (mk_interp (parse_segment_expr raw)))
+        | Token.SExpr raw -> Some (mk_interp (parse_segment_expr raw))
+        | Token.SEsc raw -> Some (mk_esc (parse_segment_expr raw)))
       segs
   in
   match parts with

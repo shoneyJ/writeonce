@@ -31,7 +31,6 @@ class Counter {
 -- Part 2: an actor whose receive PARKS mid-message. The park releases
 -- the shard: main keeps ticking while this fiber sleeps.
 class Sleeper {
-  pad: Int
   fn receive(msg: Tick) {
     print("sleeper: down for ${msg.n}ms");
     time.sleep(msg.n);
@@ -61,7 +60,7 @@ fn main() -> Int {
   print("part1 done");
 
   -- ---- part 2: a parked fiber blocks nobody ----
-  let s: actor Tick = spawn Sleeper { pad: 0 };
+  let s: actor Tick = spawn Sleeper {};
   send(s, Tick { n: 150 });
   let t = 0;
   while t < 8 {

@@ -12,13 +12,12 @@ class Box {
 }
 
 class Keeper {
-  pad: Int
   fn receive(msg: Box) {
     if msg.head == nil { print("empty"); } else { print("full"); }
   }
 }
 
 fn main() -> Int {
-  let a = spawn Keeper { pad: 0 };
+  let a = spawn Keeper {};
   return 0;
 }

@@ -1,0 +1,239 @@
+-- writeonce-view — server-rendered HTML as plain Text. Four layers, all pure:
+--   esc()        HTML-escape untrusted text. `{{ }}` in a raw text
+--                literal compiles to a call to this, so display data is
+--                escaped by construction; esc() by hand is the fallback
+--   el()/...     element builders — `el("h1", "text-3xl font-bold", t)`
+--   Component    the view unit: a class with fields + `fn render() ->
+--                Text`, satisfied structurally (iteration 37)
+--   tw_css()     a Tailwind-style utility stylesheet: the same class
+--                names Tailwind popularized, hand-written as one static
+--                sheet, inlined by page() so a page is one self-contained
+--                response — no CDN, no build step, no JS
+--
+-- The language has no varargs and no closures (doctrine), so builders
+-- take exactly (tag, classes, inner) and pages compose by `..` and by
+-- functions returning Text. That constraint is the demo: an HTML layer
+-- in writeonce is ordinary code, not a template dialect.
+--
+-- ---- the MVC seam this library sits on --------------------------------
+--
+-- MODEL      `@table` rows. Queried in the HANDLER, never here — this
+--            library has no `from ... select` anywhere in it and must
+--            not grow one. A component receives VALUES, not a cursor.
+-- VIEW       components: fields in, Text out, no hidden state and no
+--            globals, so a page is byte-deterministic from its fields.
+-- CONTROLLER the framework's `Handler`: it queries, fills the component's
+--            fields, and answers `ok_html(c.render())`.
+--
+-- The seam is what makes a view testable without a server and a query
+-- testable without markup. Breaking it looks like one convenience —
+-- a component that queries "just this once" — and costs both.
+
+-- HTML-escape: & < > " (the four that matter in text and attributes).
+pub fn esc(t: Text) -> Text {
+  let out = "";
+  let i = 0;
+  let n = len(t);
+  while i < n {
+    let b = byte_at(t, i);
+    if b == 38 { out = out .. "&amp;"; }
+    else {
+      if b == 60 { out = out .. "&lt;"; }
+      else {
+        if b == 62 { out = out .. "&gt;"; }
+        else {
+          if b == 34 { out = out .. "&quot;"; }
+          else { out = out .. substr(t, i, 1); }
+        }
+      }
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+-- One element. Empty class list = no attribute. The inner text is the
+-- CALLER's business: pass esc(user_text) for data, raw markup for
+-- fragments you built yourself.
+pub fn el(tag: Text, cls: Text, inner: Text) -> Text {
+  if cls == "" { return `<${tag}>${inner}</${tag}>`; }
+  return `<${tag} class="${cls}">${inner}</${tag}>`;
+}
+
+-- An anchor: href is attribute context, so it is escaped here.
+pub fn link(href: Text, cls: Text, label: Text) -> Text {
+  if cls == "" { return `<a href="{{ href }}">${label}</a>`; }
+  return `<a href="{{ href }}" class="${cls}">${label}</a>`;
+}
+
+-- A code block: content is ALWAYS escaped — code samples are exactly the
+-- text that breaks HTML otherwise.
+pub fn code_block(src: Text) -> Text {
+  return el("pre", "code-block", el("code", "", esc(src)));
+}
+
+pub fn text_input(name: Text, value: Text) -> Text {
+  return `<input type="text" name="{{ name }}" value="{{ value }}" class="field">`;
+}
+
+pub fn text_area(name: Text, value: Text, rows: Int) -> Text {
+  return `<textarea name="{{ name }}" rows="${rows}" class="field">{{ value }}</textarea>`;
+}
+
+pub fn submit_btn(label: Text) -> Text {
+  return `<button type="submit" class="btn">{{ label }}</button>`;
+}
+
+pub fn form_post(action: Text, inner: Text) -> Text {
+  return `<form method="POST" action="{{ action }}" class="flex flex-col gap-2">${inner}</form>`;
+}
+
+-- A sticky top navigation bar: brand on the left, a prebuilt row of
+-- links on the right. The bar spans the viewport; the inner row shares
+-- the page's container widths.
+pub fn nav_bar(brand_href: Text, brand: Text, right: Text) -> Text {
+  let b = link(brand_href, "text-xl font-bold text-gray-900 no-underline", brand);
+  let row = el("div", "mx-auto max-w-5xl px-4 flex items-center justify-between", b .. el("div", "flex items-center gap-4", right));
+  return el("nav", "nav", row);
+}
+
+-- A titled card for feature grids.
+pub fn card(title: Text, body: Text) -> Text {
+  let t = el("h3", "text-lg font-bold mb-2", title);
+  return el("div", "bg-white rounded-lg border shadow-sm p-6", t .. el("p", "leading-relaxed text-gray-700", body));
+}
+
+-- A link styled as a button; primary = filled, otherwise outline.
+pub fn btn_link(href: Text, label: Text, primary: Bool) -> Text {
+  if primary {
+    return link(href, "btn no-underline", label);
+  }
+  return link(href, "btn-outline no-underline", label);
+}
+
+-- The utility sheet. Tailwind's names, one hand-written static sheet —
+-- only the utilities this ecosystem's pages actually use; growing it is
+-- adding a line, not adopting a toolchain. `.code-block`, `.field` and
+-- `.btn` are the three composites the builders above rely on.
+pub fn tw_css() -> Text {
+  let c = "*{box-sizing:border-box;margin:0;padding:0}";
+  c = c .. "body{font-family:system-ui,sans-serif;background:#f9fafb;color:#111827;line-height:1.6}";
+  c = c .. ".mx-auto{margin-left:auto;margin-right:auto}";
+  c = c .. ".max-w-3xl{max-width:48rem}";
+  c = c .. ".p-4{padding:1rem}.p-6{padding:1.5rem}.px-4{padding-left:1rem;padding-right:1rem}";
+  c = c .. ".py-2{padding-top:.5rem;padding-bottom:.5rem}.py-8{padding-top:2rem;padding-bottom:2rem}";
+  c = c .. ".mb-2{margin-bottom:.5rem}.mb-4{margin-bottom:1rem}.mb-8{margin-bottom:2rem}";
+  c = c .. ".mt-4{margin-top:1rem}.mt-8{margin-top:2rem}";
+  c = c .. ".flex{display:flex}.flex-col{flex-direction:column}";
+  c = c .. ".items-center{align-items:center}.justify-between{justify-content:space-between}";
+  c = c .. ".gap-2{gap:.5rem}.gap-4{gap:1rem}";
+  c = c .. ".text-sm{font-size:.875rem}.text-lg{font-size:1.125rem}";
+  c = c .. ".text-xl{font-size:1.25rem}.text-2xl{font-size:1.5rem}.text-3xl{font-size:1.875rem}";
+  c = c .. ".font-bold{font-weight:700}.font-mono{font-family:ui-monospace,monospace}";
+  c = c .. ".text-gray-500{color:#6b7280}.text-gray-700{color:#374151}.text-gray-900{color:#111827}";
+  c = c .. ".text-blue-600{color:#2563eb}.text-white{color:#fff}";
+  c = c .. ".bg-white{background:#fff}.bg-gray-50{background:#f9fafb}";
+  c = c .. ".bg-gray-900{background:#111827}.bg-blue-600{background:#2563eb}";
+  c = c .. ".rounded{border-radius:.25rem}.rounded-lg{border-radius:.5rem}";
+  c = c .. ".border{border:1px solid #e5e7eb}.shadow-sm{box-shadow:0 1px 2px rgba(0,0,0,.05)}";
+  c = c .. ".block{display:block}.w-full{width:100%}.leading-relaxed{line-height:1.75}";
+  c = c .. ".underline{text-decoration:underline}.no-underline{text-decoration:none}";
+  c = c .. ".list-disc{list-style:disc}.pl-6{padding-left:1.5rem}";
+  c = c .. "a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}";
+  c = c .. ".code-block{background:#111827;color:#e5e7eb;padding:1rem;border-radius:.5rem;";
+  c = c .. "overflow-x:auto;font-size:.875rem;line-height:1.6;margin:1rem 0}";
+  c = c .. ".code-block code{font-family:ui-monospace,monospace;white-space:pre}";
+  c = c .. ".field{display:block;width:100%;border:1px solid #e5e7eb;border-radius:.25rem;";
+  c = c .. "padding:.5rem;font-family:ui-monospace,monospace;font-size:.875rem}";
+  c = c .. ".btn{background:#2563eb;color:#fff;border:0;border-radius:.25rem;";
+  c = c .. "padding:.5rem 1rem;font-weight:700;cursor:pointer}";
+  c = c .. "a.btn{color:#fff;display:inline-block}a.btn:hover{text-decoration:none;background:#1d4ed8}";
+  c = c .. ".btn-outline{display:inline-block;border:1px solid #2563eb;color:#2563eb;";
+  c = c .. "border-radius:.25rem;padding:.5rem 1rem;font-weight:700}";
+  c = c .. "a.btn-outline:hover{text-decoration:none;background:#eff6ff}";
+  c = c .. ".nav{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;";
+  c = c .. "padding:.75rem 0;z-index:10}";
+  c = c .. ".footer{border-top:1px solid #e5e7eb;color:#6b7280;font-size:.875rem;";
+  c = c .. "padding:2rem 1rem;text-align:center;margin-top:4rem}";
+  c = c .. ".max-w-5xl{max-width:64rem}.text-4xl{font-size:2.25rem;line-height:1.2}";
+  c = c .. ".py-16{padding-top:4rem;padding-bottom:4rem}.text-center{text-align:center}";
+  c = c .. ".mb-6{margin-bottom:1.5rem}.gap-6{gap:1.5rem}.justify-center{justify-content:center}";
+  c = c .. ".grid{display:grid}.grid-cols-2{grid-template-columns:repeat(2,1fr)}";
+  c = c .. "@media(max-width:640px){.grid-cols-2{grid-template-columns:1fr}}";
+  return c;
+}
+
+-- One full document: the sheet inlined, viewport set, body handed in.
+-- Self-contained by construction — view-source shows everything.
+pub fn page(title: Text, body: Text) -> Text {
+  return page_head(title, "", body);
+}
+
+-- The same document with extra <head> markup: a favicon link, a meta
+-- description, whatever the app needs up there. Kept RAW (`${}`) — head
+-- content is markup the app built, not data — and defaulted to "" by
+-- `page()` so no consumer has to care.
+pub fn page_head(title: Text, head: Text, body: Text) -> Text {
+  -- The whole document as one literal. Every newline here lands
+  -- inside <head>, where whitespace is insignificant; the body hole
+  -- and its closing tags share one line so nothing is inserted into
+  -- the rendered content.
+  return `
+    <!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ title }}</title>
+    ${head}
+    <style>${tw_css()}</style>
+    </head><body>${body}</body></html>`;
+}
+
+-- ---- components (iteration 37) ----------------------------------------
+
+-- The view twin of the framework's `Handler`: a class with fields and a
+-- render, satisfied STRUCTURALLY — nothing declares that it implements
+-- this, a class either has `fn render() -> Text` or it does not (a class
+-- missing it is WO-E205 at the use site). Composition is nesting: a
+-- parent's render calls its children's.
+--
+-- A component's fields ARE its inputs — the closure substitute this
+-- language's no-function-values doctrine forces, and the same shape the
+-- framework already proved for handlers. `multi Component` works
+-- directly, so a heterogeneous list of children needs no wrapper record.
+pub interface Component {
+  fn render() -> Text
+}
+
+-- Render children in order. The one place in this library where the
+-- interface is genuinely load-bearing: this function knows nothing about
+-- any of them beyond `render()`, and `multi Component` holds a
+-- heterogeneous list directly — no wrapper record, which the framework's
+-- Mw/Aw shape might lead you to expect.
+pub fn render_all(cs: multi Component) -> Text {
+  let out = "";
+  for c in cs {
+    out = out .. c.render();
+  }
+  return out;
+}
+
+-- Content projection, writeonce-shaped: Angular's `<ng-content>` is a
+-- slot the parent fills, and here a slot is just a pre-rendered `Text`
+-- field. The caller passes `child.render()`, a raw literal, or a
+-- builder's output — the layout never knows which, which is exactly why
+-- it never needs to know the child's type.
+--
+-- Deliberately no container/width field: a page that wants its content
+-- in a fixed-width column wraps it before passing it in. `head` is the
+-- one non-body slot — a favicon link or a meta tag has nowhere else to
+-- go, and "" is the ordinary value.
+pub class Layout {
+  title:   Text
+  head:    Text
+  nav:     Text
+  content: Text
+  footer:  Text
+
+  fn render() -> Text {
+    return page_head(self.title, self.head, self.nav .. self.content .. self.footer);
+  }
+}

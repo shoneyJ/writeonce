@@ -25,16 +25,19 @@ program ships as one file that depends only on the system C library.
   mistyped field name is a **compile error**, not a runtime surprise. There is
   no SQL string anywhere in the shipped binary.
 - **One binary, no runtime dependencies.** `woc .` produces a self-contained
-  executable (~100 KB for the sample programs) that links only libc. Copy it to
-  a server and run it.
-- **Small on purpose.** No FFI, no package manager, no framework. The standard
-  library is a handful of OS modules. The language is designed to be read.
+  executable (160–260 KB for the sample programs in this repository) that links
+  only libc. Copy it to a server and run it.
+- **Small on purpose.** No FFI, no reflection, no package registry —
+  dependencies are exact-rev git URLs and nothing else. The standard library is
+  a handful of OS modules. The language is designed to be read.
 
-writeonce is **not** a web framework and does not (yet) serve HTTP, WebSockets,
-or a UI. It is a systems language whose distinguishing feature is the embedded
-database. If you have seen an older "writeonce" that served REST from `cargo
-run`, that was a separate, earlier runtime; this page documents the current
-`woc`/`wovm` toolchain.
+writeonce is a systems language whose distinguishing feature is the embedded
+database. HTTP/1.1 and WebSockets **do** work today — but as `.wo` libraries you
+consume through `[deps]` (`porch` for serving, `writeonce-view` for
+HTML), never as runtime features: the runtime stays framework-agnostic on
+purpose. TLS is always terminated by a proxy in front. If you have seen an older
+"writeonce" that served REST from `cargo run`, that was a separate, earlier
+runtime; this page documents the current `woc`/`wovm` toolchain.
 
 ---
 
@@ -139,8 +142,10 @@ has a known owner, memory is freed deterministically, and values that form
 cycles are collected by an inferred garbage collector (you never annotate GC-
 ness; the compiler infers it). The surface will look familiar:
 
-- **Types:** `Int`, `Text`, `Bool`, and user `class` types. `?T` marks an
-  optional (nullable) value; `nil` is the empty case.
+- **Types:** `Int`, `Float`, `Bool`, `Text`, `Bytes`, `Timestamp`, `Id`, and
+  user `class` types. `?T` marks an optional (nullable) value; `nil` is the
+  empty case. `Int` and `Float` never mix implicitly — `float` and `trunc` are
+  the only bridges.
 - **Containers:** `multi T` (a growable list) and `map<K, V>`. Literals:
   `[]`, `[a, b]`, `{}`.
 - **Classes & records:** classes with fields and methods, `static const` /
@@ -149,6 +154,11 @@ ness; the compiler infers it). The surface will look familiar:
   expressions, and `try { … } catch (e) { … }` (also an expression form).
 - **Strings:** interpolation with `${expr}` inside a `"…"` literal.
 - **Functions:** free functions and methods; arguments and returns are typed.
+- **Concurrency:** `spawn C { … }` starts an actor and yields an `actor M`
+  address; `send` is fire-and-forget, `call` parks the calling fiber until the
+  receive returns. A class becomes an actor by declaring `fn receive(msg: M)`.
+  Blocking stdlib calls park the fiber — there is no `async`, no `await`, and no
+  user-visible thread.
 
 ```
 fn classify(n: Int) -> Text {
@@ -166,14 +176,17 @@ A compact set of OS modules, reached by their reserved names — no imports:
 
 | Module | What it does |
 | --- | --- |
-| `fs` | `exists`, `list`, `stat`, `read_all`, `read_at`, `append` |
-| `time` | `sleep`, `now`, `local`, `iso` |
+| `fs` | `exists`, `list`, `stat`, `read_all`, `read_at`, `append` — read and append; a file cannot yet be replaced, truncated, deleted or renamed |
+| `time` | `sleep`, `now`, `ticks` (µs monotonic), `local`, `iso` |
 | `env` | `get`, `stopping` (a cooperative shutdown flag) |
-| `net` | TCP `listen` / `accept` / `read` / `write` / `close` (host + port) |
+| `net` | `listen` / `accept` / `read` / `write` / `close`, per-call deadline twins `read_dl` / `accept_dl` / `write_dl`, `listen_unix`, `peer`. Listeners only — there is no outbound `connect` |
 | `proc` | `run` a child process, capture stdout/stderr/exit |
 | `json` | `encode` / `decode` (`json.decode(t) as T` yields `?T`) |
 
 These are deliberately minimal — the surface a real program needs, and no more.
+Alongside them sit free builtins for text, containers, the `Float`/`Bytes`
+bridges, `base64`, and the digests `sha1` / `sha256` / `hmac_sha256`. The full
+list is `docs/guides/language-surface.md`.
 
 ---
 
@@ -269,14 +282,15 @@ dependencies, declared in the manifest:
 
 ```toml
 [deps]
-niceframework = { git = "https://github.com/shoneyj/niceframework", rev = "v0.1.0" }
+porch = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
 ```
 
-`woc` fetches each dep (via the `git` binary) into `.wo-deps/<name>/`, pins
-the resolved commit in `wo.lock`, and `use niceframework` (or
-`use niceframework/sub`) imports its public names like any module. Builds
-never touch the network once the lock is satisfied; a moved tag is reported,
-and `woc --update-deps myproject/` refreshes the lock deliberately. Flat
+**The `[deps]` key IS the module name** `use` imports — the repository name
+never appears in your source. `woc` fetches each dep (via the `git` binary)
+into `.wo-deps/<name>/`, pins the resolved commit in `wo.lock`, and `use porch`
+(or `use porch/router`) imports its public names like any module. Builds never
+touch the network once the lock is satisfied; a moved tag is reported, and
+`woc --update-deps myproject/` refreshes the lock deliberately. Flat
 dependencies only (a dep may not have its own `[deps]`) — honest and small,
 by design.
 
@@ -292,8 +306,9 @@ WO_DATA=./data ./target/myproject report     # a fresh process still sees the da
 
 ## Worked examples
 
-Two complete sample programs live in the repository and double as the language's
-acceptance tests:
+Thirteen sample programs live under `docs/examples/`; eight of them are wired to
+a `just` recipe and double as the language's acceptance tests. The three worth
+reading first:
 
 - **`docs/examples/employee/`** — departments and employees related by
   `ref`/`backlink`, `@unique`, foreign-key restrict on delete, per-department
@@ -303,7 +318,7 @@ acceptance tests:
   just employee            # compile + run every mode against a durable database
   ```
 
-- **`docs/examples/writeonce-framework/` + `docs/examples/web-app/`** — a web
+- **`docs/examples/porch/` + `docs/examples/web-app/`** — a web
   framework written in writeonce (HTTP/1.1 behind a TLS-terminating proxy,
   router with `:param` captures, interface-based handlers) and a storefront
   consuming it **as a `[deps]` dependency**, with `@table` persistence. Run:
@@ -319,7 +334,10 @@ acceptance tests:
   just log-watcher
   ```
 
-Read either program's `main.wo` for idiomatic, working writeonce.
+Read any of their `main.wo` files for idiomatic, working writeonce. The rest —
+`site` (the writeonce.de tutorial, server-rendered, `just site`), `fibers`,
+`db-actor`, `db-bench`, `gc-cycle`, `operators`, `shop` — cover the concurrency,
+GC and benchmark surfaces.
 
 ---
 
@@ -330,10 +348,16 @@ honest. These exist as design iterations and/or work-in-progress branches, not
 as features you can use today:
 
 - **Query aggregates** — `group … by … into g` with `count`/`avg`/`min`/`max`
-  and projection records. (Today the same result is written by hand from the
-  shipped primitives.)
-- **HTTP service layer** — `service` blocks that route requests to methods.
-- **Concurrency** — a shard-actor runtime and green-threaded fibers.
+  and projection records. The clause parses and is then refused by the
+  typechecker; today the same result is written by hand from the shipped
+  primitives.
+- **File mutation and outbound sockets** — `fs` can create, grow and read a
+  file but never replace, truncate, delete or rename one, and there is no
+  `net.connect` at all, so nothing reaches out (no OIDC, SMTP, object store or
+  webhook). Both are iteration 38.
+- **`service` blocks** — a declaration form that routes requests to methods,
+  lowering onto the framework library. Today you register routes as ordinary
+  framework calls, which works and is what every sample does.
 - **Cross-program database access** — one program attaching to another's
   database over a local channel, with keypair authentication and per-client
   rights.
@@ -341,8 +365,11 @@ as features you can use today:
 - **Compile-time metaprogramming** — `@derive(Json/Csv/Eq/…)` generated from a
   class's own metadata, no reflection.
 
-Known current limits worth naming: `net` is TCP host+port only; `proc.run` has
-no timeout or signal control; there is no stdin/stdout byte I/O and no FFI.
+Known current limits worth naming: `proc.run` has no timeout or signal control;
+there is no stdin/stdout byte I/O and no FFI; `map` lookup is a linear scan;
+actor mailboxes are bounded but there is no supervision tree yet; the WAL is
+append-only, so it grows and boot replays all of it; TLS is always a proxy's
+job.
 
 ---
 

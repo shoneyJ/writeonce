@@ -1,0 +1,51 @@
+-- shop/main.wo — the bootstrap (app-routing.module's analog): seed the
+-- store on first boot, wire routes to the feature controllers, serve.
+-- No rendering and no queries here beyond the seed.
+--
+--   WO_DATA=./data ./target/shop 8080     (run from the shop directory:
+--   /assets/* serves from ./assets)
+use porch
+use porch/http
+use porch/router
+use product_list
+use product_page
+use orders
+
+fn seed_if_empty() {
+  let n = 0;
+  for p in from x in Product take 1 select x {
+    n = n + 1;
+  }
+  if n > 0 {
+    return;
+  }
+  insert Product { sku: "keyb-75", name: "75% mechanical keyboard", price: 89.0, stock: 12 };
+  insert Product { sku: "mug-wal", name: "WAL-backed coffee mug", price: 14.5, stock: 40 };
+  insert Product { sku: "tee-own", name: "Ownership-checked t-shirt", price: 24.9, stock: 25 };
+  insert Product { sku: "desk-pad", name: "Deskmat (one binary edition)", price: 19.0, stock: 0 };
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 1 {
+    print_err("usage: shop <port>   (WO_DATA=<dir> makes the store durable)");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil {
+    print_err("shop: <port> must be a number");
+    return 2;
+  }
+
+  seed_if_empty();
+
+  let app = App { middleware: [], routes: [] };
+  app.use_mw(Mw { m: Logging {} });
+  app.get("/",                ListProducts {});
+  app.get("/p/:sku",          ShowProduct {});
+  app.post("/orders/:sku",    CreateOrder {});
+  app.get("/orders",          ListOrders {});
+  -- the framework's file server (serve/http): 2 MiB ceiling is well
+  -- above this template's stylesheet.
+  app.get("/assets/*path",    StaticFiles { dir: "assets", max_bytes: 2097152 });
+  return app.serve("127.0.0.1", port);
+}

@@ -6,8 +6,12 @@
 > to pick the next implementation: anything whose incoming arrows are all
 > green is startable today. Rebuilt 2026-08-20 from a sweep of every
 > story/spec/plan markdown (the "misses" pass: iteration 17's outgoing
-> edges, the concurrency chain, the post-12 parked drain, 9b→10,
-> 14's gap fan-out, 20's fiber caveat).
+> edges, the concurrency chain, the parked drain, 9b→25, 28's gap
+> fan-out, 20's fiber caveat), and **refreshed 2026-08-26** against the
+> code and the story frontmatter: graph 1 had drifted a generation
+> behind — it still showed 17 parked and 18 as next, and it used the
+> pre-renumber ids 10/12/13/14 for what are now stories 25/26/29/28. All
+> iterations through 38 are now nodes.
 
 ## 1. Story iterations
 
@@ -26,23 +30,36 @@ flowchart TD
     I15["15 deps package manager"]:::done
     I16["16 web framework v1 core"]:::done
 
-    I17["17 library kind + internal/ (PARKED — spec+plan ready, branch library-internal)"]:::parked
-    FWREORG["framework internal/ reorg + check mode (kills the --emit workaround; WO-E108/E109 reserved)"]:::parked
-    I18["18 framework v2: transaction{} + cache/flags/jobs (spec APPROVED — the next implementation)"]:::specd
+    I17["17 library kind + internal/ ✅ 2026-08-20"]:::done
+    FWREORG["framework internal/ reorg + check mode ✅ landed with 17 (WO-E108/E109 shipped)"]:::done
+    I19["19 Float + Bytes ✅ 2026-08-20"]:::done
+    I37["37 wo-html components + raw text literal ✅ 2026-08-25"]:::done
+    I35["35 net runtime seams ✅ 2026-08-23"]:::done
+    I36["36 operator parity: not/bitwise/hex literals — code landed 2026-08-22, awaiting the manual pass"]:::specd
+    RELEASE["packaging + release pipeline ✅ 2026-08-25 (no story: VERSION, just dist, install-accept, release.yml)"]:::done
 
-    I9c["20 cross-program tables (half-built)"]:::open
-    I9d["21 keypair attach auth (half-built; crypto+handshake already on its branch)"]:::open
+    I18["18 framework v2: transaction{} + cache/flags/jobs (⏸ hold 2026-08-21; spec+plan approved, held intact)"]:::parked
+
+    I9c["20 cross-program tables (⏸ hold 2026-08-21; channel half-built)"]:::parked
+    I9d["21 keypair attach auth (⏸ hold 2026-08-21; crypto floor now exists via 34)"]:::parked
     I9e["22 durability + throughput baseline ✅ 2026-08-21"]:::done
     I8["8 shard-actor runtime ✅ 2026-08-21"]:::done
+    I24["24 chat + actor lifecycle 🔄 THE LIVE SLICE (absorbing 31 + 34)"]:::specd
+    I34["34 crypto builtins ✅ code landed as 24's T1 (ids 85-87)"]:::done
+    I31["31 actor lifecycle — call/mailbox-cap/death landed in 24; monitor + time.after (ids 89/90) open"]:::specd
     I9f["23 io_uring group-commit"]:::open
-    I10["10 HTTP service layer (lowers onto the framework)"]:::open
+    I32["32 WAL checkpoint (append-only today; bounds replay)"]:::open
+    I33["33 single-file store WO_DATA=<path>.db (driver-only, off-chain)"]:::open
+    I25["25 HTTP service layer — `service` blocks (⏸ hold 2026-08-21; story file removed, plan remains)"]:::parked
     I11["11 fibers ✅ 2026-08-21"]:::done
-    I12["12 blue-green deploy"]:::open
-    I13["13 metaprogramming @derive"]:::open
-    I14["14 skillhost workload (demoted)"]:::open
-    I9g["27 query grammar corpus (likely collapses)"]:::open
-    GAPS["14's gap fan-out: bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process"]:::open
-    DRAIN["post-12 parked drain: pub(read)/using/#if, WO-E225, ADT roster, group-by"]:::parked
+    I26["26 blue-green deploy (⏸ hold)"]:::parked
+    I29["29 metaprogramming @derive (⏸ hold)"]:::parked
+    I28["28 skillhost workload (⏸ hold; demoted)"]:::parked
+    I38["38 content platform capabilities: fs mutation verbs + net.connect"]:::open
+    I9g["27 query grammar corpus (⏸ hold; likely collapses)"]:::parked
+    I30["30 observability, CI, fuzz — release-only CI exists; per-change gates + fuzz open (no story file)"]:::open
+    GAPS["28's gap fan-out: bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process"]:::open
+    DRAIN["parked drain, what is LEFT of it: WO-E225 roster, ADT roster, group-by aggregates"]:::parked
 
     FOUND --> I7
     FOUND --> I9
@@ -53,34 +70,53 @@ flowchart TD
     I15 --> I17
     I16 --> I17
     I17 --> FWREORG
+    I16 --> I37
+    I19 --> I37
+    I17 --> RELEASE
     I9 --> I18
     I16 --> I18
     I9 --> I9c
     I9c --> I9d
-    I9c --> I10
-    I9b --> I10
-    I16 --> I10
+    I9c --> I25
+    I9b --> I25
+    I16 --> I25
     I9b --> I9e
     I7b --> I8
     I9e --> I9f
     I8 --> I9f
     I8 --> I11
-    I9 --> I12
-    I10 --> I12
-    I9g --> I14
-    I7 --> I14
-    I14 --> GAPS
-    I12 -.scope directive.-> I13
-    I12 -.scope directive.-> DRAIN
+    I19 --> I34
+    I34 --> I24
+    I8 --> I24
+    I11 --> I24
+    I35 --> I24
+    I31 --- I24
+    I9f --> I32
+    I32 --- I33
+    I9 --> I26
+    I25 --> I26
+    I9g --> I28
+    I7 --> I28
+    I28 --> GAPS
+    I16 --> I38
+    I32 --> I38
+    I36 -.reopens the pure-wo HMAC question.-> I34
+    I26 -.scope directive.-> I29
+    I26 -.scope directive.-> DRAIN
 ```
 
-Reading it: **18 is the only spec-approved open node with all
-prerequisites green — the next implementation.** After 18: 20/21 and 22
-are startable (chosen order: 20/21 first — half-built branches rot).
-17 unparks on directive: its prerequisites landed, its spec+plan wait on
-branch `library-internal`, and its landing brings the framework reorg
-node with it. 13 and the parked drain sit behind 12 by the 2026-08-08
-scope directive (dashed), not by any technical edge.
+Reading it: **the live slice is 24** (chat + actor lifecycle, absorbing 31
+and 34), and the chain behind it is 23 → 32. Everything else with all-green
+incoming arrows is startable: **33** (driver-only, off-chain), **38** (the
+fs-mutation and outbound-socket gaps), and **30**'s remaining half
+(per-change CI and fuzzing — the release pipeline covered only publishing).
+**36** needs no work, only the developer's manual pass over
+`docs/examples/operators/`. The held tail — 18, 20/21, 25, 26, 27, 28, 29 —
+resumes on its own precedence notes; 29 and what is left of the drain still
+sit behind 26 by the 2026-08-08 scope directive (dashed), not by any
+technical edge. Note what left the drain: `pub(read)`, `using` and `#if` all
+shipped, so only the WO-E225/ADT rosters and group-by aggregates remain in
+it.
 
 ## 2. The concurrency chain (iterations 8 / 23 / 11 and everything they gate)
 

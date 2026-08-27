@@ -95,7 +95,7 @@ unsafe {
 
 ## Used by
 
-Phase 3 of the database series — index-build-then-swap (mentioned in [03-inmemory-engine.md § Recovery](../../../runtime/database/03-inmemory-engine.md#recovery) as "build a .seg index in memory before atomically swapping it to disk"). Also any future IPC story with worker processes (Phase 6 full-stack with multiple render workers, say).
+Phase 3 of the database series — index-build-then-swap (mentioned in `03-inmemory-engine.md § Recovery` as "build a .seg index in memory before atomically swapping it to disk"). Also any future IPC story with worker processes (Phase 6 full-stack with multiple render workers, say).
 
 ## v1 port source
 

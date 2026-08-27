@@ -145,8 +145,8 @@ stop is not a trap and cannot be caught.
 | concern | where it is normative |
 | --- | --- |
 | shards, envelopes, ownership-move sends, WO-E221/E222, placement | [arc spec](../../superpowers/specs/2026-08-20-shard-fiber-arc-design.md) + [arc plan deviations](../../superpowers/plans/2026-08-20-shard-fiber-arc.md) |
-| request/response, bounded mailboxes, actor death, timers | [iteration 31](../../stories/language-runtime-database/refine/31-actor-lifecycle.md) — not built yet |
-| the DB actor (stage 3) | [story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md) — landed 2026-08-21 |
+| request/response, bounded mailboxes, actor death, timers | [iteration 31](../../stories/language-runtime-database/31-actor-lifecycle.md) — not built yet |
+| the DB actor (stage 3) | [story 8's guarantee contract](../../stories/language-runtime-database/08-shard-actor-runtime.md) — landed 2026-08-21 |
 | builtin ids and their park behavior | [`08-builtin-surface.md`](08-builtin-surface.md) |
 
 ## 7. Rejected alternatives — settled, argue against the reason

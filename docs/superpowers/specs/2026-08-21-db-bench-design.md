@@ -8,9 +8,9 @@ Board: [docs/00-status.md](../../stories/00-status.md)
 **Scope:** the measurement backbone — a benchmark workload in `.wo`, a
 campaign driver script, a tracked baseline contract, and the durability
 proofs (restart persistence + crash battery), single- AND multi-shard.
-**Relates to:** [story 22](../../stories/language-runtime-database/done/22-durability-throughput-scale.md)
+**Relates to:** [story 22](../../stories/language-runtime-database/22-durability-throughput-scale.md)
 (the four forks settled below), the landed arc
-([story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md)
+([story 8's guarantee contract](../../stories/language-runtime-database/08-shard-actor-runtime.md)
 — the stage-3 delta this iteration records), iteration 23 (the durable
 write number it exists to beat), iteration 32 (the aged-store replay
 number its policy wants), stage-2 deviation 4 (the mutex-inbox number).

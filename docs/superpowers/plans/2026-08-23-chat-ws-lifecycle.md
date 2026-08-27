@@ -84,7 +84,7 @@ pure-`.wo` framework code, bash + python3-stdlib gates.
   fresh Bytes; C entry `wo_builtin_crypto(vm, R, ins, msg)` consumed by
   `builtin.c`'s dispatch. Task 6 consumes `crypto.sha1` from `.wo`.
 
-- [ ] Create the board marker `docs/in-progress/2026-08-23-chat-ws-lifecycle.md`
+- [ ] Create the board marker `docs/active-slice-2026-08-23-chat-ws-lifecycle.md`
   (slice active, links to spec+plan) and flip the board's In-progress
   Runtime row to this slice. Commit with the first code commit.
 - [ ] Digest cores in `crypto.c`: SHA-1 and SHA-256 over one buffer
@@ -371,10 +371,10 @@ pure-`.wo` framework code, bash + python3-stdlib gates.
 
 ### Task 10 — docs, stories, board, graph
 
-- [ ] Stories: 24 → `done/` with the landing banner (what landed, gate
+- [ ] Stories: 24 → `status: done` with the landing banner (what landed, gate
   numbers, the monitor three-argument deviation, the reply-agreement
-  rule); 31 → `done/` with a banner saying it landed INSIDE 24 (the
-  four forks and their decisions, link to the spec); 34 → `done/`
+  rule); 31 → `status: done` with a banner saying it landed INSIDE 24 (the
+  four forks and their decisions, link to the spec); 34 → `status: done`
   (C-builtin resolution, ids, vectors). Frontmatter status + folder
   move together (house rule).
 - [ ] Board: In-progress row cleared (marker doc deleted), Landed

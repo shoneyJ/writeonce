@@ -7,21 +7,19 @@ class Q {
 }
 
 class IntAnswer {
-  pad: Int
   fn receive(msg: Q) -> Int {
     return msg.n;
   }
 }
 
 class BoolAnswer {
-  pad: Int
   fn receive(msg: Q) -> Bool {
     return msg.n > 0;
   }
 }
 
 fn main() -> Int {
-  let a: actor Q = spawn IntAnswer { pad: 0 };
+  let a: actor Q = spawn IntAnswer {};
   let r = call(a, Q { n: 1 });
   return r;
 }

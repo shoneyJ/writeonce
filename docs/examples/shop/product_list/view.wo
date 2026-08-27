@@ -1,0 +1,41 @@
+-- product_list/view.wo — the VIEW. Classes with `fn render() -> Text`;
+-- fields are exactly the values displayed, and a body is ONE raw text
+-- literal: markup written as markup, attributes in real double quotes,
+-- source indentation removed at compile time. `${}` interpolates raw,
+-- `{{ }}` HTML-escapes — so display data goes through `{{ }}` and never
+-- through a hand-written esc() call.
+use view
+
+pub class ProductCard {
+  sku:   Text
+  name:  Text
+  price: Float
+  stock: Int
+
+  fn render() -> Text {
+    let stock = `<p class="stock">${self.stock} in stock</p>`;
+    if self.stock == 0 {
+      stock = `<p class="stock out">sold out</p>`;
+    }
+    return `
+      <div class="card">
+        <h3><a href="/p/{{ self.sku }}">{{ self.name }}</a></h3>
+        <p class="price">€ ${self.price}</p>
+        ${stock}
+      </div>`;
+  }
+}
+
+-- A parent component: its `cards` are CHILDREN, held through the
+-- structural interface, and its render calls theirs. Nothing here knows
+-- that a card is a ProductCard — swapping in a different card component
+-- is a controller change, not a view rewrite.
+pub class ProductListPage {
+  cards: multi Component
+
+  fn render() -> Text {
+    return `
+      <h1>Products</h1>
+      <div class="grid">${render_all(self.cards)}</div>`;
+  }
+}

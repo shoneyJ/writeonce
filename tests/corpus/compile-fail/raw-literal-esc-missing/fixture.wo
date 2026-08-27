@@ -1,0 +1,8 @@
+-- A `{{ ... }}` hole desugars to a call to `esc`, so a program that
+-- uses one without an `esc` in scope fails at the literal's position
+-- with a name it never typed -- the diagnostic says why.
+fn main() -> Int {
+  let n = "x";
+  print(`<p>{{ n }}</p>`);
+  return 0;
+}

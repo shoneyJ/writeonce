@@ -1,0 +1,54 @@
+-- orders/view.wo — the confirmation page and the orders table.
+-- Raw text literals for the bodies; see product_list/view.wo for the
+-- convention.
+use view
+
+pub class OrderOk {
+  name:  Text
+  qty:   Int
+  total: Float
+
+  fn render() -> Text {
+    return `
+      <div class="card">
+        <h1>Order placed</h1>
+        <p>${self.qty} × {{ self.name }} — total € ${self.total}</p>
+        <p><a href="/orders">See all orders</a> · <a href="/">Keep shopping</a></p>
+      </div>`;
+  }
+}
+
+pub class OrderRow {
+  name:   Text
+  qty:    Int
+  total:  Float
+  status: Text
+
+  fn render() -> Text {
+    return `
+      <tr>
+        <td>{{ self.name }}</td>
+        <td>${self.qty}</td>
+        <td>€ ${self.total}</td>
+        <td>{{ self.status }}</td>
+      </tr>`;
+  }
+}
+
+pub class OrdersPage {
+  rows: multi Component
+
+  fn render() -> Text {
+    if len(self.rows) == 0 {
+      return `
+        <h1>Orders</h1>
+        <p>No orders yet — <a href="/">go buy something</a>.</p>`;
+    }
+    return `
+      <h1>Orders</h1>
+      <table class="orders">
+        <tr><th>Product</th><th>Qty</th><th>Total</th><th>Status</th></tr>
+        ${render_all(self.rows)}
+      </table>`;
+  }
+}

@@ -55,11 +55,11 @@ unsafe {
 - **Always 8-byte `read` / `write`.** Short reads/writes return `EINVAL` — the counter is `u64`, full word or nothing.
 - **Writing `u64::MAX`** returns `EINVAL`; the counter can't hold more than `u64::MAX - 1`.
 - **Multiple writers are OK**; the kernel serialises. But reads race — use `EFD_SEMAPHORE` if you want one consumer per write.
-- **Not async-signal-safe.** Don't `write(fd, ...)` from a signal handler; use `signalfd` instead (see [04-signalfd.md](./04-signalfd.md)).
+- **Not async-signal-safe.** Don't `write(fd, ...)` from a signal handler; use `signalfd` instead (see [04-signalfd.md](04-signalfd.md)).
 
 ## Used by
 
-[`02-event-loop-epoll.md`](../../done/02-event-loop-epoll.md) — wake the loop for shutdown or internal work. Future `sub` crate ([`09-native-subscriptions`], not yet planned) uses it to signal that a subscriber queue has drained.
+`02-event-loop-epoll.md` — wake the loop for shutdown or internal work. Future `sub` crate ([`09-native-subscriptions`], not yet planned) uses it to signal that a subscriber queue has drained.
 
 ## v1 port source
 

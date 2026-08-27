@@ -2,7 +2,9 @@
 
 Lexer → parser → typechecker → ownership pass → bytecode emitter, for `.wo`. OCaml stdlib only (no Menhir, no ppx); dune is the build runner. Sibling of the C `wovm` bytecode VM ([`runtime/`](../runtime/README.md)) — the two halves of the OOP track's spec (`docs/superpowers/specs/2026-08-01-oop-compiler-vm-design.md`) meet at plan 3, where `woc`'s emitted `.wob` runs on `wovm`.
 
-**Stage: plan 3 (`docs/plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md`) complete, Tasks 1–6 + 8** (Task 7, a parity harness against the Rust runtime, was deferred by explicit decision — the two stacks now diverge by design). `.wo` source compiles to `.wob` bytecode (`--emit`) and to a single self-contained executable (`build`) that runs `wovm` with no arguments and no repo-relative dependency. Milestone 1's acceptance gate — compile-time budget, the full conformance corpus under ASan, the single-binary smoke, both unit suites — is `just oop-accept`. Plan 2 (lexer through ownership pass) shipped first and is unchanged.
+**Stage: well past plan 3.** Plan 2 (lexer through ownership pass) and plan 3 (`docs/plan/compiler/2026-08-01-wob-emit-e2e-single-binary.md`, Tasks 1–6 + 8 — Task 7, a parity harness against the since-removed Rust runtime, was deferred by explicit decision) closed the milestone: `.wo` source compiles to `.wob` bytecode (`--emit`) and to a single self-contained executable (`build`) that runs `wovm` with no arguments and no repo-relative dependency. Milestone 1's acceptance gate — compile-time budget, the full conformance corpus under ASan, the single-binary smoke, both unit suites — is `just oop-accept`.
+
+Since then the front end has taken iterations **15** (`[deps]`, `wo.lock`, `--update-deps`), **17** (`kind = "library"`, entry-less check mode, `internal/` as WO-E108), **19** (`Float` and `Bytes`), **24** (`call`'s typed reply, WO-E226), **34** (digest builtins), **35** (net deadline seams), **36** (`not`, bitwise operators, hex/binary literals, compound assigns — `.wob` v6) and **37** (the backtick raw text literal with `{{ }}` auto-escaping). Current language surface: [`docs/guides/language-surface.md`](../docs/guides/language-surface.md). Current status: [the board](../docs/stories/00-status.md).
 
 ## Requirements
 
@@ -24,23 +26,30 @@ just woc-test    # same, from the repo root
 
 ```
 woc <path>                       # compile (lex, parse, typecheck, ownership-check); nothing prints on success
+woc <dir>                        # BUILDS instead, when <dir>/wo.toml exists — the primary mode
+woc version                      # e.g. "writeonce 0.1.0 linux/amd64"
+woc --emit <path> -o <out.wob>   # compile through to a .wob bytecode module, runnable by wovm
+woc build <dir> -o <app> [--runtime <path>]
+                                 # compile + append the .wob image to a copy of wovm (--runtime,
+                                 # else $WO_RUNTIME, a wovm beside this woc, or runtime/wovm)
+woc --update-deps <dir>          # re-fetch [deps] at their manifest revs, rewrite wo.lock
+woc -D <name> ...                # define a build flag for the #if/#else/#end token filter
 woc --dump-tokens <path>         # stdout: one line per lexed token
 woc --dump-ast <path>            # stdout: the declaration + body AST, indented
 woc --dump-owner <path>          # stdout: the ownership pass's four tables (moves, drops, rc, residual)
+woc --dump-gc <path>             # stdout: the inferred-GC pass's traced set
 woc --dump-bc <path>             # stdout: disassembled bytecode for every emitted method
-woc --emit <path> -o <out.wob>   # compile through to a .wob bytecode module, runnable by wovm
-woc build <dir> -o <app> [--runtime <path>]
-                                  # compile + append the .wob image to a copy of wovm (default
-                                  # runtime/wovm, or --runtime) into one self-contained <app>
 ```
 
-`<path>` is a single `.wo` file or a directory. A directory is discovered recursively for every `.wo` file under it — same contract as `wo run` (`crates/rt/src/lib.rs::discover`): dot-prefixed entries and `target`/`data`/`node_modules` are skipped, results are sorted by path. Every discovered file compiles as one program (declarations in one file resolve for bodies in another, regardless of discovery order); diagnostics from every file and every stage print sorted by `(file, line, col)`. For multi-file `--dump-*` output, each file's dump is preceded by a `=== path ===` header line (`compiler/src/dump.ml`'s `file_header`) — a single-file run never prints one.
+`woc <dir>` on a directory holding a `wo.toml` is the mode every sample and the install docs use: it reads the manifest's `name` plus the optional `[build]` runtime/target keys and produces `<target>/<name>` exactly as `woc build` would. A manifest with `kind = "library"` is checked entry-less and writes nothing.
+
+`<path>` is a single `.wo` file or a directory. A directory is discovered recursively for every `.wo` file under it: dot-prefixed entries and `target`/`data`/`node_modules` are skipped, results are sorted by path. Every discovered file compiles as one program (declarations in one file resolve for bodies in another, regardless of discovery order); diagnostics from every file and every stage print sorted by `(file, line, col)`. For multi-file `--dump-*` output, each file's dump is preceded by a `=== path ===` header line (`compiler/src/dump.ml`'s `file_header`) — a single-file run never prints one.
 
 Diagnostics render as `file:line:col: severity CODE: message` plus a source excerpt with a caret; every shipped code is cataloged in `docs/plan/oop-vm/01-error-catalog.md`. Exit codes: **0** clean compile, **1** diagnostics reported, **2** usage/IO failure.
 
 ## Layout
 
-- `src/` — one module per stage: `diag` (diagnostics, collector, exit-code decision), `token`/`lexer`, `ast`/`parser`, `types` (typechecker), `owner` (MVS ownership pass), `emit` (bytecode emitter, consumes `owner`'s four tables), `disasm` (bytecode disassembler, backs `--dump-bc`), `dump` (stable text dumps for all of the above)
+- `src/` — one module per stage: `diag` (diagnostics, collector, exit-code decision), `token`/`lexer`, `ast`/`parser`, `types` (typechecker), `gcinfer` (the inferred-GC pass, backs `--dump-gc`), `owner` (MVS ownership pass), `emit` (bytecode emitter, consumes `owner`'s four tables), `disasm` (bytecode disassembler, backs `--dump-bc`), `dump` (stable text dumps for all of the above)
 - `bin/` — the `woc` executable: CLI parsing, file discovery, the multi-file/cross-file driver, `--emit`/`build` output
 - `test/` — `runner.ml` (golden runner + CLI smoke) and `test_diag.ml` (diag.ml unit checks); `test/golden/<stage>/` holds one-file-per-fixture goldens (`tokens`, `ast`, `owner`, `owner-err`, `bc`); `test/fixtures/driver/` holds the multi-file CLI-smoke fixtures (directory discovery, cross-file symbols, diagnostic ordering) that don't fit the one-`.wo`-file-per-fixture golden shape
 

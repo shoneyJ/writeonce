@@ -47,8 +47,8 @@ every standing gate green before the next begins.
 
 **Architecture:** see the spec (normative):
 [`../specs/2026-08-20-shard-fiber-arc-design.md`](../specs/2026-08-20-shard-fiber-arc-design.md).
-Stories: [8](../../stories/language-runtime-database/done/08-shard-actor-runtime.md) ·
-[11](../../stories/language-runtime-database/done/11-fibers.md).
+Stories: [8](../../stories/language-runtime-database/08-shard-actor-runtime.md) ·
+[11](../../stories/language-runtime-database/11-fibers.md).
 
 **Tech Stack:** C11 libc-only (`wovm`), OCaml stdlib-only (`woc`), bash
 gates; TSan added to the corpus harness at stage 2.
@@ -204,7 +204,7 @@ transitively-traced check), corpus + TSan.
 > primary before any worker serves; (3) statements are serialized by the
 > DB actor — replies are materialized copies, no torn reads under the
 > concurrent multi-shard corpus (TSan). The five-property map lives in
-> [story 8's guarantee contract](../../stories/language-runtime-database/done/08-shard-actor-runtime.md); disk
+> [story 8's guarantee contract](../../stories/language-runtime-database/08-shard-actor-runtime.md); disk
 > space reclamation is story 32, not this stage.
 
 ### Task 7 — transparent DB RPC

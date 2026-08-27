@@ -1,0 +1,53 @@
+-- orders/controller.wo — the buying flow: stock-checked order creation
+-- (decrement + insert are each WAL-committed before they acknowledge)
+-- and the orders list (ref navigation: o.product.name).
+use porch/http
+use layout
+use time
+
+pub class CreateOrder {
+  fn handle(req: Req) -> Resp {
+    let sku = req.params["sku"];
+    if sku == nil {
+      return html_error(404, "No such product", "The order names no product.");
+    }
+    let f = form_values(req);
+    if f == nil {
+      return html_error(400, "Bad order", "The form did not arrive form-encoded.");
+    }
+    let qraw = f["qty"];
+    if qraw == nil {
+      return html_error(400, "Bad order", "How many? The qty field is missing.");
+    }
+    let qty = parse_int(trim("${qraw}"));
+    if qty == nil or qty < 1 {
+      return html_error(400, "Bad order", "qty must be a positive number.");
+    }
+    let hits = from p in Product where p.sku == sku take 1 select p;
+    if len(hits) == 0 {
+      return html_error(404, "No such product", "Nothing is listed under that sku.");
+    }
+    let p = hits[0];
+    if p.stock < qty {
+      return html_error(409, "Not enough stock", "Only ${p.stock} left of ${p.name}.");
+    }
+    let total = p.price * float(qty);
+    p.stock = p.stock - qty;
+    insert Order { product: p, qty: qty, total: total, placed: time.now(), status: "placed" };
+    let page = OrderOk { name: p.name, qty: qty, total: total };
+    let shell = AppShell { title: "shop — order placed", content: page.render() };
+    return ok_html(shell.render());
+  }
+}
+
+pub class ListOrders {
+  fn handle(req: Req) -> Resp {
+    let rows: multi Component = [];
+    for o in from x in Order select x {
+      push(rows, OrderRow { name: o.product.name, qty: o.qty, total: o.total, status: o.status });
+    }
+    let page = OrdersPage { rows: rows };
+    let shell = AppShell { title: "shop — orders", content: page.render() };
+    return ok_html(shell.render());
+  }
+}

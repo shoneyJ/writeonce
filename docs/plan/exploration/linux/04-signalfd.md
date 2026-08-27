@@ -66,11 +66,11 @@ unsafe {
 - **Per-thread mask.** `sigprocmask` is per-thread. In a single-threaded runtime that's fine; if you ever spawn threads, use `pthread_sigmask` on each so the main loop gets the signals.
 - **`signalfd_siginfo` is big** (128 bytes). Read into an aligned buffer; partial reads return `EINVAL`.
 - **Doesn't catch `SIGKILL` or `SIGSTOP`.** Nothing does. Those bypass everything.
-- **Child exit notifications (`SIGCHLD`)** work via signalfd but `pidfd` (see [10-pidfd.md](./10-pidfd.md)) is usually the better fit for clean child supervision.
+- **Child exit notifications (`SIGCHLD`)** work via signalfd but `pidfd` (see [10-pidfd.md](10-pidfd.md)) is usually the better fit for clean child supervision.
 
 ## Used by
 
-[`04-cutover-remove-tokio-axum.md`](../../done/04-cutover-remove-tokio-axum.md) — replaces `tokio::signal::ctrl_c()` for graceful shutdown. Every subsequent phase inherits this pattern.
+`04-cutover-remove-tokio-axum.md` — replaces `tokio::signal::ctrl_c()` for graceful shutdown. Every subsequent phase inherits this pattern.
 
 ## v1 port source
 

@@ -52,7 +52,36 @@ Status board: [`00-status.md`](../stories/00-status.md) · Doctrine: [`../00-pri
 | **Per-example `principle.md` files** | 2026-08-08: one canonical repo-level [`docs/00-principles.md`](../00-principles.md) instead; examples link to it. |
 | **Minimal 3-file log-watcher sample** | Breaks the file-for-file `.hx` → `.wo` mapping and leaves the "could not express" column unproven — which is the sample's entire acceptance criterion. |
 | **Raw code in plan documents** | Plans carry concept, reason, and required behavior in words; the executor writes the code. |
-| **`##ui` / `.htmlx` LiveView frontend track** | 2026-08-17: removed the 9-doc `exploration/ui/` design set, the `14-mvc-ui-implementation` plan, and the `ui-htmlx-live` plan. All were built on the non-advancing Rust runtime (`.dev/reference/crates/wo-htmlx`, `cargo run`, WebSocket live-patches) and contradict the current woc/wovm direction. The 13d pricing-UI row went with them. Revisit only if a UI story is re-opened on the woc/wovm stack. |
+| **`##ui` / `.htmlx` LiveView frontend track** | 2026-08-17: removed the 9-doc `exploration/ui/` design set, the `14-mvc-ui-implementation` plan, and the `ui-htmlx-live` plan. All were built on the non-advancing Rust runtime (`.dev/reference/crates/writeonce-viewx`, `cargo run`, WebSocket live-patches) and contradict the current woc/wovm direction. The 13d pricing-UI row went with them. Revisit only if a UI story is re-opened on the woc/wovm stack. |
 | **Old-runtime "front door" + v1 design docs** | 2026-08-17: removed `writeonce-pl.md`, `runtime/wo-language.md`, `future-scope/ai-agents-content-management.md`, the numbered v1 set `02-recovery`/`03-data`/`04-ui`/`05-datalayer`/`06-markdown-render`/`07-ssl`, and `runtime/database/05-go-sdk.md`. They pitched the old Rust `wo` runtime (REST + LiveView + SQL/Cypher) as the current language and contradicted the shipped woc/wovm toolchain. |
 | **The 2026-08-01 shard-actor plan (epoll-based)** | 2026-08-21: [`superpowers/plans/2026-08-01-shard-actor-vm-runtime.md`](../superpowers/plans/2026-08-01-shard-actor-vm-runtime.md) marked discarded, file kept as reference. Superseded by the arc plan of record ([`2026-08-20-shard-fiber-arc.md`](../superpowers/plans/2026-08-20-shard-fiber-arc.md), stages 1+2 landed): io_uring is a MUST and the epoll-based approach is discarded — the old plan's "epoll now / io_uring later" premise is inverted, and its substrate (`runtime/wo-rt.c`) left with the Rust track 2026-08-18. |
 | **The entire Rust `wo` runtime track** | 2026-08-18: removed `crates/` (the Stage-2 Rust runtime), `Cargo.toml`/`Cargo.lock`, `prototypes/` (wo-rt-c stale duplicate + wo-db C++ ref), the `rt-c-*` justfile recipes, the Rust engineering plans (`docs/plan/05..16`, `docs/plan/done/`), and `docs/runtime/` (the old runtime overview + 7-phase DB design series + async/fibers/gc/surreal essays). It was the prior, abandoned architecture — fully independent of the woc/wovm stack. Master now reflects only the current single-language project; the removed track lives in git history if ever needed as reference. Kept: the syscall/postgres/assembly/c-runtime **exploration studies** (they fed the current C runtime) and the discarded/learnings registers. |
+
+### Successor map for the removed Rust-era plan paths
+
+Added 2026-08-26. The exploration studies under
+[`exploration/`](exploration/linux/00-linux.md) were written against the old
+flat `docs/plan/NN-*.md` numbering and the `docs/runtime/database/` tree, both
+removed with the Rust track above. Those 48 dangling links were **de-linked, not
+re-pointed** — their prose names the retired plan by number ("plan 09a", "plan
+11"), so aiming them at a story would have made the sentence lie. The studies
+still read correctly; the names are now plain text. This table is where a reader
+goes to find what took each one's place.
+
+| Retired path | What carries that work now |
+| --- | --- |
+| `09-concurrency-scaleout.md` | [`08-shard-actor-runtime.md`](../stories/language-runtime-database/08-shard-actor-runtime.md) + [`11-fibers.md`](../stories/language-runtime-database/11-fibers.md) — the arc, landed 2026-08-21 |
+| `10-storage-foundations.md`, `11-wal-and-recovery.md` | [`09-database-engine.md`](../stories/language-runtime-database/09-database-engine.md) (typed WAL + replay) and [`22-durability-throughput-scale.md`](../stories/language-runtime-database/22-durability-throughput-scale.md) (the measurements) |
+| `12-engine-disk-cutover.md` | Nothing — RAM stays authoritative by doctrine (principle 7). The disk story is the WAL; reclamation is [`databasev2 3, WAL checkpoint`](../stories/databasev2/03-wal-checkpoint.md) |
+| `13-class-model-live-pricing.md` | [`09b-table-relations-query.md`](../stories/language-runtime-database/09b-table-relations-query.md) — `@table`, `ref`/`backlink`, the compiler-checked query surface |
+| `07-inotify-content-watcher.md` | [`07-logwatcher-proof.md`](../stories/language-runtime-database/07-logwatcher-proof.md) — the log-watcher sample polls via `fs.stat`; inotify was never surfaced as a builtin |
+| `08-sendfile-static-assets.md` | Nothing. `sendfile` is not exposed; static assets are served as `Text` through `net.write` |
+| `15-mcp-streamable-http.md` | [`28-skillhost-host-workload.md`](../stories/language-runtime-database/28-skillhost-host-workload.md) — MCP transport is that story's Blocker B |
+| `16-postgres-mirror.md` | Nothing — the mirror-is-backup doctrine holds, but no iteration owns it and there are no outbound sockets to reach a mirror with ([`refine/38`](../stories/language-runtime-database/38-content-platform-capabilities.md)) |
+| `02-event-loop-epoll.md`, `03-hand-rolled-http.md` | `runtime/src/park.c` (io_uring with an epoll fallback) and the `.wo` framework `porch` |
+| `04-cutover-remove-tokio-axum.md` | Completed by the Rust-track removal itself — nothing left to cut over |
+| `runtime/database/03-inmemory-engine.md` | [`database/src/CODE-LOGIC.md`](../../database/src/CODE-LOGIC.md) + [`plan/oop-vm/04-db-binding.md`](oop-vm/04-db-binding.md) |
+| `runtime/database/02-wo-language.md` | [`docs/guides/language-surface.md`](../guides/language-surface.md) |
+| `runtime/database/07-wo-seg-migration.md` | Nothing — segment migration was a Rust-engine concept with no analogue here |
+| `prototypes/wo-db/` (C++ query-layer ref) | Removed with the Rust track. The query layer lives in `compiler/src/emit.ml`, lowered to engine builtins |
+| `exploration/linux/07-splice.md` | Never written. Slot 07 is `07-io_uring.md` |

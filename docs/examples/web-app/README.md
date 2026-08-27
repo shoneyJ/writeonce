@@ -1,7 +1,7 @@
 # web-app — the storefront sample
 
 A small store: `Product`/`Order` as `@table` classes, JSON routes, one auth
-middleware — built on [`writeonce-framework`](../writeonce-framework/), which
+middleware — built on [`porch`](../porch/), which
 it imports **through `[deps]`** (iteration 15). This app is iteration 16's
 acceptance workload: `just web-app` runs the whole chain — fetch → lock →
 build → serve → curl matrix → restart persistence → SIGTERM.

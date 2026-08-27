@@ -101,9 +101,10 @@ directly instead of the lowest common denominator.
 
 ## 10. Capabilities are typed builtins — no FFI
 
-Programs reach the system only through audited stdlib builtins (`fs`,
-`proc`, `net`, `time`, `json`): bounded reads, args-array-only process
-runs, handles that close on drop. There is no `extern`, no escape hatch.
+Programs reach the system only through audited stdlib builtins — six
+reserved namespaces (`fs`, `proc`, `net`, `time`, `json`, `env`): bounded
+reads, args-array-only process runs, handles that close on drop. There is
+no `extern`, no escape hatch.
 *Why:* one FFI hole voids the entire memory-safety and security story;
 typed capabilities make the safe path the only path.
 *Enforced by:* [the systems-track spec Parts 2–3](superpowers/specs/2026-08-01-systems-track-design.md).

@@ -1,0 +1,23 @@
+-- layout/logo.wo — the mark, authored as inline SVG so it needs no asset
+-- pipeline and no second request: a dark tile with a two-stroke "W", the
+-- first half white and the second the site's accent blue. One glyph, two
+-- colours, still legible at 16px.
+--
+-- One source, two consumers: the nav brand embeds it, and
+-- `favicon/controller.wo` serves the same bytes at /favicon.svg.
+
+pub fn logo_svg(px: Int) -> Text {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 64 64" role="img" aria-label="writeonce"><rect width="64" height="64" rx="14" fill="#111827"/><path d="M14 20 L22 44 L32 28" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 28 L42 44 L50 20" fill="none" stroke="#2563eb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+-- The favicon is the same mark without intrinsic width/height, so the
+-- browser scales it to whatever the tab needs.
+pub fn favicon_svg() -> Text {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#111827"/><path d="M14 20 L22 44 L32 28" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 28 L42 44 L50 20" fill="none" stroke="#2563eb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+-- What goes in <head>. Inline SVG, no request, no cache question.
+pub fn head_links() -> Text {
+  return `<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <meta name="description" content="writeonce — one language, one runtime, one database, one binary.">`;
+}

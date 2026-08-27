@@ -1,0 +1,3 @@
+fn page(name: Text) -> Text {
+  return `<p>${name}{{ name }}</p>`
+}

@@ -1,7 +1,7 @@
 # Iteration 18 — framework v2 (transaction{} + cache/flags/jobs): implementation plan
 
 > **Status: ⏸ hold (2026-08-21, developer decision)** — story iteration 18
-> sits in `stories/language-runtime-database/hold/`; plan was ready to
+> carries `status: hold`; plan was ready to
 > execute (2026-08-20) and stays intact for resumption. Board:
 > [docs/00-status.md](../../stories/00-status.md).
 
@@ -33,7 +33,7 @@ pure `.wo` (framework), bash gates.
 
 **Spec:** [`../specs/2026-08-20-memory-db-features-design.md`](../specs/2026-08-20-memory-db-features-design.md)
 (approved 2026-08-20, normative). Story:
-[`18-memory-db-features.md`](../../stories/language-runtime-database/hold/18-memory-db-features.md).
+[`18-memory-db-features.md`](../../stories/language-runtime-database/18-memory-db-features.md).
 
 ## Global Constraints
 

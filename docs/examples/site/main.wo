@@ -1,142 +1,30 @@
 -- site — writeonce.de: the language tutorial, served BY the language.
--- Full stack in one binary: writeonce-framework ([deps]) for HTTP/routing/
--- auth, wo-html ([deps]) for server-rendered pages with Tailwind-style
+-- Full stack in one binary: porch ([deps]) for HTTP/routing/
+-- auth, writeonce-view ([deps]) for server-rendered pages with Tailwind-style
 -- utilities, @table + WAL for the chapters themselves. The site is its own
 -- final chapter: /ch/serving shows this file's shape.
 --
 --   SITE_TOKEN=... WO_DATA=./data ./site 8080
+--   SITE_HOST=0.0.0.0 ... ./site 8080     (reachable from the network)
+--   WO_DIST=/srv/dist ...                  (where /dl serves tarballs from)
 --
 -- Behind nginx/caddy for writeonce.de: the proxy terminates TLS and
 -- forwards to 127.0.0.1:8080 (the framework speaks HTTP/1.1 keep-alive).
+--
+-- This file is the BOOTSTRAP and nothing else: seed, routes, serve. The
+-- model is types.wo; every feature is a directory holding its view and
+-- its controller.
 use env
-use framework
-use framework/http
-use framework/router
-use html
-
--- Every chapter is a row: slug is the URL, ord orders the nav, body is a
--- server-rendered HTML fragment. Edits (the admin route) persist through
--- the WAL under WO_DATA and replay on restart.
-@table(name: "chapters", index: [slug])
-class Chapter {
-  slug:  Text @unique
-  ord:   Int
-  title: Text
-  body:  Text
-}
-
-fn seed_if_empty() {
-  let n = 0;
-  for c in from x in Chapter take 1 select x {
-    n = n + 1;
-  }
-  if n == 0 {
-    seed_chapters();
-  }
-}
-
--- ---- rendering ---------------------------------------------------------
-
-fn ok_html(body: Text) -> Resp {
-  let h: map<Text, Text> = {};
-  h["content-type"] = "text/html; charset=utf-8";
-  return Resp { status: 200, headers: h, body: body };
-}
-
-fn site_header() -> Text {
-  let brand = link("/", "text-xl font-bold text-gray-900 no-underline", "writeonce.de");
-  let tag = el("span", "text-sm text-gray-500", "one language, one runtime, one database, one binary");
-  return el("div", "flex items-center justify-between mb-8", brand .. tag);
-}
-
-fn shell(title: Text, inner: Text) -> Text {
-  let body = el("div", "mx-auto max-w-3xl px-4 py-8", site_header() .. inner);
-  return page(title, body);
-}
-
-fn chapter_nav(current: Int) -> Text {
-  let items = "";
-  for c in from x in Chapter order by x.ord select x {
-    let label = "${c.ord}. ${esc(c.title)}";
-    if c.ord == current {
-      items = items .. el("li", "mb-2 font-bold text-gray-900", label);
-    } else {
-      items = items .. el("li", "mb-2", link("/ch/${c.slug}", "", label));
-    }
-  }
-  return el("ul", "list-disc pl-6", items);
-}
-
--- ---- handlers ----------------------------------------------------------
-
-class Home {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    let hero = el("h1", "text-3xl font-bold mb-4", "Learn writeonce");
-    let intro = el("p", "leading-relaxed mb-4", "A language where the runtime, the database and the web server are one thing. " .. "This site is written in it — every page you read here is a " .. "<code>Resp</code> built by <code>.wo</code> code, stored in the language's own " .. "tables, served by its own framework. Work through the chapters in order:");
-    let body = el("div", "bg-white rounded-lg border shadow-sm p-6", hero .. intro .. chapter_nav(0));
-    return ok_html(shell("writeonce — learn the language", body));
-  }
-}
-
-class ShowChapter {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    let slug = req.params["slug"];
-    if slug == nil { return not_found(); }
-    let hits = from c in Chapter where c.slug == slug take 1 select c;
-    if len(hits) == 0 {
-      let msg = el("h1", "text-2xl font-bold mb-4", "No such chapter");
-      let back = el("p", "", link("/", "", "Back to the chapters"));
-      let h: map<Text, Text> = {};
-      h["content-type"] = "text/html; charset=utf-8";
-      let nf = shell("writeonce — not found", msg .. back);
-      return Resp { status: 404, headers: h, body: nf };
-    }
-    let c = hits[0];
-    let head = el("h1", "text-3xl font-bold mb-4", "${c.ord}. ${esc(c.title)}");
-    let art = el("div", "bg-white rounded-lg border shadow-sm p-6", head .. c.body);
-    let nav = el("div", "mt-8", el("h2", "text-lg font-bold mb-2", "Chapters") .. chapter_nav(c.ord));
-    return ok_html(shell("writeonce — ${c.title}", art .. nav));
-  }
-}
-
--- POST /admin/ch/:slug — title/body update, form-encoded, bearer-gated.
--- Mechanism (bearer_token, constant-time ct_eq) is the framework's;
--- POLICY — which routes, which token — is this app's, right here.
-class AdminEdit {
-  token: Text
-  fn handle(req: Req) -> Resp {
-    let got = bearer_token(req);
-    if got == nil { return unauthorized(); }
-    if ct_eq("${got}", self.token) == false { return unauthorized(); }
-    let slug = req.params["slug"];
-    if slug == nil { return not_found(); }
-    let hits = from c in Chapter where c.slug == slug take 1 select c;
-    if len(hits) == 0 { return not_found(); }
-    let f = form_values(req);
-    if f == nil { return bad_request("body must be form-encoded (title, body)"); }
-    let title = f["title"];
-    let body = f["body"];
-    if title == nil and body == nil { return bad_request("nothing to update"); }
-    if title != nil {
-      let t = trim("${title}");
-      if t == "" { return bad_request("title must not be empty"); }
-      hits[0].title = t;
-    }
-    if body != nil {
-      hits[0].body = "${body}";
-    }
-    return redirect("/ch/${slug}");
-  }
-}
-
-class Health {
-  pad: Int
-  fn handle(req: Req) -> Resp {
-    return ok_text("ok");
-  }
-}
+use porch
+use porch/http
+use porch/router
+use home
+use chapter
+use install
+use packages
+use admin
+use health
+use favicon
 
 fn main(args: multi Text) -> Int {
   if len(args) < 1 {
@@ -154,13 +42,38 @@ fn main(args: multi Text) -> Int {
     return 2;
   }
 
+  -- Bind to loopback unless SITE_HOST says otherwise. Behind a proxy
+  -- loopback is right; SITE_HOST=0.0.0.0 (or a LAN address) is how you
+  -- reach it from another machine while developing.
+  let host = "127.0.0.1";
+  let h = env.get("SITE_HOST");
+  if h != nil {
+    host = "${h}";
+  }
+
+  -- Where the release tarballs live. `just dist` writes them to ./dist;
+  -- a deployment points WO_DIST at wherever it keeps them.
+  let dist = "dist";
+  let d = env.get("WO_DIST");
+  if d != nil {
+    dist = "${d}";
+  }
+
   seed_if_empty();
 
   let app = App { middleware: [], routes: [] };
-  app.use_mw(Mw { m: Logging { pad: 0 } });
-  app.get("/",             Home { pad: 0 });
-  app.get("/health",       Health { pad: 0 });
-  app.get("/ch/:slug",     ShowChapter { pad: 0 });
+  app.use_mw(Mw { m: Logging {} });
+  app.get("/",                Home {});
+  app.get("/install",         ShowInstall {});
+  app.get("/packages",        ShowPackages {});
+  app.get("/packages/:name",  ShowPackage {});
+  app.get("/health",          Health {});
+  app.get("/favicon.svg",     Favicon {});
+  -- 16 MiB ceiling: the toolchain tarball is under 1 MiB today, and
+  -- `max_bytes` is a hard truncation point, not a hint.
+  app.get("/dl/*path",        StaticFiles { dir: dist, max_bytes: 16777216 });
+  app.get("/ch/:slug",        ShowChapter {});
   app.post("/admin/ch/:slug", AdminEdit { token: "${token}" });
-  return app.serve("127.0.0.1", port);
+  print_err("site: listening on ${host}:${port}");
+  return app.serve(host, port);
 }

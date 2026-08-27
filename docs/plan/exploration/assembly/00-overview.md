@@ -16,7 +16,7 @@ The biggest category. The language's calling convention — how arguments are pa
 
 Atomics, memory barriers, and some hardware-accelerated primitives need specific instruction sequences. A compiler that sees `a = *b` can't know whether you wanted a relaxed load or an acquire fence without annotation — and the *right* instruction on x86 vs ARM vs RISC-V is different.
 
-**Atomic CAS / load-acquire / store-release.** On x86 it's `LOCK CMPXCHG`; on ARM it's `LDXR` / `STXR` with a retry loop; on RISC-V it's `LR.W.AQ` / `SC.W.RL`. Go emits these from [`reference/go/src/runtime/atomic_amd64.s`](../../../.dev/reference/go/src/runtime/atomic_amd64.s) (and its per-arch siblings) because a portable compiler can't.
+**Atomic CAS / load-acquire / store-release.** On x86 it's `LOCK CMPXCHG`; on ARM it's `LDXR` / `STXR` with a retry loop; on RISC-V it's `LR.W.AQ` / `SC.W.RL`. Go emits these from `reference/go/src/runtime/atomic_amd64.s` (and its per-arch siblings) because a portable compiler can't.
 
 **Memory barriers.** `MFENCE`, `LFENCE`, `SFENCE` on x86; `DMB` / `DSB` / `ISB` on ARM. Used by Go's `publicationBarrier`, `procyield`, and friends. Per-arch asm files carry them.
 
@@ -34,10 +34,10 @@ Go does these in asm because it cannot rely on libc — Go's scheduler needs to 
 
 **Rust + libc covers all three categories** for the specific workload the `rt` crate serves. No custom scheduler means no stack switching. `std::sync::atomic::*` emits the right arch-specific instructions per target. `libc::syscall(SYS_*, ...)` hits the kernel through glibc's own trampolines — we don't need our own because we don't need fine-grained control over scheduler park/unpark (there's no scheduler to park). `signalfd` (see [`../linux/04-signalfd.md`](../linux/04-signalfd.md)) makes signal-handler asm unnecessary.
 
-The next document, [`01-go-runtime-asm.md`](./01-go-runtime-asm.md), catalogues Go's asm in concrete detail. The one after that, [`02-writeonce-stance.md`](./02-writeonce-stance.md), spells out the policy: **no custom assembly in `crates/rt`** — and lists the three edge cases where a future profiling run might force the decision.
+The next document, [`01-go-runtime-asm.md`](01-go-runtime-asm.md), catalogues Go's asm in concrete detail. The one after that, [`02-writeonce-stance.md`](02-writeonce-stance.md), spells out the policy: **no custom assembly in `crates/rt`** — and lists the three edge cases where a future profiling run might force the decision.
 
 ## Reading order
 
 1. **This doc** — the abstract "why asm exists in runtimes."
-2. [`01-go-runtime-asm.md`](./01-go-runtime-asm.md) — concrete Go inventory with reference paths.
-3. [`02-writeonce-stance.md`](./02-writeonce-stance.md) — the writeonce policy + escape hatches.
+2. [`01-go-runtime-asm.md`](01-go-runtime-asm.md) — concrete Go inventory with reference paths.
+3. [`02-writeonce-stance.md`](02-writeonce-stance.md) — the writeonce policy + escape hatches.

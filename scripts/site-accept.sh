@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/site-accept.sh — the writeonce.de tutorial site's gate: TWO deps
-# (framework + wo-html) resolved from run-time file:// remotes, build,
+# (serve + view) resolved from run-time file:// remotes, build,
 # serve, the page matrix (render/escape/404/401/authed edit), SIGTERM,
 # and WAL restart persistence of an admin edit.
 set -uo pipefail
@@ -27,8 +27,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- both deps as git remotes; the app pointed at them ----
-cp -r "$ROOT/docs/examples/writeonce-framework" "$W/fw"
-cp -r "$ROOT/docs/examples/wo-html" "$W/lib"
+cp -r "$ROOT/docs/examples/porch" "$W/fw"
+cp -r "$ROOT/docs/examples/writeonce-view" "$W/lib"
 for d in "$W/fw" "$W/lib"; do
   git -C "$d" init -q
   git -C "$d" add -A
@@ -36,8 +36,14 @@ for d in "$W/fw" "$W/lib"; do
   git -C "$d" tag v0.1.0
 done
 cp -r "$ROOT/docs/examples/site" "$W/app"
-sed -i "s|https://github.com/shoneyj/writeonce-framework|file://$W/fw|; s|https://github.com/shoneyj/wo-html|file://$W/lib|" "$W/app/wo.toml"
+sed -i "s|https://github.com/shoneyj/porch|file://$W/fw|; s|https://github.com/shoneyj/writeonce-view|file://$W/lib|" "$W/app/wo.toml"
 printf '[build]\nruntime = "%s"\n' "$WOVM" >> "$W/app/wo.toml"
+
+# a stand-in release tarball so /dl can be exercised without running
+# `just dist` first — the bytes do not matter, the serving path does
+mkdir -p "$W/app/dist"
+printf 'not-a-real-tarball' | gzip > "$W/app/dist/writeonce-0.1.0-linux-amd64.tar.gz"
+( cd "$W/app/dist" && sha256sum writeonce-0.1.0-linux-amd64.tar.gz > writeonce-0.1.0-linux-amd64.tar.gz.sha256 )
 
 # ---- 1. two-dep fetch + lock + build ----
 if "$WOC" "$W/app" >"$W/build.out" 2>&1 && [[ -x "$W/app/target/site" && -f "$W/app/wo.lock" ]]; then
@@ -69,6 +75,20 @@ except urllib.error.HTTPError as e:
 PYEOF
 }
 
+# binary-safe: status + content-type + byte count, no decoding. The
+# release tarball is gzip, which `hit` cannot represent.
+hit_bin() {
+  python3 - "$PORT" "$1" <<'PYEOF'
+import sys, urllib.request, urllib.error
+port, path = sys.argv[1], sys.argv[2]
+try:
+    r = urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5)
+    print(f"{r.status}|{r.headers.get('content-type','')}|{len(r.read())}")
+except urllib.error.HTTPError as e:
+    print(f"{e.code}|{e.headers.get('content-type','')}|{len(e.read())}")
+PYEOF
+}
+
 expect() { # name got want_status want_substr
   local name="$1" got="$2" want="$3" sub="$4"
   local st="${got%%|*}" body="${got#*|}"
@@ -93,6 +113,19 @@ expect "tailwind sheet inlined"         "$(hit /)"           200 ".btn{"
 expect "chapter renders a code sample"  "$(hit /ch/hello)"   200 "fn main"
 expect "escaped interpolation visible"  "$(hit /ch/values)"  200 '${port}'
 expect "unknown chapter is a 404 page"  "$(hit /ch/nope)"    404 "No such chapter"
+expect "install guide renders"          "$(hit /install)"    200 "tar -C /usr/local"
+expect "packages index lists both"      "$(hit /packages)"   200 "/packages/porch"
+expect "package detail shows its dep"   "$(hit /packages/view)" 200 "writeonce-view"
+expect "unknown package is a 404 page"  "$(hit /packages/nope)" 404 "No such package"
+expect "favicon is served as svg"       "$(hit /favicon.svg)" 200 "<svg"
+expect "install lists supported systems" "$(hit /install)"   200 "glibc 2.35 or newer"
+got="$(hit_bin /dl/writeonce-0.1.0-linux-amd64.tar.gz)"
+if [[ "$got" == 200\|application/gzip\|* && "${got##*|}" -gt 0 ]]; then
+  ok "the release tarball downloads as gzip"
+else bad "tarball download" "$got"; fi
+expect "its checksum downloads"          "$(hit /dl/writeonce-0.1.0-linux-amd64.tar.gz.sha256)" 200 "writeonce-0.1.0-linux-amd64.tar.gz"
+expect "traversal out of /dl is a 404"   "$(hit /dl/../wo.toml)" 404 ""
+expect "the logo is inline in the nav"  "$(hit /)"           200 "aria-label=\"writeonce\""
 expect "admin without token is 401"     "$(hit /admin/ch/hello POST "title=X")"  401 "unauthorized"
 expect "admin edit answers a redirect"  "$(hit /admin/ch/hello POST "title=Hello v2" s3cr3t)" 302 ""
 expect "the edit is live"               "$(hit /ch/hello)"   200 "Hello v2"

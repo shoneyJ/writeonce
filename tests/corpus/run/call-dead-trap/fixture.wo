@@ -8,7 +8,6 @@ class Q {
 }
 
 class Bomb {
-  pad: Int
   fn receive(msg: Q) -> Int {
     return msg.n / (msg.n - msg.n);   -- DIV0: the actor dies mid-call
   }
@@ -20,7 +19,7 @@ fn call_one(b: actor Q, n: Int) -> Text {
 }
 
 fn main() -> Int {
-  let b: actor Q = spawn Bomb { pad: 0 };
+  let b: actor Q = spawn Bomb {};
   let first = try call_one(b, 7) catch (e) e.msg;
   print("mid-call: ${first}");
   let second = try call_one(b, 8) catch (e) e.msg;
