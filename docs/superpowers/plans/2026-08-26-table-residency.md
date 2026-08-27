@@ -222,11 +222,14 @@ create fixtures under `tests/corpus/run/`.
 > | --- | --- | --- |
 > | **5a** | `wo_wal_next_offset` — exact record offsets, unit-proven | ✅ landed `ac7d8af` |
 > | **5b** | `wo_wal_read_row_at` — materialise a row from an offset into VM values. **Zero storage change**, so it is additive and independently testable | this section |
-> | **5c** | the id→offset map for `resident: keys` classes, plus the missing drop-payload-keep-index operation | not started |
-> | **5d** | rewiring `wo_row_ptr`'s call sites, the slab scans, and `@unique`/FK across the residency boundary | not started |
+> | **5c** | the shared borrow/release accessor, then id→offset storage. **Design settled 2026-08-27** — see its section | written up |
+> | **5d** | rewiring the readers: remaining call sites, slab scans, FK restrict, `@unique` across the boundary | scope recorded, write-up waits on 5c |
 >
-> Only 5b is described below. 5c and 5d need their own task write-ups once 5b
-> has shown what the read path actually costs.
+> 5b and 5c are described below. **One correction:** an earlier version of
+> this note said the secondary indexes point at slab slots. They store row
+> **ids** (`table.h:88`) and are already indirect through the id hash, so they
+> need no change — which is why 5c is one shared accessor rather than 11
+> rewrites.
 
 
 > **Retraction, 2026-08-26.** This plan originally had a Task 5 that rewrote
@@ -291,6 +294,83 @@ slab path), `database/src/db.c` (insert/read/update/delete), `database/src/wal.c
   `just oop-e2e`, `just residency`, `just employee`, `just db-actor`
   unchanged, since nothing calls the new function yet.
 - [ ] Commit. Draft: `feat(db): wo_wal_read_row_at — materialise a row from a log offset`.
+
+
+### 5c — the shared row accessor, then the offset map
+
+**Design settled 2026-08-27 by reading the structures rather than guessing.
+Both open questions have answers, and both make this smaller than feared:**
+
+- **The id hash needs no new storage.** `db_table.hvals` is already `uint64_t`
+  holding *global slot + 1*, with 0 meaning empty (`table.h:117-119`). An
+  offset fits the same field, `offset + 1` reusing the same 0-is-empty trick.
+  The interpretation is per-table and decided by the class flag, because a
+  table is wholly `all` or wholly `keys` — never mixed. **No parallel map.**
+- **Secondary indexes need no change at all.** `db_ibucket.ids` stores row
+  **ids**, not slot indices (`table.h:88`, and `table.c:452` resolves them via
+  `wo_row_ptr`). Every index is therefore already indirect through the id hash.
+  An earlier note in this plan — and an analogy given to the developer — said
+  these pointed at slots. That was wrong.
+- **The unique shadow is the real coupling.** `idx_add_row` fetches the *other*
+  row and compares columns (`table.c:452-453`), as does
+  `row_apply_field_slot`'s update path. Those are the sites that need a row
+  they cannot get from a slab.
+
+**So the shape is one shared accessor, not 11 rewrites.** Every site that today
+does `wo_row_ptr` then reads `r->slots[...]` becomes a borrow/release pair that
+serves both modes: for `resident: all` it hands back the slab pointer and
+releasing is a no-op; for `resident: keys` it materialises the record into
+caller-provided scratch via 5b's `wo_wal_read_row_at` and releasing frees the
+engine-owned values. One code path, two backings.
+
+**Files:** modify `database/src/table.h` / `table.c` (the accessor, then the
+`hvals` interpretation), `database/src/db.c` (the insert path's drop-payload
+step); extend `runtime/test/test_table.c`.
+
+**Interfaces:**
+- Consumes: Task 3's class flags, 5a's `wo_wal_next_offset`, 5b's
+  `wo_wal_read_row_at`.
+- Produces: `wo_row_borrow` / `wo_row_release`, which 5d rewires every
+  `wo_row_ptr` call site onto.
+
+- [ ] Add `wo_row_borrow(db, cid, id, scratch, msg)` returning a `db_row *`,
+  and `wo_row_release(db, cid, row, scratch)`. For a fully-resident table the
+  borrow is exactly today's `wo_row_ptr` and the release does nothing, so the
+  hot path gains at most a branch. Prove that first, alone, with **no
+  keys-table anywhere** — this step must be a pure refactor.
+- [ ] Size the scratch honestly: a borrow needs `row_size` bytes plus the
+  engine-owned values its slots point at. Decide whether the caller supplies a
+  stack buffer sized from `row_size` or the accessor allocates; the unique
+  check runs inside a loop over a bucket, so an allocation per candidate would
+  turn an O(1) probe into an allocation storm.
+- [ ] Verify: `make -C runtime test` and `test-iso` unchanged, `just oop-e2e`,
+  `just employee`, `just db-actor`, `just residency` unchanged, and `just
+  db-bench --quick` shows the resident read path inside its baseline tolerance.
+  A pure refactor that moves a number is not a pure refactor.
+- [ ] Commit that refactor on its own, before any offset storage exists.
+- [ ] Then: teach `hvals` the second interpretation, gated on the class flag —
+  `slot + 1` for `all`, `offset + 1` for `keys`. Keep the accessors for
+  reading it in one place so the two meanings cannot be confused at a call
+  site.
+- [ ] Then: the insert path for a keys-table — apply to RAM (required, since
+  `enc_val` serialises *from* the slab), capture the offset, append, commit,
+  and only then drop the payload while leaving the id hash and every index
+  entry standing. This is the operation that does not exist today;
+  `wo_row_remove` also unhooks the indexes, so it cannot be reused.
+- [ ] Verify: a keys-table insert leaves the id hash and indexes populated, the
+  slab slot recycled, and `wo_row_borrow` able to return the row from its
+  offset. ASan clean — the drop path frees engine values that the record now
+  owns instead.
+- [ ] Commit. Draft: `feat(db): id->offset storage for resident:keys tables`.
+
+### 5d — rewire the readers
+
+Deliberately not written up until 5c's accessor exists, because its shape
+decides how much of this is mechanical. Known scope: the remaining
+`wo_row_ptr` call sites, the slab scans at `db.c:105-181` (a keys-table scan
+walks the log sequentially instead), FK restrict's referrer scan, and the
+`@unique` shadow across the boundary — the correctness core, since a
+constraint that silently checks only resident rows must never ship.
 
 ## Task 6 — the two runtime refusals
 

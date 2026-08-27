@@ -120,6 +120,16 @@ typedef struct db_table {
     /* secondary indexes, from the class table's v3 metadata */
     db_index *indexes;
     uint32_t index_cnt;
+    /* databasev2 2: one reusable materialisation buffer per table, for
+     * wo_row_borrow. Per-TABLE and not per-call because the unique shadow
+     * check borrows once per candidate inside a bucket loop, and per-call
+     * allocation would turn an O(1) probe into an allocation storm. Safe
+     * because the store is single-writer (the owner shard) and a borrow is
+     * never nested — `busy` exists to catch it if that ever stops being
+     * true, rather than aliasing silently. */
+    uint8_t *scratch;
+    size_t scratch_cap;
+    int scratch_busy;
 } db_table;
 
 typedef struct wo_db {
@@ -170,6 +180,26 @@ int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t fiel
  * encoded bytes; indexes read key slots). NULL = no such row. NEVER handed
  * to the VM. */
 db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id);
+
+/* ---- databasev2 2: the shared row accessor -------------------------------
+ *
+ * Every reader that today does `wo_row_ptr` and then touches `r->slots[...]`
+ * uses this pair instead, so ONE code path serves both residencies:
+ *
+ *   resident: all   borrow returns the slab pointer; release is a no-op
+ *   resident: keys  borrow materialises the record from its log offset into
+ *                   the table's scratch; release frees what it built
+ *
+ * Landed as a PURE REFACTOR: until the offset storage exists, borrow is
+ * wo_row_ptr plus a branch and every release is a no-op. Deliberate — the
+ * refactor is provable on its own, before the storage change it enables.
+ *
+ * A borrowed row is READ-ONLY when it is materialised: it is a copy, so
+ * writing to it changes nothing durable. Mutation still goes through the row
+ * choke points. Pair EVERY non-NULL borrow with a release, and never nest two
+ * borrows on the same table — they would share one scratch. */
+db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **msg);
+void wo_row_release(wo_db *db, uint32_t class_id, db_row *r);
 
 /* Engine-internal, for WAL replay only: create a row with a FIXED id,
  * slots zeroed — the caller (wal.c) fills them with engine-encoded values

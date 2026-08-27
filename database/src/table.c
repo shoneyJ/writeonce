@@ -449,8 +449,15 @@ static int idx_add_row(wo_db *db, db_table *t, db_row *r) {
         db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
         if (!b) continue;
         for (uint32_t i = 0; i < b->len; i++) {
-            db_row *other = wo_row_ptr(db, t->class_id, b->ids[i]);
-            if (other && idx_cols_equal(c, ix, r, other)) return DB_ERR_UNIQUE;
+            /* databasev2 2: borrow, never peek at a slab. For a keys-table the
+             * conflicting row may not be resident, and a unique check that
+             * silently skipped non-resident rows would be a correctness hole,
+             * not a limitation. */
+            const char *bmsg = "";
+            db_row *other = wo_row_borrow(db, t->class_id, b->ids[i], &bmsg);
+            int clash = other && idx_cols_equal(c, ix, r, other);
+            wo_row_release(db, t->class_id, other);
+            if (clash) return DB_ERR_UNIQUE;
         }
     }
     for (uint32_t x = 0; x < t->index_cnt; x++) {
@@ -498,6 +505,9 @@ int wo_db_init(wo_db *db, const wo_classdesc *classes, uint32_t class_cnt,
 }
 
 static void table_destroy(wo_db *db, db_table *t) {
+    free(t->scratch); /* databasev2 2 */
+    t->scratch = NULL;
+    t->scratch_cap = 0;
     /* free every live row's engine-owned values, then the slabs */
     const wo_classdesc *c = &db->classes[t->class_id];
     for (uint32_t s = 0; s < t->slab_cnt; s++) {
@@ -718,6 +728,26 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
     return slot_row(t, (uint32_t)(s1 - 1));
 }
 
+db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **msg) {
+    (void)msg;
+    /* databasev2 2: only the resident backing exists so far. When
+     * `resident: keys` storage lands, this is where hvals is read as an
+     * OFFSET (it is already a uint64 holding slot+1, so offset+1 fits the
+     * same field) and 5b's wo_wal_read_row_at fills the table's scratch.
+     * Keeping the seam here, unused, is what makes that a local change
+     * instead of another sweep of every reader. */
+    return wo_row_ptr(db, class_id, id);
+}
+
+void wo_row_release(wo_db *db, uint32_t class_id, db_row *r) {
+    if (!r || class_id >= db->class_cnt) return;
+    db_table *t = &db->tables[class_id];
+    if (!t->scratch_busy || (uint8_t *)r != t->scratch) return; /* slab-backed */
+    const wo_classdesc *c = &db->classes[class_id];
+    for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], r->slots[i]);
+    t->scratch_busy = 0;
+}
+
 int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
                 uint64_t *out_vals, const char **msg) {
     db_row *r = wo_row_ptr(db, class_id, id);
@@ -903,8 +933,11 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
         if (!b) continue;
         for (uint32_t i = 0; i < b->len; i++) {
             if (b->ids[i] == id) continue;
-            db_row *other = wo_row_ptr(db, class_id, b->ids[i]);
-            if (other && idx_cols_equal(c, ix, r, other)) {
+            const char *bmsg = "";
+            db_row *other = wo_row_borrow(db, class_id, b->ids[i], &bmsg);
+            int clash = other && idx_cols_equal(c, ix, r, other);
+            wo_row_release(db, class_id, other);
+            if (clash) {
                 r->slots[field] = old; /* untouched, promised */
                 db_val_free(c->kinds[field], nv);
                 if (err_kind) *err_kind = DB_ERR_UNIQUE;
