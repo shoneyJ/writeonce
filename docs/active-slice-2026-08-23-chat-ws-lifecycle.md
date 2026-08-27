@@ -28,29 +28,53 @@ Branch `chat-ws-lifecycle`. Spec:
   callers never hang (mid-call + to-dead both trap catchably). Fixed
   TRAPF's fiber-death leak/dangle en route.
 
+- ✅ **T4 monitor + T5 time.after** (`56fe41a`, ids 89/90): the lifecycle
+  core. Corpus fixtures monitor-death, timer-delivery, timer-generation.
+- 🔄 **T8 chat sample + T9 gate** (`6d729cc`, then `bbe0216`): the sample
+  and all five gate legs exist and run.
+
 Every landed task: full battery 12/12, fresh-built.
+
+## Verified 2026-08-27 (branch merged up to master)
+
+Merged `master` in (clean; the porch rename means chat now says `use porch/...`
+and its `[deps]` key is `porch`). Baseline on this branch: **18 runtime suites
+× both dispatch flavors, 0 fail, `cli_smoke: OK`.**
+
+`just chat` at `CHAT_SOAK=20` — **11 of 12 legs green**, including the two the
+plan required and the gate was missing (`WO_SHARDS=1`, `WO_MAILBOX=8`).
+
+**Three of the four failures found on 2026-08-27 were stale build artifacts,
+not code.** Switching branches leaves `compiler/_build/` and `runtime/build/`
+holding the *other* branch's binaries: a `woc` emitting `.wob` v7 against a
+runtime expecting v6 reports only `wovm: unsupported version 7`, which the gate
+surfaces as "no listener". `runtime/build/wovm_asan` bit the same way. **Rebuild
+both after any branch switch** (`just woc-build`, `make -C runtime wovm-asan`)
+before believing a gate failure.
+
+**The remaining failure is a real bug and is NOT fixed** —
+[`2026-08-27-chat-drain-finding.md`](2026-08-27-chat-drain-finding.md). On a
+*fresh* server the SIGTERM drain leaves a client at EOF with no close frame in
+5 of 16 runs. Traced: main → Registry → Room → Writer; the Registry runs but
+the **Room never processes its shutdown message**, so the Writer's close branch
+never runs. Ruled out: the spin budget (a 1 s wall-clock deadline still failed
+2 of 12), `dummy_writer()` spawning during shutdown, and write failure. The
+gate had been hiding it by draining a server the soak had already warmed.
 
 ## Pending
 
-- ⬜ **T4 monitor(watched, observer, msg)** — id 89. Most of the death
-  machinery exists (`actor_die`); T4 adds the per-actor monitor list,
-  the death walk delivering the observer's own M-typed notice,
-  monitor-of-already-dead firing immediately, full-observer notice =
-  disclosed stderr drop. Three-argument form (spec deviation, disclosed
-  in the plan: the caller may be `main`, which has no mailbox).
-- ⬜ **T5 time.after(ms, addr, msg)** — id 90, one-shot, no cancel;
-  rides the T4 deadline plumbing; delivery = runtime send (full = drop
-  + stderr line, dead = silent). Corpus: timer-delivery,
-  timer-generation (the cancel idiom). Both WO_IO backends.
-- ⬜ **T8 chat sample** — docs/examples/chat: registry (`call`'s first
-  consumer), room actors (cap-trap drops slow members, `monitor` reaps
-  dead writers), reader/writer actor pair per connection over
-  ws_accept/wsframe; SIGTERM close choreography.
-- ⬜ **T9 chat gate** — scripts/chat-accept.sh + raw-RFC6455 python
-  client; the spec's five checks (functional cross-shard — also the
-  deferred cross-shard `call` proof — handshake vector, 1k soak with a
-  `WO_MAILBOX=8` sub-run, drain under both backends + ASan, battery).
-- ⬜ **T10 closeout** — stories 24/31/34 → done/ with banners (note the
+- 🔴 **The drain guarantee — the one blocker.** A `send` issued before the
+  stop flag must be delivered before the engine stops. `main` cannot park
+  after the flag (a park unwinds), so it spins, and **spinning is not a
+  barrier** — the evidence says the Room's shard never adopts its inbox, not
+  that it adopts it late. This is a semantic guarantee belonging to the actor
+  lifecycle (31), not a tuning parameter: it wants a stated rule in the
+  runtime lifecycle docs and a corpus fixture, not a bigger spin count.
+  **Nothing else in the slice should land before this**, because the drain is
+  half of what "actor lifecycle" means.
+- ⬜ **T9 remainder** — the 1k soak has only been run trimmed
+  (`CHAT_SOAK=20`); run it at the default 1000 once the drain is fixed.
+- ⬜ **T10 closeout** — stories 24/31/34 → `status: done` with banners (note the
   scalar-reply v1 narrowing + three-argument monitor deviations), board
   standup entry, graph nodes, framework README ledger rows, runtime +
   chat CODE-LOGIC sections, delete this marker. Final battery.
