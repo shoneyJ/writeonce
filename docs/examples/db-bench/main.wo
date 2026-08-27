@@ -467,6 +467,7 @@ fn usage() -> Int {
   print_err("usage: db-bench <mode>");
   print_err("  all N | seed N | read N | query N | write N | wal N");
   print_err("  mix N C | msgrate N | growth N int|text | growth-verify");
+  print_err("  randread N R");
   print_err("  verify | verify-acked M");
   return 2;
 }
@@ -518,6 +519,48 @@ fn self_rss_kb() -> Int {
 -- intact: rows 1..M all present with the right v and no holes. M is whatever
 -- survived -- the claim under test is the SHAPE of the survivor, not its size,
 -- because a SIGKILL can land between any two inserts.
+-- databasev2 1: randread N R -- fill N rows, then read R of them by key in a
+-- Weyl-sequence order that spreads across the WHOLE range. Under a cap smaller
+-- than the table most of those reads must fault a page back in.
+--
+-- This is the leg the swap measurement was MISSING. `growth` inserts, and
+-- inserting is append-mostly: cold pages are written once and never re-read, so
+-- swap cost it ~1% (148s vs 150s uncapped). Random reads over an oversized
+-- table are the opposite access pattern -- and they are exactly what
+-- databasev2 2's `resident: keys` creates, since it reads rows back from a log
+-- larger than RAM. No RNG in the language and none needed: i*2654435761 mod n
+-- is a Weyl sequence, deterministic and spread, so the two legs read the SAME
+-- key order and only residency differs.
+fn randread_mode(n: Int, r: Int) -> Int {
+  let bref = insert Bucket { tag: "randread" };
+  let i = 1;
+  while i <= n {
+    insert Item { k: i, v: item_v(i), bucket: bref };
+    i = i + 1;
+  }
+  print("randreadfilled ${n} ${self_rss_kb()}");
+  let h: map<Int, Int> = {};
+  let hits = 0;
+  let t0 = time.ticks();
+  let j = 0;
+  while j < r {
+    let key = 1 + (j * 2654435761) % n;
+    let o0 = time.ticks();
+    for row in from x in Item where x.k == key take 1 select x {
+      if row.v == item_v(key) {
+        hits = hits + 1;
+      }
+    }
+    hist_add(h, time.ticks() - o0);
+    j = j + 1;
+  }
+  let el = time.ticks() - t0;
+  report("randread", r, el, h);
+  -- hits proves the reads RESOLVED; a collapse measured over misses is noise
+  print("randreadrss ${self_rss_kb()} ${hits}");
+  return 0;
+}
+
 fn growth_verify() -> Int {
   let seen: map<Int, Int> = {};
   let maxk = 0;
@@ -642,6 +685,17 @@ fn main(args: multi Text) -> Int {
       return usage();
     }
     return growth_mode(n, args[2]);
+  }
+  if args[0] == "randread" {
+    if len(args) < 3 {
+      return usage();
+    }
+    let rr = parse_int(args[2]);
+    if rr == nil or rr < 1 {
+      print_err("db-bench: <r> must be a positive number");
+      return 2;
+    }
+    return randread_mode(n, rr);
   }
   if args[0] == "mix" {
     if len(args) < 3 {

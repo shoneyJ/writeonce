@@ -81,9 +81,16 @@ touch — and with swap it **keeps returning 0 while serving from disk**, finish
 900 000 rows in 148 s against 150 s uncapped. Durability is the one thing that
 does hold: acked writes came back as an intact prefix across an OOM kill.
 
+And when swap does absorb it, the price depends entirely on access pattern:
+inserting pays **~1%**, while reading randomly across the table pays **273×**
+(1 851 166 reads/s resident against 6 771 over-cap, p99 1 µs against 487 µs).
+That second number is the one this track must respect, because it is the access
+pattern [2](02-table-storage-modes.md)'s `resident: keys` creates by design.
+
 That is why "back-pressure at exhaustion" is not a design option. Exhaustion
-either kills without warning or never arrives. Only a **declared threshold** can
-speak in time.
+either kills without warning or never arrives — and the latency signal offers no
+early warning either, since departure is a **step** (1 µs to 487 µs, nothing in
+between) rather than a curve. Only a **declared threshold** can speak in time.
 
 ## The lever: per-table storage modes
 
@@ -133,7 +140,7 @@ before its mechanism existed; the history is in
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Outstanding: the random-read-over-cap collapse, and a replay baseline | nothing; extends iteration 22's harness |
+| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Also measured: the **273× random-read collapse** over an oversized table. Outstanding: a replay baseline | nothing; extends iteration 22's harness |
 | 2 | [per-table storage](02-table-storage-modes.md) | the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. **In progress — the `durable` half is done** | 1 for the budget default |
 | 3 | [WAL checkpoint](03-wal-checkpoint.md) *(was language 32)* | snapshot + truncate: disk reclaimed, replay bounded | 4 composes |
 | 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | close the 66× durable/RAM write gap (4.5k vs 297k inserts/s) | the arc (landed) |

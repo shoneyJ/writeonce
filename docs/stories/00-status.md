@@ -75,8 +75,9 @@ Int-only `Item`; `growth N int|text` in the db-bench sample, reading its OWN
 `/proc/self/status` RSS at each decile because the driver's 250 ms poll misses
 the value *at* a boundary; `growth-verify`, which asserts the survivor of a
 crash is a contiguous intact prefix; and two harness legs — four footprint legs
-under a rootless cgroup v2 cap, and a `ceiling` leg that deliberately dies at
-the cap and then replays. 121 checks, 0 failures.
+under a rootless cgroup v2 cap, a `ceiling` leg that deliberately dies at the cap
+and then replays, and a `randread` leg that reads an oversized table randomly.
+133 checks, 0 failures.
 
 **Key findings (measured, not asserted):** per-row footprint is **96.5–100 B**
 Int-only and **320.6–324 B** text-heavy — **3.3×**, not the "order of magnitude"
@@ -90,12 +91,17 @@ the opposite: `WO_HEAP_MB` is checked and traps). And swap is not "latency
 collapse": 900 000 rows inside a 64 MiB cap with swap finished in **148 s
 against 150 s uncapped** — ~1%, on a real disk swap file with no zram. Also
 measured: **ack-after-fsync holds through an OOM kill** — ~40 000 rows came back
-as an intact prefix, no holes, not read as corruption.
+as an intact prefix, no holes, not read as corruption. And the pattern the swap
+leg was missing: **random reads over an oversized table collapse 273×.**
 
 **Learned:** an append-mostly workload never re-touches its cold pages, so swap
-costs it nothing — the collapse belongs to *random reads* over an oversized
-table, which is precisely the pattern iteration 2's `resident: keys` creates and
-is **still unmeasured**. The RAM ceiling therefore has two shapes and neither
+costs it nothing — and the opposite pattern was then measured on the same day.
+The `randread` leg reads randomly across a table larger than the cap, both legs
+walking the SAME Weyl key order so residency is the only variable: **273×
+throughput collapse** (1 851 166 → 6 771 reads/s), p99 **1 µs → 487 µs**, all
+20 000 reads resolving in both. So the two access patterns sit ~270× apart under
+identical memory pressure, and **departure is a step, not a curve** — which is
+why `p99_departure_decile` finds nothing: there is no knee to find. The RAM ceiling therefore has two shapes and neither
 announces itself: without swap the process vanishes on signal 9, with swap it
 keeps returning 0 while serving from disk. That is the argument for a budget
 that fires at a declared threshold instead of at exhaustion.
@@ -107,10 +113,13 @@ degradation to detect. Iteration 2 must pick its budget on other grounds rather
 than wait on a number this slice cannot produce. Iteration 3's replay baseline is
 still NOT delivered — `bench/baseline.json` times no replay.
 
-**Next steps:** the read-heavy-over-cap leg is the single most valuable
-follow-up, and it is what makes `p99_departure_decile` mean anything (the
-footprint legs never approach their 512 MiB cap, so it is legitimately 0 today).
-Then iteration 2's 5c/5d.
+**Next steps:** iteration 2's 5c/5d. Its task 7 gained a criterion from this:
+`resident: keys` must measure its OWN read path rather than inherit 273×. That
+number bounds demand-paged anonymous memory through swap (4 KiB per fault, no
+readahead); `pread` through the page cache should beat it, and **the entire value
+of `resident: keys` rests on how much** — if it is not materially better than
+swapping, the design buys nothing the kernel was not already doing. Still absent:
+a replay baseline for iteration 3.
 
 **`.dev/reference` used:** none. Sources were the kernel's own interfaces —
 cgroup v2 `memory.max`/`memory.swap.max`, `/proc/self/status`, `/proc/swaps` and
@@ -684,7 +693,7 @@ the language arc as v1 history.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | 🔄 **MEASURED 2026-08-27** — `readiness: ready`, `status: in-progress` (two criteria outstanding), forks settled, harness landed (121 checks). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Outstanding: the **random-read-over-cap** collapse (unmeasured, and it is `resident: keys`'s own access pattern) and iteration 3's replay baseline. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
+| 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | 🔄 **MEASURED 2026-08-27** — `readiness: ready`, `status: in-progress` (iteration 3 replay baseline still undelivered), forks settled, harness landed (**133 checks**). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Also measured: **random reads over an oversized table collapse 273×** (1.85M vs 6 771 reads/s, p99 1 µs vs 487 µs) — so the two access patterns sit ~270× apart under the same pressure, and departure is a **step, not a curve**. Outstanding: iteration 3's replay baseline. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
 | 2 | [per-table storage: `durable` and `resident`](databasev2/02-table-storage-modes.md) | 🔄 **the language enrichment — the `durable` half is DONE and usable.** Two optional `@table` keys, `durable: true\|false` and `resident: all\|keys`, both defaulting to today's behaviour (all 28 existing declarations compile unchanged, no golden moved). Landed: the grammar, WO-E224 (a durable `ref` into a volatile table is refused), `.wob` v7 carrying both properties in spare `flags` bits, `durable: false` actually skipping the WAL (measured: 50 inserts → 1500 bytes durable, **0** volatile) with a mode-mismatch startup refusal, plus offset capture and read-a-row-from-an-offset. Outstanding: 5c/5d (the id→offset map and rewiring `wo_row_ptr`'s 11 call sites, slab scans and `@unique`/FK across the boundary — not yet written up), the two runtime refusals, and closeout. [spec](../superpowers/specs/2026-08-26-table-residency-design.md) · [plan](../superpowers/plans/2026-08-26-table-residency.md) |
 | 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
 | 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ **`readiness: ready` — the one startable iteration in the repo** (four forks confirmed settled 2026-08-20). Close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |

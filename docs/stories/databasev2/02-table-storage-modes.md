@@ -118,6 +118,14 @@ Outstanding:
   **then** a refusal naming the table and the annotation. *(task 6)*
 - **Given** the `resident: all` read baseline, **when** re-measured, **then**
   inside tolerance — no cost for a feature not used. *(task 7)*
+- **Given** a `resident: keys` table larger than RAM, **when** read randomly,
+  **then** its read cost is **measured against the resident baseline on its own
+  read path**, not inherited from databasev2 1's swap figure. *(task 7)* — that
+  figure is **273×** for demand-paged anonymous memory
+  ([1](01-ram-ceiling-measurement.md)); `pread` through the page cache should do
+  better, and the whole value of `resident: keys` rests on how much better. If it
+  is not materially better than swapping, the design buys nothing that the
+  kernel was not already doing.
 
 ## Out Of Scope
 

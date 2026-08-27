@@ -97,10 +97,10 @@ are written out once and never read again, so paging is sequential and off the
 critical path. The swap is a real disk file (`/swap.img`, no zram, zswap
 disabled), so this is genuine disk paging, not compressed RAM.
 
-**The correct generalisation is narrower than "swap is fine".** This measures an
-append-mostly workload. A workload that reads randomly across a table larger
-than the cap is the one that collapses, and this iteration did *not* measure
-that — see Outstanding.
+**The correct generalisation is narrower than "swap is fine", and the narrow
+claim was then measured too.** The 1% figure belongs to an append-mostly
+workload. Reading *randomly* across a table larger than the cap collapses
+**273×** — see below. Same cap, same swap, opposite access pattern.
 
 ## Progress
 
@@ -113,11 +113,12 @@ that — see Outstanding.
 | rootless cap wrapper, swap on/off legs | ✅ 4 footprint legs |
 | footprint metric = **median of marginals**, doublings counted separately | ✅ |
 | `ceiling` leg: dies at the cap, then replay must be intact | ✅ gated |
-| baseline + tolerance policy | ✅ 121 checks; footprint at ±10%, kill-timing metrics at ±100% |
+| `randread` leg: control vs over-cap, same key order | ✅ gated |
+| baseline + tolerance policy | ✅ 133 checks; footprint at ±10%, kill-timing metrics at ±100% |
 | `perf-targets.md` §5 | ✅ |
 | **resident-footprint fraction for [iteration 2](02-table-storage-modes.md)** | ⬜ **not delivered — the premise it rested on is false**, see Outstanding |
 | **replay/restart baseline for [iteration 3](03-wal-checkpoint.md)** | ⬜ not delivered |
-| **the random-read-over-cap collapse** | ⬜ not measured |
+| `randread N R` + the `randread` leg — random reads over an oversized table | ✅ **273x collapse measured** |
 
 ## Measured
 
@@ -142,6 +143,36 @@ The ceiling, 60 000 Int rows under an 8 MiB cap with swap off and `WO_DATA` set:
 
 **Ack-after-fsync holds through an OOM kill.** That is the one shutdown path
 which skips every cleanup handler, and the durable prefix came back whole.
+
+Random reads over an oversized table — 60 000 rows, same Weyl key order in both
+legs, only the cap differs:
+
+| Leg | Cap | Throughput | p50 | p99 | RSS after fill |
+| --- | --- | --- | --- | --- | --- |
+| control, all resident | 256 MiB | **1 851 166 reads/s** | 0 µs | **1 µs** | 13 508 KiB |
+| over-cap, swap on | 6 MiB | **6 771 reads/s** | 128 µs | **487 µs** | 6 980 KiB |
+
+**273× throughput collapse, ~480× on p99.** All 20 000 reads resolved correctly
+in both legs, so this is the cost of faulting pages back in, not of failing
+lookups. Swap off is not an alternative here: that configuration is simply
+SIGKILLed.
+
+So the two access patterns sit ~270× apart under identical memory pressure:
+
+| Access pattern | Cost of exceeding RAM |
+| --- | --- |
+| append-mostly insert | **~1%** — cold pages written once, never re-read |
+| random read across the table | **273×** — almost every read faults |
+
+**The mechanism caveat matters for [iteration 2](02-table-storage-modes.md).**
+This measures demand-paging of *anonymous slab memory* through swap: 4 KiB at a
+time, on fault, with no readahead. `resident: keys` will instead `pread` rows
+from the WAL, which goes through the **page cache** — the same physical
+constraint (data larger than RAM means disk I/O) but a different mechanism, and
+plausibly a better constant, because file reads get readahead and a shared cache
+while swap-in does not. **That is a hypothesis, not a result.** The honest
+reading is that 273× bounds what *swapping* costs, and iteration 2 must measure
+its own read path rather than inherit this number.
 
 **The finding that matters most is the swap leg succeeding.** It did not fail,
 did not warn, and returned 0. A deployment in that state looks healthy while
@@ -176,6 +207,10 @@ Met:
   the legs are skipped with a named reason and the rest still passes. ✅
   `cap_wrapper` returns None unless the `memory` controller is delegated; there
   is no uncapped fallback.
+- **Given** a table larger than the cap, **when** it is read randomly, **then**
+  the degradation is quantified. ✅ **273× throughput, ~480× p99**, both legs
+  reading the same key order with all reads resolving. This closes the gap the
+  swap leg left, and it is the pattern `resident: keys` creates.
 
 Outstanding:
 
@@ -187,16 +222,12 @@ Outstanding:
   an explicit developer-declared figure) rather than waiting on a number this
   iteration cannot produce. This is the most important thing this slice learned
   and it removes a dependency rather than satisfying it.
-- **The random-read-over-cap collapse.** Not measured. This is where the "latency
-  collapse" prediction may still be true, and it is the workload that matters
-  for [2](02-table-storage-modes.md)'s `resident: keys`, whose whole premise is
-  reading rows back from a log larger than RAM. Needs a read-heavy leg over a
-  table exceeding the cap. **The single most valuable follow-up.**
 - **Given** rising fractions of the cap, **when** latency is sampled, **then**
-  the p99 departure point is recorded. Partially: the sampler and metric exist
-  and are gated, but the footprint legs never approach their 512 MiB cap, so
-  `p99_departure_decile` is legitimately 0 and proves nothing. It becomes
-  meaningful only with the read-heavy leg above.
+  the p99 departure point is recorded. Partially, and now with a real answer
+  elsewhere: `p99_departure_decile` stays 0 because the footprint legs never
+  approach their 512 MiB cap, but the departure itself is measured by the
+  `randread` leg as a **step, not a curve** — 1 µs resident, 487 µs over-cap.
+  There is no gentle departure to find; residency is close to binary.
 - **A replay/restart baseline for iteration 3.** Not delivered; `growth` exercises
   `WO_DATA` but nothing times replay. Cheap to add, still absent from
   `bench/baseline.json`.
@@ -237,7 +268,12 @@ Outstanding:
 5. **Kill-timing metrics carry ±100% tolerance.** `rows_recovered` depends on
    where the SIGKILL landed; gating it tightly would be gating the scheduler.
    The invariant asserted instead is the *shape* of the survivor.
-6. **The ceiling leg asserts `rc`, never records it.** When iteration 2's byte
+6. **`randread` gates the RATIO, not the absolutes.** The over-cap half is swap
+   I/O, so its reads/sec belongs to the box; the collapse factor between two
+   runs that differ only in their cap belongs to the engine. Both legs read the
+   same Weyl key order (`i*2654435761 mod n` — no RNG in the language, and none
+   needed) so residency is the only variable.
+7. **The ceiling leg asserts `rc`, never records it.** When iteration 2's byte
    budget lands, death should become a checked refusal — the gate must not fail
    on that improvement.
 

@@ -61,6 +61,21 @@ stay resident, rows do not.** It buys roughly two orders of magnitude of table
 size, not infinity, and the spec says so plainly because a design sold as
 unlimited gets deployed as if it were.
 
+**What the trade costs, bounded by measurement (databasev2 1, 2026-08-27).**
+Buying table size with disk reads is not free, and the price is large: random
+reads across a table larger than RAM measured **273× slower** than resident ones
+(1 851 166 reads/s against 6 771; p99 1 µs against 487 µs), and the transition is
+a **step, not a curve** — there is no gentle region to operate in. That figure is
+an *upper bound on the mechanism this spec does not use*: it is demand-paging of
+anonymous memory through swap, 4 KiB per fault with no readahead, whereas
+`resident: keys` `pread`s from the WAL through the page cache, which gets
+readahead and a shared cache. The constant should therefore be better — **but
+that is a hypothesis and task 7 must measure it, not inherit it.** Two things
+follow regardless: `resident: keys` must stay opt-in per table (it is), and the
+hot-set question is not deferrable decoration — it is
+[iteration 5](../../stories/databasev2/05-bounded-tables-eviction.md) and it
+decides whether this design is usable for anything read-heavy.
+
 ## The design
 
 ### Grammar

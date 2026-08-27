@@ -233,6 +233,7 @@ def tolerance_for(key):
     if ".bytes_per_row" in key: return 10
     if key.startswith("growth."): return 100
     if key.startswith("ceiling."): return 100
+    if key.startswith("randread."): return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -374,6 +375,10 @@ def growth(metrics):
 
 
 CEIL_N, CEIL_CAP_MB = 60000, 8
+RAND_N = 60000 if QUICK else 200000
+RAND_R = 20000 if QUICK else 40000
+RAND_CAP_MB = 6 if QUICK else 14      # over-cap: holds roughly a third of the rows
+RAND_FIT_MB = 256                     # control: same mechanism, cap simply does not bind
 
 def ceiling(metrics):
     """The ceiling itself, and the durability claim across it.
@@ -433,6 +438,81 @@ def ceiling(metrics):
     shutil.rmtree(data, ignore_errors=True)
 
 
+
+def parse_randread(lines):
+    """ops/sec, p50, p99, resolved-read count and post-fill RSS from the
+    sample's own randread lines. `randreadfilled` also starts with "randread",
+    so match f[0] exactly, not by prefix."""
+    ops = p50 = p99 = hits = filled = None
+    for l in lines:
+        f = l.split()
+        if not f:
+            continue
+        if f[0] == "randread" and len(f) == 5:
+            ops, p50, p99 = int(f[2]), int(f[3]), int(f[4])
+        elif f[0] == "randreadrss" and len(f) == 3:
+            hits = int(f[2])
+        elif f[0] == "randreadfilled" and len(f) == 3:
+            filled = int(f[2])
+    return ops, p50, p99, hits, filled
+
+
+def randread(metrics):
+    """Random reads over a table LARGER than the memory cap -- the access
+    pattern the swap measurement was missing.
+
+    growth() only inserts, and inserting is append-mostly: cold pages are
+    written once and never re-read, so swap cost it ~1% (148s vs 150s
+    uncapped). That result is real but does NOT generalise to "swap is fine".
+    This leg reads back across the whole range in a Weyl-sequence order, so
+    most reads must fault a page in.
+
+    It matters because it is databasev2 2's `resident: keys` access pattern:
+    that design reads rows back from a log larger than RAM by construction.
+
+    Two runs, identical except for the cap, reading the SAME key order:
+      - control  (RAND_FIT_MB): cap does not bind, everything resident
+      - over-cap (RAND_CAP_MB): ~a third of the rows fit; swap ON, because
+        with swap off this configuration is simply SIGKILLed (see ceiling())
+    The headline is collapse_x, the throughput ratio between them. Tolerances
+    are wide: the over-cap half is swap I/O, so its absolute numbers are the
+    box's, while the RATIO is the property of the engine."""
+    if cap_wrapper(RAND_FIT_MB, 0) is None:
+        ok("randread: SKIPPED -- no rootless cgroup v2 memory cap on this host")
+        return
+    res = {}
+    for legname, cap_mb, swap_mb in (("resident", RAND_FIT_MB, 0),
+                                     ("overcap", RAND_CAP_MB, 256)):
+        w = cap_wrapper(cap_mb, swap_mb)
+        pr = subprocess.run(w + [BIN, "randread", str(RAND_N), str(RAND_R)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, env=dict(os.environ), timeout=900)
+        lines = pr.stdout.splitlines()
+        ops, p50, p99, hits, filled = parse_randread(lines)
+        key = f"randread.{legname}"
+        if pr.returncode != 0 or ops is None:
+            bad(f"{key}: run failed", f"rc={pr.returncode} {(lines[-1:] or ['no output'])[0][:120]}")
+            return
+        if hits != RAND_R:
+            # a collapse measured over reads that did not resolve is noise
+            bad(f"{key}: only {hits}/{RAND_R} reads resolved", "keys must all exist")
+            return
+        metrics[f"{key}.ops_sec"] = ops
+        metrics[f"{key}.read_p50us"] = p50
+        metrics[f"{key}.read_p99us"] = p99
+        metrics[f"{key}.filled_rss_kb"] = filled
+        res[legname] = ops
+        ok(f"{key}: {ops} reads/sec, p50 {p50}us p99 {p99}us, {filled} KiB after fill")
+    collapse = res["resident"] // max(res["overcap"], 1)
+    metrics["randread.collapse_x"] = collapse
+    if collapse < 2:
+        bad("randread: NO collapse -- the cap did not bind",
+            f"{RAND_N} rows fit under {RAND_CAP_MB} MiB, resize the leg")
+    else:
+        ok(f"randread: random reads over an oversized table collapse {collapse}x "
+           f"({res['resident']} -> {res['overcap']} reads/sec)")
+
+
 def main():
     # --check <results.json>: gate-only evaluation of a recorded run — the
     # gate-bites smoke doctors a copy and this mode must FAIL on it
@@ -447,6 +527,7 @@ def main():
     durability(metrics)
     growth(metrics)
     ceiling(metrics)
+    randread(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS_DIR, f"run-{stamp}{'-quick' if QUICK else ''}.json")

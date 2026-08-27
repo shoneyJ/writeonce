@@ -126,9 +126,7 @@ is a real disk file (`/swap.img`; no zram, zswap disabled), so this is genuine
 disk paging.
 
 **Do not generalise this to "swap is fine".** It measures an append-mostly
-workload. A random-read workload over a table larger than the cap is where the
-collapse should appear, and it is **not yet measured** — which matters, because
-that is exactly the access pattern databasev2 2's `resident: keys` creates.
+workload — and the opposite pattern was then measured too, below.
 
 The operational consequence is that the RAM ceiling has two shapes and neither
 reports itself: without swap the process vanishes on signal 9, with swap it
@@ -153,3 +151,41 @@ scheduler's business, so `rows_recovered` carries ±100% tolerance. The leg
 asserts the exit but never records it as a metric, so that when databasev2 2's
 byte budget turns the kill into a checked refusal, the gate does not fail on the
 improvement.
+
+### Random reads over an oversized table: 273×
+
+60 000 Int rows, both legs reading the **same** Weyl key order
+(`i*2654435761 mod n`), differing only in the cap:
+
+| Leg | Cap | Throughput | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| all resident | 256 MiB | **1 851 166 reads/s** | 0 µs | **1 µs** |
+| over-cap, swap on | 6 MiB | **6 771 reads/s** | 128 µs | **487 µs** |
+
+All 20 000 reads resolved in both legs, so this is the cost of faulting pages
+back, not of failed lookups. Swap-off is not an option in this configuration —
+it is SIGKILLed.
+
+**The two access patterns are ~270× apart under identical memory pressure:**
+
+| Pattern | Cost of exceeding RAM |
+| --- | --- |
+| append-mostly insert | **~1%** (cold pages written once, never re-read) |
+| random read across the table | **273×** |
+
+**Departure is a step, not a curve.** 1 µs to 487 µs with nothing in between —
+`p99_departure_decile` looks for a gentle knee that does not exist. Residency is
+close to binary, which is why a budget must fire at a *declared* threshold: there
+is no early warning in the latency signal to react to.
+
+**Mechanism caveat, and it is a design input for databasev2 2.** This is
+demand-paging of *anonymous slab memory* through swap — 4 KiB per fault, no
+readahead. `resident: keys` instead `pread`s rows from the WAL, through the
+**page cache**: same physical constraint, different mechanism, plausibly a better
+constant because file reads get readahead and a shared cache. **That is a
+hypothesis.** 273× bounds what *swapping* costs; iteration 2 must measure its own
+read path rather than inherit this figure.
+
+Gated as `db-bench`'s `randread` leg, which gates the **ratio** — the absolute
+reads/sec of the over-cap half is the box's swap device, while the factor between
+two runs differing only in their cap is the engine's.
