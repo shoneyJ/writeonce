@@ -412,6 +412,12 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     uint32_t cid = rd_u32(&r);
     uint64_t id = rd_u64(&r);
     if (r.bad || cid >= db->class_cnt) return -1;
+    /* databasev2 2: this log holds records for a class the CURRENT source
+     * declares `durable: false`. Not corruption — a real migration case (the
+     * table used to be durable). Refuse rather than convert, and refuse
+     * rather than silently resurrect rows into a table declared not to have
+     * any. -2 so the caller can say which of the two it is. */
+    if (db->classes[cid].flags & WO_CLASSF_VOLATILE) return -2;
     if (kind == WO_WAL_REMOVE) return wo_row_remove(db, cid, id);
     if (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE) return -1;
     if (kind == WO_WAL_UPDATE) {
@@ -444,7 +450,7 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     return 0;
 }
 
-int64_t wo_wal_replay(const char *path, wo_db *db) {
+int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return errno == ENOENT ? 0 : -1; /* no WAL yet = fresh boot */
     uint64_t off = 0;
@@ -453,17 +459,27 @@ int64_t wo_wal_replay(const char *path, wo_db *db) {
         uint32_t len;
         uint8_t *payload;
         if (scan_record(fd, off, &len, &payload) != 0) break; /* intact prefix ends */
+        /* peek the class id before applying, so a -2 can name it */
+        uint32_t rec_cid = len >= 5u ? (uint32_t)payload[1] | ((uint32_t)payload[2] << 8)
+                                           | ((uint32_t)payload[3] << 16)
+                                           | ((uint32_t)payload[4] << 24)
+                                     : 0u;
         int rc = apply_record(db, payload, len);
         free(payload);
         if (rc != 0) {
             close(fd);
-            return -1;
+            if (rc == -2 && volatile_cid) *volatile_cid = rec_cid;
+            return rc == -2 ? -2 : -1;
         }
         off += 8u + len + 4u;
         applied++;
     }
     close(fd);
     return applied;
+}
+
+int64_t wo_wal_replay(const char *path, wo_db *db) {
+    return wo_wal_replay_ex(path, db, NULL);
 }
 
 int64_t wo_wal_check(const char *path, uint64_t *intact_bytes) {

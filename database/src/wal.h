@@ -83,6 +83,14 @@ int wo_wal_commit(wo_wal *w);
  * the intact prefix and reports it. */
 int64_t wo_wal_replay(const char *path, wo_db *db);
 
+/* databasev2 2: as wo_wal_replay, but distinguishes the two failure kinds.
+ * Returns the applied count on success; -1 on corruption beyond a torn tail;
+ * -2 when the log holds records for a class the loaded image declares
+ * `durable: false`, writing that class id through [volatile_cid] if non-NULL.
+ * The plain wo_wal_replay above is this with NULL, kept so the existing
+ * callers and the 156 WAL unit checks are untouched. */
+int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid);
+
 /* Offline verification (no engine): scan [path], count intact records.
  * *intact_bytes (optional) = where the intact prefix ends. -1 = open
  * failure. */

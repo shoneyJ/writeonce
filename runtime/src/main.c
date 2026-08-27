@@ -200,7 +200,36 @@ int main(int argc, char **argv) {
     if (data_dir && data_dir[0]) {
         char wal_path[512];
         snprintf(wal_path, sizeof wal_path, "%s/shard-0.wal", data_dir);
-        if (wo_wal_replay(wal_path, &DB) < 0) {
+        uint32_t vol_cid = 0;
+        int64_t replayed = wo_wal_replay_ex(wal_path, &DB, &vol_cid);
+        if (replayed == -2) {
+            /* databasev2 2: not corruption — this log was written when the
+             * table was durable and the source now says `durable: false`.
+             * Refusing beats converting, and beats resurrecting rows into a
+             * table declared not to have any. Name the class so the fix is
+             * obvious. */
+            /* wo_str.data is NOT NUL-terminated (obj.h), so the name must be
+             * printed with an explicit length — %s here would over-read. */
+            const char *cname = "?";
+            int cnlen = 1;
+            if (vol_cid < mod.class_cnt) {
+                uint32_t k = mod.classes[vol_cid].name;
+                if (k < mod.const_cnt && mod.consts[k].s) {
+                    cname = mod.consts[k].s->data;
+                    cnlen = (int)mod.consts[k].s->len;
+                }
+            }
+            fprintf(stderr,
+                    "wovm: %s: holds records for `%.*s`, which this program declares "
+                    "`@table(durable: false)` — refusing to start. Either restore "
+                    "`durable: true` for that table, or remove the data directory.\n",
+                    wal_path, cnlen, cname);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        if (replayed < 0) {
             fprintf(stderr, "wovm: %s: replay found corruption beyond a torn tail\n", wal_path);
             wo_db_destroy(&DB);
             wo_vm_destroy(&VM);

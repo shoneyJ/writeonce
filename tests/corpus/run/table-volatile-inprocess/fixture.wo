@@ -1,0 +1,30 @@
+-- databasev2 2: a `durable: false` table is a FULL table for the life of the
+-- process — same indexes, same @unique enforcement, same FK restrict, same
+-- query surface. Only its survival differs, and that cannot be observed from
+-- inside one process, so this fixture pins the in-process half. The restart
+-- half is scripts/residency-accept.sh.
+
+@table(name: "sessions", durable: false, index: [who])
+class Session {
+  token: Text @unique
+  who:   Text
+}
+
+fn main() -> Int {
+  insert Session { token: "t1", who: "asha" };
+  insert Session { token: "t2", who: "asha" };
+
+  let n = 0;
+  for s in from x in Session select x { n = n + 1; }
+  print("rows ${n}");
+
+  -- @unique still bites on a volatile table
+  let dup = try insert Session { token: "t1", who: "eve" } catch (e) nil;
+  if dup == nil { print("unique refused"); }
+
+  -- the index-backed probe still works
+  for s in from x in Session where x.who == "asha" order by x.token select x {
+    print("who ${s.who} token ${s.token}");
+  }
+  return 0;
+}

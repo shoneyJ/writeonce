@@ -23,6 +23,21 @@ VM values ──copy──▶ row slots (engine-owned malloc) ──copy──�
   the id hash maps id → slot. Ids are never reused (per-table counter,
   shard-interleaved `S+1, S+1+N, …`), which is also what makes the hash's
   tombstone sentinel safe.
+- **Storage is per-table since databasev2 2.** `@table(durable: false)` sets
+  `WO_CLASSF_VOLATILE` in the class descriptor (`.wob` v7), and `db.c`'s
+  `table_is_durable` gates all three mutation sites: a volatile table stages
+  nothing, so it pays none of the fsync cost and is empty after a restart.
+  Measured: 50 inserts wrote 1500 WAL bytes durable, **0** volatile. The three
+  sites stayed three — the predicate is one function, not an inlined condition,
+  precisely so this file's "nothing else may mutate storage" claim keeps
+  holding.
+- **A mode mismatch refuses, it does not convert.** If the log holds records
+  for a class the loaded image now declares volatile, `apply_record` returns
+  **-2** (distinct from -1 corruption) and `wo_wal_replay_ex` reports the class
+  id so `main.c` can name it. Silently skipping those records would resurrect
+  nothing but would also hide a real migration; silently applying them would
+  load rows into a table declared not to have any. `wo_wal_replay` remains as
+  the NULL-out-param wrapper so the 156 WAL unit checks are untouched.
 - **Choke points**: `wo_row_insert` / `wo_row_remove` carry the `INDEX HOOK`
   comments where Task 4's secondary indexes attach and Task 2's WAL stages
   its record. Nothing else may mutate storage.

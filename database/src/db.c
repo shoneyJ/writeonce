@@ -7,6 +7,17 @@
 #include "table.h"
 #include "wal.h"
 
+/* databasev2 2: is this table's storage durable? A `@table(durable: false)`
+ * class carries WO_CLASSF_VOLATILE and is never staged to the WAL — no
+ * record, no fsync, ack straight from RAM. One predicate for all three
+ * mutation sites below: `database/src/CODE-LOGIC.md` names those as the only
+ * places storage may be staged, and that invariant is worth more than the
+ * convenience of inlining this. cid is always loader-validated by the time a
+ * mutation has succeeded, so no bounds check is added here. */
+static int table_is_durable(const wo_db *db, uint32_t cid) {
+    return (db->classes[cid].flags & WO_CLASSF_VOLATILE) == 0u;
+}
+
 int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     uint32_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
     wo_db *db = (wo_db *)vm->rt.db;
@@ -24,7 +35,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                    : ek == DB_ERR_OOM  ? WO_T_OOM
                                        : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
-        if (w) {
+        if (w && table_is_durable(db, cid)) {
             /* RAM applied, record staged, ONE commit before the ack (the
              * builtin's return). A failed commit is a failed write: the
              * row is removed again so RAM never claims what disk never
@@ -46,7 +57,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         if (wo_row_update_field(db, cid, id, field, R[B + 3], msg, &ek) != 0)
             return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
-        if (w) {
+        if (w && table_is_durable(db, cid)) {
             if (wo_wal_append_update(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
                 *msg = "wal commit failed"; /* RAM ahead of disk: trap, do not ack */
                 return WO_T_IO;
@@ -69,7 +80,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return WO_T_DB;
         }
         wo_wal *w = (wo_wal *)vm->rt.wal;
-        if (w) {
+        if (w && table_is_durable(db, cid)) {
             if (wo_wal_append_remove(w, cid, id) != 0 || wo_wal_commit(w) != 0) {
                 *msg = "wal commit failed";
                 return WO_T_IO;

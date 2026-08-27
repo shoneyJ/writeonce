@@ -66,6 +66,15 @@ fibers:
 db-actor:
     ./scripts/db-actor-accept.sh
 
+# residency: databasev2 2's gate — per-table storage. The corpus covers the
+# in-process half; this covers what one process cannot see: a volatile table
+# empty after restart while its durable sibling replays, volatile inserts
+# writing ZERO WAL bytes (measured against the fallocate'd file's non-zero
+# prefix, since its size proves nothing), the mode-mismatch startup refusal,
+# and the two compile-time refusals.
+residency:
+    ./scripts/residency-accept.sh
+
 # db-bench: iteration 22's campaign (docs/examples/db-bench) — OFF the
 # fast path, minutes long: ram+durable x 1/N shards, durability legs,
 # gates vs bench/baseline.json. quick = seconds, floors only.
