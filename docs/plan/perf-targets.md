@@ -67,3 +67,74 @@ not the limiting factor for any current workload).
 the ~55× gap is one fdatasync per statement (~220µs each).
 **Owner: iteration 23** (io_uring group-commit) — its acceptance is
 literally this number moving while the crash battery stays green.
+
+## 6. WAL group commit: one barrier per drain (databasev2 4 part A)
+
+**Measured 2026-08-28.** Before this, the engine committed per *statement*:
+`db.c` called `wo_wal_commit` immediately after every append, so each row
+change bought its own `pwrite` + `fdatasync`. Now shard 0 stages every queued
+write request, issues one barrier, and only then releases the held replies.
+
+### The controlled before/after
+
+Same machine, same workload (`wmix 4000 32` — every op a durable update, 32
+concurrent), same build except `db.c` and `vm.c`, two runs each, interleaved:
+
+| | ops/sec | p50 | p99 |
+| --- | --- | --- | --- |
+| per-statement barrier | 2213 · 2177 | 7183 · 7251 µs | **20000 · 20000 µs** |
+| group commit | **6216 · 6525** | **3458 · 3444 µs** | 11139 · 5971 µs |
+
+**≈2.9× throughput, ≈2.1× lower p50.**
+
+**The p99 "before" figure is at the histogram ceiling, not a measurement.**
+`hist_add` clamps at 20000 µs, and both before-runs pinned there — so the true
+before p99 is ≥20 ms and unknown. The improvement is *at least* 2.3×; the
+honest statement is that the old p99 was off the end of the instrument.
+
+### Confirmation from the committed baseline
+
+The full campaign gives the same answer a second way. `s1` takes the inline
+path, which commits per statement **by design**, so within one build the two
+shard configurations are batching-off against batching-on:
+
+| Leg | ops/sec | p50 | p99 | mean batch | peak batch |
+| --- | --- | --- | --- | --- | --- |
+| `durable.s1.wmix` (inline, unbatched) | 1467 | 455 µs | 721 µs | **1.0** | 1 |
+| `durable.sN.wmix` (batched) | **5117** | 8208 µs | 12169 µs | **5.43** | 57 |
+
+3.5× throughput, agreeing with the 2.9× above. Note `sN` latency is *higher*
+while throughput is 3.5× better: 64 writers queueing behind one owner shard
+trade per-op latency for barrier amortisation, which is what group commit is.
+
+Batching scales with write concurrency exactly as designed — mean batch at
+C = 4 / 16 / 64 was **1.13 / 1.76 / 5.35**, peak **3 / 10 / 39**.
+
+### What did NOT improve, and why that was predicted
+
+`durable.sN.mixwrite` went **480 → 492 ops/s** — unchanged. That is the metric
+the spec *originally* named as the payoff, and correcting it was part of the
+brainstorm: `mix` writes on one op in ten with C=4, so a quick run performs
+**20 writes** and mean batch measured **1.01** over 3112 barriers. A workload
+that never has two writes in flight cannot be helped by batching them.
+`durable.*.seed` is likewise unchanged: a serial single writer has nothing to
+batch with under any scheme.
+
+**So the payoff is real but conditional: it appears exactly where concurrent
+durable writes fan into the owner shard, and nowhere else.**
+
+### Two traps worth recording
+
+**Do not benchmark durability on `/tmp`.** It is `tmpfs` here, where
+`fdatasync` is free — the same `wmix` run reported **195 000 ops/s at p50 1 µs**
+there against **2200 ops/s at p50 7200 µs** on ext4. There is no barrier to
+amortise on a memory filesystem, so a group-commit measurement taken there
+measures nothing. `db-bench` gets this right by keeping its stores under
+`bench/`.
+
+**The record count is not the update count.** `wmix` staged 7755 records for
+4000 updates because the histogram dump and the done-marker are themselves
+durable inserts. They arrive as an end-of-run burst, which is batch-friendly,
+so `mean_batch` is not purely update-driven. Peak staged bytes stayed small
+(2793 B at C=64), which is what settled the decision to ship **no batch cap**:
+the request queue's existing upstream bound is sufficient.

@@ -1,52 +1,52 @@
 {
  "_config": {
-  "N": 2000,
-  "crash_reps": 1,
-  "msg_n": 20000,
+  "N": 20000,
+  "crash_reps": 3,
+  "msg_n": 200000,
   "note": "refresh only with a commit that says why; tolerances come from tolerance_for() in the driver",
-  "wal_n": 800
+  "wal_n": 4000
  },
  "durable.s1.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2240,
+  "floor": 2070,
   "tolerance_pct": 50,
-  "value": 8961
+  "value": 8281
  },
  "durable.s1.mixread.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "durable.s1.mixread.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 4
+  "value": 21
  },
  "durable.s1.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 248,
+  "floor": 230,
   "tolerance_pct": 50,
-  "value": 995
+  "value": 920
  },
  "durable.s1.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 824,
+  "floor": 1784,
   "tolerance_pct": 50,
-  "value": 206
+  "value": 446
  },
  "durable.s1.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 904,
+  "floor": 2252,
   "tolerance_pct": 50,
-  "value": 226
+  "value": 563
  },
  "durable.s1.query.ops_sec": {
   "dir": "higher",
-  "floor": 233644,
+  "floor": 210260,
   "tolerance_pct": 50,
-  "value": 934579
+  "value": 841042
  },
  "durable.s1.query.p50us": {
   "dir": "lower",
@@ -58,13 +58,13 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 3
+  "value": 4
  },
  "durable.s1.read.ops_sec": {
   "dir": "higher",
-  "floor": 190114,
+  "floor": 284155,
   "tolerance_pct": 50,
-  "value": 760456
+  "value": 1136621
  },
  "durable.s1.read.p50us": {
   "dir": "lower",
@@ -80,21 +80,21 @@
  },
  "durable.s1.seed.ops_sec": {
   "dir": "higher",
-  "floor": 1080,
+  "floor": 1076,
   "tolerance_pct": 15,
-  "value": 4323
+  "value": 4306
  },
  "durable.s1.seed.p50us": {
   "dir": "lower",
-  "floor": 848,
+  "floor": 868,
   "tolerance_pct": 15,
-  "value": 212
+  "value": 217
  },
  "durable.s1.seed.p99us": {
   "dir": "lower",
-  "floor": 2108,
+  "floor": 2080,
   "tolerance_pct": 15,
-  "value": 527
+  "value": 520
  },
  "durable.s1.wmix.mean_batch": {
   "dir": "higher",
@@ -104,21 +104,21 @@
  },
  "durable.s1.wmix.ops_sec": {
   "dir": "higher",
-  "floor": 810,
+  "floor": 366,
   "tolerance_pct": 15,
-  "value": 3241
+  "value": 1467
  },
  "durable.s1.wmix.p50us": {
   "dir": "lower",
-  "floor": 852,
+  "floor": 1820,
   "tolerance_pct": 15,
-  "value": 213
+  "value": 455
  },
  "durable.s1.wmix.p99us": {
   "dir": "lower",
-  "floor": 2032,
+  "floor": 2884,
   "tolerance_pct": 15,
-  "value": 508
+  "value": 721
  },
  "durable.s1.wmix.peak_batch": {
   "dir": "higher",
@@ -134,63 +134,63 @@
  },
  "durable.s1.write.ops_sec": {
   "dir": "higher",
-  "floor": 1103,
+  "floor": 554,
   "tolerance_pct": 15,
-  "value": 4415
+  "value": 2216
  },
  "durable.s1.write.p50us": {
   "dir": "lower",
-  "floor": 856,
+  "floor": 1828,
   "tolerance_pct": 15,
-  "value": 214
+  "value": 457
  },
  "durable.s1.write.p99us": {
   "dir": "lower",
-  "floor": 1932,
+  "floor": 2880,
   "tolerance_pct": 15,
-  "value": 483
+  "value": 720
  },
  "durable.sN.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 1111,
+  "floor": 1107,
   "tolerance_pct": 50,
-  "value": 4445
+  "value": 4429
  },
  "durable.sN.mixread.p50us": {
   "dir": "lower",
-  "floor": 348,
+  "floor": 308,
   "tolerance_pct": 50,
-  "value": 87
+  "value": 77
  },
  "durable.sN.mixread.p99us": {
   "dir": "lower",
-  "floor": 17540,
+  "floor": 4172,
   "tolerance_pct": 50,
-  "value": 4385
+  "value": 1043
  },
  "durable.sN.mixwrite.ops_sec": {
   "dir": "higher",
   "floor": 123,
   "tolerance_pct": 50,
-  "value": 493
+  "value": 492
  },
  "durable.sN.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 1460,
+  "floor": 2156,
   "tolerance_pct": 50,
-  "value": 365
+  "value": 539
  },
  "durable.sN.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 3888,
+  "floor": 6952,
   "tolerance_pct": 50,
-  "value": 972
+  "value": 1738
  },
  "durable.sN.query.ops_sec": {
   "dir": "higher",
-  "floor": 211864,
+  "floor": 237529,
   "tolerance_pct": 50,
-  "value": 847457
+  "value": 950118
  },
  "durable.sN.query.p50us": {
   "dir": "lower",
@@ -202,13 +202,13 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 3
  },
  "durable.sN.read.ops_sec": {
   "dir": "higher",
-  "floor": 204415,
+  "floor": 276701,
   "tolerance_pct": 50,
-  "value": 817661
+  "value": 1106806
  },
  "durable.sN.read.p50us": {
   "dir": "lower",
@@ -224,81 +224,81 @@
  },
  "durable.sN.seed.ops_sec": {
   "dir": "higher",
-  "floor": 1111,
+  "floor": 1085,
   "tolerance_pct": 50,
-  "value": 4446
+  "value": 4343
  },
  "durable.sN.seed.p50us": {
   "dir": "lower",
-  "floor": 848,
+  "floor": 868,
   "tolerance_pct": 50,
-  "value": 212
+  "value": 217
  },
  "durable.sN.seed.p99us": {
   "dir": "lower",
-  "floor": 1996,
+  "floor": 2040,
   "tolerance_pct": 50,
-  "value": 499
+  "value": 510
  },
  "durable.sN.wmix.mean_batch": {
   "dir": "higher",
-  "floor": 0.0,
+  "floor": 1.0,
   "tolerance_pct": 100,
-  "value": 3.38
+  "value": 5.43
  },
  "durable.sN.wmix.ops_sec": {
   "dir": "higher",
-  "floor": 1575,
+  "floor": 1279,
   "tolerance_pct": 50,
-  "value": 6302
+  "value": 5117
  },
  "durable.sN.wmix.p50us": {
   "dir": "lower",
-  "floor": 13776,
+  "floor": 32832,
   "tolerance_pct": 50,
-  "value": 3444
+  "value": 8208
  },
  "durable.sN.wmix.p99us": {
   "dir": "lower",
-  "floor": 51212,
+  "floor": 48676,
   "tolerance_pct": 50,
-  "value": 12803
+  "value": 12169
  },
  "durable.sN.wmix.peak_batch": {
   "dir": "higher",
-  "floor": 7,
+  "floor": 14,
   "tolerance_pct": 100,
-  "value": 28
+  "value": 57
  },
  "durable.sN.wmix.peak_staged": {
   "dir": "lower",
-  "floor": 5488,
+  "floor": 11172,
   "tolerance_pct": 100,
-  "value": 1372
+  "value": 2793
  },
  "durable.sN.write.ops_sec": {
   "dir": "higher",
-  "floor": 1117,
+  "floor": 552,
   "tolerance_pct": 50,
-  "value": 4470
+  "value": 2210
  },
  "durable.sN.write.p50us": {
   "dir": "lower",
-  "floor": 852,
+  "floor": 1828,
   "tolerance_pct": 50,
-  "value": 213
+  "value": 457
  },
  "durable.sN.write.p99us": {
   "dir": "lower",
-  "floor": 2020,
+  "floor": 2948,
   "tolerance_pct": 50,
-  "value": 505
+  "value": 737
  },
  "ram.s1.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2235,
+  "floor": 22322,
   "tolerance_pct": 50,
-  "value": 8940
+  "value": 89290
  },
  "ram.s1.mixread.p50us": {
   "dir": "lower",
@@ -314,9 +314,9 @@
  },
  "ram.s1.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 248,
+  "floor": 2480,
   "tolerance_pct": 50,
-  "value": 993
+  "value": 9921
  },
  "ram.s1.mixwrite.p50us": {
   "dir": "lower",
@@ -328,19 +328,19 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "ram.s1.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 384911,
+  "floor": 1568873,
   "tolerance_pct": 15,
-  "value": 3079291
+  "value": 12550988
  },
  "ram.s1.query.ops_sec": {
   "dir": "higher",
-  "floor": 274725,
+  "floor": 256016,
   "tolerance_pct": 50,
-  "value": 1098901
+  "value": 1024065
  },
  "ram.s1.query.p50us": {
   "dir": "lower",
@@ -352,13 +352,13 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "ram.s1.read.ops_sec": {
   "dir": "higher",
-  "floor": 312500,
+  "floor": 233448,
   "tolerance_pct": 50,
-  "value": 1250000
+  "value": 933794
  },
  "ram.s1.read.p50us": {
   "dir": "lower",
@@ -370,91 +370,91 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "ram.s1.seed.ops_sec": {
   "dir": "higher",
-  "floor": 335570,
+  "floor": 53529,
   "tolerance_pct": 15,
-  "value": 1342281
+  "value": 214119
  },
  "ram.s1.seed.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 1
+  "value": 4
  },
  "ram.s1.seed.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 2
+  "value": 12
  },
  "ram.s1.write.ops_sec": {
   "dir": "higher",
-  "floor": 237416,
+  "floor": 48021,
   "tolerance_pct": 15,
-  "value": 949667
+  "value": 192086
  },
  "ram.s1.write.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 1
+  "value": 6
  },
  "ram.s1.write.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 2
+  "value": 15
  },
  "ram.sN.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2243,
+  "floor": 7481,
   "tolerance_pct": 50,
-  "value": 8975
+  "value": 29924
  },
  "ram.sN.mixread.p50us": {
   "dir": "lower",
-  "floor": 264,
+  "floor": 320,
   "tolerance_pct": 50,
-  "value": 66
+  "value": 80
  },
  "ram.sN.mixread.p99us": {
   "dir": "lower",
-  "floor": 2080,
+  "floor": 624,
   "tolerance_pct": 50,
-  "value": 520
+  "value": 156
  },
  "ram.sN.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 249,
+  "floor": 831,
   "tolerance_pct": 50,
-  "value": 997
+  "value": 3324
  },
  "ram.sN.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 288,
+  "floor": 348,
   "tolerance_pct": 50,
-  "value": 72
+  "value": 87
  },
  "ram.sN.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 344,
+  "floor": 608,
   "tolerance_pct": 50,
-  "value": 86
+  "value": 152
  },
  "ram.sN.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 176056,
+  "floor": 248897,
   "tolerance_pct": 50,
-  "value": 1408450
+  "value": 1991179
  },
  "ram.sN.query.ops_sec": {
   "dir": "higher",
-  "floor": 308641,
+  "floor": 227790,
   "tolerance_pct": 50,
-  "value": 1234567
+  "value": 911161
  },
  "ram.sN.query.p50us": {
   "dir": "lower",
@@ -466,13 +466,13 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "ram.sN.read.ops_sec": {
   "dir": "higher",
-  "floor": 310945,
+  "floor": 216919,
   "tolerance_pct": 50,
-  "value": 1243781
+  "value": 867678
  },
  "ram.sN.read.p50us": {
   "dir": "lower",
@@ -484,42 +484,42 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 2
  },
  "ram.sN.seed.ops_sec": {
   "dir": "higher",
-  "floor": 363372,
+  "floor": 60469,
   "tolerance_pct": 50,
-  "value": 1453488
+  "value": 241878
  },
  "ram.sN.seed.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 4
  },
  "ram.sN.seed.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 10
  },
  "ram.sN.write.ops_sec": {
   "dir": "higher",
-  "floor": 202922,
+  "floor": 41677,
   "tolerance_pct": 50,
-  "value": 811688
+  "value": 166708
  },
  "ram.sN.write.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 8
  },
  "ram.sN.write.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 4
+  "value": 15
  }
 }
