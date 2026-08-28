@@ -304,6 +304,17 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
     w->fd = open(path, O_RDWR | O_CREAT, 0644);
     if (w->fd < 0) return -1;
     w->path = strdup(path); /* NULL is tolerated: the diagnostic degrades */
+    /* databasev2 3: remove a stale compaction temp before doing anything else.
+     * The only way one exists is a crash before the rename, which means its
+     * records were never authoritative — the live log below is the truth. It is
+     * deleted rather than ignored because a file full of well-formed records
+     * sitting beside the log is exactly the thing a future reader mistakes for
+     * data. */
+    {
+        char tmp[4096];
+        if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX) < sizeof tmp)
+            (void)unlink(tmp);
+    }
     if (prealloc) {
         /* best-effort: a filesystem without fallocate still works */
         (void)posix_fallocate(w->fd, 0, (off_t)prealloc);

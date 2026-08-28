@@ -234,6 +234,69 @@ static void test_compact_shortens_and_replays_equal(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 3 Task 2: a stale temp file is the one input that could be
+ * mistaken for data — a crash before the rename leaves one behind, full of
+ * well-formed records that are NOT yet authoritative. So the fixture uses
+ * plausible records (a byte copy of a real log), not garbage: garbage would be
+ * rejected by the CRC anyway and would prove nothing. */
+static void test_stale_compact_temp_is_removed(void) {
+    char path[128], tmp[160];
+    snprintf(path, sizeof path, "%s/stale.wal", g_dir);
+    snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    /* two live rows in the REAL log */
+    uint64_t ids[2];
+    for (int i = 0; i < 2; i++) {
+        wo_str *s = wo_str_new(&rt, "abc", 3);
+        uint64_t vals[2] = {(uint64_t)(i + 1), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    wo_wal_close(&w);
+
+    /* forge a plausible stale temp: a byte copy of the real log */
+    {
+        int src = open(path, O_RDONLY);
+        int dst = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        T_CHECK(src >= 0 && dst >= 0);
+        char buf[8192];
+        ssize_t n;
+        while ((n = read(src, buf, sizeof buf)) > 0) T_CHECK(write(dst, buf, (size_t)n) == n);
+        close(src);
+        close(dst);
+        T_EQ(access(tmp, F_OK), 0); /* it really is there before we open */
+    }
+
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    T_CHECK(access(tmp, F_OK) != 0); /* gone, and never consulted */
+    wo_wal_close(&w2);
+
+    /* and the live log still says exactly what it said */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 2);
+    uint64_t out[2];
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[0], out, &msg), 0);
+    T_CHECK(out[0] == 1);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[1], out, &msg), 0);
+    T_CHECK(out[0] == 2);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+
+    wo_db_destroy(&db2);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -446,6 +509,7 @@ int main(void) {
     test_roundtrip_replay();
     test_commit_failure_detected();
     test_compact_shortens_and_replays_equal();
+    test_stale_compact_temp_is_removed();
     test_torn_tail();
     test_float_bytes_replay();
     test_crash_battery();
