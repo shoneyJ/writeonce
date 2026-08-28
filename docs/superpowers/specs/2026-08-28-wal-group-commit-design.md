@@ -123,11 +123,45 @@ a status of its own. Exit 1 is a trap and exit 2 is a refusal, so a durability
 failure takes a third. `abort()` is rejected — a core dump on a full disk is
 noise, not evidence.
 
+## What will improve, and what will not
+
+**Corrected 2026-08-28, after reading the baseline properly.** The spec first
+pointed at `durable.s1.seed` as the payoff metric. That was wrong, and the
+reason is structural rather than a matter of degree.
+
+Worker shards hold no WAL at all — the runtime asserts it — so every DB
+statement on a worker marshals to shard 0 and parks, while a statement already
+on shard 0 executes inline. **A queue of write requests therefore exists only
+when other shards are writing.** Batches form where there is a queue:
+
+| Workload | Today | Batching |
+| --- | --- | --- |
+| `durable.sN.mixwrite` — concurrent writers across shards | **480 ops/s, p99 5888 µs** | **the target.** N shards marshal N writes and shard 0 pays N barriers serially; one barrier replaces them |
+| `durable.s1.mixwrite` — concurrent writers, one shard | 1023 ops/s, p99 664 µs | **no change.** Every write is inline with no queue, so no batch forms |
+| `durable.*.seed` — one serial writer | ~4460 ops/s | **no change**, under any batching scheme. There is nothing to batch with |
+
+The inversion in those numbers is the finding worth keeping: **multi-shard
+concurrent writes are currently 2× slower than single-shard with a 9× worse
+p99.** Adding shards makes durable writing worse today, because every marshaled
+statement still buys its own barrier on the owner. That is the pathology group
+commit exists to remove, and it is a better argument for this iteration than the
+one the story recorded.
+
+**Single-shard concurrent batching is deliberately out of part A.** It would
+need the inline path to park its fiber on the barrier rather than commit
+synchronously — the same parking machinery part B needs anyway. Deferring it
+keeps A to one mechanism, and B inherits the reason to build it.
+
+So the acceptance criterion is scoped: **`durable.sN.mixwrite` throughput up and
+its p99 down; `durable.s1.*` and both `seed` legs must not regress.** A plan
+that reported "no improvement" against the s1 seed number would be measuring a
+workload this change cannot help.
+
 ## Proof plan
 
 | Claim | How it is proven |
 | --- | --- |
-| The payoff is real | `durable.*.seed` and `mixwrite` measured before and after on one machine, recorded in `perf-targets.md`. Today: 4460 and 1023 ops/s, p99 664 µs |
+| The payoff is real | **`durable.sN.mixwrite`** before and after on one machine, recorded in `perf-targets.md`. Today 480 ops/s, p99 5888 µs. `durable.s1.*` and both `seed` legs are regression guards, not targets — see the section above |
 | Durability is unchanged | Iteration 22's crash battery, unaltered: concurrent writers, `kill -9` mid-stream, replay. **The critical test** — a kill between staging and the barrier must lose only unacknowledged writes |
 | Batches actually form | New metrics for mean and peak batch size under contention. If batches are always one, the feature is inert and any throughput change came from somewhere else |
 | No idle tax | Single-writer p99 must not regress against the current baseline |

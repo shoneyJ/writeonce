@@ -50,7 +50,19 @@ chain: 5
 > features compose without either knowing the other.
 
 > **BRAINSTORMED 2026-08-28 — and SPLIT IN TWO.** Spec for part A:
-> [`2026-08-28-wal-group-commit-design.md`](../../superpowers/specs/2026-08-28-wal-group-commit-design.md).
+> [`2026-08-28-wal-group-commit-design.md`](../../superpowers/specs/2026-08-28-wal-group-commit-design.md)
+> · plan: [`2026-08-28-wal-group-commit.md`](../../superpowers/plans/2026-08-28-wal-group-commit.md)
+> (6 tasks).
+>
+> **The payoff metric is `durable.sN.mixwrite`, not the s1 numbers.** Worker
+> shards hold no WAL — the runtime asserts it — so every statement on a worker
+> marshals to shard 0 and parks, while a statement already on shard 0 runs
+> inline. Batches form only where there is a queue, so concurrent multi-shard
+> writes batch and a single-shard or serial workload does not. The baseline
+> shows why that is the right target anyway: **multi-shard concurrent writes are
+> 480 ops/s at p99 5888 µs against single-shard's 1023 at p99 664 — adding
+> shards makes durable writing WORSE today**, because every marshaled statement
+> still buys its own barrier on the owner.
 >
 > **The premise below needed correcting.** This story says "replace
 > fsync-per-commit with io_uring group-commit", but the engine does not commit
