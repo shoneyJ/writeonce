@@ -2,7 +2,7 @@
 track: databasev2
 iteration: "4"
 was_language_iteration: "23"
-status: refine
+status: in-progress
 chain: 5
 ---
 
@@ -48,6 +48,40 @@ chain: 5
 > note added since iteration 18: a `transaction { }` already IS a staged
 > batch — under io_uring it becomes exactly one submission, so the two
 > features compose without either knowing the other.
+
+> **BRAINSTORMED 2026-08-28 — and SPLIT IN TWO.** Spec for part A:
+> [`2026-08-28-wal-group-commit-design.md`](../../superpowers/specs/2026-08-28-wal-group-commit-design.md).
+>
+> **The premise below needed correcting.** This story says "replace
+> fsync-per-commit with io_uring group-commit", but the engine does not commit
+> per commit — it commits per **statement**: `db.c` calls `wo_wal_commit`
+> immediately after every append, at all six sites, so every row change is one
+> `pwrite` plus one `fdatasync`. That splits the goal into two independent
+> wins, and only the second needs io_uring:
+>
+> - **Part A — batching.** Let many statements share one barrier. The staging
+>   buffer already holds any number of records; today it never holds more than
+>   one because the caller commits immediately. Mostly a deletion of calls.
+> - **Part B — async submission.** The shard submits and keeps working instead
+>   of blocking in `fdatasync`. Deferred until A's measurement says whether the
+>   blocking boundary is still the bottleneck.
+>
+> **A is where most of the number lives.** Iteration 22 measured durable writes
+> at 4460 ops/s and mixed writes at 1023 ops/s (p99 664 µs) against 1.28M ops/s
+> for durable reads — ~290× apart, essentially all of it the per-statement
+> barrier.
+>
+> **Forks settled in the brainstorm:** batch boundary is **queue-drain** (not
+> the tick this story recorded — a tick taxes an idle system to serve a busy
+> one); a failure between "RAM mutated" and "record durable" is a **fatal,
+> diagnosed abort**, replacing today's uneven rollback where `insert` undoes
+> itself and `update`/`delete` admit in a comment that they leave RAM ahead of
+> disk. **That removes `WO_T_IO` from the write path** — a language-visible
+> change, recorded here deliberately.
+>
+> `status: in-progress` because the brainstorm is done and the spec is
+> approved; the plan is next. (The `readiness` axis that would say this
+> precisely lives on the unmerged `db-residency-doctrine`.)
 
 ## Goals
 
