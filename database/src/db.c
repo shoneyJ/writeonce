@@ -25,15 +25,25 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                                        : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w) {
-            /* RAM applied, record staged, ONE commit before the ack (the
-             * builtin's return). A failed commit is a failed write: the
-             * row is removed again so RAM never claims what disk never
-             * acknowledged, and the statement traps. */
-            if (wo_wal_append_insert(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                wo_row_remove(db, cid, id);
-                *msg = "wal commit failed";
-                return WO_T_IO;
-            }
+            /* THE INLINE PATH KEEPS ITS OWN BARRIER, AND THAT ASYMMETRY IS
+             * DELIBERATE (databasev2 4 part A). The request path batches:
+             * wo_vm_adopt holds each reply and commits once per drain. This
+             * path cannot, because it has no reply to hold — it returns into
+             * its OWN fiber rather than unparking a requester. Batching here
+             * would mean parking that fiber on the barrier, which is part B's
+             * machinery and deliberately out of part A. Do not "fix" this by
+             * dropping the commit: without it an inline statement would never
+             * be durable at all.
+             *
+             * Committing here is safe because the drain commits
+             * unconditionally whenever anything is staged, so the buffer is
+             * empty when this runs. If that ever stops holding, this commit
+             * would make another statement's record durable early and ack it
+             * to the wrong writer.
+             *
+             * Failure is fatal, not a trap: the row is already in RAM. */
+            if (wo_wal_append_insert(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
         }
         R[A] = id;
         return 0;
@@ -47,10 +57,10 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w) {
-            if (wo_wal_append_update(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                *msg = "wal commit failed"; /* RAM ahead of disk: trap, do not ack */
-                return WO_T_IO;
-            }
+            /* was: trap and leave RAM ahead of disk, which the old comment
+             * admitted. Now fatal — see the insert arm. */
+            if (wo_wal_append_update(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
         }
         R[A] = 0;
         return 0;
@@ -70,10 +80,8 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w) {
-            if (wo_wal_append_remove(w, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                *msg = "wal commit failed";
-                return WO_T_IO;
-            }
+            if (wo_wal_append_remove(w, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
         }
         R[A] = 0;
         return 0;
