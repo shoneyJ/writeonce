@@ -2,7 +2,7 @@
 track: databasev2
 iteration: "3"
 was_language_iteration: "32"
-status: refine
+status: in-progress
 chain: 6
 ---
 
@@ -26,6 +26,45 @@ chain: 6
 > **stage 3 → 22 → 31 → 24 → 23 → 32** — it wants 22's measured
 > replay/restart numbers to justify its policy and must compose with
 > 23's group-commit write path.
+
+> **BRAINSTORMED 2026-08-28.** Spec:
+> [`2026-08-28-wal-checkpoint-design.md`](../../superpowers/specs/2026-08-28-wal-checkpoint-design.md).
+> Read `.dev/reference/postgresql` for this — and the conclusion was that
+> Postgres' design is *unavailable* to us, which is what makes the simpler one
+> legitimate.
+>
+> **The design in one sentence:** compact the log by rewriting it as one record
+> per live row into a temp file, then `rename` it over the live WAL. Recovery is
+> **completely unchanged** — boot still opens one file and replays it — and the
+> crash criterion is satisfied by the filesystem rather than by code we must get
+> right.
+>
+> **Why one file works here and not in Postgres.** Postgres never compacts its
+> WAL: its records are page deltas, so a compacted redo log is not a store, and
+> it must keep heap files, a control file, a redo pointer and a second recovery
+> source. Ours are **full row images** — `apply_record` implements UPDATE as
+> remove-then-recreate — so a compacted log *is* a complete store. That one
+> difference deletes the control file, the redo pointer, the cutoff offset and
+> the separate process from the design.
+>
+> **Forks settled:** no snapshot format (the compacted log is the snapshot); one
+> source, not two; **volume-only trigger** as a ratio against the last
+> compaction's own measured output, with an absolute floor — **no timer**,
+> because Postgres' timer exists to bound loss from unflushed buffers and we have
+> none; stop-the-world, with the pause measured against a stated budget rather
+> than assumed acceptable.
+>
+> **The coupling that would otherwise be found late:** compaction moves every
+> record, so it **invalidates every WAL offset**
+> [iteration 2](02-table-storage-modes.md)'s `resident: keys` stores. The
+> compactor rebuilds the offset map as it writes. Recorded now because iteration
+> 2's storage half is unimplemented, so nothing breaks today — it would break
+> later, looking like corruption rather than a design gap.
+>
+> **Measured on master 2026-08-28, grounding the whole iteration:** `seed 20000`
+> leaves a 986 614-byte log; 20 000 updates take it to **2 590 262 bytes with the
+> same live rows** (2.6× history for no data), and boot+verify on that store is
+> **155 ms**.
 
 ## Goals
 

@@ -29,6 +29,31 @@ Writeonce's phase 12 `Engine` keeps an `HashMap<(TypeName, SegmentOffset), Cache
 The kernel page cache does most of the work. `pread` against an fd that already has its page cached is a memcpy. `pwrite` populates the page cache without going to disk until pressure or `fsync`. This is why writeonce explicitly does NOT use `O_DIRECT` (see [`linux/12-pwrite-fsync.md`](../linux/12-pwrite-fsync.md)) — the page cache is the one cache we want.
 
 ## Checkpoint — the writeonce shape
+> **⚠ TWO CORRECTIONS, 2026-08-28** (found while brainstorming
+> [databasev2 3](../../../stories/databasev2/03-wal-checkpoint.md); spec:
+> [`2026-08-28-wal-checkpoint-design.md`](../../../superpowers/specs/2026-08-28-wal-checkpoint-design.md)).
+>
+> 1. **Postgres does NOT update its control file by rename.** The claim below
+>    that "Postgres does the same in `BasicOpenFile` + `fsync_parent_path`" is
+>    wrong: `update_controlfile` (`src/common/controldata_utils.c`) opens the
+>    existing file `O_WRONLY`, writes a zero-padded **full block in place**, and
+>    relies on **CRC32C** over the struct to detect a torn write. The
+>    `fsync(parent_dir)` reasoning below is still correct *for renames* — it is
+>    just not what Postgres does here.
+> 2. **The checkpoint sketch below assumes writeonce has segment files.** It
+>    says records before the LSN are "*known* to be in the segment files". There
+>    are none: the WAL is writeonce's only durable form, replayed into RAM, and
+>    [databasev2 2](../../../stories/databasev2/02-table-storage-modes.md)
+>    deliberately rejected adding a paged store. This document predates the
+>    databasev2 direction, so read the loop below as a design for an
+>    architecture that was not chosen.
+>
+> What survived the comparison is the **ordering discipline**, not the
+> architecture: publish the new "recovery starts here" atomically and last, so a
+> crash falls back. writeonce gets that from one `rename` of the whole log —
+> possible only because its records are full row images, where Postgres' are
+> page deltas.
+
 
 Postgres' checkpoint runs in a separate process and signals the postmaster when done. Writeonce's runs as a periodic loop step:
 
