@@ -216,12 +216,11 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             break;
         }
         if (w) {
-            if (wo_wal_append_insert(w, db, q->cid, id) != 0 || wo_wal_commit(w) != 0) {
-                wo_row_remove(db, q->cid, id);
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+            /* databasev2 4: staging failure is FATAL, not a trap. The row is
+             * already in RAM; of the three verbs only insert could undo
+             * itself, so continuing means RAM ahead of disk. One rule: once a
+             * statement has mutated RAM, the outcomes are durable or death. */
+            if (wo_wal_append_insert(w, db, q->cid, id) != 0) wo_wal_stage_fatal(w);
         }
         q->result = id;
         break;
@@ -234,11 +233,7 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             break;
         }
         if (w) {
-            if (wo_wal_append_update(w, db, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+            if (wo_wal_append_update(w, db, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
         }
         break;
     }
@@ -254,11 +249,7 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             break;
         }
         if (w) {
-            if (wo_wal_append_remove(w, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+            if (wo_wal_append_remove(w, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
         }
         break;
     }

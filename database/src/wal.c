@@ -409,20 +409,25 @@ int wo_wal_commit(wo_wal *w) {
     return 0;
 }
 
+/* Nothing at either fatal point is recoverable: RAM holds changes the log
+ * does not, and this process can no longer serve reads that would survive a
+ * restart. Name what failed precisely enough to act on, then stop. */
+static void wal_die(const wo_wal *w, const char *op, uint32_t nrec) {
+    fprintf(stderr,
+            "writeonce: DURABILITY FAILURE — %s failed on %s: %s\n"
+            "  %u record(s) were NOT made durable and are not acknowledged.\n"
+            "  The process is stopping: replay restores the last durable state.\n",
+            op, w->path ? w->path : "(the write-ahead log)", strerror(errno),
+            nrec);
+    exit(WO_EXIT_DURABILITY);
+}
+
+void wo_wal_stage_fatal(const wo_wal *w) { wal_die(w, "staging a record", 1); }
+
 void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
     int rc = wo_wal_commit(w);
     if (rc == 0) return;
-    /* Nothing here is recoverable: RAM holds changes the log does not, and
-     * this process can no longer serve reads that would survive a restart.
-     * Name what failed precisely enough to act on, then stop. */
-    fprintf(stderr,
-            "writeonce: DURABILITY FAILURE — %s failed on %s: %s\n"
-            "  %u record(s) in the batch were NOT made durable and are not acknowledged.\n"
-            "  The process is stopping: replay restores the last durable state.\n",
-            rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite",
-            w->path ? w->path : "(the write-ahead log)", strerror(errno),
-            nrec);
-    exit(WO_EXIT_DURABILITY);
+    wal_die(w, rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite", nrec);
 }
 
 static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {

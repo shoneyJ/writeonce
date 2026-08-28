@@ -16,6 +16,7 @@
 
 #include "db.h"    /* arc stage 3: the transparent DB RPC (wo_db_req) */
 #include "table.h" /* slot encode/decode for the RPC marshaling */
+#include "wal.h"   /* databasev2 4: the drain issues the barrier */
 
 #include <pthread.h>
 #include <poll.h>
@@ -91,6 +92,11 @@ static int wo_vm_adopt(wo_vm *vm) {
     ib->head = ib->tail = NULL;
     pthread_mutex_unlock(&ib->mu);
     int n = 0;
+    /* databasev2 4 (group commit): DB replies are HELD until one barrier has
+     * covered the whole drain. Locals, not per-shard state: nothing here needs
+     * to outlive the batch it describes. */
+    wo_envelope *rhead = NULL, *rtail = NULL;
+    uint32_t staged = 0;
     while (e) {
         wo_envelope *nx = e->next;
         switch (e->kind) {
@@ -171,13 +177,25 @@ static int wo_vm_adopt(wo_vm *vm) {
                    * the same request back as the reply. */
             wo_db_req *q = (wo_db_req *)(uintptr_t)e->payload;
             assert(vm->is_primary && "DB requests route to shard 0 only");
+            wo_wal *dw = (wo_wal *)vm->rt.wal;
+            size_t before = dw ? dw->len : 0;
             wo_db_exec_req(vm, q);
             q->done = 1;
+            /* did this statement actually stage a record? Asking the buffer
+             * beats guessing from the opcode, and the count is what the
+             * failure diagnostic reports. */
+            if (dw && dw->len > before) staged++;
             wo_envelope *re = calloc(1, sizeof *re);
             if (re) {
                 re->kind = 4;
                 re->payload = e->payload;
-                inbox_push_to(q->from_shard, re);
+                /* HELD, not pushed: pushing here would unpark the requester
+                 * before its record is durable, which is the ack contract
+                 * this iteration exists to make literally true. FIFO so the
+                 * first waiter is released first. */
+                re->next = NULL;
+                if (rtail) rtail->next = re; else rhead = re;
+                rtail = re;
             } /* OOM: the requester stays parked until stop — leak, not UB */
             break;
         }
@@ -191,6 +209,22 @@ static int wo_vm_adopt(wo_vm *vm) {
         free(e);
         n++;
         e = nx;
+    }
+    /* databasev2 4: ONE barrier for everything this drain staged, then every
+     * held reply. Each requester therefore unparks having been acknowledged
+     * after the barrier that carried ITS record. Commit unconditionally when
+     * anything is staged — the inline path relies on finding the buffer empty
+     * (see db.c), so a drain must never leave a record behind. */
+    if (staged) {
+        wo_wal *cw = (wo_wal *)vm->rt.wal;
+        if (cw) wo_wal_commit_fatal(cw, staged);
+    }
+    while (rhead) {
+        wo_envelope *rn = rhead->next;
+        wo_db_req *rq = (wo_db_req *)(uintptr_t)rhead->payload;
+        rhead->next = NULL;
+        inbox_push_to(rq->from_shard, rhead);
+        rhead = rn;
     }
     return n;
 }

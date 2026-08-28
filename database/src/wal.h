@@ -90,6 +90,11 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
  * batch stays staged: a failed commit consumes nothing). */
 int wo_wal_commit(wo_wal *w);
 
+/* databasev2 4: a record could not even be STAGED (the row is already in
+ * RAM, so this is the same unrecoverable position as a failed barrier — see
+ * wo_wal_commit_fatal). Never returns. */
+void wo_wal_stage_fatal(const wo_wal *w);
+
 /* databasev2 4: commit, or END THE PROCESS.
  *
  * The one rule this iteration introduces: once a statement has mutated RAM,
