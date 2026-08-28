@@ -117,6 +117,46 @@ static void test_roundtrip_replay(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 4 part A, Task 1: a failed barrier must be DETECTED, and the
+ * caller must be able to tell WHICH operation failed — a pwrite failure and
+ * an fdatasync failure are different operational problems and the diagnostic
+ * has to name the right one. This proves detection only; the fatal exit that
+ * follows it cannot be exercised in-process. */
+static void test_commit_failure_detected(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/commitfail.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    /* the WAL remembers where it lives — the abort diagnostic is worthless
+     * without it */
+    T_CHECK(w.path != NULL && strstr(w.path, "commitfail.wal") != NULL);
+
+    wo_str *s = wo_str_new(&rt, "abc", 3);
+    uint64_t vals[2] = {7, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_CHECK(w.len > 0); /* something really is staged */
+
+    /* an unusable descriptor: pwrite reports EBADF. -1 is used rather than
+     * closing the real fd so the close below cannot double-free it. */
+    int real = w.fd;
+    w.fd = -1;
+    T_EQ(wo_wal_commit(&w), WO_WAL_ERR_WRITE);
+    T_CHECK(w.len > 0); /* a failed commit consumes nothing */
+    w.fd = real;
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -327,6 +367,7 @@ int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
     test_roundtrip_replay();
+    test_commit_failure_detected();
     test_torn_tail();
     test_float_bytes_replay();
     test_crash_battery();

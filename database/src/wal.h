@@ -47,6 +47,10 @@ enum { WO_WAL_INSERT = 1, WO_WAL_REMOVE = 2, WO_WAL_UPDATE = 3 };
 
 typedef struct wo_wal {
     int fd;
+    /* databasev2 4: where this WAL lives, so a durability failure can name
+     * the file it could not write. An abort diagnostic without the path
+     * sends an operator hunting. Owned here, freed by wo_wal_close. */
+    char *path;
     uint64_t off; /* next write offset (the intact tail) */
     /* staged batch: appended by wal_append_*, flushed by wal_commit */
     uint8_t *buf;
@@ -71,9 +75,32 @@ int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id);
  * later optimization, recorded). Call AFTER the RAM update. */
 int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
 
+/* databasev2 4: which half of the barrier failed. A pwrite failure and an
+ * fdatasync failure are different operational problems (a short write vs a
+ * device refusing the flush), so the diagnostic must name the right one. */
+#define WO_WAL_ERR_WRITE (-1)
+#define WO_WAL_ERR_SYNC  (-2)
+
+/* The process exit status for a durability failure. 1 is a trap and 2 is a
+ * refusal, so this takes a third of its own. */
+#define WO_EXIT_DURABILITY 3
+
 /* Write the staged batch and fdatasync — the ack line. Empty batch = ok,
- * no syscall. 0 ok, -1 write/sync failure (the batch stays staged). */
+ * no syscall. 0 ok, WO_WAL_ERR_WRITE / WO_WAL_ERR_SYNC on failure (the
+ * batch stays staged: a failed commit consumes nothing). */
 int wo_wal_commit(wo_wal *w);
+
+/* databasev2 4: commit, or END THE PROCESS.
+ *
+ * The one rule this iteration introduces: once a statement has mutated RAM,
+ * the only outcomes are durable or process death. Retrying is not an
+ * alternative — on Linux a failed fsync may already have discarded the dirty
+ * pages, so a second call can report success having written nothing. The
+ * recovery that works is replay, which returns the last durable state.
+ *
+ * [nrec] is the number of records in the batch, for the diagnostic only.
+ * Returns on success; never returns on failure. */
+void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec);
 
 /* Boot replay: apply every intact record to [db] in order. Ids re-enter
  * exactly as logged; each table's next_id advances past the replayed ids

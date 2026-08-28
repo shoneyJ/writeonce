@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -302,6 +303,7 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
     memset(w, 0, sizeof(*w));
     w->fd = open(path, O_RDWR | O_CREAT, 0644);
     if (w->fd < 0) return -1;
+    w->path = strdup(path); /* NULL is tolerated: the diagnostic degrades */
     if (prealloc) {
         /* best-effort: a filesystem without fallocate still works */
         (void)posix_fallocate(w->fd, 0, (off_t)prealloc);
@@ -317,6 +319,7 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
 
 void wo_wal_close(wo_wal *w) {
     if (w->fd >= 0) close(w->fd);
+    free(w->path);
     free(w->buf);
     memset(w, 0, sizeof(*w));
     w->fd = -1;
@@ -396,14 +399,30 @@ int wo_wal_commit(wo_wal *w) {
         ssize_t n = pwrite(w->fd, w->buf + at, w->len - at, (off_t)(w->off + at));
         if (n < 0) {
             if (errno == EINTR) continue;
-            return -1;
+            return WO_WAL_ERR_WRITE;
         }
         at += (size_t)n;
     }
-    if (fdatasync(w->fd) != 0) return -1;
+    if (fdatasync(w->fd) != 0) return WO_WAL_ERR_SYNC;
     w->off += w->len;
     w->len = 0; /* acked: the batch is durable */
     return 0;
+}
+
+void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
+    int rc = wo_wal_commit(w);
+    if (rc == 0) return;
+    /* Nothing here is recoverable: RAM holds changes the log does not, and
+     * this process can no longer serve reads that would survive a restart.
+     * Name what failed precisely enough to act on, then stop. */
+    fprintf(stderr,
+            "writeonce: DURABILITY FAILURE — %s failed on %s: %s\n"
+            "  %u record(s) in the batch were NOT made durable and are not acknowledged.\n"
+            "  The process is stopping: replay restores the last durable state.\n",
+            rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite",
+            w->path ? w->path : "(the write-ahead log)", strerror(errno),
+            nrec);
+    exit(WO_EXIT_DURABILITY);
 }
 
 static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
