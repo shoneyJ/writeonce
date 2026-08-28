@@ -90,9 +90,15 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
 #define WO_WAL_ERR_WRITE (-1)
 #define WO_WAL_ERR_SYNC  (-2)
 
-/* The process exit status for a durability failure. 1 is a trap and 2 is a
- * refusal, so this takes a third of its own. */
-#define WO_EXIT_DURABILITY 3
+/* The process exit status for a durability failure.
+ *
+ * 74 is sysexits' EX_IOERR, chosen deliberately over a small number: 1 is a
+ * trap and 2 is a loader refusal, but 3 and 4 are already used by SAMPLES for
+ * their own meanings — db-bench's own `verify` exits 3 on a checksum mismatch,
+ * and it is the gate that exercises durability, so a durability abort exiting 3
+ * would have been indistinguishable from the mismatch it is supposed to help
+ * diagnose. The low range belongs to programs; the runtime takes a high one. */
+#define WO_EXIT_DURABILITY 74
 
 /* Write the staged batch and fdatasync — the ack line. Empty batch = ok,
  * no syscall. 0 ok, WO_WAL_ERR_WRITE / WO_WAL_ERR_SYNC on failure (the

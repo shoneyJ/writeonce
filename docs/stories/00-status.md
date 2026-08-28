@@ -50,6 +50,60 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-28 — databasev2 4 part A, WAL group commit
+
+**Implemented last time (2026-08-28):** one durability barrier per drain
+instead of one per statement. Shard 0 stages every queued write request, holds
+each reply, commits once when its queue empties, then releases all — so a writer
+is acknowledged after the barrier that carried *its* record, which was the
+intended contract all along and was true before only because every batch had one
+member. Six tasks, brainstormed and spec'd first
+([spec](../superpowers/specs/2026-08-28-wal-group-commit-design.md) ·
+[plan](../superpowers/plans/2026-08-28-wal-group-commit.md)).
+
+**Key findings (measured, not asserted):** **≈2.9× durable write throughput,
+≈2.1× lower p50** on a write-concurrent workload, confirmed a second way by the
+`s1`-vs-`sN` split within one build (1467 → 5117 ops/s, mean batch 1.0 → 5.43,
+peak 57) — 2.9× and 3.5× agreeing. Batching scales with contention: mean batch
+1.13 / 1.76 / 5.35 at C = 4 / 16 / 64. **The story's premise was wrong**: it
+said "fsync-per-commit" and the engine was fsync-per-**statement**, committing
+after every append at all six sites — so part A was closer to deleting calls
+than adding a mechanism.
+
+**Learned — three things the measurement corrected, not the code:**
+(1) **`/tmp` is tmpfs here, where `fdatasync` is free.** The same run reported
+195 000 ops/s at p50 1 µs there against 2200 at 7200 µs on ext4. A group-commit
+measurement taken on a memory filesystem measures nothing; `db-bench` is right
+to keep its stores under `bench/`. (2) **No existing leg could exercise the
+feature** — `mix` writes on one op in ten with C=4, giving 20 writes and mean
+batch 1.01, so a `wmix` write-concurrent leg had to be added or the payoff was
+unevaluable either way. (3) **The before-p99 was off the instrument** —
+`hist_add` clamps at 20000 µs and both before-runs pinned there, so the gain is
+*at least* 2.3× and the true old p99 is unknown.
+
+**Dependencies unblocked — and one dependency invalidated.** `WO_T_IO` is
+unreachable from a DB write: a failed stage or barrier now ends the process
+(exit 74, diagnosed), replacing three behaviours that disagreed — `insert`
+un-applied itself while `update` and `delete` returned a catchable trap and
+admitted in their own comments that they left RAM ahead of disk. **Part B's
+premise is invalidated**: it was justified by "close the 66× durable gap", but
+that gap is two problems. Concurrent fan-in was a batching problem and is now
+~3× better; a **serial** writer waiting on one barrier is a latency problem that
+batching cannot touch and io_uring does not obviously help either. Part B should
+be re-brainstormed, not started.
+
+**Next steps:** either re-brainstorm part B against its corrected premise, or
+take chain 6 ([databasev2 3](databasev2/03-wal-checkpoint.md), WAL checkpoint),
+which now has the replay "before" it lacked. Two debts named rather than hidden:
+the abort path is not exercised (forcing a real `fdatasync` failure needs mount
+privileges), and single-shard concurrent batching needs the inline-path park —
+the same machinery part B would need.
+
+**`.dev/reference` used:** none this slice. The sources were the engine's own
+code and the Linux `fsync`-failure semantics that make retrying unsound.
+
+---
+
 ### Landed 2026-08-27 — iteration 24, chat + actor lifecycle (absorbing 31 + 34)
 
 **Implemented last time (2026-08-27):** the slice closed and merged to master
@@ -248,6 +302,9 @@ both still literal holes in `wob.h`'s builtin enum; then T8 the chat
 sample, T9 its gate, T10 closeout setting 24/31/34 to `status: done`) → 23
 (io_uring group-commit — target: close the 4.5k→297k durable gap) →
 32 (WAL checkpoint). Held tail resumes on its own precedence notes.
+> (**Superseded 2026-08-28:** 24 landed, and 23's part A landed with it —
+> "close the 4.5k→297k durable gap" turned out to be the wrong target; see
+> the databasev2 4 row.)
 
 **`.dev/reference` used:** none this slice (the LW_SOAK discipline and
 linkcheck.py precedent came from in-repo scripts).
@@ -407,7 +464,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
 | 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | ✅ **LANDED 2026-08-27 inside 24** (directive 2026-08-23). All four mechanisms: `call`/reply with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), actor death that traps callers instead of hanging them, **`monitor` (89)** and **`time.after` (90)** — the reserved holes in `wob.h` are filled. A fifth mechanism it did not anticipate came out of proving the gate: the shutdown drain guarantee, [40](language-runtime-database/40-shutdown-drain-guarantee.md). Supervision trees stay out of v1 |
 | 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | ✅ **LANDED 2026-08-27** (absorbing 31 + 34) — all ten tasks; merged to master `ed5334d`. `just chat` **11 checks, 0 failures** at the full 1000-client soak: handshake, functional matrix on both `WO_IO` backends and on one shard, the soak, the fd invariant, the SIGTERM drain, `WO_MAILBOX=8` backpressure, ASan clean. Finishing its gate found a real runtime bug, split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md) |
-| 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md)            | ⬜ fifth in chain, after stage 3 + 22 |
+| 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md) | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
 | 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
 | 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
@@ -682,7 +739,7 @@ the language arc as v1 history.
 | 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ **first, and startable today** — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
 | 2 | [`@table` storage modes](databasev2/02-table-storage-modes.md) | ⬜ **the language enrichment** — `mode: ram \| durable \| cold` per table, replacing the global switch. `durable` defaults so nothing changes silently; the compiler refuses a `durable` row holding a `ref` into a `ram` table. `.wob` format change. Grammar is small (`Ast.table_cfg` gains a key); semantics are the iteration |
 | 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
-| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |
+| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
 | 5 | [Bounded tables and eviction](databasev2/05-bounded-tables-eviction.md) | ⬜ a declared capacity + refuse/evict/back-pressure, and a process-level pressure signal that sheds **before** the allocator or OS gets involved — turning the invisible failure into a managed one |
 | 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⬜ the iteration that raises the ceiling, and the riskiest. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |
 | 7 | [Single-file store](databasev2/07-single-file-db.md) *(was 33)* | ⬜ `WO_DATA=<path>.db`; driver-only, independent |

@@ -290,6 +290,18 @@ def tolerance_for(key):
     # blanket waiver here would have left the whole leg ungated.
     if key.endswith((".wmix.mean_batch", ".wmix.peak_batch", ".wmix.peak_staged")):
         return 100
+    # databasev2 4: DURABLE multi-shard p99 is an fsync TAIL, and group commit
+    # made it both noisier and legitimately higher. Measured across three full
+    # runs of the same build, durable.sN.mixread.p99 was 1043 / 2318 / 4147 us
+    # and wmix.p99 8758 / 20000 — a 2-4x spread with the box near idle, because
+    # a barrier now blocks the owner shard LONGER (more records per fsync) even
+    # though it blocks LESS OFTEN. That is the trade group commit makes on a
+    # single-threaded owner, and part B (async submission) is what would undo
+    # it. Gating a 2-4x-variable tail at 50% gates the disk, not the engine, so
+    # the FLOOR is the real guard here — and it is not slack: mixread's floor
+    # (4172us) came within 25us of tripping on the worst run.
+    if key.startswith("durable.sN.") and key.endswith(".p99us"):
+        return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50

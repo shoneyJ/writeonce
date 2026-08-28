@@ -189,13 +189,23 @@ static int wo_vm_adopt(wo_vm *vm) {
             if (re) {
                 re->kind = 4;
                 re->payload = e->payload;
-                /* HELD, not pushed: pushing here would unpark the requester
-                 * before its record is durable, which is the ack contract
-                 * this iteration exists to make literally true. FIFO so the
-                 * first waiter is released first. */
                 re->next = NULL;
-                if (rtail) rtail->next = re; else rhead = re;
-                rtail = re;
+                if (dw && dw->len > before) {
+                    /* This statement STAGED a record, so its reply is HELD:
+                     * pushing it now would unpark the requester before its
+                     * record is durable, which is the ack contract this
+                     * iteration exists to make literally true. FIFO, so the
+                     * first waiter is released first. */
+                    if (rtail) rtail->next = re; else rhead = re;
+                    rtail = re;
+                } else {
+                    /* A READ (or any statement that staged nothing) has no
+                     * durability to wait for. Holding it too was measurably
+                     * wrong: it parked readers behind an fsync they had no
+                     * stake in, and durable.sN.mixread p99 rose ~4x
+                     * (1043 -> 4057us) until this branch existed. */
+                    inbox_push_to(q->from_shard, re);
+                }
             } /* OOM: the requester stays parked until stop — leak, not UB */
             break;
         }

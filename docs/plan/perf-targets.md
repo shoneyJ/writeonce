@@ -138,3 +138,31 @@ durable inserts. They arrive as an end-of-run burst, which is batch-friendly,
 so `mean_batch` is not purely update-driven. Peak staged bytes stayed small
 (2793 B at C=64), which is what settled the decision to ship **no batch cap**:
 the request queue's existing upstream bound is sufficient.
+
+### The cost side: tail latency on the owner shard
+
+Group commit is a trade, and the full battery made the other side of it visible.
+
+**A bug first, caught by `durable.sN.mixread.p99`.** The drain initially held
+*every* DB reply until the barrier — including **reads**, which stage nothing and
+have no stake in durability. That parked readers behind an fsync for no reason
+and pushed read p99 from ~1043 µs to **4057 µs**. Reads are now released
+immediately; only a statement that actually staged a record has its reply held.
+
+**What remains is inherent, not a bug.** A barrier now blocks the owner shard
+**longer** (more records per fsync) even though it blocks **less often**, so
+anything arriving during a barrier — reads included — waits behind it. Measured
+across three full runs of the same build, `durable.sN.mixread.p99` came in at
+**1043 / 2318 / 4147 µs** and `wmix.p99` at **8758 / 20000 µs**, a 2–4× spread
+with the box near idle.
+
+So the honest summary of part A on a single-threaded owner shard: **~3× write
+throughput, at the price of a longer and noisier tail for everything queued
+behind a barrier.** That is precisely what part B (async submission — submit the
+barrier and keep serving) would undo, and it is a better argument for part B than
+the "close the 66× gap" framing part B was originally given.
+
+**Gating consequence.** `durable.sN.*.p99us` now carries a 100% tolerance,
+because a 2–4×-variable tail gated at 50% gates the disk rather than the engine.
+The **floor** is the real guard there, and it is not slack: `mixread`'s floor
+(4172 µs) came within 25 µs of tripping on the worst observed run.

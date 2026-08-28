@@ -118,11 +118,29 @@ R[B+1..] = one slot per declared field in declaration order (the literal's
 order is irrelevant — slots are the class table's).
 
 Execution: `wo_row_insert` (RAM, engine copies every value), then — when
-durability is on — stage + **commit before the builtin returns**: the
-builtin's return IS the acknowledgment, so ack-after-fsync holds at
-statement granularity until iteration 8 brings tick-scoped group commit. A
-failed commit un-applies the row and traps `WO_T_IO`; engine failures trap
-`WO_T_DB`. Durability is opt-in: `WO_DATA=<dir>` makes the CLI replay
+durability is on — stage, then a barrier before the acknowledgment. **Updated
+2026-08-28 (databasev2 4 part A): group commit landed, and the barrier's
+location now depends on which path the statement takes.**
+
+A statement arriving from a worker shard marshals to shard 0 and parks; shard 0
+stages every such request, issues **one** barrier when its queue empties, and
+only then releases the held replies — so each writer is acknowledged after the
+barrier that carried *its* record. A statement already running on shard 0 takes
+the inline path and still commits before the builtin returns, because it has no
+reply to hold: it returns into its own fiber, and batching it would require
+parking that fiber on the barrier (deferred to part B). The boundary is the
+queue draining, **not** the tick this document previously anticipated — a tick
+would add latency to a lone writer, taxing an idle system to serve a busy one.
+
+Measured: ~2.9× durable write throughput and ~2.1× lower p50 on a
+write-concurrent workload; unchanged for a serial writer, which has nothing to
+batch with.
+
+A failed commit **no longer traps — it ends the process** (exit 74, with a
+diagnostic naming the operation, log path, `errno` and batch size). So does a
+failed staging. `WO_T_IO` is unreachable from a DB write. One rule: once a
+statement has mutated RAM, the outcomes are durable or death. Engine failures
+still trap `WO_T_DB`. Durability is opt-in: `WO_DATA=<dir>` makes the CLI replay
 `<dir>/shard-0.wal` before the entry runs and commit every insert; without
 it the engine is RAM-only (every corpus fixture runs that way).
 
