@@ -7,6 +7,23 @@
 #include "table.h"
 #include "wal.h"
 
+/* databasev2 3: the inline path's compaction check.
+ *
+ * The drain has its own (vm.c, after the barrier). This one exists because a
+ * statement running ON the owner shard never enters that drain, so without it
+ * a single-shard durable program's log grows FOREVER — measured: WO_SHARDS=1
+ * reached 536 KB where the multi-shard run held 446 KB, because the check was
+ * only wired into the drain.
+ *
+ * Safe here for the same reason it is safe there: the commit above just
+ * emptied the staging buffer. The result is ignored because a failed
+ * compaction is a missed optimisation, not a durability event. */
+static void maybe_compact(wo_db *db, wo_wal *w) {
+    if (wo_wal_should_compact(w->off, w->compacted_bytes, wo_wal_ckpt_floor,
+                              wo_wal_ckpt_ratio))
+        (void)wo_wal_compact(w, db);
+}
+
 int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     uint32_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
     wo_db *db = (wo_db *)vm->rt.db;
@@ -44,6 +61,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
              * Failure is fatal, not a trap: the row is already in RAM. */
             if (wo_wal_append_insert(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
             wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = id;
         return 0;
@@ -61,6 +79,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
              * admitted. Now fatal — see the insert arm. */
             if (wo_wal_append_update(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
             wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = 0;
         return 0;
@@ -82,6 +101,7 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         if (w) {
             if (wo_wal_append_remove(w, cid, id) != 0) wo_wal_stage_fatal(w);
             wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = 0;
         return 0;

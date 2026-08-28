@@ -297,6 +297,67 @@ static void test_stale_compact_temp_is_removed(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 3 Task 3: the trigger, tested as a pure decision. Kept pure
+ * precisely so it CAN be tested — a policy only observable by writing megabytes
+ * and waiting is a policy nobody checks. */
+static void test_should_compact_policy(void) {
+    /* below the floor, nothing fires however bad the ratio looks */
+    T_EQ(wo_wal_should_compact(1000, 10, 4096, 3), 0);
+    T_EQ(wo_wal_should_compact(4095, 1, 4096, 3), 0);
+    /* past the floor with no prior compaction: run once to learn the size */
+    T_EQ(wo_wal_should_compact(4096, 0, 4096, 3), 1);
+    /* with a known denominator it is a straight ratio test */
+    T_EQ(wo_wal_should_compact(30000, 10000, 4096, 3), 0); /* exactly 3x is not MORE than 3x */
+    T_EQ(wo_wal_should_compact(30001, 10000, 4096, 3), 1);
+    T_EQ(wo_wal_should_compact(19999, 10000, 4096, 2), 0);
+    T_EQ(wo_wal_should_compact(20001, 10000, 4096, 2), 1);
+    /* a zero ratio disables the policy rather than dividing by nothing */
+    T_EQ(wo_wal_should_compact(1u << 30, 10, 4096, 0), 0);
+}
+
+/* databasev2 3 Task 3: the ordering rule, asserted rather than trusted.
+ * Compaction with records staged would write them into a file about to be
+ * replaced, so it must be REFUSED — and refused without touching the log. */
+static void test_compact_refuses_with_staged_records(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/staged.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    wo_str *s1 = wo_str_new(&rt, "abc", 3);
+    uint64_t v1[2] = {7, (uint64_t)(uintptr_t)s1};
+    uint64_t id1 = wo_row_insert(&db, 0, v1, &msg, NULL);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id1), 0);
+    T_EQ(wo_wal_commit(&w), 0); /* durable, buffer empty */
+
+    /* now stage WITHOUT committing */
+    wo_str *s2 = wo_str_new(&rt, "xyz", 3);
+    uint64_t v2[2] = {8, (uint64_t)(uintptr_t)s2};
+    uint64_t id2 = wo_row_insert(&db, 0, v2, &msg, NULL);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id2), 0);
+    T_CHECK(w.len > 0);
+
+    uint64_t before = 0;
+    int64_t recs = wo_wal_check(path, &before);
+    T_EQ(wo_wal_compact(&w, &db), -1);  /* refused */
+    T_CHECK(w.len > 0);                 /* and the staged record is still there */
+    uint64_t after = 0;
+    T_CHECK(wo_wal_check(path, &after) == recs && after == before); /* log untouched */
+
+    /* the staged record still commits normally afterwards */
+    T_EQ(wo_wal_commit(&w), 0);
+    T_CHECK(wo_wal_check(path, NULL) == recs + 1);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -510,6 +571,8 @@ int main(void) {
     test_commit_failure_detected();
     test_compact_shortens_and_replays_equal();
     test_stale_compact_temp_is_removed();
+    test_should_compact_policy();
+    test_compact_refuses_with_staged_records();
     test_torn_tail();
     test_float_bytes_replay();
     test_crash_battery();

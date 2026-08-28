@@ -450,6 +450,18 @@ void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
     wal_die(w, rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite", nrec);
 }
 
+uint64_t wo_wal_ckpt_floor = 4u << 20; /* 4 MiB: below this there is nothing worth reclaiming */
+uint32_t wo_wal_ckpt_ratio = 3u;      /* 3x the live-set's own size is enough history */
+
+int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t ratio) {
+    if (used < floor) return 0;   /* a small log has nothing to reclaim */
+    if (last == 0) return 1;      /* past the floor and never compacted: do it once
+                                   * to establish the denominator */
+    if (ratio == 0) return 0;     /* a zero ratio disables the policy rather than
+                                   * dividing by nothing */
+    return used > last * (uint64_t)ratio;
+}
+
 /* databasev2 3: how many records the dump stages before flushing.
  *
  * NOT unbounded: stage() grows the staging buffer by doubling and never

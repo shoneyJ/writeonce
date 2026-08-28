@@ -236,6 +236,25 @@ static int wo_vm_adopt(wo_vm *vm) {
         inbox_push_to(rq->from_shard, rhead);
         rhead = rn;
     }
+    /* databasev2 3: the ONE point where compaction is safe — the barrier above
+     * just ran, so the staging buffer is empty. Anywhere else, a staged record
+     * would be written into a file about to be replaced. This is a correctness
+     * requirement, not a scheduling preference; wo_wal_compact also refuses a
+     * non-empty buffer as a backstop.
+     *
+     * Replies are released FIRST, deliberately: their records are already
+     * durable, and holding them across a stop-the-world rewrite would add the
+     * rewrite's full duration to their latency for no benefit.
+     *
+     * The result is ignored because a failed compaction is a missed
+     * optimisation, not a durability event — the original log is left intact
+     * and the process carries on. */
+    if (staged) {
+        wo_wal *cw = (wo_wal *)vm->rt.wal;
+        if (cw && wo_wal_should_compact(cw->off, cw->compacted_bytes,
+                                        wo_wal_ckpt_floor, wo_wal_ckpt_ratio))
+            (void)wo_wal_compact(cw, (wo_db *)vm->rt.db);
+    }
     return n;
 }
 

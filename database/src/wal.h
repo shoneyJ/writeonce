@@ -109,6 +109,31 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
  * batch stays staged: a failed commit consumes nothing). */
 int wo_wal_commit(wo_wal *w);
 
+/* databasev2 3: the checkpoint trigger, as a PURE decision so it can be tested
+ * without a store — which is the only way a policy like this gets tested at all.
+ *
+ * [used] the log's used bytes; [last] what the LAST compaction wrote (0 if it
+ * has never run); [floor] the size below which compacting is not worth it;
+ * [ratio] the multiple of [last] that counts as too much history.
+ *
+ * The denominator is the last compaction's MEASURED output rather than an
+ * estimate of the live set: estimating would mean estimating Text, and the
+ * compactor already knows the true number.
+ *
+ * There is deliberately NO TIME component. Postgres' CheckPointTimeout exists
+ * to bound data loss from unflushed buffers; our records are durable at commit,
+ * so a checkpoint only reclaims space and shortens boot. An idle log does not
+ * grow, so a timer would fire with nothing to do.
+ *
+ * 1 = compact now, 0 = leave it. */
+int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t ratio);
+
+/* Defaults, overridable at boot by WO_CHECKPOINT_BYTES / WO_CHECKPOINT_RATIO.
+ * The knobs are what make the policy testable: a test sets a tiny floor and
+ * forces compaction in a few writes instead of waiting for megabytes. */
+extern uint64_t wo_wal_ckpt_floor;
+extern uint32_t wo_wal_ckpt_ratio;
+
 /* databasev2 3: the temporary file compaction writes before the swap. Named
  * next to the log so it lands on the same filesystem — rename(2) is only
  * atomic within one. Boot removes a stale one (a crash before the rename). */

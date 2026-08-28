@@ -240,6 +240,25 @@ int main(int argc, char **argv) {
             if (v >= 1 && v <= 0x7FFFFFFFul) wo_mailbox_cap = (uint32_t)v;
         }
     }
+    /* databasev2 3: the checkpoint policy. WO_CHECKPOINT_BYTES is the floor
+     * below which a log is too small to bother compacting; WO_CHECKPOINT_RATIO
+     * is how many times the live set's own size counts as too much history.
+     * Both exist mainly so the policy is TESTABLE — a gate sets a tiny floor
+     * and forces compaction in a few writes rather than waiting for megabytes.
+     * There is no time-based trigger, by design: our records are durable at
+     * commit, so an idle log does not grow. */
+    {
+        const char *cb = getenv("WO_CHECKPOINT_BYTES");
+        if (cb && cb[0]) {
+            unsigned long long v = strtoull(cb, NULL, 10);
+            if (v > 0) wo_wal_ckpt_floor = (uint64_t)v;
+        }
+        const char *cr = getenv("WO_CHECKPOINT_RATIO");
+        if (cr && cr[0]) {
+            unsigned long v = strtoul(cr, NULL, 10);
+            if (v <= 0xFFFFFFFFul) wo_wal_ckpt_ratio = (uint32_t)v;
+        }
+    }
     /* the arc's stage 2: all cores by default (the brave landing), one
      * pinned worker vm per extra core; WO_SHARDS caps or forces it */
     {
