@@ -28,7 +28,9 @@ chain: 6
 > 23's group-commit write path.
 
 > **BRAINSTORMED 2026-08-28.** Spec:
-> [`2026-08-28-wal-checkpoint-design.md`](../../superpowers/specs/2026-08-28-wal-checkpoint-design.md).
+> [`2026-08-28-wal-checkpoint-design.md`](../../superpowers/specs/2026-08-28-wal-checkpoint-design.md)
+> · plan: [`2026-08-28-wal-checkpoint.md`](../../superpowers/plans/2026-08-28-wal-checkpoint.md)
+> (6 tasks).
 > Read `.dev/reference/postgresql` for this — and the conclusion was that
 > Postgres' design is *unavailable* to us, which is what makes the simpler one
 > legitimate.
