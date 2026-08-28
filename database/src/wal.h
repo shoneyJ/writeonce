@@ -64,6 +64,10 @@ typedef struct wo_wal {
     uint64_t stat_records;     /* records those commits carried */
     uint64_t stat_peak_batch;  /* most records in one barrier */
     uint64_t stat_peak_staged; /* most bytes staged behind one barrier */
+    /* databasev2 3: bytes the last compaction wrote. The trigger compares the
+     * log against THIS rather than an estimate of the live set — estimating
+     * would mean estimating Text, and the compactor knows the true number. */
+    uint64_t compacted_bytes;
 } wo_wal;
 
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;
@@ -104,6 +108,31 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
  * no syscall. 0 ok, WO_WAL_ERR_WRITE / WO_WAL_ERR_SYNC on failure (the
  * batch stays staged: a failed commit consumes nothing). */
 int wo_wal_commit(wo_wal *w);
+
+/* databasev2 3: the temporary file compaction writes before the swap. Named
+ * next to the log so it lands on the same filesystem — rename(2) is only
+ * atomic within one. Boot removes a stale one (a crash before the rename). */
+#define WO_WAL_TMP_SUFFIX ".compact"
+
+/* databasev2 3: rewrite the log as one INSERT record per LIVE row, then swap
+ * it in with rename(2).
+ *
+ * Recovery is deliberately untouched: the result is an ordinary log in the
+ * ordinary grammar, replayed from byte 0. Crash safety comes from rename being
+ * atomic — before it the live log is intact and the temp file is not
+ * authoritative; after it the new log is complete. There is no window in which
+ * a reader sees a mixture, so this needs no recovery logic of its own.
+ *
+ * REFUSES if anything is staged (returns -1 without touching the log): those
+ * records would be written into a file about to be replaced. Callers must
+ * invoke this only where the staging buffer is empty — right after a barrier.
+ *
+ * A failure is a MISSED OPTIMISATION, not a durability event: the original log
+ * is left usable and the process keeps running. It must not take the fatal
+ * path wo_wal_commit_fatal takes.
+ *
+ * 0 ok, -1 on any failure. */
+int wo_wal_compact(wo_wal *w, wo_db *db);
 
 /* databasev2 4: a record could not even be STAGED (the row is already in
  * RAM, so this is the same unrecoverable position as a failed barrier — see

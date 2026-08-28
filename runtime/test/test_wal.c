@@ -157,6 +157,83 @@ static void test_commit_failure_detected(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 3 Task 1: compaction rewrites the log as one record per LIVE row.
+ * Asserts BOTH halves on purpose: "the file got shorter" is also true of a
+ * truncating bug, so the replay comparison is what actually proves it. */
+static void test_compact_shortens_and_replays_equal(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/compact.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    uint64_t ids[3];
+    for (int i = 0; i < 3; i++) {
+        wo_str *s = wo_str_new(&rt, "abc", 3);
+        uint64_t vals[2] = {(uint64_t)(i * 10), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    /* age it: the SAME row updated repeatedly, so HISTORY grows while the live
+     * set does not — the exact case checkpoint exists for */
+    for (int k = 0; k < 40; k++) {
+        int ek = 0;
+        T_EQ(wo_row_update_field(&db, 0, ids[0], 0, (uint64_t)(500 + k), &msg, &ek), 0);
+        T_EQ(wo_wal_append_update(&w, &db, 0, ids[0]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    uint64_t before_bytes = 0;
+    int64_t before_recs = wo_wal_check(path, &before_bytes);
+    T_CHECK(before_recs == 43); /* 3 inserts + 40 updates, all history */
+
+    T_EQ(wo_wal_compact(&w, &db), 0);
+
+    uint64_t after_bytes = 0;
+    int64_t after_recs = wo_wal_check(path, &after_bytes);
+    T_CHECK(after_recs == 3);              /* one record per LIVE row */
+    T_CHECK(after_bytes < before_bytes);   /* and the file really shrank */
+
+    /* the WAL stays usable: the descriptor was reopened and the offset reset,
+     * so a further write must land AFTER the compacted records, not over them */
+    wo_str *s4 = wo_str_new(&rt, "xyz", 3);
+    uint64_t v4[2] = {99, (uint64_t)(uintptr_t)s4};
+    uint64_t id4 = wo_row_insert(&db, 0, v4, &msg, NULL);
+    T_CHECK(id4 != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id4), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_CHECK(wo_wal_check(path, NULL) == 4);
+    wo_wal_close(&w);
+
+    /* the proof: a FRESH store replayed from the compacted log must hold the
+     * same rows, the same ids, and the LAST value each row had */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 4);
+    uint64_t out[2];
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[0], out, &msg), 0);
+    T_CHECK(out[0] == 539); /* the 40th update won, not the original 0 */
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[1], out, &msg), 0);
+    T_CHECK(out[0] == 10);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[2], out, &msg), 0);
+    T_CHECK(out[0] == 20);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, id4, out, &msg), 0);
+    T_CHECK(out[0] == 99);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+
+    wo_db_destroy(&db2);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -368,6 +445,7 @@ int main(void) {
     if (!mkdtemp(g_dir)) return 1;
     test_roundtrip_replay();
     test_commit_failure_detected();
+    test_compact_shortens_and_replays_equal();
     test_torn_tail();
     test_float_bytes_replay();
     test_crash_battery();

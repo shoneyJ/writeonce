@@ -439,6 +439,95 @@ void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
     wal_die(w, rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite", nrec);
 }
 
+/* databasev2 3: how many records the dump stages before flushing.
+ *
+ * NOT unbounded: stage() grows the staging buffer by doubling and never
+ * shrinks it, so appending a whole store through one buffer would hold the
+ * entire store in RAM on top of the store itself — the unbounded growth
+ * databasev2 1 identified as how this engine dies. 256 records is a few tens
+ * of KiB per flush, which is large enough that the syscall cost is amortised
+ * and small enough that the buffer never matters. */
+#define WO_WAL_COMPACT_FLUSH 256u
+
+/* rename(2)'s atomicity is in-kernel: the new directory ENTRY is not durable
+ * until the parent directory is synced. Postgres does the same thing for the
+ * same reason. Best-effort — a filesystem that refuses to sync a directory
+ * still leaves a correct log, just one whose swap might not survive a power
+ * cut. */
+static void sync_parent_dir(const char *path) {
+    char dir[4096];
+    size_t n = strlen(path);
+    if (n >= sizeof dir) return;
+    memcpy(dir, path, n + 1);
+    char *slash = strrchr(dir, '/');
+    if (slash == dir) dir[1] = '\0';
+    else if (slash) *slash = '\0';
+    else memcpy(dir, ".", 2);
+    int fd = open(dir, O_RDONLY);
+    if (fd < 0) return;
+    (void)fsync(fd);
+    close(fd);
+}
+
+int wo_wal_compact(wo_wal *w, wo_db *db) {
+    /* staged records would be written into a file about to be replaced */
+    if (!w->path || w->len != 0) return -1;
+
+    char tmp[4096];
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", w->path, WO_WAL_TMP_SUFFIX) >= sizeof tmp)
+        return -1;
+    (void)unlink(tmp); /* a stale one would otherwise be appended to */
+
+    wo_wal nw;
+    if (wo_wal_open(&nw, tmp, 0) != 0) return -1;
+
+    /* one INSERT per live row, in the existing grammar, through the existing
+     * append path — so replay needs no second decoder and ids are preserved
+     * exactly (wo_wal_append_insert takes the id and reads the row) */
+    uint32_t pending = 0;
+    for (uint32_t cid = 0; cid < db->class_cnt; cid++) {
+        db_table *t = &db->tables[cid];
+        if (!t->slabs) continue; /* tables are created lazily */
+        uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
+        for (uint32_t g = 0; g < total; g++) {
+            if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
+            db_row *r = (db_row *)(t->slabs[g / DB_SLAB_ROWS] +
+                                   (size_t)(g % DB_SLAB_ROWS) * t->row_size);
+            if (wo_wal_append_insert(&nw, db, cid, r->id) != 0) goto fail;
+            if (++pending >= WO_WAL_COMPACT_FLUSH) {
+                if (wo_wal_commit(&nw) != 0) goto fail;
+                pending = 0;
+            }
+        }
+    }
+    if (wo_wal_commit(&nw) != 0) goto fail; /* the tail batch */
+    if (fsync(nw.fd) != 0) goto fail;       /* commit fdatasyncs; this is for the size */
+
+    uint64_t new_bytes = nw.off;
+    wo_wal_close(&nw);
+
+    /* THE SWITCH. Every crash point either side of this is safe. */
+    if (rename(tmp, w->path) != 0) {
+        (void)unlink(tmp);
+        return -1;
+    }
+    sync_parent_dir(w->path);
+
+    /* the old descriptor now refers to an unlinked inode */
+    if (w->fd >= 0) close(w->fd);
+    w->fd = open(w->path, O_RDWR);
+    if (w->fd < 0) return -1; /* the log is correct on disk; this process cannot go on */
+    w->off = new_bytes;
+    w->len = 0;
+    w->compacted_bytes = new_bytes;
+    return 0;
+
+fail:
+    wo_wal_close(&nw);
+    (void)unlink(tmp);
+    return -1; /* the live log is untouched and still usable */
+}
+
 static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     rbuf r = {payload, payload + len, 0};
     uint8_t kind = rd_u8(&r);
