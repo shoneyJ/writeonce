@@ -393,7 +393,8 @@ int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id) {
 }
 
 int wo_wal_commit(wo_wal *w) {
-    if (!w->len) return 0;
+    if (!w->len) return 0; /* empty commits are not batches; do not count them */
+    if (w->len > w->stat_peak_staged) w->stat_peak_staged = w->len;
     size_t at = 0;
     while (at < w->len) {
         ssize_t n = pwrite(w->fd, w->buf + at, w->len - at, (off_t)(w->off + at));
@@ -425,8 +426,16 @@ static void wal_die(const wo_wal *w, const char *op, uint32_t nrec) {
 void wo_wal_stage_fatal(const wo_wal *w) { wal_die(w, "staging a record", 1); }
 
 void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
+    int staged = w->len != 0;
     int rc = wo_wal_commit(w);
-    if (rc == 0) return;
+    if (rc == 0) {
+        if (staged) { /* count the barrier that actually happened */
+            w->stat_batches++;
+            w->stat_records += nrec;
+            if (nrec > w->stat_peak_batch) w->stat_peak_batch = nrec;
+        }
+        return;
+    }
     wal_die(w, rc == WO_WAL_ERR_SYNC ? "fdatasync" : "pwrite", nrec);
 }
 

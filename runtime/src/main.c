@@ -125,6 +125,16 @@ static void gc_pump(wo_vm *vm) {
     }
 }
 
+/* databasev2 4: one diagnostic line about group commit, opt-in via
+ * WO_WAL_STATS. Off by default because it would otherwise pollute the output
+ * of every durable program; a gate that wants the numbers asks for them. */
+static void wal_stats_report(const wo_wal *w) {
+    if (!w || !getenv("WO_WAL_STATS")) return;
+    fprintf(stderr, "walstats batches=%llu records=%llu peak_batch=%llu peak_staged=%llu\n",
+            (unsigned long long)w->stat_batches, (unsigned long long)w->stat_records,
+            (unsigned long long)w->stat_peak_batch, (unsigned long long)w->stat_peak_staged);
+}
+
 int main(int argc, char **argv) {
     wo_module mod;
     char err[256];
@@ -245,7 +255,7 @@ int main(int argc, char **argv) {
         if (wo_engine_start(&mod, heap_mb << 20, nshards) != 0) {
             fprintf(stderr, "wovm: cannot start %u shards\n", nshards);
             wo_engine_stop();
-            if (VM.rt.wal) wo_wal_close(&WAL);
+            if (VM.rt.wal) { wal_stats_report(&WAL); wo_wal_close(&WAL); }
             wo_db_destroy(&DB);
             wo_vm_destroy(&VM);
             wo_module_free(&mod);
@@ -304,7 +314,7 @@ int main(int argc, char **argv) {
      * unwind. */
     if (argv_val) wo_drop_kind(&VM.rt, WO_K_MULTI, argv_val);
     wo_engine_stop(); /* join + destroy the worker shards before the primary */
-    if (VM.rt.wal) wo_wal_close(&WAL);
+    if (VM.rt.wal) { wal_stats_report(&WAL); wo_wal_close(&WAL); }
     wo_db_destroy(&DB);
     gc_pump(&VM);
     wo_vm_destroy(&VM);

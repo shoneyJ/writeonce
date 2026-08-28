@@ -337,6 +337,91 @@ class Mixer {
   }
 }
 
+-- databasev2 4 part A: every op a durable write, C at once.
+--
+-- Why this leg exists. `mix` writes on one op in ten with C=4, so at most a
+-- handful of writes are ever in flight and group commit has almost nothing to
+-- batch: measured mean batch 1.01 over 3112 barriers, peak 3. That is a
+-- property of the WORKLOAD, not of the mechanism, and without a write-
+-- concurrent leg the iteration's payoff cannot be evaluated either way.
+--
+-- Updates rather than inserts: comparable to what `mixwrite` measures, and the
+-- row count stays flat so a long run does not turn into a growth test.
+-- Histogram kind 2, because a replayed store still holds the seeding run's
+-- kind-0/1 Hist rows and merging those would report someone else's latencies.
+class WJob {
+  ops:  Int
+  seed: Int
+  kmod: Int
+}
+
+class WMixer {
+  id: Int
+  fn receive(msg: WJob) {
+    let hw: map<Int, Int> = {};
+    let s = msg.seed;
+    let i = 0;
+    while i < msg.ops {
+      s = lcg(s);
+      let key = s % msg.kmod;
+      let o0 = time.ticks();
+      for r in from x in Item where x.k == key take 1 select x {
+        r.v = r.v + 1;
+      }
+      hist_add(hw, time.ticks() - o0);
+      i = i + 1;
+    }
+    hist_dump(hw, 2);
+    insert Meta { tag: "wmixdone${self.id}", val: msg.ops };
+  }
+}
+
+fn wmix_mode(total: Int, c: Int) -> Int {
+  let kmod = meta_val("kmod");
+  if kmod < 1 {
+    print_err("wmix: seed first");
+    return 1;
+  }
+  let per = total / c;
+  if per < 1 {
+    per = 1;
+  }
+  let wall0 = time.ticks();
+  let i = 0;
+  while i < c {
+    let a: actor WJob = spawn WMixer { id: i };
+    send(a, WJob { ops: per, seed: 4242 + i * 7919, kmod: kmod });
+    i = i + 1;
+  }
+  let done = 0;
+  while done < c {
+    time.sleep(20);
+    done = 0;
+    i = 0;
+    while i < c {
+      if meta_val("wmixdone${i}") >= 0 {
+        done = done + 1;
+      }
+      i = i + 1;
+    }
+  }
+  let wall = time.ticks() - wall0;
+  let hw: map<Int, Int> = {};
+  let nw = 0;
+  for x in from x in Hist select x {
+    if x.kind == 2 {
+      if has(hw, x.b) {
+        set(hw, x.b, get(hw, x.b) + x.c);
+      } else {
+        set(hw, x.b, x.c);
+      }
+      nw = nw + x.c;
+    }
+  }
+  report("wmix", nw, wall, hw);
+  return 0;
+}
+
 fn mix_mode(total: Int, c: Int) -> Int {
   let kmod = meta_val("kmod");
   if kmod < 1 {
@@ -465,7 +550,7 @@ fn all_mode(n: Int) -> Int {
 fn usage() -> Int {
   print_err("usage: db-bench <mode>");
   print_err("  all N | seed N | read N | query N | write N | wal N");
-  print_err("  mix N C | msgrate N | verify | verify-acked M");
+  print_err("  mix N C | wmix N C | msgrate N | verify | verify-acked M");
   return 2;
 }
 
@@ -507,6 +592,17 @@ fn main(args: multi Text) -> Int {
   }
   if args[0] == "msgrate" {
     return msgrate_mode(n);
+  }
+  if args[0] == "wmix" {
+    if len(args) < 3 {
+      return usage();
+    }
+    let wc = parse_int(args[2]);
+    if wc == nil or wc < 1 {
+      print_err("db-bench: <c> must be a positive number");
+      return 2;
+    }
+    return wmix_mode(n, wc);
   }
   if args[0] == "mix" {
     if len(args) < 3 {

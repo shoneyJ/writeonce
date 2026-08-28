@@ -55,6 +55,15 @@ typedef struct wo_wal {
     /* staged batch: appended by wal_append_*, flushed by wal_commit */
     uint8_t *buf;
     size_t len, cap;
+    /* databasev2 4: group-commit diagnostics. Batching is worthless if
+     * batches are always one, and a throughput change would then have come
+     * from somewhere else — so the mechanism is measured, not assumed.
+     * peak_staged also settles whether the batch needs a cap with a number
+     * instead of a guess. Reported at exit under WO_WAL_STATS. */
+    uint64_t stat_batches;     /* non-empty commits */
+    uint64_t stat_records;     /* records those commits carried */
+    uint64_t stat_peak_batch;  /* most records in one barrier */
+    uint64_t stat_peak_staged; /* most bytes staged behind one barrier */
 } wo_wal;
 
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;

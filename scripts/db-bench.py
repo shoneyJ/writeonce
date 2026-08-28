@@ -26,6 +26,13 @@ QUICK = "--quick" in sys.argv
 WRITE_BASELINE = "--write-baseline" in sys.argv
 
 N = 2000 if QUICK else 20000
+# databasev2 4: the write-concurrent leg. `mix` writes on one op in ten with
+# C=4, so group commit had almost nothing to batch there (measured mean batch
+# 1.01, peak 3) — a property of that workload, not of the mechanism. C is high
+# on purpose: batching is a function of how many writes are in flight, and
+# measured mean batch rose 1.13 -> 1.76 -> 5.35 at C = 4 -> 16 -> 64.
+WMIX_N = 4000 if QUICK else 20000
+WMIX_C = 32 if QUICK else 64
 MSG_N = 20000 if QUICK else 200000
 WAL_N = 800 if QUICK else 4000
 CRASH_REPS = 1 if QUICK else 3
@@ -95,6 +102,55 @@ def parse_metrics(lines, into, prefix):
         if m:
             into[f"{prefix}.msgrate.msgs_sec"] = int(m.group(2))
 
+def wmix_leg(metrics, tag, env, data):
+    """Every op a durable write, WMIX_C at once — the leg that actually
+    exercises group commit.
+
+    It reuses the store the `all` run just seeded (a fresh process replays it,
+    so `kmod` is there) and asks the runtime for its group-commit counters via
+    WO_WAL_STATS. The counters matter as much as the throughput: if batches are
+    always one the mechanism is inert and any throughput change came from
+    somewhere else, so a payoff would be attributed to the wrong cause."""
+    e = dict(env); e["WO_WAL_STATS"] = "1"
+    rc, lines, _, _ = run(["wmix", str(WMIX_N), str(WMIX_C)], e, 1800)
+    if rc != 0:
+        bad(f"{tag}.wmix", f"rc={rc} tail={lines[-2:]}")
+        return
+    ops = p50 = p99 = None
+    batches = records = peak_batch = peak_staged = None
+    for l in lines:
+        f = l.split()
+        if f and f[0] == "wmix" and len(f) == 5:
+            ops, p50, p99 = int(f[2]), int(f[3]), int(f[4])
+        elif f and f[0] == "walstats":
+            kv = dict(x.split("=", 1) for x in f[1:] if "=" in x)
+            batches = int(kv.get("batches", 0)); records = int(kv.get("records", 0))
+            peak_batch = int(kv.get("peak_batch", 0)); peak_staged = int(kv.get("peak_staged", 0))
+    if ops is None or batches is None:
+        bad(f"{tag}.wmix", "no report or no walstats line")
+        return
+    metrics[f"{tag}.wmix.ops_sec"] = ops
+    metrics[f"{tag}.wmix.p50us"] = p50
+    metrics[f"{tag}.wmix.p99us"] = p99
+    metrics[f"{tag}.wmix.peak_batch"] = peak_batch
+    metrics[f"{tag}.wmix.peak_staged"] = peak_staged
+    mean = round(records / batches, 2) if batches else 0
+    metrics[f"{tag}.wmix.mean_batch"] = mean
+    ok(f"{tag}.wmix: {ops} ops/sec, p50 {p50}us p99 {p99}us; "
+       f"{records} records over {batches} barriers (mean {mean}, peak {peak_batch}), "
+       f"peak staged {peak_staged}B")
+    # The gate that matters. Only the MULTI-shard leg can batch: a worker's
+    # statements marshal to shard 0 and queue, while shard-0 statements run
+    # inline and commit one at a time by design (see db.c).
+    if tag.endswith(".sN"):
+        if mean > 1.0:
+            ok(f"{tag}.wmix batches form (mean {mean} > 1)")
+        else:
+            bad(f"{tag}.wmix-inert",
+                f"mean batch {mean} — group commit is not engaging, so a "
+                f"throughput change would not be attributable to it")
+
+
 def campaign():
     metrics = {}
     ncores = os.cpu_count() or 1
@@ -123,6 +179,8 @@ def campaign():
                         bad(f"{tag}.mix.fds", f"grew {fdg}")
                     else:
                         ok(f"{tag}.mix.fds flat")
+            if flavor == "durable" and data:
+                wmix_leg(metrics, tag, env, data)
             if data: shutil.rmtree(data, ignore_errors=True)
         # msgrate once per shard count, RAM only (no store dependency)
     for shards in (1, ncores):
@@ -225,6 +283,13 @@ def tolerance_for(key):
     mix*: scheduling-dependent small counts. read/query + all .sN.*:
     machine jitter, and at post-index-µs scale a 1µs histogram step on a
     7µs p50 is already 14%."""
+    # databasev2 4: batch SHAPE follows arrival timing, so gating it tightly
+    # would gate the scheduler — what must hold is that the mean exceeds one
+    # under contention, which wmix_leg asserts directly against the live run.
+    # wmix's throughput and latency are NOT waived: they are the payoff, and a
+    # blanket waiver here would have left the whole leg ungated.
+    if key.endswith((".wmix.mean_batch", ".wmix.peak_batch", ".wmix.peak_staged")):
+        return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -236,7 +301,7 @@ def write_baseline(metrics):
                                 "tolerances come from tolerance_for() in the driver"}}
     for k, v in sorted(metrics.items()):
         if k.endswith(("rss_growth_kb", "fd_growth")): continue
-        higher = k.endswith(("ops_sec", "msgs_sec"))
+        higher = k.endswith(("ops_sec", "msgs_sec", "mean_batch", "peak_batch"))
         floor_div = 8 if k.endswith("msgs_sec") else 4
         # latency floors never sit below 100µs: at post-index µs scale a
         # 4×1µs "catastrophe line" is noise; the tripwire means "µs became
