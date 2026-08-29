@@ -33,7 +33,7 @@ features cannot collide.
 | --- | --- | --- |
 | `commit-history` | this file and the workflow it records | ✅ on `dev` |
 | `db2-keys` | databasev2 2 — `resident: keys` storage and readers | on `dev` (`125bd09`, `08abd09`, `0c97fa4`, `f606fc9`). **Not ready**: the loader still refuses the annotation, and updates on such a table are refused rather than implemented |
-| `porch-store` | porch store tables + Limiter middleware (Phases A, B) | on `dev` (`519d411`, `5b1e82a`). In progress — a later phase was still uncommitted when this was replayed |
+| `porch-store` | porch store tables, Limiter and Idempotent middleware (Phases A, B, C) | on `dev` (`519d411`, `5b1e82a`, `aee7926`). **In progress**: Phase C was uncommitted work from a parallel session, committed as-is, and calls `json.decode`/`json.encode` with no `use json` import |
 | `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
 
 ## Cherry-picks onto master
