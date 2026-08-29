@@ -1,0 +1,24 @@
+-- porch/middleware/store.wo — store-backed middleware tables.
+-- Two purpose-shaped @table classes for rate limiting and idempotency.
+-- Iteration 1 of the porch track.
+
+-- Rate limiter: fixed-window counter.
+-- Key format: "ip:192.168.1.1" or "principal:alice"
+-- Window = start of current window in time.ticks (µs monotonic)
+@table(name: "rate_limit_counters", index: [key])
+class RateLimitCounter {
+  key:   Text @unique
+  count: Int
+  window: Int
+}
+
+-- Idempotency: stored response for replay.
+-- Key format: "idem:keyheader" or "idem:keyheader:sha256(method|path|body)"
+-- Response = JSON-encoded Resp {status, headers, body} (allowlist: status, body, content-type)
+-- created_at = time.ticks when stored (µs monotonic) for lazy expiry
+@table(name: "idempotency_keys", index: [key])
+class IdempotencyKey {
+  key:        Text @unique
+  response:   Text
+  created_at: Int
+}
