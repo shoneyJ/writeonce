@@ -51,7 +51,8 @@ pub class Idempotent {
       return r;
     }
 
-    if raw / 1_000_000_000 == 2 {
+    let outcome = raw / 1_000_000_000;
+    if outcome == 2 {
       -- Same key, a different request: refuse rather than serve the
       -- other request's response.
       let r = Resp { status: 422, headers: {}, body: "{\"error\":\"idempotency key reused with a different request\"}" };
@@ -59,11 +60,13 @@ pub class Idempotent {
       return r;
     }
 
-    -- Stored (fresh miss or matched replay): the actor already committed
-    -- this row before returning, so it is there to read.
+    -- outcome 1 (2xx/3xx, a durable replay target) or 3 (4xx/5xx, a
+    -- one-read relay only): either way the actor already committed this
+    -- row before returning, so it is there to read right now.
     let hits = from k in IdempotencyKey where k.key == key take 1 select k;
     if len(hits) == 0 { return server_error(); }
-    let stored = json.decode(hits[0].response) as IdempotentStoredResp;
+    let row = hits[0];
+    let stored = json.decode(row.response) as IdempotentStoredResp;
     if stored == nil { return server_error(); }
     -- `.. ""` forces a fresh, independently-owned Text for every key/value
     -- copied out of the decoded record: json.decode's Text values do not
@@ -72,7 +75,15 @@ pub class Idempotent {
     -- otherwise) — concat is documented to always allocate new owned text.
     let hdrs: map<Text, Text> = {};
     for k, v in stored.headers { hdrs[k .. ""] = v .. ""; }
-    return Resp { status: stored.status, headers: hdrs, body: stored.body .. "" };
+    let result = Resp { status: stored.status, headers: hdrs, body: stored.body .. "" };
+    if outcome == 3 {
+      -- Never a replay target: delete now so the next attempt with this
+      -- key (an immediate retry, most likely) is a genuine miss and
+      -- re-executes the handler, instead of caching a transient failure
+      -- for the TTL.
+      delete row;
+    }
+    return result;
   }
 }
 

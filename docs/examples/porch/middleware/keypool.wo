@@ -128,14 +128,24 @@ class KeyActor {
       -- unguarded, same as kind 1's own insert: this actor is the only
       -- writer for this key (messages are processed one at a time), so a
       -- @unique violation here would mean something is genuinely wrong,
-      -- not a race to paper over. A swallowed failure would answer
-      -- outcome 1 (stored) for a response that was never actually
+      -- not a race to paper over. A swallowed failure would answer a
+      -- stored/ephemeral outcome for a response that was never actually
       -- written -- let it trap instead, so a saturated-looking 503 is
       -- what the middleware answers, never a false success.
       insert IdempotencyKey {
         key: msg.key, response: stored_json, created_at: now, digest: msg.digest
       };
-      return pool_pack(1, 0);
+      if resp.status >= 200 and resp.status < 400 {
+        -- 2xx/3xx: a real answer worth replaying for the TTL.
+        return pool_pack(1, 0);
+      }
+      -- 4xx/5xx: the row above exists only so the scalar-only reply can
+      -- still hand the caller its exact response (WO-E226 -- a Resp
+      -- cannot ride the mailbox). It must NOT survive to answer a later
+      -- retry: caching a transient 500 for the TTL (default 24h) would
+      -- make every retry fail until it expires, worse than no idempotency
+      -- at all. idempotent.wo reads this row once and deletes it.
+      return pool_pack(3, 0);
     }
 
     -- kind 1: count.
@@ -235,10 +245,12 @@ pub fn pool_count(pool: Pool, key: Text, limit: Int, window: Int) -> Verdict {
 }
 
 -- The begin accessor idempotent.wo calls: hides pool_select/call the same
--- way pool_count does. Returns the raw packed outcome — 1 means the
--- response is now in IdempotencyKey (fresh store or matched replay), 2
--- means a digest mismatch (422, nothing to read). Never 0: idempotent.wo's
--- own `try ... catch (e) nil` cannot tell a literal 0 reply apart from a
+-- way pool_count does. Returns the raw packed outcome — 1 means a 2xx/3xx
+-- response is durably in IdempotencyKey (fresh store or matched replay);
+-- 2 means a digest mismatch (422, nothing to read); 3 means a 4xx/5xx
+-- miss whose row is a one-read-then-delete relay only, never a replay
+-- target (see the kind-2 arm above). Never 0: idempotent.wo's own
+-- `try ... catch (e) nil` cannot tell a literal 0 reply apart from a
 -- trapped call, so the encoding avoids it on purpose. A trapped call (a
 -- saturated mailbox) propagates to the caller uncaught, same as
 -- pool_count -- the middleware's own try/catch answers 503.

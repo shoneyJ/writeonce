@@ -778,10 +778,27 @@ class ExecCount {
   }
 }
 
+@table(name: "flaky_marks")
+class FlakyMark {
+  n: Int
+}
+
+-- reviewer finding, task 4 follow-up: a transient 5xx must not be cached
+-- for the TTL -- fails on the first call, succeeds on every call after.
+class FlakyHandler {
+  fn handle(req: Req) -> Resp {
+    let n = len(from f in FlakyMark select f);
+    insert FlakyMark { n: 1 };
+    if n == 0 { return server_error(); }
+    return ok_json("{\"ok\":true}");
+  }
+}
+
 fn build_app(slot: actor PoolMsg) -> App {
   let app = App { middleware: [], routes: [] };
   let p = Pool { actors: [PoolSlot { a: slot }] };
   app.post("/create", Idempotent { key_header: "idempotency-key", pool: p, inner: SlowHandler {} });
+  app.post("/flaky", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler {} });
   app.get("/execs", ExecCount {});
   return app;
 }
@@ -904,6 +921,22 @@ if ip_out="$("$WOC" --emit "$IP" -o "$IP/idempotent_check.wob" 2>&1)"; then
   [[ "$ec" == "3" ]] \
     && ok "idempotent concurrency: exactly one execution despite 2 parallel duplicates (ExecMark row count = 3)" \
     || bad "idempotent-cc-execs" "ExecMark count=$ec want 3"
+
+  # ---- 18d. gate leg: a transient 5xx is never replayed (reviewer finding) --
+  # The miss path must persist only a 2xx/3xx response. FlakyHandler fails
+  # on its first-ever call and succeeds on every call after; hit twice with
+  # the SAME idempotency key, the answer must be 500 then 200 -- caching the
+  # 500 would make every retry fail for the rest of the TTL (default 24h),
+  # a worse outcome than no idempotency at all.
+  f1="$(curl -s -o "$W/i11a.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg11-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT/flaky")"
+  f2="$(curl -s -o "$W/i11b.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg11-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT/flaky")"
+  [[ "$f1" == "500" && "$f2" == "200" ]] \
+    && ok "idempotent: a transient 5xx is not replayed -- retry re-executes (500 then 200)" \
+    || bad "idempotent-5xx-not-cached" "first=$f1 second=$f2 want 500 then 200"
 
   kill -TERM "$SRV" 2>/dev/null
   for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
