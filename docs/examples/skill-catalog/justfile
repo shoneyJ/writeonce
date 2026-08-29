@@ -1,0 +1,7 @@
+ROOT := source_directory() / "../../.."
+default: accept
+build:
+    {{ROOT}}/compiler/_build/default/bin/woc .
+    @ls -la target/skill-catalog
+accept:
+    {{ROOT}}/scripts/skill-catalog-accept.sh

@@ -1,0 +1,9 @@
+name        = "skill-catalog"
+version     = "0.1.0"
+description = "Iteration 9g corpus: skillhost's embedded-SQLite skill catalog, translated 1:1 to the writeonce query surface — proving it needs no new grammar"
+
+[runtime]
+wo = ">= 0.1"
+
+[build]
+runtime = "../../../runtime/wovm"

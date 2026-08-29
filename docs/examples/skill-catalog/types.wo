@@ -1,0 +1,17 @@
+-- Mirrors ~/projects/skillhost's `skills` table (src/catalog/catalog.cpp):
+--   CREATE TABLE skills (name TEXT PRIMARY KEY, description TEXT NOT NULL,
+--     location TEXT NOT NULL, root TEXT NOT NULL, parent TEXT);
+--   CREATE INDEX skills_parent ON skills(parent);
+-- TEXT PRIMARY KEY -> @unique name; the parent self-reference is a ?ref, and
+-- the `skills_parent` index is what the `children` backlink reads. This is
+-- iteration 9g's corpus #1: proving the writeonce query surface already
+-- covers a real embedded-SQLite app.
+@table(name: "skills", index: [name], index: [parent])
+class Skill {
+  name:        Text @unique
+  description: Text
+  location:    Text
+  root:        Text
+  parent:      ?ref Skill              -- SQLite's nullable `parent` column
+  children:    backlink Skill.parent   -- the inverse the skills_parent index serves
+}

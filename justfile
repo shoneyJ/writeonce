@@ -116,6 +116,10 @@ mod log-watcher "docs/examples/log-watcher"
 # (scan/where/select/order/take, update, delete). `just employee` runs it.
 mod employee "docs/examples/employee"
 
+# iteration 9g corpus: skillhost's embedded-SQLite catalog translated to the
+# writeonce query surface (proves it needs no new grammar). `just skill-catalog`
+mod skill-catalog "docs/examples/skill-catalog"
+
 # conformance harness (plan 3): walks tests/corpus/{run,compile-fail,trap},
 # exact outcome per fixture kind — see docs/plan/oop-vm/02-corpus.md.
 # Fails loudly (and names the recipe to run) if woc or wovm isn't built.

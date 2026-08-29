@@ -1,0 +1,17 @@
+-- iteration 9g: skillhost's grammar on the 9b surface. count(query) for
+-- COUNT(*), backlink-emptiness for a correlated NOT EXISTS. No new grammar.
+@table(name: "skills", index: [name], index: [parent])
+class Skill {
+  name: Text
+  parent: ?ref Skill
+  children: backlink Skill.parent
+}
+fn main() {
+  let git = insert Skill { name: "git", parent: nil }
+  insert Skill { name: "git-commit", parent: git }
+  insert Skill { name: "docker", parent: nil }
+  print_int(count(from x in Skill select x))
+  for s in from x in Skill where len(x.children) == 0 order by x.name select x {
+    print(s.name)
+  }
+}

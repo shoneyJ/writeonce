@@ -1,0 +1,72 @@
+-- skill-catalog — iteration 9g corpus proof. Each mode is a 1:1 translation
+-- of one statement skillhost issues against its embedded SQLite; the point is
+-- that ALL of them run on the query surface iteration 9b already shipped, with
+-- NO new grammar. skillhost's SQL, translated:
+--
+--   INSERT INTO skills (...) VALUES (?,...)          -> insert Skill { ... }
+--   SELECT ... WHERE name = ?                        -> where s.name == n
+--   SELECT ... ORDER BY name                         -> order by s.name
+--   SELECT COUNT(*) FROM skills                       -> count(from ... select ...)
+--   SELECT ... WHERE NOT EXISTS (child) ORDER BY name -> where len(s.children) == 0
+--
+-- The NOT EXISTS correlated subquery becomes a backlink emptiness check — the
+-- idiomatic writeonce form, needing no subquery construct.
+
+fn main(args: multi Text) -> Int {
+  if len(args) >= 1 and args[0] == "seed" { return seed(); }
+  if len(args) >= 1 and args[0] == "list" { return list(); }
+  if len(args) >= 1 and args[0] == "roots" { return roots(); }
+  if len(args) >= 1 and args[0] == "count" { return count_all(); }
+  if len(args) >= 2 and args[0] == "get" { return get(args[1]); }
+  print_err("usage: skill-catalog seed | list | roots | count | get <name>");
+  return 1;
+}
+
+-- INSERT + the app's duplicate-name handling (skillhost checks SQLITE_CONSTRAINT;
+-- writeonce catches the @unique trap).
+fn seed() -> Int {
+  let git = try insert Skill { name: "git", description: "version control",
+                               location: ".agents/git", root: ".agents/git", parent: nil }
+            catch (e) nil;
+  if git == nil { print("SEED-DUP catalog already seeded"); return 3; }
+  insert Skill { name: "git-commit", description: "make a commit",
+                 location: ".agents/git/commit", root: ".agents/git", parent: git };
+  insert Skill { name: "git-rebase", description: "rebase a branch",
+                 location: ".agents/git/rebase", root: ".agents/git", parent: git };
+  insert Skill { name: "docker", description: "containers",
+                 location: ".agents/docker", root: ".agents/docker", parent: nil };
+  print("SEEDED 4 skills");
+  return 0;
+}
+
+-- SELECT ... FROM skills ORDER BY name
+fn list() -> Int {
+  for s in from x in Skill order by x.name select x {
+    print("${s.name}\t${s.description}");
+  }
+  return 0;
+}
+
+-- SELECT ... WHERE NOT EXISTS (SELECT 1 FROM skills c WHERE c.parent = s.name)
+--   ORDER BY name  -- the childless skills (skillhost's list-roots)
+fn roots() -> Int {
+  for s in from x in Skill where len(x.children) == 0 order by x.name select x {
+    print(s.name);
+  }
+  return 0;
+}
+
+-- SELECT COUNT(*) FROM skills
+fn count_all() -> Int {
+  print_int(count(from x in Skill select x));
+  return 0;
+}
+
+-- SELECT ... FROM skills WHERE name = ?
+fn get(name: Text) -> Int {
+  let hits = from x in Skill where x.name == name take 1 select x;
+  if len(hits) == 0 { print_err("no such skill: ${name}"); return 1; }
+  let s = hits[0];
+  print("${s.name}\t${s.description}\t${s.location}\t${s.root}");
+  return 0;
+}

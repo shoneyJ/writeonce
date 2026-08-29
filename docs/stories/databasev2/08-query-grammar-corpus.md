@@ -24,6 +24,21 @@ readiness: refine
 > applied to a whole application: **an embedded-SQLite app is a grammar
 > corpus; each one analysed drives a grammar increment.**
 >
+> **Implemented 2026-08-16 (branch `query-grammar`).** The forks resolved
+> empirically, and the result is the strongest possible one for the method:
+> **corpus #1 (skillhost) forced NO new query grammar.** `count(<query>)` and
+> `len(<query>)` already work (fork 2), and skillhost's correlated `NOT EXISTS`
+> is a backlink emptiness — `where len(x.children) == 0` — using only 9b
+> machinery (fork 1). So `exists`/`not exists` was **not** built: the method is
+> "add only what a corpus uses," and this corpus uses nothing new. Deliverable
+> is the parity sample (`docs/examples/skill-catalog`, all five skillhost
+> statements translated 1:1, `scripts/skill-catalog-accept.sh` 7/0) and this
+> recorded conclusion — not speculative subquery machinery.
+>
+> **Still open (no corpus yet):** the general `exists`/`not exists` construct,
+> for a correlation a backlink cannot express (a correlation on a non-relation
+> column). It enters when a corpus forces it, exactly as the method prescribes.
+
 > **No spec exists yet.** The forks in *Info* are genuine decisions.
 
 ## Why this iteration exists
