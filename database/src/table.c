@@ -1086,6 +1086,36 @@ int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id) {
     return 0;
 }
 
+int wo_row_next_id(const wo_db *db, uint32_t class_id, size_t *cursor, uint64_t *id_out) {
+    if (class_id >= db->class_cnt) return 0;
+    const db_table *t = &db->tables[class_id];
+    if (!t->row_size) return 0;
+    if (wo_table_is_keys_resident(db, class_id)) {
+        /* the id map IS the live set here: hkeys non-zero, hvals holding an
+         * offset + 1 */
+        for (size_t j = *cursor; j < t->hcap; j++) {
+            if (t->hkeys[j] && t->hvals[j]) {
+                *id_out = t->hkeys[j];
+                *cursor = j + 1;
+                return 1;
+            }
+        }
+        *cursor = t->hcap;
+        return 0;
+    }
+    {   /* resident: the bitmap, in slab order, exactly as before */
+        uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
+        for (size_t g = *cursor; g < total; g++) {
+            if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
+            *id_out = slot_row((db_table *)t, (uint32_t)g)->id;
+            *cursor = g + 1;
+            return 1;
+        }
+        *cursor = total;
+        return 0;
+    }
+}
+
 int wo_table_is_keys_resident(const wo_db *db, uint32_t class_id) {
     if (class_id >= db->class_cnt) return 0;
     return (db->classes[class_id].flags & WO_CLASSF_RESIDENT_KEYS) != 0u;

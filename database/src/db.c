@@ -136,15 +136,13 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         /* materialize the id list up front — the 9b cursor-stability rule:
          * the loop body then point-reads each id, so a row updated mid-loop
          * (even an indexed column) cannot disturb the iteration */
-        db_table *t = &db->tables[cid];
-        if (t->row_size) {
-            uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
-            for (uint32_t g = 0; g < total; g++) {
-                if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
-                db_row *row =
-                    (db_row *)(t->slabs[g / DB_SLAB_ROWS] + (size_t)(g % DB_SLAB_ROWS) * t->row_size);
-                if (wo_multi_push(ids, row->id) != 0) return WO_T_OOM;
-            }
+        {   /* databasev2 2 (5d): through the shared iterator, because a
+             * keys-resident table's bitmap is empty by construction — this
+             * walk would otherwise see no rows at all */
+            size_t cur = 0;
+            uint64_t rid;
+            while (wo_row_next_id(db, cid, &cur, &rid))
+                if (wo_multi_push(ids, rid) != 0) return WO_T_OOM;
         }
         R[A] = (uint64_t)(uintptr_t)ids;
         return 0;
@@ -157,14 +155,17 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "no such field";
             return WO_T_DB;
         }
-        db_row *row = wo_row_ptr(db, cid, id);
+        db_row *row = wo_row_borrow(db, cid, id, msg);
         if (!row) {
             *msg = "no such row";
             return WO_T_DB;
         }
         int ok = 1;
+        /* decode BEFORE releasing: for a keys-resident row the slots point at
+         * the borrow's scratch, which release frees */
         uint64_t v = wo_val_decode_vm(db, &vm->rt, db->classes[cid].kinds[field],
                                       row->slots[field], &ok, msg);
+        wo_row_release(db, cid, row);
         if (!ok) return WO_T_OOM;
         R[A] = v;
         return 0;
@@ -210,21 +211,29 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                     return 0;
                 }
             }
-            uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
-            for (uint32_t g = 0; g < total; g++) {
-                if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
-                db_row *row =
-                    (db_row *)(t->slabs[g / DB_SLAB_ROWS] + (size_t)(g % DB_SLAB_ROWS) * t->row_size);
-                int eq;
-                if (kind == WO_K_TEXT) {
-                    const wo_str *want = (const wo_str *)(uintptr_t)key;
-                    const db_text *have = (const db_text *)(uintptr_t)row->slots[col];
-                    eq = (!want && !have) ||
-                         (want && have && want->len == have->len &&
-                          memcmp(want->data, have->bytes, have->len) == 0);
-                } else
-                    eq = row->slots[col] == key;
-                if (eq && wo_multi_push(ids, row->id) != 0) return WO_T_OOM;
+            {   /* databasev2 2 (5d): the filtered scan, through the shared
+                 * iterator and a borrow. The borrow is released BEFORE any
+                 * exit from the loop body: the scratch is per-table, so a
+                 * borrow leaked past a `return` would make the next borrow on
+                 * that table fail as a nested one. */
+                size_t cur = 0;
+                uint64_t rid;
+                const char *bmsg = NULL;
+                while (wo_row_next_id(db, cid, &cur, &rid)) {
+                    db_row *row = wo_row_borrow(db, cid, rid, &bmsg);
+                    if (!row) continue;
+                    int eq;
+                    if (kind == WO_K_TEXT) {
+                        const wo_str *want = (const wo_str *)(uintptr_t)key;
+                        const db_text *have = (const db_text *)(uintptr_t)row->slots[col];
+                        eq = (!want && !have) ||
+                             (want && have && want->len == have->len &&
+                              memcmp(want->data, have->bytes, have->len) == 0);
+                    } else
+                        eq = row->slots[col] == key;
+                    wo_row_release(db, cid, row);
+                    if (eq && wo_multi_push(ids, rid) != 0) return WO_T_OOM;
+                }
             }
         }
         R[A] = (uint64_t)(uintptr_t)ids;
@@ -340,11 +349,15 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
                 }
                 if (prc == 1) break; /* probed; reply fields already set */
             }
-            uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
-            for (uint32_t g = 0; g < total; g++) {
-                if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
-                db_row *row =
-                    (db_row *)(t->slabs[g / DB_SLAB_ROWS] + (size_t)(g % DB_SLAB_ROWS) * t->row_size);
+            {   /* databasev2 2 (5d): shared iterator + borrow, with the borrow
+                 * released before the realloc that can `break` — a borrow held
+                 * past an exit would poison the table's scratch. */
+            size_t cur = 0;
+            uint64_t rid;
+            const char *bmsg = NULL;
+            while (wo_row_next_id(db, q->cid, &cur, &rid)) {
+                db_row *row = wo_row_borrow(db, q->cid, rid, &bmsg);
+                if (!row) continue;
                 if (q->op == WO_B_DB_PROBE) {
                     int eq;
                     if (kind == WO_K_TEXT || kind == WO_K_BYTES) {
@@ -357,8 +370,9 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
                               memcmp(want->bytes, have->bytes, have->len) == 0);
                     } else
                         eq = row->slots[col] == q->slots[0];
-                    if (!eq) continue;
+                    if (!eq) { wo_row_release(db, q->cid, row); continue; }
                 }
+                wo_row_release(db, q->cid, row);
                 if (n == cap) {
                     uint32_t ncap = cap ? cap * 2 : 16;
                     uint64_t *no = realloc(out, (size_t)ncap * 8u);
@@ -372,7 +386,8 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
                     out = no;
                     cap = ncap;
                 }
-                out[n++] = row->id;
+                out[n++] = rid;
+            }
             }
         }
         if (!q->status) {
@@ -387,7 +402,7 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             q->msg = "no such field";
             break;
         }
-        db_row *row = wo_row_ptr(db, q->cid, q->id);
+        db_row *row = wo_row_borrow(db, q->cid, q->id, &m);
         if (!row) {
             q->status = WO_T_DB;
             q->msg = "no such row";
@@ -395,7 +410,10 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
         }
         int ok = 1;
         q->val_kind = db->classes[q->cid].kinds[q->field];
+        /* clone BEFORE releasing: a keys-resident row's slots point into the
+         * borrow's scratch, which release frees */
         q->val = wo_db_val_clone(db->classes, q->val_kind, row->slots[q->field], &ok);
+        wo_row_release(db, q->cid, row);
         if (!ok) {
             q->status = WO_T_OOM;
             q->msg = "out of memory";
