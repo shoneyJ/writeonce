@@ -5,6 +5,7 @@
 
 use time
 use http
+use json
 
 -- Idempotent middleware: before (check/replay) + after (store on miss).
 -- Key composition: "idem:${header}" or "idem:${header}:${sha256(method|path|body)}"
