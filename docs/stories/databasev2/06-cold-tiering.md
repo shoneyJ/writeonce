@@ -1,7 +1,7 @@
 ---
 track: databasev2
 iteration: "6"
-status: pending
+status: hold
 readiness: refine
 ---
 
@@ -16,7 +16,8 @@ readiness: refine
 > This iteration was written to implement a `cold` mode. That mode no longer
 > exists: the brainstorm replaced it with `resident: all | keys`, and
 > **`resident: keys` is the ceiling-raising mechanism** — indexes resident, rows
-> read from the log by offset. It is iteration 2's tasks 5c/5d, not this file's.
+> read from the log by offset. It is iteration 2's tasks 5c/5d — which landed
+> 2026-08-29 — not this file's.
 >
 > Its premise was also specifically *rejected*, not merely relocated. This
 > iteration assumed a **user-space resident working set** with faulting and an
@@ -26,7 +27,8 @@ readiness: refine
 > position `exploration/postgresql/buffer-and-checkpoint.md` already argued and
 > the reason the engine avoids `O_DIRECT`.
 >
-> **What may still be left:** if measurement after 5c/5d shows the page cache
+> **What may still be left:** if measurement after 5c/5d (landed 2026-08-29,
+> still unmeasured — that is iteration 2's task 7) shows the page cache
 > insufficient for some workload, a user-space working set becomes arguable
 > again — but only with that number in hand, which is the opposite of how this
 > file was written.

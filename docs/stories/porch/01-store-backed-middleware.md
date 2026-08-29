@@ -1,14 +1,22 @@
 ---
 track: porch
 iteration: "1"
-status: pending
-readiness: refine
+status: in-progress
+readiness: ready
 ---
 
 # porch 1 — store-backed middleware: rate limiting and idempotency
 
 > Part of [Story — `porch`, the writeonce web framework](00-story.md).
 > Source: [the Fiber parity study](../../plan/exploration/fiber/00-fiber-parity.md) §2.
+> Spec: [`2026-08-29-porch-store-backed-middleware-design.md`](../../superpowers/specs/2026-08-29-porch-store-backed-middleware-design.md).
+>
+> **Rewritten 2026-08-29** after the brainstorm settled every fork. The
+> iteration's premise changed: it was scoped as the cheapest slice because it
+> needed "only a `@table` and `time.ticks`", and it now serializes through an
+> actor pool. That is not new runtime surface — `spawn`, `send`, `call`,
+> `monitor` and `time.after` all landed with the actor-lifecycle work — but it
+> is more than the original framing, and the reason is in History below.
 >
 > **First deliberately because it is the cheapest.** Both features need only a
 > `@table` and `time.ticks`, both of which already exist — no new builtin, no
@@ -30,6 +38,35 @@ readiness: refine
   needed since it grew a checkout.
 - **Establish the store convention for iterations 2–4.** Sessions and CSRF will
   want the same shape. Decide it once, here, on the cheap slice.
+
+## The design, as settled
+
+One rule, inherited by porch 2 (sessions) and 3 (CSRF):
+
+> **Serialize through an actor. Persist in a `@table`. Never read-modify-write
+> from a handler fiber.**
+
+| Concern | Owner |
+| --- | --- |
+| per-key ordering, in-flight ownership, waiter lists | a sharded pool of actors, selected by hash of the key |
+| counters, stored responses, request digests | `@table` rows — WAL-durable, replayed at boot |
+| deciding whether a request passes | the actor, never the handler fiber |
+
+The read-modify-write is the defect both features shared: a handler reads a
+count, adds one and writes it back, so two interleaved fibers lose an
+increment. An actor processes one message at a time, so routing both features
+through the pool buys per-key serialization with no locks and no polling. A
+pool rather than one actor because ordering is needed *per key*, never
+globally.
+
+## Progress
+
+| Phase | State |
+| --- | --- |
+| A — store convention | ✅ `519d411` — two purpose-shaped tables. **Outstanding**: the request-digest column the refusal criterion needs |
+| B — rate limiter | ⚠️ **superseded** — `5b1e82a` built the store-after shape; see History |
+| C — idempotency | ⚠️ **superseded** — `aee7926` built the same shape; `5c3544d` fixed its missing `use json`, which had made the whole porch library uncompilable |
+| D — gate and ledger | ⬜ not started; the restart leg is the one that must not be skipped |
 
 ## Phases
 
@@ -101,8 +138,20 @@ readiness: refine
   arrives, **then** it is refused rather than answered with the other request's
   response.
 - **Given** two identical keyed requests in flight at once, **when** both are
-  dispatched, **then** exactly one executes and the other gets the decided
-  answer (replay or 409), never a partial write.
+  dispatched, **then** exactly one executes and the other receives that one's
+  stored response — never a refusal, never a partial write. *(Restated
+  2026-08-29: this used to permit 409. Blocking supersedes it — the duplicate
+  parks on `call` until the owner reports.)*
+- **Given** N concurrent requests for one limiter key, **when** they are
+  counted, **then** the total is exactly N and no increment is lost. *(Added:
+  unreachable before the pool, and the defect that most undermines a limiter.)*
+- **Given** a saturated actor pool, **when** a request arrives, **then** it is
+  refused with 503 rather than served uncounted. *(Added: fail-closed, because
+  saturating the pool must not become the limiter's bypass.)*
+
+None of these are met yet — Phase D owns the gate, and B and C are being
+rebuilt. The concurrency legs need genuine parallelism: a test that cannot
+fail before the fix is not a test.
 
 ## Out Of Scope
 
@@ -117,15 +166,23 @@ readiness: refine
 - **Distributed limiting across processes.** One program owns its database;
   cross-program state is language
   [databasev2 9](../databasev2/09-cross-program-tables.md).
-- **A background expiry sweeper.** No timer exists (`time.after` is still a
-  reserved builtin id in `wob.h`). Lazy pruning on access, deliberately.
+- **A background expiry sweeper.** Lazy pruning on access, deliberately —
+  porch has no scheduler. **Corrected 2026-08-29**: this used to say "no timer
+  exists (`time.after` is still a reserved builtin id)". That is false —
+  `time.after` is builtin 90 and implemented (`runtime/src/builtin.c`, via
+  `wo_vm_timer_after`), along with `spawn` (68), `send` (69), `call` (88) and
+  `monitor` (89). The exclusion stands on its own merits: `time.after` is a
+  one-shot timer aimed at an actor, not a recurring sweep. But the *reason*
+  given was wrong, and it is the claim that made this iteration look cheaper
+  than it is.
 - **The TTL cache middleware** — language
   [iteration 18](../language-runtime-database/18-memory-db-features.md) owns it,
   spec already approved. Do not build a second cache here.
 
 ## Info
 
-Forks the spec must settle:
+**All three settled 2026-08-29** — kept with their outcomes rather than
+deleted, so the reasoning survives:
 
 1. **One store or two?** A single generic key/value/expiry table serving both
    features, or a purpose-shaped table each. Leaning two: the columns genuinely
@@ -142,4 +199,50 @@ Forks the spec must settle:
    cookies yet (iteration 2), so this is cheap to decide now and expensive to
    retrofit later.
 
-Nothing here needs a new runtime primitive, which is the point of going first.
+Nothing here needs a new runtime primitive — still true, and now verified
+rather than assumed: `call` is "a send that WAITS", whose park/reply protocol
+lives in the VM, and that is exactly the blocking primitive the design needs.
+
+**Outcomes:**
+
+1. **Two stores**, as leaned. Confirmed by construction in `519d411`; a
+   generic table would have forced a counter and a response body through the
+   same `Text` column.
+2. **The peer address, unless the app declares otherwise.** A `trust_proxy`
+   flag defaulting to off: off keys on `net.peer(req.conn)`, which cannot be
+   forged; on keys on the left-most `X-Forwarded-For` entry. Only the deployer
+   knows the topology, so the declaration belongs in their code. The built
+   version branched on `req.ctx["verified_proxy"]`, which nothing anywhere
+   sets — a dead branch. Verifying the proxy is genuinely story 35's, and
+   `client_ip` says so in its own comment.
+3. **`content-type` only.** Settled as built, and settled correctly: replaying
+   a stored `Set-Cookie` or a stale `Date` is wrong, and cookies arrive in
+   iteration 2, so this is cheap now and expensive later.
+
+## History
+
+**2026-08-29 — Phases B and C superseded before review.** Both were built
+against the original framing and both store the response *after* the handler
+returns. Three of the seven original criteria cannot hold in that shape, which
+is why this is a rebuild rather than a patch:
+
+- **In-flight collision was undetectable.** `before` finds nothing and passes;
+  the row appears in `after`, once the handler has already run. Concurrent
+  duplicates both miss and both execute — there is no reservation to collide
+  on.
+- **The 10-second in-flight heuristic was inverted.** The timestamp is stamped
+  when the response is *stored*, not when the request *starts*, so it fired on
+  legitimate fast replays — the common case — answering 409 where the stored
+  response was owed, and could never fire on a genuinely concurrent request.
+- **"Reused key, different body is refused" was unreachable.** The body digest
+  was folded into the lookup key, so a different body was a different key and
+  simply missed. Safe — the wrong response is never served — but nothing looks
+  the bare key up, so nothing can refuse. The digest becomes a column.
+
+Two defects independent of the redesign, both since fixed or scheduled: the
+limiter emitted a monotonic tick into `X-RateLimit-Reset`, where a client
+expects a Unix timestamp; and it used delete-then-insert where assigning to a
+row field writes through (`compiler/src/emit.ml`), which doubled WAL traffic
+and left a window where a failed insert after a successful delete silently lost
+the counter — handing out a free window, the exact inverse of the durability
+this iteration exists to demonstrate.

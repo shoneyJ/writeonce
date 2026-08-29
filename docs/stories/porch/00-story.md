@@ -49,7 +49,7 @@ risky work starts.
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [Store-backed middleware](01-store-backed-middleware.md) | rate limiting + idempotency over a `@table` store | nothing new — starts today |
+| 1 | [Store-backed middleware](01-store-backed-middleware.md) | rate limiting + idempotency over a `@table` store, serialized through a sharded actor pool | 🔄 in progress; needs no new primitive (`call`/`send`/`monitor`/`time.after` all landed) |
 | 2 | [Randomness and cookies](02-randomness-and-cookies.md) | a `random_bytes` runtime builtin, repeated response headers, `Cookie:` parsing, signed cookies | a language-track builtin (phase A) |
 | 3 | [Sessions](03-sessions.md) | server-side sessions, idle + absolute timeout, revocation | 2 |
 | 4 | [CSRF](04-csrf.md) | token mint/verify, trusted origins, single-use tokens | 2, 3 |

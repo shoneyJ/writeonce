@@ -152,6 +152,8 @@ first (pure `.wo` cannot express it yet).
 
 | Item | State |
 | --- | --- |
+| Rate limiting (fixed window, durable) | 🔶 tables + a first limiter exist (`middleware/store.wo`, `limiter.wo`); the counting path is being rebuilt to serialize through an actor pool, because read-modify-write from a handler fiber loses increments — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
+| Idempotent replay of unsafe requests | 🔶 tables + a first middleware exist (`middleware/idempotent.wo`); being rebuilt to block on the in-flight owner rather than store-after-completion, which cannot detect a collision at all — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
 | Transaction-per-request middleware (commit on 2xx, roll back otherwise) | ⏸ **v2** — needs iteration 18's `transaction { }` |
 | Cancellation → rollback | ⏸ arc landed; still needs v2's `transaction { }` (iteration 18) |
 | Migration generation + review workflow | ⬜ recorded future story (script-based destructive migrations) |

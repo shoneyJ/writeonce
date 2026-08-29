@@ -58,12 +58,13 @@ chain: 6
 > none; stop-the-world, with the pause measured against a stated budget rather
 > than assumed acceptable.
 >
-> **The coupling that would otherwise be found late:** compaction moves every
-> record, so it **invalidates every WAL offset**
+> **The coupling that would otherwise be found late — and was found in time:**
+> compaction moves every record, so it **invalidates every WAL offset**
 > [iteration 2](02-table-storage-modes.md)'s `resident: keys` stores. The
-> compactor rebuilds the offset map as it writes. Recorded now because iteration
-> 2's storage half is unimplemented, so nothing breaks today — it would break
-> later, looking like corruption rather than a design gap.
+> compactor rebuilds the offset map as it writes. Recorded here while iteration
+> 2's storage half was still unimplemented; **it landed 2026-08-29 and the
+> obligation was discharged** (`f606fc9`), including a worse failure this note
+> did not predict — see the hazard section at the end.
 >
 > **Measured on master 2026-08-28, grounding the whole iteration:** `seed 20000`
 > leaves a 986 614-byte log; 20 000 updates take it to **2 590 262 bytes with the
@@ -126,12 +127,11 @@ Met:
 
 Outstanding:
 
-- **The `resident: keys` offset map.** Compaction moves every record, so it
-  invalidates every WAL offset [iteration 2](02-table-storage-modes.md) stores.
-  The compactor must rebuild that map as it writes. **Nothing fails today**
-  because iteration 2's storage half is unimplemented — which is exactly why the
-  obligation is written at the compactor in `wal.c`, where the next implementer
-  hits it, rather than only in a spec they may not read.
+- ~~**The `resident: keys` offset map.**~~ **Discharged 2026-08-29 by
+  iteration 2's task 5d** (`f606fc9`). The obligation written at the compactor
+  in `wal.c` did its job: the implementer hit it there. See the hazard section
+  below for what it caught — and for the second, worse failure it did not
+  predict.
 - **The pause is O(live rows).** At ~181 MB/s a 1 GB live set implies ~5.5 s,
   past any interactive budget. Incremental or forked copying was deliberately
   not bought in advance; this is the number to buy it against.
@@ -242,3 +242,30 @@ the snapshot persists the map and compaction is forbidden while any
 `resident: keys` table is live. **The first is almost certainly right**,
 but it means compaction cannot be written as a pure file operation that
 ignores in-memory table state.
+
+### Settled 2026-08-29 — and the hazard was only half the danger
+
+The first shape was implemented, in iteration 2's task 5d (`f606fc9`).
+Compaction re-points each row as it writes it, using a value-only map update
+that cannot rehash, so a walk in progress stays valid and no per-row buffer of
+new offsets is needed. Compaction is therefore **not** a pure file operation,
+exactly as predicted above.
+
+**What this section did not predict is the failure that would actually have
+struck first.** It described stored offsets going stale — a pointer into a
+rewritten file. But the compactor walked the slab **bitmap**, and a
+keys-resident row holds no bitmap bit: its slot returns to the free list when
+the payload is dropped. Every such row would therefore have been omitted from
+the new log altogether. That is silent data loss, not a bad pointer, and
+rebuilding offsets would never have caught it — the rows would simply have been
+gone.
+
+Both failure modes are now pinned by `test_keys_resident_survives_compaction`,
+which rewrites rows in hash order so the offsets genuinely move; a map left
+un-repointed lands on another row and fails the identity check rather than
+passing by luck.
+
+A failure *after* any row has been re-pointed is fatal by design: the map would
+name offsets inside a temp file that the failure path unlinks, and the intact
+original log replays correctly, so stopping is strictly better than serving
+wrong rows.

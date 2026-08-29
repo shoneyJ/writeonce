@@ -162,10 +162,17 @@ before its mechanism existed; the history is in
 | 10 | [Keypair attach auth](10-keypair-attach-auth.md) *(was language 21)* | program identity as a keypair; mutual challenge–response | 9 |
 
 ```
-1 ──▶ 2 ──▶ 5 ──▶ 6
-      │            ▲
-      3 ──▶ 4 ─────┘
-7, 8 independent
+An arrow points AT the iteration that NEEDS the other.
+
+1 ──▶ 2 ◀── 3      2 needs 1 (budget from a measurement) and 3 (the
+      │            offset map survives compaction). Since 5d, 3 also
+      ▼            calls 2's row API — the coupling runs both ways.
+      5            5 needs 2. Nothing needs 5.
+
+4                  composes with 3 on the WAL commit path; NEITHER
+                   needs the other. Executed 4 then 3 (chain 5, then 6).
+6                  superseded by 2 — not sequenced.
+7, 8               independent.
 9 ──▶ 10
 ```
 
@@ -178,6 +185,21 @@ Amended 2026-08-27: the original rationale sequenced **6** as the ceiling-raiser
 after 3, 4 and 5. `resident: keys` took that role into iteration 2, so 6 is
 largely superseded and 5 is no longer a prerequisite for anything on the
 critical path.
+
+**Corrected 2026-08-29 — the graph above used to say the opposite of this
+prose.** It drew `2 ──▶ 3 ──▶ 4`, which reads as 3 needing 2 and 4 needing 3.
+Both are backwards. 2 needs 3 (the offset map), and the execution order that
+actually happened is **4 before 3** — 4's part A landed 2026-08-28, 3 landed
+2026-08-29, which is also what the `chain` field says (4 is chain 5, 3 is
+chain 6). The retired `2 ──▶ 5 ──▶ 6` path was still drawn as well. Arrows now
+point at the dependency, not at the reader's guess.
+
+**The coupling between 2 and 3 runs both ways as of 5d.** 3's compactor calls
+2's row API — the iterator, the offset accessor and its setter — because
+compaction moves every record and must re-point the map it invalidates. That
+was the hazard 3 recorded; it is now discharged, and it means compaction is not
+a pure file operation. Full review in
+[`00-databasev2-chain-review.md`](../../00-databasev2-chain-review.md).
 
 ## What this track does NOT own
 

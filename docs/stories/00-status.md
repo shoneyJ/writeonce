@@ -67,6 +67,55 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-29 — databasev2 2 tasks 5c/5d, and a branch consolidation
+
+**Implemented last time (2026-08-29):** `resident: keys` storage and every read
+path. Rows are stored keys-only — the payload dropped after the WAL barrier,
+the id map holding a log offset instead of a slab slot — and read back through
+a borrow/release accessor. The scans go through a row iterator that walks the
+id map for a keys table and the bitmap for a resident one, deliberately, since
+hash order would reorder every unordered query.
+
+**The obligation databasev2 3 left at the compactor is discharged**, and it
+caught more than it predicted. The recorded hazard was that compaction moves
+records and invalidates stored offsets. True — but the compactor walked the
+slab *bitmap*, which a keys-resident row has no bit in, so every such row would
+have been omitted from the new log outright. Silent data loss, not a bad
+pointer, and rebuilding offsets would never have caught it. Records are now
+moved byte-for-byte and re-pointed as they land.
+
+**What is NOT done, and why the annotation is still refused:** updating a
+keys-resident row. It lives in the log with no slab slot to mutate, so writing
+into the borrow's scratch would discard the write *silently* — the one failure
+this iteration must not ship. It needs read-modify-append. `wo_row_update_field`
+and its slot variant refuse explicitly, and the loader still rejects the
+annotation, with its message corrected to say so.
+
+**Also this session:** every branch consolidated to `dev` and `master` only.
+Three could not be replayed and are preserved as annotated tags rather than
+merged or discarded — `archive/cleanup-pre-existing-changes` carries the Rust
+runtime master deleted, and `archive/ipc-attach` + `archive/keypair-auth`
+refactor the same row-API functions `db2-keys` rewrote. That last one is not a
+merge conflict but an integration task: iteration 9c transfers ownership of
+`vals` on failure, while the keys-resident arm returns early without freeing, so
+a merge that compiles and passes could still leak or double-free.
+
+**porch 1 brainstormed and specced.** Phases B and C are superseded before
+review — both store the response after the handler returns, which cannot detect
+an in-flight collision at all. Design settled: serialize through a sharded actor
+pool, persist in a `@table`. Found and fixed en route: `docs/examples/porch/`
+did not typecheck at all, for want of a `use json`.
+
+**.dev / reference projects used:** the PostgreSQL checkpoint study
+(`docs/plan/exploration/postgresql/buffer-and-checkpoint.md`) for the compaction
+shape; the Fiber parity study for porch 1's scope.
+
+**Dependencies unblocked:** nothing was blocked. databasev2 2's remaining tasks
+6 and 7 depend only on iteration 2.
+
+**Next steps:** databasev2 2 task 6 (the two runtime refusals) and task 7
+(measure, gate, close out), then the porch 1 implementation plan.
+
 ### Landed 2026-08-29 — databasev2 3, WAL checkpoint (the chain's last link)
 
 **Implemented last time (2026-08-29):** compaction. The log used to grow forever

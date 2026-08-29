@@ -186,13 +186,19 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         /* databasev2 2: `resident: keys` PARSES and sets this bit, but the
          * storage half (tasks 5c/5d) is not implemented — rows are still fully
          * resident. Accepting it would be an annotation the compiler honours
-         * in name only: a developer could declare a 120 GB table keys-resident,
-         * see it compile, and be OOM-killed. Refuse until the storage lands. */
+         * in name only.
+         *
+         * Narrowed 2026-08-29 (databasev2 2, 5c/5d): storage, boot, the read
+         * paths and checkpoint survival all landed. What has NOT landed is
+         * UPDATE — a keys-resident row lives in the log with no slab slot to
+         * mutate, so an update needs read-modify-append. Until that exists the
+         * annotation is still refused, because a table you can insert into and
+         * read but not update is a worse promise than one that never compiled. */
         if (flags & WO_CLASSF_RESIDENT_KEYS)
-            BAIL("class %u declares `resident: keys`, which is NOT IMPLEMENTED "
-                 "yet — rows are still fully resident, so the annotation would "
-                 "be honoured in name only. Remove it until databasev2 2 tasks "
-                 "5c/5d land; `resident: all` is what actually runs",
+            BAIL("class %u declares `resident: keys`, which is INCOMPLETE: rows "
+                 "are stored and read keys-only, but UPDATING one is not "
+                 "implemented (it needs read-modify-append). Remove it until "
+                 "databasev2 2 lands updates; `resident: all` is what runs",
                  (unsigned)i);
         if ((flags & WO_CLASSF_VOLATILE) && (flags & WO_CLASSF_RESIDENT_KEYS))
             BAIL("class %u: durable:false with resident:keys — rows would have "
