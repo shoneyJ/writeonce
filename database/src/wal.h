@@ -68,6 +68,11 @@ typedef struct wo_wal {
      * log against THIS rather than an estimate of the live set — estimating
      * would mean estimating Text, and the compactor knows the true number. */
     uint64_t compacted_bytes;
+    /* databasev2 3: the preallocation this log was opened with. Compaction
+     * MUST give the replacement the same one: the WAL is preallocated so that
+     * appends never extend the file, which is what lets fdatasync alone be the
+     * ack barrier. A replacement without it silently weakens durability. */
+    uint64_t prealloc;
 } wo_wal;
 
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;

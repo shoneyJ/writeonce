@@ -315,6 +315,7 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
         if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX) < sizeof tmp)
             (void)unlink(tmp);
     }
+    w->prealloc = prealloc;
     if (prealloc) {
         /* best-effort: a filesystem without fallocate still works */
         (void)posix_fallocate(w->fd, 0, (off_t)prealloc);
@@ -502,7 +503,14 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
     (void)unlink(tmp); /* a stale one would otherwise be appended to */
 
     wo_wal nw;
-    if (wo_wal_open(&nw, tmp, 0) != 0) return -1;
+    /* THE REPLACEMENT MUST BE PREALLOCATED LIKE THE ORIGINAL. The WAL is
+     * preallocated so appends never extend the file, which is precisely what
+     * makes fdatasync sufficient as the ack barrier — no file-size metadata
+     * has to reach disk for an acked record to be readable. Opening the
+     * replacement with prealloc 0 silently removed that property, and the
+     * crash battery caught it: records acked shortly before a kill went
+     * missing, with the log otherwise intact and self-consistent. */
+    if (wo_wal_open(&nw, tmp, w->prealloc) != 0) return -1;
 
     /* one INSERT per live row, in the existing grammar, through the existing
      * append path — so replay needs no second decoder and ids are preserved
