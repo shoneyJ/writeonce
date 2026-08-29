@@ -1,96 +1,100 @@
--- porch/middleware/limiter.wo — rate limiter middleware backed by @table.
--- Fixed-window counter with hybrid key (net.peer default, client_ip when verified proxy).
--- Iteration 1 of the porch track.
+-- porch/middleware/limiter.wo — rate limiter middleware. All counting is
+-- delegated to the key pool (keypool.wo): this file never reads or writes
+-- RateLimitCounter and holds no window arithmetic of its own. That is what
+-- makes the pool's per-key serialization guarantee actually apply — a
+-- store call here would be a second, uncoordinated writer.
+-- Iteration 1 of the porch track, porch-store task 3.
 
 use time
 use http
 use net
 
--- Limiter counts requests per key per window.
--- On limit exceeded: returns 429 with Retry-After and X-RateLimit headers.
--- Key selection: if req.ctx["verified_proxy"] == "true" → client_ip(req) (XFF left-most),
--- else → net.peer(req.conn) (unforgeable "ip:port" or "unix").
--- Falls back to "principal:<req.principal>" when authenticated.
+-- Limiter counts requests per key per window by calling into the shared
+-- pool and acting on the Verdict it returns.
+-- On limit exceeded: 429 with Retry-After and X-RateLimit-* headers.
+-- On a saturated pool (the key's actor mailbox is full under load): 503
+-- with Retry-After. The request is refused, never let through — a limiter
+-- that stops limiting under load is worse than no limiter, since
+-- saturating the pool would otherwise be the bypass.
+-- Key selection: req.principal wins when non-empty. Otherwise, trust_proxy
+-- false (default) keys on net.peer(req.conn), which cannot be forged;
+-- trust_proxy true keys on client_ip(req) (the left-most X-Forwarded-For
+-- entry) — the app author's assertion that a proxy they control overwrites
+-- that header.
+-- The refused/saturated paths stamp their own headers directly on the Resp
+-- they return. The allowed path has no Resp yet to stamp — before() stashes
+-- the numbers on req.ctx, and `after` (same shape as Cors: register the one
+-- value as both Mw and Aw) copies them onto whatever response the chain
+-- eventually produces.
 pub class Limiter {
-  max:    Int
-  window: Int  -- window size in µs (e.g., 60_000_000 = 60s)
+  pool:        Pool
+  limit:       Int
+  window:      Int   -- window size in µs (e.g., 60_000_000 = 60s)
+  trust_proxy: Bool = false
 
   fn before(mut req: Req) -> ?Resp {
-    let key = limiter_key(req);
-    let now = time.ticks();
+    let key = limiter_key(self, req);
+    let v = try pool_count(self.pool, key, self.limit, self.window) catch (e) nil;
 
-    -- Read existing counter
-    let hits = from c in RateLimitCounter where c.key == key take 1 select c;
-    let counter = RateLimitCounter { key: key, count: 0, window: now };
-    let is_new_window = false;
-
-    if len(hits) == 0 {
-      is_new_window = true;
-    } else {
-      counter = hits[0];
-      -- Check if window has elapsed
-      if now - counter.window > self.window {
-        counter.count = 0;
-        counter.window = now;
-        is_new_window = true;
-      }
+    if v == nil {
+      let r = Resp { status: 503, headers: {}, body: "{\"error\":\"rate limiter saturated\"}" };
+      set_header(r, "content-type", "application/json");
+      set_header(r, "retry-after", "1");
+      return r;
     }
 
-    -- Increment and check limit
-    counter.count = counter.count + 1;
-
-    -- Headers for both allowed and limited responses
-    let limit_hdr = "${self.max}";
-    let remaining = self.max - counter.count;
+    let limit_hdr = "${v.limit}";
+    let remaining = v.limit - v.count;
     if remaining < 0 { remaining = 0; }
-    let remaining_hdr = "${remaining}";
-    let reset_sec = (counter.window + self.window) / 1_000_000;
-    let reset_hdr = "${reset_sec}";
+    let reset_hdr = "${v.reset_at / 1000}"; -- wall-clock ms -> Unix seconds
 
-    -- Store the counter (insert new or delete+insert for update)
-    if is_new_window {
-      try insert RateLimitCounter { key: counter.key, count: counter.count, window: counter.window } catch (e) nil;
-    } else {
-      -- Update existing: delete old, insert new
-      let to_delete = from c in RateLimitCounter where c.key == key take 1 select c;
-      if len(to_delete) > 0 { delete to_delete[0]; }
-      try insert RateLimitCounter { key: counter.key, count: counter.count, window: counter.window } catch (e) nil;
-    }
-
-    -- Check limit
-    if counter.count > self.max {
+    if v.allowed == false {
+      let retry_sec = ((v.reset_at - time.now()) / 1000) + 1;
       let r = Resp { status: 429, headers: {}, body: "{\"error\":\"rate limit exceeded\"}" };
       set_header(r, "content-type", "application/json");
       set_header(r, "x-ratelimit-limit", limit_hdr);
       set_header(r, "x-ratelimit-remaining", "0");
       set_header(r, "x-ratelimit-reset", reset_hdr);
-      set_header(r, "retry-after", "${((counter.window + self.window - now) / 1_000_000) + 1}");
+      set_header(r, "retry-after", "${retry_sec}");
       return r;
     }
 
     -- Allowed: attach headers to request for after-chain to stamp on response
     req.ctx["ratelimit_limit"] = limit_hdr;
-    req.ctx["ratelimit_remaining"] = remaining_hdr;
+    req.ctx["ratelimit_remaining"] = "${remaining}";
     req.ctx["ratelimit_reset"] = reset_hdr;
 
     return nil;
   }
+
+  -- Stamps the allowed-path numbers before() stashed. A refused/saturated
+  -- request never reaches here with anything to stamp (before() only
+  -- writes ctx on the allowed path), so this is a no-op for those.
+  fn after(req: Req, mut r: Resp) {
+    let limit_hdr = req.ctx["ratelimit_limit"];
+    let remaining_hdr = req.ctx["ratelimit_remaining"];
+    let reset_hdr = req.ctx["ratelimit_reset"];
+    if limit_hdr == nil { return; }
+    if remaining_hdr == nil { return; }
+    if reset_hdr == nil { return; }
+    r.headers["x-ratelimit-limit"] = limit_hdr;
+    r.headers["x-ratelimit-remaining"] = remaining_hdr;
+    r.headers["x-ratelimit-reset"] = reset_hdr;
+  }
 }
 
--- Default hybrid key function: net.peer unless verified proxy
-pub fn limiter_key(req: Req) -> Text {
-  if req.ctx["verified_proxy"] == "true" {
-    let ip = client_ip(req);
-    if ip != "" { return "ip:${ip}"; }
+-- Key selection: identity first, then the trust_proxy-gated peer address.
+pub fn limiter_key(self: Limiter, req: Req) -> Text {
+  if req.principal != "" { return "principal:${req.principal}"; }
+  if self.trust_proxy {
+    return "ip:${client_ip(req)}";
   }
-  -- net.Conn is a scalar (fd), so req.conn should work directly as the fd argument
   let peer = net.peer(req.conn);
   if peer != "" { return "ip:${peer}"; }
-  if req.principal != "" { return "principal:${req.principal}"; }
   return "unknown";
 }
 
 -- Helper to build a Limiter with defaults
-pub fn make_limiter(max: Int, window_sec: Int) -> Limiter {
-  return Limiter { max: max, window: window_sec * 1_000_000 };
+pub fn make_limiter(pool: Pool, limit: Int, window_sec: Int) -> Limiter {
+  return Limiter { pool: pool, limit: limit, window: window_sec * 1_000_000 };
 }

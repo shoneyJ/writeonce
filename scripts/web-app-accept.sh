@@ -527,6 +527,188 @@ else
   bad "keypool" "compile: $(printf '%s' "$kp_out" | head -1)"
 fi
 
+# ---- 17. porch-store task 3: the limiter delegates to the pool ----------
+# Same flattening trick as the keypool leg, but this one boots a REAL
+# server: fiber-per-connection (mirrors web-app's ConnWorker — see App's
+# own doc comment), Limiter registered as both Mw and Aw (Cors's own
+# dual-role shape) so the allowed path's X-RateLimit-* headers actually
+# reach the response, not just req.ctx. trust_proxy is on so every
+# backgrounded client can land on ONE key by sending the same
+# X-Forwarded-For value, regardless of its own ephemeral source port.
+#
+# ConnWorker's own state carries a bare actor handle, never a Pool: Pool
+# is aliased by design (pool_count reads the same value on every request)
+# and the compiler refuses a traced value in actor state or a message
+# (WO-E222 — spawn placement makes every actor potentially remote). Each
+# connection rebuilds a throwaway one-slot Pool from that handle instead.
+LP="$W/limiter-check"
+cp -r "$ROOT/docs/examples/porch" "$LP"
+rm -f "$LP/wo.toml"
+rm -rf "$LP/target"
+cat >"$LP/limiter_check_main.wo" <<'WOEOF'
+use net
+use env
+use http
+use router
+use middleware
+
+class Ping {
+  fn handle(req: Req) -> Resp { return ok_text("pong"); }
+}
+
+fn build_app(slot: actor PoolMsg, limit: Int, window_us: Int) -> App {
+  let app = App { middleware: [], routes: [] };
+  let p1 = Pool { actors: [PoolSlot { a: slot }] };
+  let p2 = Pool { actors: [PoolSlot { a: slot }] };
+  app.use_mw(Mw { m: Limiter { pool: p1, limit: limit, window: window_us, trust_proxy: true } });
+  app.use_after(Aw { a: Limiter { pool: p2, limit: limit, window: window_us, trust_proxy: true } });
+  app.get("/ping", Ping {});
+  return app;
+}
+
+class Conn { fd: net.Conn }
+
+class ConnWorker {
+  slot:   actor PoolMsg
+  limit:  Int
+  window: Int
+  fn receive(msg: Conn) {
+    let app = build_app(self.slot, self.limit, self.window);
+    app.handle_conn(msg.fd, 2000, 2000);
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 3 {
+    print_err("usage: limiter_check <port> <limit> <window_us>");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil { print_err("bad port"); return 2; }
+  let limit = parse_int(args[1]);
+  if limit == nil { print_err("bad limit"); return 2; }
+  let window = parse_int(args[2]);
+  if window == nil { print_err("bad window"); return 2; }
+  let ka: actor PoolMsg = spawn KeyActor {};
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    let c = net.accept_dl(srv, 250);
+    if c != nil {
+      let w: actor Conn = spawn ConnWorker { slot: ka, limit: limit, window: window };
+      send(w, Conn { fd: c });
+    }
+  }
+}
+WOEOF
+
+if lp_out="$("$WOC" --emit "$LP" -o "$LP/limiter_check.wob" 2>&1)"; then
+  ok "limiter: compiles against the pool (Mw+Aw, trust_proxy)"
+
+  LPORT=$((PORT + 1))
+  lhit() { # xff-value -> "STATUS\nHEADERS..." for one request keyed on it
+    curl -sD - -o /dev/null --max-time 5 -H "X-Forwarded-For: $1" -H "Host: a" "http://127.0.0.1:$LPORT/ping" | tr -d '\r'
+  }
+  lstatus() { printf '%s' "$1" | head -1 | awk '{print $2}'; }
+  lwait_listen() { # from-line
+    for _ in $(seq 1 40); do
+      tail -n "+$1" "$SRVLOG" 2>/dev/null | grep -q listening && return
+      sleep 0.1
+    done
+  }
+
+  # ---- 17a. threshold: of LIMIT+1 requests, first LIMIT pass, last 429 ----
+  LDATA="$W/limiter-data"; mkdir -p "$LDATA"
+  LLIMIT=5
+  LWINDOW_US=60000000
+  printf '\n===== limiter check — port %s =====\n' "$LPORT" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$LDATA" "$WOVM" "$LP/limiter_check.wob" "$LPORT" "$LLIMIT" "$LWINDOW_US" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  lwait_listen "$LEGFROM"
+
+  codes=""
+  last=""
+  for i in $(seq 1 $((LLIMIT + 1))); do
+    last="$(lhit 6.6.6.6)"
+    codes="$codes$(lstatus "$last") "
+  done
+  want=""
+  for i in $(seq 1 $LLIMIT); do want="${want}200 "; done
+  want="${want}429 "
+  [[ "$codes" == "$want" ]] \
+    && ok "limiter threshold: first $LLIMIT pass, request $((LLIMIT + 1)) is 429" \
+    || bad "limiter-threshold" "codes=$codes want=$want"
+  printf '%s\n' "$last" | grep -qi '^retry-after:' \
+    && ok "limiter 429 carries Retry-After" \
+    || bad "limiter-429-retry-after" "$(printf '%s' "$last" | head -1)"
+  printf '%s\n' "$last" | grep -qi '^x-ratelimit-remaining: 0' \
+    && ok "limiter 429 x-ratelimit-remaining is 0" \
+    || bad "limiter-429-remaining" "$(printf '%s' "$last" | head -1)"
+
+  allowed="$(lhit 6.6.6.7)"
+  printf '%s\n' "$allowed" | grep -qi "^x-ratelimit-limit: $LLIMIT\$" \
+    && ok "limiter allowed path carries X-RateLimit-* headers (Mw+Aw)" \
+    || bad "limiter-allowed-headers" "$(printf '%s' "$allowed" | head -1)"
+
+  # ---- 17b. SIGTERM + restart: same WO_DATA, same key, still limited ----
+  kill -TERM "$SRV" 2>/dev/null
+  stopped=1
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { stopped=0; break; }; sleep 0.1; done
+  [[ $stopped -eq 0 ]] && ok "limiter: SIGTERM stops the server" || bad "limiter-stop" "still running"
+  SRV=""
+
+  printf '\n===== limiter check — restart, port %s =====\n' "$LPORT" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$LDATA" "$WOVM" "$LP/limiter_check.wob" "$LPORT" "$LLIMIT" "$LWINDOW_US" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  lwait_listen "$LEGFROM"
+  r="$(lhit 6.6.6.6)"
+  [[ "$(lstatus "$r")" == "429" ]] \
+    && ok "limiter restart: counter replayed from the WAL, still limited" \
+    || bad "limiter-restart" "got $(lstatus "$r")"
+  kill -TERM "$SRV" 2>/dev/null
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  SRV=""
+
+  # ---- 17c. concurrency: N genuinely-parallel requests, exact count -------
+  # Backgrounded shell clients (curl `&` + explicit-PID `wait`), not asyncio
+  # in one process — a sequential version of this passes against the OLD
+  # read-modify-write limiter too and proves nothing. The exact count is
+  # read off ONE more sequential probe's X-RateLimit-Remaining afterward,
+  # never off the table directly: if the N parallel calls lost an
+  # increment, that number is wrong by exactly the lost count.
+  LCDATA="$W/limiter-cc-data"; mkdir -p "$LCDATA"
+  LCN=30
+  LCLIMIT=1000
+  printf '\n===== limiter check — concurrency, port %s =====\n' "$LPORT" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$LCDATA" "$WOVM" "$LP/limiter_check.wob" "$LPORT" "$LCLIMIT" "$LWINDOW_US" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  lwait_listen "$LEGFROM"
+
+  cc_pids=()
+  for i in $(seq 1 $LCN); do
+    ( curl -s -o /dev/null --max-time 10 -H "X-Forwarded-For: 6.6.6.8" -H "Host: a" "http://127.0.0.1:$LPORT/ping" ) &
+    cc_pids+=("$!")
+  done
+  for p in "${cc_pids[@]}"; do wait "$p"; done
+
+  probe="$(lhit 6.6.6.8)"
+  remaining="$(printf '%s\n' "$probe" | grep -i '^x-ratelimit-remaining:' | awk '{print $2}')"
+  expected=$((LCLIMIT - (LCN + 1)))
+  [[ "$remaining" == "$expected" ]] \
+    && ok "limiter concurrency: exact count after $LCN parallel requests (no lost increments)" \
+    || bad "limiter-concurrency" "remaining=$remaining expected=$expected"
+
+  kill -TERM "$SRV" 2>/dev/null
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  SRV=""
+else
+  bad "limiter-compile" "$(printf '%s' "$lp_out" | head -1)"
+fi
+
 echo
 printf 'web-app-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
 [[ $fail -eq 0 ]]
