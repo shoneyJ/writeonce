@@ -120,6 +120,27 @@ typedef struct wo_msg {
  * guarantee). Death (iteration 24): a receive trapping uncaught marks
  * the actor dead — sends to it drop silently, calls trap, queued
  * callers are error-unparked; the state and mailbox are released. */
+/* iteration 24 T4: one death-notice registration. The runtime owns the
+ * moved-in notice message until delivery (or drops it if the observer is
+ * unreachable). The list lives on the WATCHED actor, owned by its home
+ * thread. */
+typedef struct wo_monitor {
+    struct wo_actor *observer;
+    uint64_t msg;
+    struct wo_monitor *next;
+} wo_monitor;
+
+/* iteration 24 T5: one armed one-shot timer — fires as an ordinary
+ * runtime send of the moved message when `at` passes. The list lives on
+ * the ARMING fiber's shard and is scanned by the same deadline machinery
+ * that serves fd-park deadlines. */
+typedef struct wo_timer {
+    int64_t at; /* wall ms */
+    struct wo_actor *target;
+    uint64_t msg;
+    struct wo_timer *next;
+} wo_timer;
+
 typedef struct wo_actor {
     uint64_t instance;   /* the moved-in state object (runtime-owned) */
     uint32_t method;     /* receive's method index (self + msg = 2 args) */
@@ -134,6 +155,7 @@ typedef struct wo_actor {
      * overshoot by at most the number of in-flight sends — disclosed. */
     uint32_t pending;
     wo_fiber *active;    /* the delivery fiber, NULL when idle */
+    wo_monitor *monitors; /* iteration 24 T4: who wants the death notice */
     struct wo_actor *next_all; /* the vm's all-actors list */
 } wo_actor;
 
@@ -176,6 +198,9 @@ typedef struct wo_vm {
      * freed memory is the UAF this prevents. Steady-state pool size = the
      * peak live fiber count; the pool dies with the vm. */
     wo_fiber *fib_pool;
+    /* iteration 24 T5: this shard's armed timers (unsorted list — the
+     * deadline scan is already linear; a wheel is measured-later work) */
+    wo_timer *timers;
     /* iteration 35, uring backend: the shard's ONE deadline tick — a
      * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
      * deadline (fd parks keep exactly one POLL op each; expiry wakes them
@@ -206,6 +231,20 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
  * caller attached and parks (WO_SYS_PARKED); the re-execution consumes the
  * scalar reply into R[A] (vm.c owns the protocol, builtin.c dispatches). */
 int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
+/* iteration 24 T4: register a death notice — monitor(watched, observer,
+ * msg). The msg MOVES to the runtime; an already-dead watched actor
+ * delivers it immediately. */
+int wo_vm_actor_monitor(wo_vm *vm, uint64_t watched, uint64_t observer,
+                        uint64_t msg_val, const char **msg);
+/* iteration 24 T5: arm a one-shot timer on THIS shard — time.after(ms,
+ * addr, msg). ms <= 0 delivers now. */
+int wo_vm_timer_after(wo_vm *vm, int64_t ms, uint64_t addr, uint64_t msg_val,
+                      const char **msg);
+/* iteration 24 T5: fire every timer at or past `now` (park.c's deadline
+ * machinery calls this beside the fd-park sweep). Returns fired count. */
+int wo_vm_timers_fire(wo_vm *vm, int64_t now);
+/* The nearest armed timer's deadline, 0 = none (park.c's tick/timeout). */
+int64_t wo_vm_timers_next(wo_vm *vm);
 
 /* ---- the shard engine (arc stage 2) ------------------------------------
  * One pinned thread per shard, each a full wo_vm (own arena, GC, I/O
@@ -231,7 +270,11 @@ typedef struct wo_envelope {
                *     from_shard/from_fiber = the parked caller),
                * 6 = CALL_REPLY (payload = the SCALAR reply, from_fiber =
                *     the caller to unpark; status 0 = ok, WO_T_ACTOR =
-               *     the callee was/went dead — the caller traps) */
+               *     the callee was/went dead — the caller traps),
+               * 7 = MONITOR (iteration 24 T4: actor = the WATCHED one,
+               *     from_fiber REUSED as the observer wo_actor*, payload =
+               *     the moved notice — registered on the watched actor's
+               *     home thread; already-dead delivers the notice now) */
     struct wo_actor *actor;
     uint64_t payload;
     uint32_t from_shard;

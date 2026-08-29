@@ -4,6 +4,7 @@
  *   2 = usage or load failure (loader's message on stderr)
  * Heap cap defaults to 64 MiB, overridable via WO_HEAP_MB. */
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,6 +125,22 @@ static void gc_pump(wo_vm *vm) {
     }
 }
 
+/* databasev2 4: one diagnostic line about group commit, opt-in via
+ * WO_WAL_STATS. Off by default because it would otherwise pollute the output
+ * of every durable program; a gate that wants the numbers asks for them. */
+static void wal_stats_report(const wo_wal *w) {
+    if (!w || !getenv("WO_WAL_STATS")) return;
+    fprintf(stderr,
+            "walstats batches=%llu records=%llu peak_batch=%llu peak_staged=%llu "
+            "compactions=%llu compact_us_max=%llu compact_us_total=%llu compacted_bytes=%llu\n",
+            (unsigned long long)w->stat_batches, (unsigned long long)w->stat_records,
+            (unsigned long long)w->stat_peak_batch, (unsigned long long)w->stat_peak_staged,
+            (unsigned long long)w->stat_compactions,
+            (unsigned long long)w->stat_compact_us_max,
+            (unsigned long long)w->stat_compact_us_total,
+            (unsigned long long)w->compacted_bytes);
+}
+
 int main(int argc, char **argv) {
     wo_module mod;
     char err[256];
@@ -178,6 +195,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     wo_tls_set(&VM);
+    /* iteration 24: a write to a peer-closed socket must be EPIPE (a
+     * catchable WO_T_IO), never a process-killing SIGPIPE — every
+     * serving program writes to sockets whose peers vanish. */
+    signal(SIGPIPE, SIG_IGN);
     /* The database engine boots with the VM: every class IS a table.
      * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
      * replays it before the entry runs (boot-before-listeners doctrine),
@@ -254,6 +275,25 @@ int main(int argc, char **argv) {
             if (v >= 1 && v <= 0x7FFFFFFFul) wo_mailbox_cap = (uint32_t)v;
         }
     }
+    /* databasev2 3: the checkpoint policy. WO_CHECKPOINT_BYTES is the floor
+     * below which a log is too small to bother compacting; WO_CHECKPOINT_RATIO
+     * is how many times the live set's own size counts as too much history.
+     * Both exist mainly so the policy is TESTABLE — a gate sets a tiny floor
+     * and forces compaction in a few writes rather than waiting for megabytes.
+     * There is no time-based trigger, by design: our records are durable at
+     * commit, so an idle log does not grow. */
+    {
+        const char *cb = getenv("WO_CHECKPOINT_BYTES");
+        if (cb && cb[0]) {
+            unsigned long long v = strtoull(cb, NULL, 10);
+            if (v > 0) wo_wal_ckpt_floor = (uint64_t)v;
+        }
+        const char *cr = getenv("WO_CHECKPOINT_RATIO");
+        if (cr && cr[0]) {
+            unsigned long v = strtoul(cr, NULL, 10);
+            if (v <= 0xFFFFFFFFul) wo_wal_ckpt_ratio = (uint32_t)v;
+        }
+    }
     /* the arc's stage 2: all cores by default (the brave landing), one
      * pinned worker vm per extra core; WO_SHARDS caps or forces it */
     {
@@ -269,7 +309,7 @@ int main(int argc, char **argv) {
         if (wo_engine_start(&mod, heap_mb << 20, nshards) != 0) {
             fprintf(stderr, "wovm: cannot start %u shards\n", nshards);
             wo_engine_stop();
-            if (VM.rt.wal) wo_wal_close(&WAL);
+            if (VM.rt.wal) { wal_stats_report(&WAL); wo_wal_close(&WAL); }
             wo_db_destroy(&DB);
             wo_vm_destroy(&VM);
             wo_module_free(&mod);
@@ -328,7 +368,7 @@ int main(int argc, char **argv) {
      * unwind. */
     if (argv_val) wo_drop_kind(&VM.rt, WO_K_MULTI, argv_val);
     wo_engine_stop(); /* join + destroy the worker shards before the primary */
-    if (VM.rt.wal) wo_wal_close(&WAL);
+    if (VM.rt.wal) { wal_stats_report(&WAL); wo_wal_close(&WAL); }
     wo_db_destroy(&DB);
     gc_pump(&VM);
     wo_vm_destroy(&VM);

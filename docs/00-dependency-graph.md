@@ -128,6 +128,7 @@ flowchart TD
     classDef rt fill:#8250df,color:#fff,stroke:none
     classDef gated fill:#eac54f,color:#000,stroke:none
     classDef v2 fill:#0969da,color:#fff,stroke:none
+    classDef done fill:#1a7f37,color:#fff,stroke:none
 
     I7b2["7b per-shard collector (done — the precondition 8 waited on)"]:::rt
     I8x["8 shard-actor runtime: thread-per-core, ownership-move messages"]:::rt
@@ -140,7 +141,7 @@ flowchart TD
     STREAM2["request body streaming + backpressure"]:::gated
     SRESP2["streaming responses + explicit commit point"]:::gated
     CANCEL2["per-request cancellation propagation"]:::gated
-    PUBSUB2["pub/sub + WebSockets (rejected until here)"]:::gated
+    PUBSUB2["DONE 2026-08-27 — pub/sub + WebSockets (iteration 24: ws_accept + wsframe + room actors)"]:::done
     ASYNC9C["20 async attach statements (rejected-for-now alternative)"]:::gated
     TIMEOUTS2["idle timeouts become schedulable (net seam still needed)"]:::gated
 

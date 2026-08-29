@@ -16,6 +16,7 @@
 
 #include "db.h"    /* arc stage 3: the transparent DB RPC (wo_db_req) */
 #include "table.h" /* slot encode/decode for the RPC marshaling */
+#include "wal.h"   /* databasev2 4: the drain issues the barrier */
 
 #include <pthread.h>
 #include <poll.h>
@@ -78,6 +79,9 @@ static int actor_push(wo_actor *a, wo_msg m);
 static void call_reply_to(wo_vm *vm, wo_fiber *caller, uint32_t caller_shard,
                           uint64_t reply, int status);
 static void actor_drop_payload(wo_vm *vm, uint64_t payload);
+static void monitors_fire(wo_vm *vm, wo_actor *a);
+static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
+                           const char *what);
 
 /* the owning thread drains its inbox: adopt actors, deliver sends,
  * execute home-routed frees. Returns how many envelopes were handled. */
@@ -88,6 +92,11 @@ static int wo_vm_adopt(wo_vm *vm) {
     ib->head = ib->tail = NULL;
     pthread_mutex_unlock(&ib->mu);
     int n = 0;
+    /* databasev2 4 (group commit): DB replies are HELD until one barrier has
+     * covered the whole drain. Locals, not per-shard state: nothing here needs
+     * to outlive the batch it describes. */
+    wo_envelope *rhead = NULL, *rtail = NULL;
+    uint32_t staged = 0;
     while (e) {
         wo_envelope *nx = e->next;
         switch (e->kind) {
@@ -133,6 +142,25 @@ static int wo_vm_adopt(wo_vm *vm) {
             }
             break;
         }
+        case 7: { /* iteration 24 T4: a cross-shard monitor registration —
+                   WE are the watched actor's home. Dead already = the
+                   notice fires now; else it joins the list. */
+            wo_actor *ob = (wo_actor *)(uintptr_t)e->from_fiber;
+            if (e->actor->dead) {
+                runtime_notify(vm, ob, e->payload, "death notice");
+                break;
+            }
+            wo_monitor *mn = calloc(1, sizeof *mn);
+            if (!mn) {
+                actor_drop_payload(vm, e->payload);
+                break;
+            }
+            mn->observer = ob;
+            mn->msg = e->payload;
+            mn->next = e->actor->monitors;
+            e->actor->monitors = mn;
+            break;
+        }
         case 6: /* iteration 24: a call reply landing on the caller's shard —
                    fill the slot and wake the parked fiber; the re-executed
                    builtin consumes it (status != 0 makes it trap). */
@@ -149,13 +177,35 @@ static int wo_vm_adopt(wo_vm *vm) {
                    * the same request back as the reply. */
             wo_db_req *q = (wo_db_req *)(uintptr_t)e->payload;
             assert(vm->is_primary && "DB requests route to shard 0 only");
+            wo_wal *dw = (wo_wal *)vm->rt.wal;
+            size_t before = dw ? dw->len : 0;
             wo_db_exec_req(vm, q);
             q->done = 1;
+            /* did this statement actually stage a record? Asking the buffer
+             * beats guessing from the opcode, and the count is what the
+             * failure diagnostic reports. */
+            if (dw && dw->len > before) staged++;
             wo_envelope *re = calloc(1, sizeof *re);
             if (re) {
                 re->kind = 4;
                 re->payload = e->payload;
-                inbox_push_to(q->from_shard, re);
+                re->next = NULL;
+                if (dw && dw->len > before) {
+                    /* This statement STAGED a record, so its reply is HELD:
+                     * pushing it now would unpark the requester before its
+                     * record is durable, which is the ack contract this
+                     * iteration exists to make literally true. FIFO, so the
+                     * first waiter is released first. */
+                    if (rtail) rtail->next = re; else rhead = re;
+                    rtail = re;
+                } else {
+                    /* A READ (or any statement that staged nothing) has no
+                     * durability to wait for. Holding it too was measurably
+                     * wrong: it parked readers behind an fsync they had no
+                     * stake in, and durable.sN.mixread p99 rose ~4x
+                     * (1043 -> 4057us) until this branch existed. */
+                    inbox_push_to(q->from_shard, re);
+                }
             } /* OOM: the requester stays parked until stop — leak, not UB */
             break;
         }
@@ -169,6 +219,41 @@ static int wo_vm_adopt(wo_vm *vm) {
         free(e);
         n++;
         e = nx;
+    }
+    /* databasev2 4: ONE barrier for everything this drain staged, then every
+     * held reply. Each requester therefore unparks having been acknowledged
+     * after the barrier that carried ITS record. Commit unconditionally when
+     * anything is staged — the inline path relies on finding the buffer empty
+     * (see db.c), so a drain must never leave a record behind. */
+    if (staged) {
+        wo_wal *cw = (wo_wal *)vm->rt.wal;
+        if (cw) wo_wal_commit_fatal(cw, staged);
+    }
+    while (rhead) {
+        wo_envelope *rn = rhead->next;
+        wo_db_req *rq = (wo_db_req *)(uintptr_t)rhead->payload;
+        rhead->next = NULL;
+        inbox_push_to(rq->from_shard, rhead);
+        rhead = rn;
+    }
+    /* databasev2 3: the ONE point where compaction is safe — the barrier above
+     * just ran, so the staging buffer is empty. Anywhere else, a staged record
+     * would be written into a file about to be replaced. This is a correctness
+     * requirement, not a scheduling preference; wo_wal_compact also refuses a
+     * non-empty buffer as a backstop.
+     *
+     * Replies are released FIRST, deliberately: their records are already
+     * durable, and holding them across a stop-the-world rewrite would add the
+     * rewrite's full duration to their latency for no benefit.
+     *
+     * The result is ignored because a failed compaction is a missed
+     * optimisation, not a durability event — the original log is left intact
+     * and the process carries on. */
+    if (staged) {
+        wo_wal *cw = (wo_wal *)vm->rt.wal;
+        if (cw && wo_wal_should_compact(cw->off, cw->compacted_bytes,
+                                        wo_wal_ckpt_floor, wo_wal_ckpt_ratio))
+            (void)wo_wal_compact(cw, (wo_db *)vm->rt.db);
     }
     return n;
 }
@@ -425,6 +510,33 @@ static void *shard_main(void *arg) {
         } else {
             int rc = wo_io_wait(vm); /* parked fibers AND the wake eventfd */
             if (rc == WO_IO_STOP) {
+                /* iteration 40 — THE DRAIN GUARANTEE. A message sent before
+                 * the stop flag is observed must be delivered and run before
+                 * the engine stops.
+                 *
+                 * NEXT_RUNNABLE() already states this contract for a worker
+                 * holding a live fiber: it returns 2 and keeps draining "so
+                 * queued shutdown messages (close frames!) still run". This
+                 * branch — the IDLE worker, empty run queue, waiting on the
+                 * plane — used to reap and break instead, abandoning whatever
+                 * sat in its inbox for wo_engine_stop() to free wholesale.
+                 *
+                 * An actor between messages is exactly that idle case, which
+                 * is why a WARM server hid the bug: warm shards had live
+                 * fibers and took the correct path. Measured 2026-08-27 on a
+                 * fresh server: 5 of 16 SIGTERM drains left a WebSocket
+                 * client at EOF with no close frame and no diagnostic.
+                 *
+                 * The window belongs to the PRIMARY and closes when it sets
+                 * eng_shutdown (after main returns), so honour it here and
+                 * only exit when the primary says so. Yield on an empty poll:
+                 * a tight loop would burn a core per shard and starve the very
+                 * actors the drain exists to let run. */
+                if (!eng_shutdown) {
+                    (void)wo_vm_adopt(vm);
+                    if (!vm->qhead) sched_yield();
+                    continue;
+                }
                 fib_reap_all(vm);
                 break;
             }
@@ -443,6 +555,85 @@ int wo_engine_primary_inbox(int wake_efd) {
     INBOX[0].head = INBOX[0].tail = NULL;
     INBOX[0].efd = wake_efd;
     return 0;
+}
+
+/* iteration 24 teardown phase 1 (single-threaded, BEFORE eng_teardown):
+ * dismantle one vm's actor world with real drops — container backings are
+ * malloc'd, so wholesale arena death does NOT cover them (LSan, chat's
+ * registry map). Cross-shard payloads route home through wo_route_free
+ * (still live here); the routed kind-2 envelopes are settled by the
+ * caller's inbox passes. */
+static void vm_drop_actor_world(wo_vm *vm) {
+    wo_actor *a = vm->actors;
+    vm->actors = NULL;
+    while (a) {
+        wo_actor *nx = a->next_all;
+        if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; i < a->mlen; i++) {
+            uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
+            if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
+        }
+        wo_monitor *mo = a->monitors;
+        while (mo) {
+            wo_monitor *mnx = mo->next;
+            if (mo->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
+            free(mo);
+            mo = mnx;
+        }
+        free(a->msgs);
+        free(a);
+        a = nx;
+    }
+    wo_timer *tt = vm->timers;
+    vm->timers = NULL;
+    while (tt) {
+        wo_timer *tnx = tt->next;
+        if (tt->msg) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
+        free(tt);
+        tt = tnx;
+    }
+}
+
+/* Settle every inbox after phase 1: home-routed frees execute on their
+ * owner vm; payload-carrying strays drop (possibly routing again — the
+ * outer loop runs until everything is quiet). Node memory always freed. */
+static int eng_settle_inboxes(void) {
+    int moved = 0;
+    for (uint32_t i = 0; i < wo_eng.nshards && i < WO_ENG_MAX_SHARDS; i++) {
+        if (!INBOX_READY[i]) continue;
+        wo_vm *vm = &wo_eng.shards[i];
+        wo_inbox *ib = &INBOX[i];
+        wo_envelope *e = ib->head;
+        ib->head = ib->tail = NULL;
+        while (e) {
+            wo_envelope *nx = e->next;
+            switch (e->kind) {
+            case 2: /* WE are home: the direct drop is the settlement */
+                wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+                break;
+            case 0:
+            case 5:
+            case 7: /* in-flight payloads: drop (may route -> next pass) */
+                if (e->payload)
+                    wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+                break;
+            case 1: /* an unadopted actor shell */
+                if (e->actor) {
+                    if (e->actor->instance)
+                        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->actor->instance);
+                    free(e->actor->msgs);
+                    free(e->actor);
+                }
+                break;
+            default: /* 3/4/6: scalar or engine-side payloads, node-only */
+                break;
+            }
+            free(e);
+            moved++;
+            e = nx;
+        }
+    }
+    return moved;
 }
 
 int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
@@ -489,6 +680,13 @@ void wo_engine_stop(void) {
         (void)n;
     }
     for (uint32_t i = 1; i < wo_eng.nshards; i++) pthread_join(ts[i - 1], NULL);
+    /* single-threaded from here: PHASE 1 — real drops while every arena
+     * and the routing fabric are still alive (malloc'd container backings
+     * inside actor state need them; iteration 24's registry map). Settle
+     * passes run until routed frees stop appearing. */
+    for (uint32_t i = 0; i < wo_eng.nshards && i < WO_ENG_MAX_SHARDS; i++)
+        if (wo_eng.shards[i].rt.arena.base) vm_drop_actor_world(&wo_eng.shards[i]);
+    while (eng_settle_inboxes() > 0) {}
     /* single-threaded from here. Every arena dies wholesale, so routed
      * frees and queued payloads need no per-object drops — DISCARD the
      * envelopes (freeing the malloc'd nodes/actors) and let the arenas
@@ -557,18 +755,41 @@ void wo_vm_destroy(wo_vm *vm) {
         free(fb);
     }
     /* actors first — dropping their state and queued messages needs the
-     * runtime alive */
+     * runtime alive. BUT: once the engine is in teardown, arenas die
+     * WHOLESALE (the standing doctrine) — a moved-in message's home arena
+     * may belong to an ALREADY-destroyed shard, and even reading its
+     * header is a use-after-free (ASan, chat's drain). Structures are
+     * still freed; payload drops are skipped. */
+    int drops_ok = !eng_teardown;
     wo_actor *a = vm->actors;
     while (a) {
         wo_actor *nx = a->next_all;
-        if (a->instance) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
-        for (uint32_t i = 0; i < a->mlen; i++) {
+        if (drops_ok && a->instance)
+            wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)a->instance);
+        for (uint32_t i = 0; drops_ok && i < a->mlen; i++) {
             uint64_t m = a->msgs[(a->mhead + i) % a->mcap].payload;
             if (m) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)m);
+        }
+        wo_monitor *mo = a->monitors;
+        while (mo) { /* undelivered notices are the runtime's to drop */
+            wo_monitor *mnx = mo->next;
+            if (drops_ok && mo->msg)
+                wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)mo->msg);
+            free(mo);
+            mo = mnx;
         }
         free(a->msgs);
         free(a);
         a = nx;
+    }
+    wo_timer *tt = vm->timers;
+    vm->timers = NULL;
+    while (tt) { /* unfired timers likewise */
+        wo_timer *tnx = tt->next;
+        if (drops_ok && tt->msg)
+            wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)tt->msg);
+        free(tt);
+        tt = tnx;
     }
     vm->actors = NULL;
     wo_io_destroy(vm);
@@ -760,6 +981,7 @@ static void actor_die(wo_vm *vm, wo_actor *a, wo_fiber *delivery) {
         a->instance = 0;
     }
     a->active = NULL;
+    monitors_fire(vm, a);
 }
 
 /* Mailbox nonempty, no delivery fiber: start one on the next message.
@@ -877,6 +1099,57 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
     return 0;
 }
 
+/* iteration 24 T4/T5: a RUNTIME-sourced delivery (death notice, timer).
+ * No fiber to trap: a full or dead target drops the message with a
+ * stderr line (spec'd disclosure), never silently. Runs on any thread —
+ * cross-shard targets ride the ordinary kind-0 envelope. */
+static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
+                           const char *what) {
+    if (!target || !msg_val) return;
+    if (target->dead) {
+        actor_drop_payload(vm, msg_val);
+        return; /* send-to-dead: silent by contract */
+    }
+    if (wo_mbox_reserve(target) != 0) {
+        fprintf(stderr, "wovm: %s dropped — the observer's mailbox is full\n", what);
+        actor_drop_payload(vm, msg_val);
+        return;
+    }
+    if (target->home != vm->shard_id) {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            wo_mbox_release(target);
+            actor_drop_payload(vm, msg_val);
+            return;
+        }
+        e->kind = 0;
+        e->actor = target;
+        e->payload = msg_val;
+        inbox_push_to(target->home, e);
+        return;
+    }
+    wo_msg m0 = { msg_val, NULL, 0 };
+    if (actor_push(target, m0) != 0) {
+        wo_mbox_release(target);
+        actor_drop_payload(vm, msg_val);
+        return;
+    }
+    if (!target->active) (void)actor_activate(vm, target);
+}
+
+/* iteration 24 T4: the death walk — every registered observer gets its
+ * chosen notice, then the list is gone (an actor dies once). */
+static void monitors_fire(wo_vm *vm, wo_actor *a) {
+    wo_monitor *m = a->monitors;
+    a->monitors = NULL;
+    while (m) {
+        wo_monitor *nx = m->next;
+        runtime_notify(vm, m->observer, m->msg, "death notice");
+        free(m);
+        m = nx;
+    }
+}
+
 /* iteration 24: call — send that waits. First entry enqueues with the
  * caller attached and parks (WO_PARK_INBOX, the DB-RPC park); the resume
  * RE-EXECUTES this builtin and consumes the scalar reply. No hangs, ever:
@@ -944,6 +1217,105 @@ int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     fb->park_fd = WO_PARK_INBOX;
     fb->park_done = 0; /* resume RE-EXECUTES the builtin: the consume path */
     return WO_SYS_PARKED;
+}
+
+int wo_vm_actor_monitor(wo_vm *vm, uint64_t watched, uint64_t observer,
+                        uint64_t msg_val, const char **msg) {
+    wo_actor *w = (wo_actor *)(uintptr_t)watched;
+    wo_actor *o = (wo_actor *)(uintptr_t)observer;
+    if (!w || !o) {
+        *msg = "monitor: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "monitor: nil notice message";
+        return WO_T_BOUNDS;
+    }
+    /* the registration belongs to the WATCHED actor's home thread */
+    if (w->home != vm->shard_id) {
+        wo_envelope *e = calloc(1, sizeof *e);
+        if (!e) {
+            actor_drop_payload(vm, msg_val);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        e->kind = 7;
+        e->actor = w;
+        e->payload = msg_val;
+        e->from_fiber = (wo_fiber *)o; /* reused slot: the observer */
+        inbox_push_to(w->home, e);
+        return 0;
+    }
+    if (w->dead) { /* monitoring the dead: the notice fires NOW */
+        runtime_notify(vm, o, msg_val, "death notice");
+        return 0;
+    }
+    wo_monitor *m = calloc(1, sizeof *m);
+    if (!m) {
+        actor_drop_payload(vm, msg_val);
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    m->observer = o;
+    m->msg = msg_val;
+    m->next = w->monitors;
+    w->monitors = m;
+    return 0;
+}
+
+int wo_vm_timer_after(wo_vm *vm, int64_t ms, uint64_t addr, uint64_t msg_val,
+                      const char **msg) {
+    wo_actor *a = (wo_actor *)(uintptr_t)addr;
+    if (!a) {
+        *msg = "time.after: nil actor address";
+        return WO_T_BOUNDS;
+    }
+    if (!msg_val) {
+        *msg = "time.after: nil message";
+        return WO_T_BOUNDS;
+    }
+    if (ms <= 0) { /* no wait to arm: deliver now */
+        runtime_notify(vm, a, msg_val, "timer message");
+        return 0;
+    }
+    wo_timer *t = calloc(1, sizeof *t);
+    if (!t) {
+        actor_drop_payload(vm, msg_val);
+        *msg = "out of memory";
+        return WO_T_OOM;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    t->at = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + ms;
+    t->target = a;
+    t->msg = msg_val;
+    t->next = vm->timers;
+    vm->timers = t;
+    return 0;
+}
+
+int wo_vm_timers_fire(wo_vm *vm, int64_t now) {
+    int fired = 0;
+    wo_timer **pp = &vm->timers;
+    while (*pp) {
+        wo_timer *t = *pp;
+        if (t->at <= now) {
+            *pp = t->next;
+            runtime_notify(vm, t->target, t->msg, "timer message");
+            free(t);
+            fired++;
+        } else {
+            pp = &t->next;
+        }
+    }
+    return fired;
+}
+
+int64_t wo_vm_timers_next(wo_vm *vm) {
+    int64_t next = 0;
+    for (wo_timer *t = vm->timers; t; t = t->next)
+        if (next == 0 || t->at < next) next = t->at;
+    return next;
 }
 
 /* The drop-table entry governing instruction [pc]: the last one recorded
@@ -1227,6 +1599,15 @@ static int vm_run(wo_vm *vm, uint64_t *ret, wo_err *err) {
             }                                        \
             int iorc_ = wo_io_wait(vm);              \
             if (iorc_ == WO_IO_STOP) {               \
+                /* iteration 24: a WORKER on stop keeps DRAINING — its    \
+                 * serve loop spins adopting the inbox until the primary  \
+                 * finishes the drain window and sets eng_shutdown, so    \
+                 * queued shutdown messages (close frames!) still run.    \
+                 * Only the PRIMARY's stop ends the program. */           \
+                if (!vm->is_primary) {               \
+                    vm->cur = &vm->f0;               \
+                    return 2;                        \
+                }                                    \
                 fib_reap_all(vm);                    \
                 vm->cur = &vm->f0;                   \
                 return 1;                            \
@@ -1729,8 +2110,31 @@ dispatch:
             vm->cur->frames[vm->cur->depth - 1].pc = pc - 1;
             vm->cur->ncatch = 0;
             vm_unwind(vm, 0);
-            /* a stop ends the PROGRAM: every fiber — the stopped one,
-             * queued ones, main wherever it is — unwinds clean */
+            /* iteration 24 (the drain): a STOPPED wait on a NON-main fiber
+             * unwinds that fiber ALONE — the rest of the program (main's
+             * drain code, actors flushing close frames) keeps running.
+             * Main's own STOPPED still ends the program, as ever. */
+            if (vm->cur != &vm->f0) {
+                wo_fiber *dead = vm->cur;
+                if (dead->actor) {
+                    wo_actor *da = dead->actor;
+                    if (dead->cur_msg) {
+                        wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)dead->cur_msg);
+                        dead->cur_msg = 0;
+                    }
+                    call_reply_to(vm, dead->msg_caller, dead->msg_caller_shard,
+                                  0, WO_T_ACTOR);
+                    dead->msg_caller = NULL;
+                    da->active = NULL;
+                }
+                vm->nfibers--;
+                fib_retire(vm, dead);
+                NEXT_RUNNABLE();
+                RELOAD();
+                NEXT();
+            }
+            /* main: a stop ends the PROGRAM — every remaining fiber
+             * unwinds clean */
             if (vm->cur != &vm->f0) {
                 wo_fiber *dead = vm->cur;
                 vm->cur = &vm->f0;

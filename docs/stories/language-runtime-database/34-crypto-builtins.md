@@ -1,6 +1,6 @@
 ---
 iteration: "34"
-status: in-progress
+status: done
 readiness: ready
 ---
 
@@ -19,6 +19,18 @@ readiness: ready
 > Off the concurrency chain but **gates chain position 4**: iteration
 > 24's WebSocket handshake needs SHA-1 before chat can land.
 
+> **✅ LANDED 2026-08-27 — inside [24](24-chat-websocket-workload.md)** as its
+> task 1. The fork resolved to **C builtins**: `sha1` (85), `sha256` (86),
+> `hmac_sha256` (87), each over one buffer returning a fresh `Bytes`. Pinned to
+> the published vectors — RFC 3174, the SHA-256 vectors, RFC 4231 — in
+> `runtime/test/test_crypto.c`, 18 checks, plus a corpus fixture hashing "abc"
+> from `.wo`. This unblocked chain position 4: the WebSocket handshake needs
+> SHA-1, and `just chat` verifies the accept-key independently.
+>
+> **The gap it did NOT close:** there is still no RNG in the runtime. HMAC
+> authenticates a token and cannot mint one, so CSRF and sessions stay blocked
+> — which is why [39](39-web-framework-parity.md) leads with a random-bytes
+> builtin rather than treating them as unblocked.
 ## Why this iteration exists
 
 Four consumers already wait on it, none able to proceed:

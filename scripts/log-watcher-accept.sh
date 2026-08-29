@@ -51,6 +51,14 @@ if [[ ! -x "$WOVM" ]]; then
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/lw-accept.XXXXXX")"
+# stable, tailable log for the example app: the per-run work dir is deleted on
+# exit, so a developer had nothing to follow. `tail -F /tmp/log-watcher.log`.
+# Each invocation keeps its own $WORK/*.out (the checks grep those) and is
+# ALSO teed here, banner-separated, so one file holds the whole run.
+APPLOG="/tmp/log-watcher.log"
+: > "$APPLOG"
+echo "app log: $APPLOG  (tail -F \"$APPLOG\" to follow)"
+
 # LW_ACCEPT_KEEP=1 leaves the work directory (image, logs, cron.d, the
 # server's own stdout) in place — what you want the moment a check fails.
 cleanup() {
@@ -89,7 +97,8 @@ fi
 # watcher to decide the burst is over.
 LOG="$WORK/app.log"
 : >"$LOG"
-timeout -k 2 12 "$WOVM" "$IMAGE" watch "$LOG" 2 1 >"$WORK/watch.out" 2>&1 &
+printf '\n===== watch =====\n' >>"$APPLOG"
+timeout -k 2 12 "$WOVM" "$IMAGE" watch "$LOG" 2 1 > >(tee -a "$APPLOG" >"$WORK/watch.out") 2>&1 &
 WATCH_PID=$!
 sleep 2
 printf 'info service starting\n' >>"$LOG"
@@ -110,6 +119,7 @@ CRON="$WORK/cron.d"
 mkdir -p "$CRON"
 printf '* * * * * root /usr/bin/backup.sh > /var/log/backup.log 2>&1\n' >"$CRON/backup"
 timeout 8 "$WOVM" "$IMAGE" run "$CRON" >"$WORK/run.out" 2>&1
+{ printf '\n===== run =====\n'; cat "$WORK/run.out"; } >>"$APPLOG"
 if grep -q "^SCHEDULE /var/log/backup.log" "$WORK/run.out"; then
   ok "run (parsed and scheduled the cron entry)"
 else
@@ -124,7 +134,8 @@ EOF
 # -k: `env.stopping()` installs a SIGTERM handler that only sets a flag, and
 # the serve loop is blocked in accept(), so a plain TERM is swallowed — the
 # process needs a KILL to actually stop (recorded in docs/00-status.md).
-timeout -k 2 20 "$WOVM" "$IMAGE" mcp "$CRON" "$WORK/cfg.json" >"$WORK/mcp.out" 2>&1 &
+printf '\n===== mcp =====\n' >>"$APPLOG"
+timeout -k 2 20 "$WOVM" "$IMAGE" mcp "$CRON" "$WORK/cfg.json" > >(tee -a "$APPLOG" >"$WORK/mcp.out") 2>&1 &
 SRV_PID=$!
 sleep 2
 
@@ -256,7 +267,8 @@ if [[ -n "${LW_SOAK:-}" ]]; then
   soak_mode() {
     local name="$1" load_fn="$2"
     shift 2
-    "$WOVM" "$IMAGE" "$@" >"$WORK/soak-$name.out" 2>&1 &
+    printf '\n===== soak %s =====\n' "$name" >>"$APPLOG"
+    "$WOVM" "$IMAGE" "$@" > >(tee -a "$APPLOG" >"$WORK/soak-$name.out") 2>&1 &
     local pid=$! rss0 fd0 rss1 fd1 drss dfd deadline i
     sleep 3 # first-touch pages and the first work cycle
     if ! kill -0 "$pid" 2>/dev/null; then

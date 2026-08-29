@@ -1,0 +1,23 @@
+use time
+
+-- iteration 24 T5: a timer is a MESSAGE. time.after arms a one-shot on
+-- this shard; the target receives it like any send. ms <= 0 delivers now.
+class Tick {
+  tag: Text
+}
+
+class Sink {
+  pad: Int
+  fn receive(msg: Tick) {
+    print("tick: ${msg.tag}");
+  }
+}
+
+fn main() -> Int {
+  let a: actor Tick = spawn Sink { pad: 0 };
+  time.after(30, a, Tick { tag: "armed" });
+  time.after(0, a, Tick { tag: "now" });
+  time.sleep(150);
+  print("done");
+  return 0;
+}

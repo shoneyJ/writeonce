@@ -309,6 +309,8 @@ let stdlib_members : stdlib_member list =
     m "net" "write_dl" 3 93 (Some (TScalar "Bool")) None;
     m "net" "listen_unix" 1 94 (Some (TScalar "Int")) None;
     m "net" "peer" 1 95 (Some (TScalar "Text")) None;
+    (* iteration 24 T5: one-shot timer — the msg MOVES to the runtime *)
+    m "time" "after" 3 90 None None;
     (* proc *)
     m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
     (* json — both members are lowered specially (emit.ml): encode needs its
@@ -1915,6 +1917,48 @@ let typecheck_program ~file ~(module_of : string -> string)
                           (Diag.error ~code:type_mismatch_code ~file ~line:a.pos.line
                              ~col:a.pos.col
                              ~message:"`call`'s first argument must be an `actor M` address" ())
+                      | None -> ())
+                    | _ -> ())
+             | None when name = "monitor" ->
+                 (* iteration 24 T4: monitor(watched, observer, msg) — the
+                    notice msg is typed against the OBSERVER's mailbox
+                    (three-argument form: the caller may be main, which has
+                    no mailbox). msg moves like send's. *)
+                 (if List.length args <> 3 then
+                    Diag.Collector.add collector
+                      (Diag.error ~code:bad_arity_code ~file ~line:e.pos.line ~col:e.pos.col
+                         ~message:
+                           (Printf.sprintf
+                              "`monitor` takes 3 arguments (watched, observer, notice), given %d"
+                              (List.length args))
+                         ())
+                  else
+                    match args with
+                    | [ w; o; m ] -> (
+                      (match confident_typ cenv w with
+                      | Some (TActor _) | None -> ()
+                      | Some _ ->
+                        Diag.Collector.add collector
+                          (Diag.error ~code:type_mismatch_code ~file ~line:w.pos.line
+                             ~col:w.pos.col
+                             ~message:"`monitor`'s first argument must be an `actor M` address" ()));
+                      match confident_typ cenv o with
+                      | Some (TActor want) -> (
+                        match confident_typ cenv m with
+                        | Some (TScalar got) when got <> want ->
+                          Diag.Collector.add collector
+                            (Diag.error ~code:type_mismatch_code ~file ~line:m.pos.line
+                               ~col:m.pos.col
+                               ~message:
+                                 (Printf.sprintf
+                                    "the observer receives `%s` — the notice is a `%s`" want got)
+                               ())
+                        | _ -> ())
+                      | Some _ ->
+                        Diag.Collector.add collector
+                          (Diag.error ~code:type_mismatch_code ~file ~line:o.pos.line
+                             ~col:o.pos.col
+                             ~message:"`monitor`'s second argument must be an `actor M` address" ())
                       | None -> ())
                     | _ -> ())
              | None ->

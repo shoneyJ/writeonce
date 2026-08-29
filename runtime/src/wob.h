@@ -478,8 +478,17 @@ enum {
                                * return value arrives. R is a SCALAR (v1,
                                * compiler-enforced WO-E226). Dead callee =
                                * WO_T_ACTOR, immediately or mid-call. */
-    /* ids 89 (monitor) and 90 (time.after) are RESERVED for the rest of
-     * the lifecycle slice — do not reuse. */
+    WO_B_MONITOR = 89,        /* (watched, observer, msg) -> (): the
+                               * observer's own M-typed msg is delivered
+                               * when watched dies (trap-death); already
+                               * dead delivers NOW; msg MOVES. A full
+                               * observer's notice is dropped with a
+                               * stderr line (no fiber to trap). */
+    WO_B_TIME_AFTER = 90,     /* (ms, addr, msg) -> (): one-shot timer —
+                               * msg (MOVED) arrives as an ordinary send
+                               * after ms; no cancel (the generation-
+                               * counter idiom is the documented answer);
+                               * ms <= 0 delivers now. */
     /* ---- iteration 35: net seams (sysio.c). Deadlines are per-CALL (no
      * hidden fd state); a timeout is an EXPECTED outcome, so it answers
      * nil/false, never a trap. ms <= 0 = no deadline (the old behavior,

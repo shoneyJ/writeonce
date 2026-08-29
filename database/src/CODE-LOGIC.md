@@ -119,3 +119,135 @@ rather than acknowledging what disk never got.
   columns excluded (engine raw-eq is narrower than VM float-eq, and a
   probe miss cannot be resurrected by a recheck). Pinned by
   `tests/corpus/run/query-index-probe`.
+
+## Group commit: one barrier per drain (databasev2 4 part A, 2026-08-28)
+
+**What changed:** the engine used to commit per *statement*. `db.c` called
+`wo_wal_commit` immediately after every append, at all six sites, so each row
+change bought its own `pwrite` and its own `fdatasync`. Now the barrier belongs
+to the drain, not to the statement.
+
+**Where the barrier runs, and why there.** A statement on a worker shard has no
+WAL to write — the runtime asserts workers hold neither `db` nor `wal` — so it
+marshals to shard 0 and parks. Shard 0 executes those requests in its envelope
+drain (`wo_vm_adopt`), and the drain now **holds each reply** instead of pushing
+it as the statement finishes. When the queue empties it issues one barrier, then
+releases every held reply.
+
+Holding the reply is the whole mechanism. Pushing it early would unpark the
+requester before its record was durable; holding it means each writer is
+acknowledged after the barrier that carried *its own* record. That was always
+the intended contract — it was simply true by accident before, because every
+batch had exactly one member.
+
+**Why the queue is the boundary.** Not a tick, and not a timer. A queue of one
+gives a batch of one, so a lone writer pays exactly what it paid before; the
+batch grows only when writes genuinely contend. A tick boundary would have
+added latency even with nothing to batch against, which is taxing an idle
+system to serve a busy one. There is nothing to tune, which is the point.
+
+**Why the inline path is asymmetric.** A statement already on shard 0 stages and
+commits before returning, batch size one. It cannot hold a reply because there
+is nobody to reply to — it returns into its own fiber. Batching it would mean
+parking that fiber on the barrier, which is part B's machinery. Two consequences
+worth keeping in mind: single-shard configurations get no batching at all, by
+design; and the inline commit is only safe because the drain commits
+*unconditionally* whenever anything is staged, so the buffer is empty when an
+inline statement runs. If that ever stops holding, the inline path would make
+another statement's record durable early and acknowledge it to the wrong writer.
+
+**One rule for failure: once a statement has mutated RAM, the outcomes are
+durable or process death.** It replaced three behaviours that disagreed —
+`insert` un-applied itself, while `update` and `delete` returned a catchable
+trap and left RAM ahead of disk, which their own comments said out loud.
+Batching would have multiplied that from one row to a whole batch. So a failed
+stage or a failed barrier now prints one diagnostic (operation, log path,
+`errno`, record count) and exits 3; `WO_T_IO` is unreachable from a write.
+Retrying is not offered because it is unsound: on Linux a failed `fsync` may
+already have discarded the dirty pages, so a second call can report success
+having written nothing. Replay is the recovery that works.
+
+**Measuring it.** `WO_WAL_STATS=1` makes the runtime print one line at exit —
+batches, records, peak batch, peak staged bytes. Opt-in, because it would
+otherwise pollute every durable program's output. The counters live in `wo_wal`
+rather than behind a builtin: they are diagnostic, not part of the language.
+`db-bench`'s `wmix N C` leg exists to exercise this at all — `mix` writes on one
+op in ten with C=4, which produced a measured mean batch of 1.01, so it could
+never have shown whether batching worked.
+
+**If you are looking at this because writes got slower**, check the mean batch
+first. Mean 1.0 means the mechanism is not engaging, which is expected for a
+serial writer or a single-shard configuration and a bug anywhere else.
+
+## Checkpoint: compaction by rewrite + rename (databasev2 3, 2026-08-29)
+
+**The problem:** nothing ever removed superseded records, so the log grew
+forever and boot replayed all history. Measured before this: 20 000 rows seeded
+gave a 986 KB log; updating those same rows 20 000 times took it to 2.6 MB with
+**the same live data**.
+
+**Why one file and not a snapshot plus a tail.** Postgres does the opposite —
+its WAL is a redo tail and the data lives in heap files, so a checkpoint flushes
+pages and then recycles log segments; it never compacts. It cannot: its records
+are page deltas, so a compacted redo log is not a store. **Ours are full row
+images** — `apply_record` implements UPDATE as remove-then-recreate — so a log
+of one record per live row *is* a complete store. That single difference deletes
+the control file, the redo pointer, the second recovery source and the separate
+process from this design. Recovery is not merely compatible with compaction; it
+is completely unaware of it.
+
+**Why `rename` is the whole crash-safety story.** The dump goes to a temp file,
+which is fsynced, renamed over the live log, and then the parent directory is
+fsynced (the rename is atomic in-kernel, but the directory entry is not durable
+until the parent is — Postgres does the same for the same reason). Before the
+rename the live log is intact and the temp is not authoritative; after it the new
+log is complete. There is no instant at which a reader sees a mixture, so this
+needs no recovery logic of its own. What Postgres achieves with a redo pointer
+computed at checkpoint start and a control file written at the end, one syscall
+achieves here — because we can swap the entire data set atomically and Postgres
+cannot.
+
+A crash mid-rewrite leaves a temp file. The next open **removes it**, and it is
+deleted rather than ignored because a file full of well-formed records sitting
+beside the log is exactly what a later reader mistakes for data.
+
+**Why the dump flushes periodically, and why it does NOT fsync when it does.**
+`stage()` grows the staging buffer by doubling and never shrinks it, so pushing a
+whole store through one buffer would hold the entire store in RAM on top of the
+store — the unbounded growth databasev2 1 measured as how this engine dies. So
+the dump flushes every 256 records. It flushes with a plain write, **not** a
+commit: intermediate durability is worthless because the temp is not
+authoritative until the rename and is fsynced once immediately before it. Using
+the committing path cost one barrier per 256 records and made the pause 8×
+larger — measured 107 649 µs against 13 212 µs for a 2 MB live set, ~22 MB/s
+against ~181 MB/s.
+
+**Why the replacement is preallocated like the original.** The WAL is
+preallocated so that appends never extend the file, which is what lets
+`fdatasync` alone serve as the ack barrier. A replacement opened without it
+would silently change that property, and the zero-padded tail the open-time scan
+relies on.
+
+**When it runs.** Only where the staging buffer is empty — right after a
+barrier. Both write paths check: the drain (`vm.c`, after its commit and after
+releasing held replies, since those records are already durable and should not
+wait out a rewrite) and the inline path (`db.c`). Wiring only the drain left
+`WO_SHARDS=1` never compacting, with its log growing forever: measured 536 KB
+where the multi-shard run held 446 KB.
+
+**The trigger** compares the log against what the *last* compaction actually
+wrote, with an absolute floor. The denominator is measured rather than
+estimated, because estimating the live size means estimating Text and the
+compactor already knows the true number. There is deliberately **no timer**:
+Postgres needs one because its dirty buffers are not durable until flushed, and
+ours are durable at commit — an idle log does not grow.
+
+**A failed compaction is a missed optimisation, not a durability event.** It
+leaves the original log intact and returns an error the callers ignore. It must
+never take `wo_wal_commit_fatal`'s path, which exists for a different problem.
+
+**If you are here because a checkpoint misbehaved:** `WO_WAL_STATS=1` reports
+compaction count, the stop-the-world pause (max and total) and the last
+compaction's size. `WO_CHECKPOINT_BYTES` and `WO_CHECKPOINT_RATIO` move the
+policy; setting a tiny floor forces compaction in a few writes, which is how the
+gate tests it at all.

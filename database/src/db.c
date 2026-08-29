@@ -18,6 +18,23 @@ static int table_is_durable(const wo_db *db, uint32_t cid) {
     return (db->classes[cid].flags & WO_CLASSF_VOLATILE) == 0u;
 }
 
+/* databasev2 3: the inline path's compaction check.
+ *
+ * The drain has its own (vm.c, after the barrier). This one exists because a
+ * statement running ON the owner shard never enters that drain, so without it
+ * a single-shard durable program's log grows FOREVER — measured: WO_SHARDS=1
+ * reached 536 KB where the multi-shard run held 446 KB, because the check was
+ * only wired into the drain.
+ *
+ * Safe here for the same reason it is safe there: the commit above just
+ * emptied the staging buffer. The result is ignored because a failed
+ * compaction is a missed optimisation, not a durability event. */
+static void maybe_compact(wo_db *db, wo_wal *w) {
+    if (wo_wal_should_compact(w->off, w->compacted_bytes, wo_wal_ckpt_floor,
+                              wo_wal_ckpt_ratio))
+        (void)wo_wal_compact(w, db);
+}
+
 int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     uint32_t A = wo_ins_a(ins), B = wo_ins_b(ins), C = wo_ins_c(ins);
     wo_db *db = (wo_db *)vm->rt.db;
@@ -36,15 +53,26 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                                        : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w && table_is_durable(db, cid)) {
-            /* RAM applied, record staged, ONE commit before the ack (the
-             * builtin's return). A failed commit is a failed write: the
-             * row is removed again so RAM never claims what disk never
-             * acknowledged, and the statement traps. */
-            if (wo_wal_append_insert(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                wo_row_remove(db, cid, id);
-                *msg = "wal commit failed";
-                return WO_T_IO;
-            }
+            /* THE INLINE PATH KEEPS ITS OWN BARRIER, AND THAT ASYMMETRY IS
+             * DELIBERATE (databasev2 4 part A). The request path batches:
+             * wo_vm_adopt holds each reply and commits once per drain. This
+             * path cannot, because it has no reply to hold — it returns into
+             * its OWN fiber rather than unparking a requester. Do not "fix"
+             * this by dropping the commit: without it an inline statement
+             * would never be durable at all.
+             *
+             * Committing here is safe because the drain commits
+             * unconditionally whenever anything is staged, so the buffer is
+             * empty when this runs.
+             *
+             * The `table_is_durable` guard is databasev2 2's: a
+             * `@table(durable: false)` class is never staged, so it reaches
+             * neither this barrier nor the compaction check below.
+             *
+             * Failure is fatal, not a trap: the row is already in RAM. */
+            if (wo_wal_append_insert(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = id;
         return 0;
@@ -58,10 +86,11 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w && table_is_durable(db, cid)) {
-            if (wo_wal_append_update(w, db, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                *msg = "wal commit failed"; /* RAM ahead of disk: trap, do not ack */
-                return WO_T_IO;
-            }
+            /* was: trap and leave RAM ahead of disk, which the old comment
+             * admitted. Now fatal — see the insert arm. */
+            if (wo_wal_append_update(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = 0;
         return 0;
@@ -81,10 +110,9 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w && table_is_durable(db, cid)) {
-            if (wo_wal_append_remove(w, cid, id) != 0 || wo_wal_commit(w) != 0) {
-                *msg = "wal commit failed";
-                return WO_T_IO;
-            }
+            if (wo_wal_append_remove(w, cid, id) != 0) wo_wal_stage_fatal(w);
+            wo_wal_commit_fatal(w, 1);
+            maybe_compact(db, w);
         }
         R[A] = 0;
         return 0;
@@ -226,13 +254,12 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             q->msg = m;
             break;
         }
-        if (w) {
-            if (wo_wal_append_insert(w, db, q->cid, id) != 0 || wo_wal_commit(w) != 0) {
-                wo_row_remove(db, q->cid, id);
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+        if (w && table_is_durable(db, q->cid)) {
+            /* databasev2 4: staging failure is FATAL, not a trap. The row is
+             * already in RAM; of the three verbs only insert could undo
+             * itself, so continuing means RAM ahead of disk. One rule: once a
+             * statement has mutated RAM, the outcomes are durable or death. */
+            if (wo_wal_append_insert(w, db, q->cid, id) != 0) wo_wal_stage_fatal(w);
         }
         q->result = id;
         break;
@@ -244,12 +271,8 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             q->msg = m;
             break;
         }
-        if (w) {
-            if (wo_wal_append_update(w, db, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+        if (w && table_is_durable(db, q->cid)) {
+            if (wo_wal_append_update(w, db, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
         }
         break;
     }
@@ -264,12 +287,8 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             q->msg = "no such row";
             break;
         }
-        if (w) {
-            if (wo_wal_append_remove(w, q->cid, q->id) != 0 || wo_wal_commit(w) != 0) {
-                q->status = WO_T_IO;
-                q->msg = "wal commit failed";
-                break;
-            }
+        if (w && table_is_durable(db, q->cid)) {
+            if (wo_wal_append_remove(w, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
         }
         break;
     }

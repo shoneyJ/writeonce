@@ -117,6 +117,397 @@ static void test_roundtrip_replay(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 4 part A, Task 1: a failed barrier must be DETECTED, and the
+ * caller must be able to tell WHICH operation failed — a pwrite failure and
+ * an fdatasync failure are different operational problems and the diagnostic
+ * has to name the right one. This proves detection only; the fatal exit that
+ * follows it cannot be exercised in-process. */
+static void test_commit_failure_detected(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/commitfail.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    /* the WAL remembers where it lives — the abort diagnostic is worthless
+     * without it */
+    T_CHECK(w.path != NULL && strstr(w.path, "commitfail.wal") != NULL);
+
+    wo_str *s = wo_str_new(&rt, "abc", 3);
+    uint64_t vals[2] = {7, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_CHECK(w.len > 0); /* something really is staged */
+
+    /* an unusable descriptor: pwrite reports EBADF. -1 is used rather than
+     * closing the real fd so the close below cannot double-free it. */
+    int real = w.fd;
+    w.fd = -1;
+    T_EQ(wo_wal_commit(&w), WO_WAL_ERR_WRITE);
+    T_CHECK(w.len > 0); /* a failed commit consumes nothing */
+    w.fd = real;
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 3 Task 1: compaction rewrites the log as one record per LIVE row.
+ * Asserts BOTH halves on purpose: "the file got shorter" is also true of a
+ * truncating bug, so the replay comparison is what actually proves it. */
+static void test_compact_shortens_and_replays_equal(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/compact.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    uint64_t ids[3];
+    for (int i = 0; i < 3; i++) {
+        wo_str *s = wo_str_new(&rt, "abc", 3);
+        uint64_t vals[2] = {(uint64_t)(i * 10), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    /* age it: the SAME row updated repeatedly, so HISTORY grows while the live
+     * set does not — the exact case checkpoint exists for */
+    for (int k = 0; k < 40; k++) {
+        int ek = 0;
+        T_EQ(wo_row_update_field(&db, 0, ids[0], 0, (uint64_t)(500 + k), &msg, &ek), 0);
+        T_EQ(wo_wal_append_update(&w, &db, 0, ids[0]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    uint64_t before_bytes = 0;
+    int64_t before_recs = wo_wal_check(path, &before_bytes);
+    T_CHECK(before_recs == 43); /* 3 inserts + 40 updates, all history */
+
+    T_EQ(wo_wal_compact(&w, &db), 0);
+
+    uint64_t after_bytes = 0;
+    int64_t after_recs = wo_wal_check(path, &after_bytes);
+    T_CHECK(after_recs == 3);              /* one record per LIVE row */
+    T_CHECK(after_bytes < before_bytes);   /* and the file really shrank */
+
+    /* the WAL stays usable: the descriptor was reopened and the offset reset,
+     * so a further write must land AFTER the compacted records, not over them */
+    wo_str *s4 = wo_str_new(&rt, "xyz", 3);
+    uint64_t v4[2] = {99, (uint64_t)(uintptr_t)s4};
+    uint64_t id4 = wo_row_insert(&db, 0, v4, &msg, NULL);
+    T_CHECK(id4 != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id4), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_CHECK(wo_wal_check(path, NULL) == 4);
+    wo_wal_close(&w);
+
+    /* the proof: a FRESH store replayed from the compacted log must hold the
+     * same rows, the same ids, and the LAST value each row had */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 4);
+    uint64_t out[2];
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[0], out, &msg), 0);
+    T_CHECK(out[0] == 539); /* the 40th update won, not the original 0 */
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[1], out, &msg), 0);
+    T_CHECK(out[0] == 10);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[2], out, &msg), 0);
+    T_CHECK(out[0] == 20);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, id4, out, &msg), 0);
+    T_CHECK(out[0] == 99);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+
+    wo_db_destroy(&db2);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 3 Task 2: a stale temp file is the one input that could be
+ * mistaken for data — a crash before the rename leaves one behind, full of
+ * well-formed records that are NOT yet authoritative. So the fixture uses
+ * plausible records (a byte copy of a real log), not garbage: garbage would be
+ * rejected by the CRC anyway and would prove nothing. */
+static void test_stale_compact_temp_is_removed(void) {
+    char path[128], tmp[160];
+    snprintf(path, sizeof path, "%s/stale.wal", g_dir);
+    snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    /* two live rows in the REAL log */
+    uint64_t ids[2];
+    for (int i = 0; i < 2; i++) {
+        wo_str *s = wo_str_new(&rt, "abc", 3);
+        uint64_t vals[2] = {(uint64_t)(i + 1), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    wo_wal_close(&w);
+
+    /* forge a plausible stale temp: a byte copy of the real log */
+    {
+        int src = open(path, O_RDONLY);
+        int dst = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        T_CHECK(src >= 0 && dst >= 0);
+        char buf[8192];
+        ssize_t n;
+        while ((n = read(src, buf, sizeof buf)) > 0) T_CHECK(write(dst, buf, (size_t)n) == n);
+        close(src);
+        close(dst);
+        T_EQ(access(tmp, F_OK), 0); /* it really is there before we open */
+    }
+
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    T_CHECK(access(tmp, F_OK) != 0); /* gone, and never consulted */
+    wo_wal_close(&w2);
+
+    /* and the live log still says exactly what it said */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 2);
+    uint64_t out[2];
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[0], out, &msg), 0);
+    T_CHECK(out[0] == 1);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    T_EQ(wo_row_read(&db2, &rt, 0, ids[1], out, &msg), 0);
+    T_CHECK(out[0] == 2);
+    wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+
+    wo_db_destroy(&db2);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 3 Task 3: the trigger, tested as a pure decision. Kept pure
+ * precisely so it CAN be tested — a policy only observable by writing megabytes
+ * and waiting is a policy nobody checks. */
+static void test_should_compact_policy(void) {
+    /* below the floor, nothing fires however bad the ratio looks */
+    T_EQ(wo_wal_should_compact(1000, 10, 4096, 3), 0);
+    T_EQ(wo_wal_should_compact(4095, 1, 4096, 3), 0);
+    /* past the floor with no prior compaction: run once to learn the size */
+    T_EQ(wo_wal_should_compact(4096, 0, 4096, 3), 1);
+    /* with a known denominator it is a straight ratio test */
+    T_EQ(wo_wal_should_compact(30000, 10000, 4096, 3), 0); /* exactly 3x is not MORE than 3x */
+    T_EQ(wo_wal_should_compact(30001, 10000, 4096, 3), 1);
+    T_EQ(wo_wal_should_compact(19999, 10000, 4096, 2), 0);
+    T_EQ(wo_wal_should_compact(20001, 10000, 4096, 2), 1);
+    /* a zero ratio disables the policy rather than dividing by nothing */
+    T_EQ(wo_wal_should_compact(1u << 30, 10, 4096, 0), 0);
+}
+
+/* databasev2 3 Task 3: the ordering rule, asserted rather than trusted.
+ * Compaction with records staged would write them into a file about to be
+ * replaced, so it must be REFUSED — and refused without touching the log. */
+static void test_compact_refuses_with_staged_records(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/staged.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+
+    wo_str *s1 = wo_str_new(&rt, "abc", 3);
+    uint64_t v1[2] = {7, (uint64_t)(uintptr_t)s1};
+    uint64_t id1 = wo_row_insert(&db, 0, v1, &msg, NULL);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id1), 0);
+    T_EQ(wo_wal_commit(&w), 0); /* durable, buffer empty */
+
+    /* now stage WITHOUT committing */
+    wo_str *s2 = wo_str_new(&rt, "xyz", 3);
+    uint64_t v2[2] = {8, (uint64_t)(uintptr_t)s2};
+    uint64_t id2 = wo_row_insert(&db, 0, v2, &msg, NULL);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id2), 0);
+    T_CHECK(w.len > 0);
+
+    uint64_t before = 0;
+    int64_t recs = wo_wal_check(path, &before);
+    T_EQ(wo_wal_compact(&w, &db), -1);  /* refused */
+    T_CHECK(w.len > 0);                 /* and the staged record is still there */
+    uint64_t after = 0;
+    T_CHECK(wo_wal_check(path, &after) == recs && after == before); /* log untouched */
+
+    /* the staged record still commits normally afterwards */
+    T_EQ(wo_wal_commit(&w), 0);
+    T_CHECK(wo_wal_check(path, NULL) == recs + 1);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 3 Task 4: kill -9 DURING compaction.
+ *
+ * The existing battery is insert-only, so its "records >= acks" oracle is
+ * exactly what compaction is allowed to break: collapsing history is the point.
+ * The invariant that survives is the ACKED LIVE SET — every id acked as
+ * inserted and not later acked as deleted must be present with its acked value,
+ * and every id acked as deleted must be absent. Both the pre-compaction and the
+ * post-compaction log satisfy that identically, which is precisely the
+ * "never a mixture" property the design is shaped around.
+ *
+ * The child deletes as it goes so HISTORY accumulates while the live set stays
+ * small — without that, compaction would have nothing to collapse and the test
+ * would prove nothing. */
+#define CK_DELETED UINT64_MAX
+
+static void ck_ack(int fd, uint64_t id, uint64_t val) {
+    uint64_t rec[2] = {id, val};
+    if (write(fd, rec, sizeof rec) != (ssize_t)sizeof rec) _exit(0); /* parent gone */
+}
+
+static void compact_battery_child(const char *path, int ack_fd) {
+    wo_rt rt;
+    wo_db db;
+    wo_wal w;
+    if (wo_rt_init(&rt, 1 << 20, CLASSES, 1) != 0) _exit(9);
+    if (wo_db_init(&db, CLASSES, 1, 0, 1) != 0) _exit(9);
+    if (wo_wal_open(&w, path, 1 << 20) != 0) _exit(9);
+    const char *msg = "";
+    uint64_t live[512];
+    size_t nlive = 0;
+    for (uint64_t i = 0;; i++) {
+        uint64_t val = i * 7 + 3;
+        wo_str *s = wo_str_new(&rt, "r", 1);
+        uint64_t vals[2] = {val, (uint64_t)(uintptr_t)s};
+        uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+        wo_str_free(&rt, s);
+        if (!id) _exit(9);
+        if (wo_wal_append_insert(&w, &db, 0, id) != 0) _exit(9);
+        if (wo_wal_commit(&w) != 0) _exit(9); /* durable BEFORE the ack */
+        ck_ack(ack_fd, id, val);
+        if (nlive < 512) live[nlive++] = id;
+
+        /* drop the oldest so history grows while the live set does not */
+        if (nlive > 16) {
+            uint64_t victim = live[0];
+            memmove(live, live + 1, (nlive - 1) * sizeof live[0]);
+            nlive--;
+            /* INTENT FIRST, deliberately. An ack after the commit would race:
+             * a kill between them leaves the row legitimately gone on disk
+             * while the last ack still says "inserted", and the parent would
+             * demand a row the engine was right to remove. Announcing intent
+             * makes the row's fate simply UNKNOWN to the parent, which is the
+             * honest thing to assert about it. */
+            ck_ack(ack_fd, victim, CK_DELETED);
+            if (wo_row_remove(&db, 0, victim) != 0) _exit(9);
+            if (wo_wal_append_remove(&w, 0, victim) != 0) _exit(9);
+            if (wo_wal_commit(&w) != 0) _exit(9);
+        }
+        /* compact often, so a kill has a real chance of landing inside one */
+        if (i % 24 == 23) (void)wo_wal_compact(&w, &db);
+    }
+}
+
+static void test_compact_crash_battery(void) {
+    int rounds = 40; /* it is a RACE: one green run proves very little */
+    for (int round = 0; round < rounds; round++) {
+        char path[128], tmp[160];
+        snprintf(path, sizeof path, "%s/ckcrash-%d.wal", g_dir, round);
+        snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX);
+        int pipefd[2];
+        T_EQ(pipe(pipefd), 0);
+        pid_t pid = fork();
+        T_CHECK(pid >= 0);
+        if (pid == 0) {
+            close(pipefd[0]);
+            compact_battery_child(path, pipefd[1]);
+            _exit(0);
+        }
+        close(pipefd[1]);
+        /* vary the instant so kills land before, inside and after rewrites */
+        struct timespec ts = {0, (7 + round * 3) * 1000000L};
+        while (nanosleep(&ts, &ts) != 0) {}
+        kill(pid, SIGKILL);
+        int status;
+        waitpid(pid, &status, 0);
+
+        /* replay the acks into the expected live set, in order */
+        uint64_t ids[65536], vals[65536];
+        size_t n = 0;
+        for (;;) {
+            uint64_t rec[2];
+            ssize_t r = read(pipefd[0], rec, sizeof rec);
+            if (r != (ssize_t)sizeof rec) break;
+            if (n < 65536) { ids[n] = rec[0]; vals[n] = rec[1]; n++; }
+        }
+        close(pipefd[0]);
+        T_CHECK(n > 0); /* the child got at least one commit out */
+
+        wo_rt rt;
+        T_EQ(wo_rt_init(&rt, 1 << 22, CLASSES, 1), 0);
+        wo_db db;
+        T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+        int64_t ck_recs = wo_wal_check(path, NULL);
+        int64_t ck_applied = wo_wal_replay(path, &db);
+        T_CHECK(ck_applied >= 0); /* never reported as corruption */
+
+        /* A stale temp may well EXIST after a kill inside compaction — that is
+         * the expected debris. The guarantee is that the next OPEN removes it
+         * and never reads it, so that is what gets asserted here; checking
+         * merely for its absence after a replay would be asserting something
+         * the design never promised (wo_wal_replay does not open the WAL). */
+        {
+            wo_wal probe;
+            T_EQ(wo_wal_open(&probe, path, 1 << 20), 0);
+            T_CHECK(access(tmp, F_OK) != 0);
+            wo_wal_close(&probe);
+        }
+
+        const char *msg = "";
+        int bad = 0, checked = 0;
+        for (size_t k = 0; k < n && !bad; k++) {
+            if (vals[k] == CK_DELETED) continue; /* intent: fate is unknown */
+            /* an id ever announced for deletion may legally be gone */
+            int doomed = 0;
+            for (size_t j = 0; j < n; j++)
+                if (ids[j] == ids[k] && vals[j] == CK_DELETED) { doomed = 1; break; }
+            if (doomed) continue;
+            uint64_t out[2];
+            int rc = wo_row_read(&db, &rt, 0, ids[k], out, &msg);
+            if (0) {
+            } else if (rc != 0 || out[0] != vals[k]) {
+                bad = 1;              /* an acked insert is missing or wrong */
+                fprintf(stderr, "CKDIAG round=%d id=%llu rc=%d got=%llu want=%llu ack#%zu/%zu "
+                        "log_records=%lld replay_applied=%lld\n",
+                        round, (unsigned long long)ids[k], rc,
+                        rc == 0 ? (unsigned long long)out[0] : 0ull,
+                        (unsigned long long)vals[k], k, n,
+                        (long long)ck_recs, (long long)ck_applied);
+            } else {
+                wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+            }
+            checked++;
+        }
+        T_CHECK(checked > 0);
+        T_CHECK(!bad);
+        wo_db_destroy(&db);
+        wo_rt_destroy(&rt);
+    }
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -534,12 +925,18 @@ int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
     test_roundtrip_replay();
+    test_commit_failure_detected();
+    test_compact_shortens_and_replays_equal();
+    test_stale_compact_temp_is_removed();
+    test_should_compact_policy();
+    test_compact_refuses_with_staged_records();
     test_torn_tail();
     test_float_bytes_replay();
     test_offset_capture();
     test_offset_after_failed_commit();
     test_read_row_at();
     test_crash_battery();
+    test_compact_crash_battery();
     /* leave the dir for a failed run's forensics only */
     if (!t_fail) {
         char cmd[128];

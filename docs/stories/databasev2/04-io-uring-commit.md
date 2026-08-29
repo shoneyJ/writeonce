@@ -2,7 +2,7 @@
 track: databasev2
 iteration: "4"
 was_language_iteration: "23"
-status: pending
+status: in-progress
 readiness: ready
 chain: 5
 ---
@@ -59,6 +59,111 @@ chain: 5
 > batch — under io_uring it becomes exactly one submission, so the two
 > features compose without either knowing the other.
 
+> **BRAINSTORMED 2026-08-28 — and SPLIT IN TWO.** Spec for part A:
+> [`2026-08-28-wal-group-commit-design.md`](../../superpowers/specs/2026-08-28-wal-group-commit-design.md)
+> · plan: [`2026-08-28-wal-group-commit.md`](../../superpowers/plans/2026-08-28-wal-group-commit.md)
+> (6 tasks).
+>
+> **The payoff metric is `durable.sN.mixwrite`, not the s1 numbers.** Worker
+> shards hold no WAL — the runtime asserts it — so every statement on a worker
+> marshals to shard 0 and parks, while a statement already on shard 0 runs
+> inline. Batches form only where there is a queue, so concurrent multi-shard
+> writes batch and a single-shard or serial workload does not. The baseline
+> shows why that is the right target anyway: **multi-shard concurrent writes are
+> 480 ops/s at p99 5888 µs against single-shard's 1023 at p99 664 — adding
+> shards makes durable writing WORSE today**, because every marshaled statement
+> still buys its own barrier on the owner.
+>
+> **The premise below needed correcting.** This story says "replace
+> fsync-per-commit with io_uring group-commit", but the engine does not commit
+> per commit — it commits per **statement**: `db.c` calls `wo_wal_commit`
+> immediately after every append, at all six sites, so every row change is one
+> `pwrite` plus one `fdatasync`. That splits the goal into two independent
+> wins, and only the second needs io_uring:
+>
+> - **Part A — batching.** Let many statements share one barrier. The staging
+>   buffer already holds any number of records; today it never holds more than
+>   one because the caller commits immediately. Mostly a deletion of calls.
+> - **Part B — async submission.** The shard submits and keeps working instead
+>   of blocking in `fdatasync`. Deferred until A's measurement says whether the
+>   blocking boundary is still the bottleneck.
+>
+> **A is where most of the number lives.** Iteration 22 measured durable writes
+> at 4460 ops/s and mixed writes at 1023 ops/s (p99 664 µs) against 1.28M ops/s
+> for durable reads — ~290× apart, essentially all of it the per-statement
+> barrier.
+>
+> **Forks settled in the brainstorm:** batch boundary is **queue-drain** (not
+> the tick this story recorded — a tick taxes an idle system to serve a busy
+> one); a failure between "RAM mutated" and "record durable" is a **fatal,
+> diagnosed abort**, replacing today's uneven rollback where `insert` undoes
+> itself and `update`/`delete` admit in a comment that they leave RAM ahead of
+> disk. **That removes `WO_T_IO` from the write path** — a language-visible
+> change, recorded here deliberately.
+>
+> `status: in-progress` because the brainstorm is done and the spec is
+> approved; the plan is next. (The `readiness` axis that would say this
+> precisely lives on the unmerged `db-residency-doctrine`.)
+
+## Progress — part A landed 2026-08-28
+
+| # | Task | State |
+| --- | --- | --- |
+| 1 | a failed barrier is detected, and fatal | ✅ `d3ff03e` |
+| 2 | one barrier per drain; replies held | ✅ `b9b8a45` |
+| 3 | the inline path takes the fatal rule, asymmetry documented | ✅ `a6ccdbe` |
+| 4 | prove batches form — the `wmix` write-concurrent leg | ✅ `40d029c` |
+| 5 | measure the payoff, gate it, record it | ✅ `d52ea8a` |
+| 6 | closeout | ✅ this change |
+| — | **part B — io_uring submission** | ⬜ **not started; its premise changed, see below** |
+
+### The payoff, measured two ways
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| controlled (same build, only `db.c`/`vm.c` swapped; `wmix 4000 32`) | 2213 · 2177 ops/s, p50 7183 · 7251 µs | **6216 · 6525 ops/s, p50 3458 · 3444 µs** |
+| committed baseline: `s1` inline vs `sN` batched | 1467 ops/s, mean batch 1.0 | **5117 ops/s, mean batch 5.43, peak 57** |
+
+**≈2.9× throughput, ≈2.1× lower p50**, and the two methods agree (2.9× and
+3.5×). Batching scales with contention: mean batch **1.13 / 1.76 / 5.35** at
+C = 4 / 16 / 64.
+
+### The cost side, and a bug the battery caught
+
+**Reads were being held behind the barrier.** The drain first held *every* DB
+reply until the commit — including reads, which stage nothing. `mixread` p99 rose
+from ~1043 µs to **4057 µs** until only staging statements had their replies
+held. Caught by the gate, not by review.
+
+**What remains is inherent:** a barrier blocks the owner shard longer (more
+records per fsync) though less often, so anything queued behind one waits. Three
+full runs of the same build gave `durable.sN.mixread.p99` of **1043 / 2318 /
+4147 µs** — a 2–4× spread near idle. So part A buys ~3× write throughput at the
+cost of a longer, noisier tail on the owner shard. `durable.sN.*.p99us` was
+re-baselined at 100% tolerance for that reason, with the floor as the real guard
+(`mixread`'s came within 25 µs of tripping).
+
+**This is the strongest argument for part B** — submitting the barrier and
+continuing to serve is exactly what removes this cost.
+
+### What did NOT improve — and it was predicted
+
+- **`durable.sN.mixwrite`: 480 → 492 ops/s, i.e. unchanged.** This was the
+  spec's *original* payoff metric, and correcting it was part of the brainstorm:
+  `mix` writes on one op in ten with C=4, so a quick run performs **20 writes**
+  and measured mean batch **1.01**. A workload that never has two writes in
+  flight cannot be helped by batching them.
+- **`durable.*.seed`: unchanged.** A serial single writer has nothing to batch
+  with, under any scheme.
+- **This board's stated target was mis-stated.** It read "close the 66× gap
+  iteration 22 measured (durable 4.5k vs ram 297k inserts/s)". Part A does not
+  close that gap and structurally cannot: `seed` is serial, and one writer
+  waiting on one barrier is a **latency** problem, not a batching one. Recorded
+  rather than quietly renumbered.
+- **The before-p99 is not a measurement.** `hist_add` clamps at 20000 µs and
+  both before-runs pinned exactly there, so the true value is ≥20 ms and
+  unknown. The gain is *at least* 2.3×.
+
 ## Goals
 
 - **Replace fsync-per-commit with io_uring group-commit** on the WAL write
@@ -77,26 +182,50 @@ chain: 5
 
 ## Acceptance Criteria
 
-- What to achieve?
-    - **Given** the io_uring write path under the iteration-22 crash battery
-      (concurrent writers, kill -9 mid-stream, reboot, replay),
-    - **when** it runs,
-    - **then** every acknowledged write is present after replay and no
-      unacknowledged partial write is ever visible — the exact result the
-      fsync path gives, so durability is provably unchanged.
-- What to achieve?
-    - **Given** the iteration-22 durable write benchmark,
-    - **when** it is run on the fsync-per-commit path and then the io_uring
-      group-commit path on the same machine,
-    - **then** the io_uring path's write throughput is materially higher and
-      its p99 commit latency lower, with the before/after numbers recorded —
-      the payoff, measured, not asserted.
-- What to achieve?
-    - **Given** a kernel without io_uring (old, or restricted by seccomp),
-    - **when** the runtime starts,
-    - **then** it falls back to the pwrite + fdatasync path automatically and
-      correctly — io_uring is an accelerator, never a hard dependency, and a
-      binary that runs everywhere is the whole project's premise.
+Met:
+
+- **Given** the io_uring write path under iteration 22's crash battery, **when**
+  it runs, **then** every acknowledged write is present after replay. ✅ — the
+  criterion applies unchanged to part A's batching. `crash.sN` (the batched
+  path) recovered every acked row after `kill -9`, `crash.s1` likewise, and both
+  restart legs replay byte-true. This was the one thing batching could break.
+- **Given** the durable write benchmark before and after, **then** throughput is
+  materially higher and p99 lower, recorded. ✅ ~2.9× and ~2.1× (p50); see
+  `perf-targets.md` §6. **Scoped honestly:** on a write-concurrent workload
+  only, and p99's "before" is at the histogram ceiling.
+- **Given** batching, **when** it runs, **then** it is proven to engage rather
+  than assumed. ✅ mean batch 5.43, peak 57 on the gated leg, and the live
+  assertion fails the suite if the mean drops to 1.
+- **Given** a durability failure, **when** it happens, **then** the engine does
+  not continue with RAM ahead of disk. ✅ fatal, diagnosed, exit 74 — replacing
+  three behaviours that disagreed.
+
+Outstanding:
+
+- **Given** a kernel without io_uring, **when** the runtime starts, **then** it
+  falls back automatically. *(part B — part A adds no syscall interface, so
+  nothing to fall back from yet.)*
+- **Single-shard concurrent batching.** A statement on shard 0 commits inline
+  and cannot batch; doing so needs the inline path to park its fiber on the
+  barrier — the same machinery part B needs. So `WO_SHARDS=1` gets no batching
+  at all, by design and measured (mean batch 1.0).
+- **The abort path is not exercised.** Forcing a real `fdatasync` failure needs a
+  full or read-only filesystem, which the gate cannot arrange without mount
+  privileges. The unit test proves the error is *detected*; the exit three lines
+  later is covered by inspection. Disclosed rather than papered over — iteration
+  40 was exactly a fatal path nothing exercised.
+
+## Part B — its premise changed
+
+Part B was justified by "close the 66× durable gap". Part A shows that framing
+was wrong: the gap is **two** problems. Concurrent write fan-in was a batching
+problem and is now ~3× better. What remains is a **serial** writer waiting on a
+single barrier, which no amount of batching can help — and io_uring does not
+obviously help it either, since one writer still needs one durable barrier
+before its ack. Part B's real candidates are overlapping the barrier with other
+work on the shard, and the inline-path park that single-shard batching also
+needs. **It should be re-brainstormed against that, not started on the old
+premise.**
 
 ## Out Of Scope
 

@@ -1,22 +1,70 @@
 {
  "_config": {
-  "N": 2000,
-  "crash_reps": 1,
-  "msg_n": 20000,
+  "N": 20000,
+  "crash_reps": 3,
+  "msg_n": 200000,
   "note": "refresh only with a commit that says why; tolerances come from tolerance_for() in the driver",
-  "wal_n": 800
+  "wal_n": 4000
  },
  "ceiling.rows_recovered": {
   "dir": "lower",
-  "floor": 159744,
+  "floor": 159492,
   "tolerance_pct": 100,
-  "value": 39936
+  "value": 39873
+ },
+ "ckpt.boot_off_ms": {
+  "dir": "lower",
+  "floor": 456,
+  "tolerance_pct": 400,
+  "value": 114
+ },
+ "ckpt.boot_on_ms": {
+  "dir": "lower",
+  "floor": 256,
+  "tolerance_pct": 400,
+  "value": 64
+ },
+ "ckpt.bytes_off": {
+  "dir": "lower",
+  "floor": 7876676,
+  "tolerance_pct": 400,
+  "value": 1969169
+ },
+ "ckpt.bytes_on": {
+  "dir": "lower",
+  "floor": 3696192,
+  "tolerance_pct": 400,
+  "value": 924048
+ },
+ "ckpt.compactions": {
+  "dir": "lower",
+  "floor": 100,
+  "tolerance_pct": 400,
+  "value": 6
+ },
+ "ckpt.pause_us_max": {
+  "dir": "lower",
+  "floor": 33912,
+  "tolerance_pct": 400,
+  "value": 8478
+ },
+ "ckpt.pause_us_per_mb": {
+  "dir": "lower",
+  "floor": 65848,
+  "tolerance_pct": 100,
+  "value": 16462
+ },
+ "ckpt.reclaim_x": {
+  "dir": "higher",
+  "floor": 0.0,
+  "tolerance_pct": 15,
+  "value": 2.13
  },
  "durable.s1.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2237,
+  "floor": 2452,
   "tolerance_pct": 50,
-  "value": 8949
+  "value": 9809
  },
  "durable.s1.mixread.p50us": {
   "dir": "lower",
@@ -28,31 +76,31 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 12
  },
  "durable.s1.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 248,
+  "floor": 272,
   "tolerance_pct": 50,
-  "value": 994
+  "value": 1089
  },
  "durable.s1.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 820,
+  "floor": 1704,
   "tolerance_pct": 50,
-  "value": 205
+  "value": 426
  },
  "durable.s1.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 872,
+  "floor": 1984,
   "tolerance_pct": 50,
-  "value": 218
+  "value": 496
  },
  "durable.s1.query.ops_sec": {
   "dir": "higher",
-  "floor": 335570,
+  "floor": 306372,
   "tolerance_pct": 50,
-  "value": 1342281
+  "value": 1225490
  },
  "durable.s1.query.p50us": {
   "dir": "lower",
@@ -68,9 +116,9 @@
  },
  "durable.s1.read.ops_sec": {
   "dir": "higher",
-  "floor": 347705,
+  "floor": 307389,
   "tolerance_pct": 50,
-  "value": 1390820
+  "value": 1229558
  },
  "durable.s1.read.p50us": {
   "dir": "lower",
@@ -82,85 +130,121 @@
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 1
  },
  "durable.s1.seed.ops_sec": {
   "dir": "higher",
-  "floor": 1103,
+  "floor": 1095,
   "tolerance_pct": 15,
-  "value": 4415
+  "value": 4381
  },
  "durable.s1.seed.p50us": {
   "dir": "lower",
-  "floor": 828,
+  "floor": 848,
   "tolerance_pct": 15,
-  "value": 207
+  "value": 212
  },
  "durable.s1.seed.p99us": {
   "dir": "lower",
-  "floor": 2092,
+  "floor": 2432,
   "tolerance_pct": 15,
-  "value": 523
+  "value": 608
+ },
+ "durable.s1.wmix.mean_batch": {
+  "dir": "higher",
+  "floor": 0.0,
+  "tolerance_pct": 100,
+  "value": 1.0
+ },
+ "durable.s1.wmix.ops_sec": {
+  "dir": "higher",
+  "floor": 402,
+  "tolerance_pct": 15,
+  "value": 1611
+ },
+ "durable.s1.wmix.p50us": {
+  "dir": "lower",
+  "floor": 1764,
+  "tolerance_pct": 15,
+  "value": 441
+ },
+ "durable.s1.wmix.p99us": {
+  "dir": "lower",
+  "floor": 2684,
+  "tolerance_pct": 15,
+  "value": 671
+ },
+ "durable.s1.wmix.peak_batch": {
+  "dir": "higher",
+  "floor": 0,
+  "tolerance_pct": 100,
+  "value": 1
+ },
+ "durable.s1.wmix.peak_staged": {
+  "dir": "lower",
+  "floor": 196,
+  "tolerance_pct": 100,
+  "value": 49
  },
  "durable.s1.write.ops_sec": {
   "dir": "higher",
-  "floor": 1155,
+  "floor": 573,
   "tolerance_pct": 15,
-  "value": 4620
+  "value": 2294
  },
  "durable.s1.write.p50us": {
   "dir": "lower",
-  "floor": 832,
+  "floor": 1760,
   "tolerance_pct": 15,
-  "value": 208
+  "value": 440
  },
  "durable.s1.write.p99us": {
   "dir": "lower",
-  "floor": 1948,
+  "floor": 2716,
   "tolerance_pct": 15,
-  "value": 487
+  "value": 679
  },
  "durable.sN.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 1112,
+  "floor": 1183,
   "tolerance_pct": 50,
-  "value": 4450
+  "value": 4733
  },
  "durable.sN.mixread.p50us": {
   "dir": "lower",
-  "floor": 236,
+  "floor": 244,
   "tolerance_pct": 50,
-  "value": 59
+  "value": 61
  },
  "durable.sN.mixread.p99us": {
   "dir": "lower",
-  "floor": 13100,
-  "tolerance_pct": 50,
-  "value": 3275
+  "floor": 16200,
+  "tolerance_pct": 300,
+  "value": 4050
  },
  "durable.sN.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 123,
+  "floor": 131,
   "tolerance_pct": 50,
-  "value": 494
+  "value": 525
  },
  "durable.sN.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 1160,
+  "floor": 2172,
   "tolerance_pct": 50,
-  "value": 290
+  "value": 543
  },
  "durable.sN.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 2944,
-  "tolerance_pct": 50,
-  "value": 736
+  "floor": 16440,
+  "tolerance_pct": 300,
+  "value": 4110
  },
  "durable.sN.query.ops_sec": {
   "dir": "higher",
-  "floor": 287356,
+  "floor": 308451,
   "tolerance_pct": 50,
-  "value": 1149425
+  "value": 1233806
  },
  "durable.sN.query.p50us": {
   "dir": "lower",
@@ -171,14 +255,14 @@
  "durable.sN.query.p99us": {
   "dir": "lower",
   "floor": 100,
-  "tolerance_pct": 50,
+  "tolerance_pct": 300,
   "value": 1
  },
  "durable.sN.read.ops_sec": {
   "dir": "higher",
-  "floor": 192752,
+  "floor": 248188,
   "tolerance_pct": 50,
-  "value": 771010
+  "value": 992752
  },
  "durable.sN.read.p50us": {
   "dir": "lower",
@@ -189,44 +273,80 @@
  "durable.sN.read.p99us": {
   "dir": "lower",
   "floor": 100,
-  "tolerance_pct": 50,
+  "tolerance_pct": 300,
   "value": 2
  },
  "durable.sN.seed.ops_sec": {
   "dir": "higher",
-  "floor": 1142,
+  "floor": 1104,
   "tolerance_pct": 50,
-  "value": 4571
+  "value": 4418
  },
  "durable.sN.seed.p50us": {
   "dir": "lower",
-  "floor": 836,
+  "floor": 844,
   "tolerance_pct": 50,
-  "value": 209
+  "value": 211
  },
  "durable.sN.seed.p99us": {
   "dir": "lower",
-  "floor": 1916,
+  "floor": 2188,
+  "tolerance_pct": 300,
+  "value": 547
+ },
+ "durable.sN.wmix.mean_batch": {
+  "dir": "higher",
+  "floor": 1.0,
+  "tolerance_pct": 100,
+  "value": 6.22
+ },
+ "durable.sN.wmix.ops_sec": {
+  "dir": "higher",
+  "floor": 1504,
   "tolerance_pct": 50,
-  "value": 479
+  "value": 6017
+ },
+ "durable.sN.wmix.p50us": {
+  "dir": "lower",
+  "floor": 27184,
+  "tolerance_pct": 50,
+  "value": 6796
+ },
+ "durable.sN.wmix.p99us": {
+  "dir": "lower",
+  "floor": 37484,
+  "tolerance_pct": 300,
+  "value": 9371
+ },
+ "durable.sN.wmix.peak_batch": {
+  "dir": "higher",
+  "floor": 15,
+  "tolerance_pct": 100,
+  "value": 60
+ },
+ "durable.sN.wmix.peak_staged": {
+  "dir": "lower",
+  "floor": 11760,
+  "tolerance_pct": 100,
+  "value": 2940
  },
  "durable.sN.write.ops_sec": {
   "dir": "higher",
-  "floor": 1010,
+  "floor": 580,
   "tolerance_pct": 50,
-  "value": 4040
+  "value": 2320
  },
  "durable.sN.write.p50us": {
   "dir": "lower",
-  "floor": 832,
+  "floor": 1760,
   "tolerance_pct": 50,
-  "value": 208
+  "value": 440
  },
  "durable.sN.write.p99us": {
   "dir": "lower",
-  "floor": 1996,
-  "tolerance_pct": 50,
-  "value": 499
+  "floor": 2688,
+  "tolerance_pct": 300,
+  "value": 672
  },
  "growth.available": {
   "dir": "lower",
@@ -236,9 +356,9 @@
  },
  "growth.int.noswap.bytes_per_row": {
   "dir": "lower",
-  "floor": 392,
+  "floor": 440,
   "tolerance_pct": 10,
-  "value": 98
+  "value": 110
  },
  "growth.int.noswap.doublings": {
   "dir": "lower",
@@ -266,21 +386,21 @@
  },
  "growth.int.noswap.rows": {
   "dir": "lower",
-  "floor": 80000,
+  "floor": 800000,
   "tolerance_pct": 100,
-  "value": 20000
+  "value": 200000
  },
  "growth.int.noswap.rss_kb": {
   "dir": "lower",
-  "floor": 23968,
+  "floor": 168528,
   "tolerance_pct": 100,
-  "value": 5992
+  "value": 42132
  },
  "growth.int.swap.bytes_per_row": {
   "dir": "lower",
-  "floor": 392,
+  "floor": 440,
   "tolerance_pct": 10,
-  "value": 98
+  "value": 110
  },
  "growth.int.swap.doublings": {
   "dir": "lower",
@@ -308,21 +428,21 @@
  },
  "growth.int.swap.rows": {
   "dir": "lower",
-  "floor": 80000,
+  "floor": 800000,
   "tolerance_pct": 100,
-  "value": 20000
+  "value": 200000
  },
  "growth.int.swap.rss_kb": {
   "dir": "lower",
-  "floor": 23984,
+  "floor": 168576,
   "tolerance_pct": 100,
-  "value": 5996
+  "value": 42144
  },
  "growth.text.noswap.bytes_per_row": {
   "dir": "lower",
-  "floor": 1288,
+  "floor": 1284,
   "tolerance_pct": 10,
-  "value": 322
+  "value": 321
  },
  "growth.text.noswap.doublings": {
   "dir": "lower",
@@ -350,21 +470,21 @@
  },
  "growth.text.noswap.rows": {
   "dir": "lower",
-  "floor": 80000,
+  "floor": 800000,
   "tolerance_pct": 100,
-  "value": 20000
+  "value": 200000
  },
  "growth.text.noswap.rss_kb": {
   "dir": "lower",
-  "floor": 41216,
+  "floor": 343312,
   "tolerance_pct": 100,
-  "value": 10304
+  "value": 85828
  },
  "growth.text.swap.bytes_per_row": {
   "dir": "lower",
-  "floor": 1288,
+  "floor": 1284,
   "tolerance_pct": 10,
-  "value": 322
+  "value": 321
  },
  "growth.text.swap.doublings": {
   "dir": "lower",
@@ -392,21 +512,21 @@
  },
  "growth.text.swap.rows": {
   "dir": "lower",
-  "floor": 80000,
+  "floor": 800000,
   "tolerance_pct": 100,
-  "value": 20000
+  "value": 200000
  },
  "growth.text.swap.rss_kb": {
   "dir": "lower",
-  "floor": 41216,
+  "floor": 343328,
   "tolerance_pct": 100,
-  "value": 10304
+  "value": 85832
  },
  "ram.s1.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2236,
+  "floor": 22286,
   "tolerance_pct": 50,
-  "value": 8947
+  "value": 89144
  },
  "ram.s1.mixread.p50us": {
   "dir": "lower",
@@ -422,9 +542,9 @@
  },
  "ram.s1.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 248,
+  "floor": 2476,
   "tolerance_pct": 50,
-  "value": 994
+  "value": 9904
  },
  "ram.s1.mixwrite.p50us": {
   "dir": "lower",
@@ -440,15 +560,15 @@
  },
  "ram.s1.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 419322,
-  "tolerance_pct": 15,
-  "value": 3354579
+  "floor": 1336469,
+  "tolerance_pct": 70,
+  "value": 10691756
  },
  "ram.s1.query.ops_sec": {
   "dir": "higher",
-  "floor": 324675,
+  "floor": 244857,
   "tolerance_pct": 50,
-  "value": 1298701
+  "value": 979431
  },
  "ram.s1.query.p50us": {
   "dir": "lower",
@@ -464,9 +584,9 @@
  },
  "ram.s1.read.ops_sec": {
   "dir": "higher",
-  "floor": 332889,
+  "floor": 252270,
   "tolerance_pct": 50,
-  "value": 1331557
+  "value": 1009081
  },
  "ram.s1.read.p50us": {
   "dir": "lower",
@@ -482,87 +602,87 @@
  },
  "ram.s1.seed.ops_sec": {
   "dir": "higher",
-  "floor": 375939,
+  "floor": 62904,
   "tolerance_pct": 15,
-  "value": 1503759
+  "value": 251616
  },
  "ram.s1.seed.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 0
+  "value": 4
  },
  "ram.s1.seed.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 2
+  "value": 9
  },
  "ram.s1.write.ops_sec": {
   "dir": "higher",
-  "floor": 272628,
+  "floor": 47770,
   "tolerance_pct": 15,
-  "value": 1090512
+  "value": 191080
  },
  "ram.s1.write.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 1
+  "value": 8
  },
  "ram.s1.write.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 15,
-  "value": 2
+  "value": 10
  },
  "ram.sN.mixread.ops_sec": {
   "dir": "higher",
-  "floor": 2241,
+  "floor": 11218,
   "tolerance_pct": 50,
-  "value": 8964
+  "value": 44874
  },
  "ram.sN.mixread.p50us": {
   "dir": "lower",
-  "floor": 228,
+  "floor": 240,
   "tolerance_pct": 50,
-  "value": 57
+  "value": 60
  },
  "ram.sN.mixread.p99us": {
   "dir": "lower",
-  "floor": 1412,
+  "floor": 324,
   "tolerance_pct": 50,
-  "value": 353
+  "value": 81
  },
  "ram.sN.mixwrite.ops_sec": {
   "dir": "higher",
-  "floor": 249,
+  "floor": 1246,
   "tolerance_pct": 50,
-  "value": 996
+  "value": 4986
  },
  "ram.sN.mixwrite.p50us": {
   "dir": "lower",
-  "floor": 252,
+  "floor": 260,
   "tolerance_pct": 50,
-  "value": 63
+  "value": 65
  },
  "ram.sN.mixwrite.p99us": {
   "dir": "lower",
-  "floor": 280,
+  "floor": 356,
   "tolerance_pct": 50,
-  "value": 70
+  "value": 89
  },
  "ram.sN.msgrate.msgs_sec": {
   "dir": "higher",
-  "floor": 214795,
-  "tolerance_pct": 50,
-  "value": 1718360
+  "floor": 317323,
+  "tolerance_pct": 70,
+  "value": 2538586
  },
  "ram.sN.query.ops_sec": {
   "dir": "higher",
-  "floor": 331125,
+  "floor": 291545,
   "tolerance_pct": 50,
-  "value": 1324503
+  "value": 1166180
  },
  "ram.sN.query.p50us": {
   "dir": "lower",
@@ -578,9 +698,9 @@
  },
  "ram.sN.read.ops_sec": {
   "dir": "higher",
-  "floor": 340599,
+  "floor": 317823,
   "tolerance_pct": 50,
-  "value": 1362397
+  "value": 1271294
  },
  "ram.sN.read.p50us": {
   "dir": "lower",
@@ -596,87 +716,87 @@
  },
  "ram.sN.seed.ops_sec": {
   "dir": "higher",
-  "floor": 353606,
+  "floor": 73305,
   "tolerance_pct": 50,
-  "value": 1414427
+  "value": 293220
  },
  "ram.sN.seed.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 3
  },
  "ram.sN.seed.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 7
  },
  "ram.sN.write.ops_sec": {
   "dir": "higher",
-  "floor": 290697,
+  "floor": 56810,
   "tolerance_pct": 50,
-  "value": 1162790
+  "value": 227241
  },
  "ram.sN.write.p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 1
+  "value": 6
  },
  "ram.sN.write.p99us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 50,
-  "value": 2
+  "value": 10
  },
  "randread.collapse_x": {
   "dir": "lower",
-  "floor": 1172,
+  "floor": 1084,
   "tolerance_pct": 100,
-  "value": 293
+  "value": 271
  },
  "randread.overcap.filled_rss_kb": {
   "dir": "lower",
-  "floor": 25680,
+  "floor": 58144,
   "tolerance_pct": 100,
-  "value": 6420
+  "value": 14536
  },
  "randread.overcap.ops_sec": {
   "dir": "higher",
-  "floor": 1665,
+  "floor": 1427,
   "tolerance_pct": 100,
-  "value": 6661
+  "value": 5711
  },
  "randread.overcap.read_p50us": {
   "dir": "lower",
-  "floor": 556,
+  "floor": 624,
   "tolerance_pct": 100,
-  "value": 139
+  "value": 156
  },
  "randread.overcap.read_p99us": {
   "dir": "lower",
-  "floor": 1920,
+  "floor": 1628,
   "tolerance_pct": 100,
-  "value": 480
+  "value": 407
  },
  "randread.resident.filled_rss_kb": {
   "dir": "lower",
-  "floor": 54080,
+  "floor": 168288,
   "tolerance_pct": 100,
-  "value": 13520
+  "value": 42072
  },
  "randread.resident.ops_sec": {
   "dir": "higher",
-  "floor": 488424,
+  "floor": 387281,
   "tolerance_pct": 100,
-  "value": 1953697
+  "value": 1549126
  },
  "randread.resident.read_p50us": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 100,
-  "value": 0
+  "value": 1
  },
  "randread.resident.read_p99us": {
   "dir": "lower",
@@ -686,57 +806,57 @@
  },
  "replay.history.ms": {
   "dir": "lower",
-  "floor": 844,
+  "floor": 12876,
   "tolerance_pct": 100,
-  "value": 211
+  "value": 3219
  },
  "replay.history.ns_per_record": {
   "dir": "lower",
-  "floor": 21068,
+  "floor": 64384,
   "tolerance_pct": 100,
-  "value": 5267
+  "value": 16096
  },
  "replay.history.records": {
   "dir": "lower",
-  "floor": 160000,
+  "floor": 800000,
   "tolerance_pct": 100,
-  "value": 40000
+  "value": 200000
  },
  "replay.history.wal_bytes": {
   "dir": "lower",
-  "floor": 7840140,
+  "floor": 39200140,
   "tolerance_pct": 100,
-  "value": 1960035
+  "value": 9800035
  },
  "replay.history_penalty_x": {
   "dir": "lower",
   "floor": 100,
   "tolerance_pct": 100,
-  "value": 1.9
+  "value": 1.6
  },
  "replay.inserts.ms": {
   "dir": "lower",
-  "floor": 444,
+  "floor": 8064,
   "tolerance_pct": 100,
-  "value": 111
+  "value": 2016
  },
  "replay.inserts.ns_per_record": {
   "dir": "lower",
-  "floor": 22120,
+  "floor": 80656,
   "tolerance_pct": 100,
-  "value": 5530
+  "value": 20164
  },
  "replay.inserts.records": {
   "dir": "lower",
-  "floor": 80000,
+  "floor": 400000,
   "tolerance_pct": 100,
-  "value": 20000
+  "value": 100000
  },
  "replay.inserts.wal_bytes": {
   "dir": "lower",
-  "floor": 3920140,
+  "floor": 19600140,
   "tolerance_pct": 100,
-  "value": 980035
+  "value": 4900035
  },
  "replay.startup_ms": {
   "dir": "lower",

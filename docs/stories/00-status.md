@@ -67,6 +67,161 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-29 — databasev2 3, WAL checkpoint (the chain's last link)
+
+**Implemented last time (2026-08-29):** compaction. The log used to grow forever
+— nothing removed superseded records, so boot replayed all history. It is now
+rewritten as one record per live row into a temp file and swapped in with
+`rename`. Six tasks, brainstormed and spec'd first
+([spec](../superpowers/specs/2026-08-28-wal-checkpoint-design.md) ·
+[plan](../superpowers/plans/2026-08-28-wal-checkpoint.md)).
+
+**Key findings (measured, not asserted):** **2.16× space reclaimed**
+(1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs**
+against a stated 50 ms budget. Reading `.dev/reference/postgresql` was what made
+the design defensible rather than lazy: **Postgres never compacts its WAL**,
+because its records are page deltas and a compacted redo log is not a store —
+hence heap files, a control file, a redo pointer, a second recovery source and a
+separate checkpointer process. Ours are **full row images**, so a compacted log
+*is* a complete store, and all of that machinery disappears. What was worth
+porting is the ordering discipline — publish the switch atomically and last — and
+one `rename` provides it.
+
+**Learned — two bugs of mine that measurement found, not review:** wiring the
+trigger only into the drain left **`WO_SHARDS=1` never compacting**, its log
+growing forever (536 KB where multi-shard held 446 KB), because a statement on
+the owner shard never enters that drain. And the dump was **8× slower than
+necessary**, flushing through the committing path and paying one `fdatasync` per
+256 records for durability that is worthless before the rename — one final
+barrier took a 2 MB dump from 107 649 µs to 13 212 µs, ~22 MB/s to ~181 MB/s.
+Separately, the crash battery's *first* version failed on correct code ~1 run in
+3: it acked deletes after committing them, so a kill in between made it demand a
+row the engine was right to remove. Deletes now announce intent first.
+
+**Dependencies unblocked:** every link in the concurrency + fiber chain has now
+landed its planned work — stage 3 → 22 → 24 (absorbing 31 + 34) → 40 →
+databasev2 4 part A → databasev2 3. **Not "complete", precisely:** chain 5 stays
+`in-progress` because databasev2 4's part B was never done, and its premise was
+invalidated by part A rather than satisfied. Nothing in the chain is blocked on
+anything else in it.
+
+**Next steps:** the honest queue is (1) databasev2 2's outstanding 5c/5d, whose
+`resident: keys` half is unimplemented and now carries a recorded obligation —
+compaction invalidates every WAL offset it stores, so the compactor must rebuild
+that map; (2) databasev2 4 **part B**, whose premise was invalidated by part A
+and which needs re-brainstorming rather than starting; (3) the O(live rows)
+pause, ~5.5 s at a 1 GB live set, which is the number an incremental checkpoint
+must be bought against.
+
+**`.dev/reference` used:** `postgresql` — `xlog.c` (`CreateCheckPoint`, segment
+recycling), `checkpointer.c` (the time-or-volume trigger), and
+`controldata_utils.c`, which also corrected a prior exploration doc: Postgres
+updates its control file **in place with a CRC**, not by rename.
+
+---
+
+### Landed 2026-08-28 — databasev2 4 part A, WAL group commit
+
+**Implemented last time (2026-08-28):** one durability barrier per drain
+instead of one per statement. Shard 0 stages every queued write request, holds
+each reply, commits once when its queue empties, then releases all — so a writer
+is acknowledged after the barrier that carried *its* record, which was the
+intended contract all along and was true before only because every batch had one
+member. Six tasks, brainstormed and spec'd first
+([spec](../superpowers/specs/2026-08-28-wal-group-commit-design.md) ·
+[plan](../superpowers/plans/2026-08-28-wal-group-commit.md)).
+
+**Key findings (measured, not asserted):** **≈2.9× durable write throughput,
+≈2.1× lower p50** on a write-concurrent workload, confirmed a second way by the
+`s1`-vs-`sN` split within one build (1467 → 5117 ops/s, mean batch 1.0 → 5.43,
+peak 57) — 2.9× and 3.5× agreeing. Batching scales with contention: mean batch
+1.13 / 1.76 / 5.35 at C = 4 / 16 / 64. **The story's premise was wrong**: it
+said "fsync-per-commit" and the engine was fsync-per-**statement**, committing
+after every append at all six sites — so part A was closer to deleting calls
+than adding a mechanism.
+
+**Learned — three things the measurement corrected, not the code:**
+(1) **`/tmp` is tmpfs here, where `fdatasync` is free.** The same run reported
+195 000 ops/s at p50 1 µs there against 2200 at 7200 µs on ext4. A group-commit
+measurement taken on a memory filesystem measures nothing; `db-bench` is right
+to keep its stores under `bench/`. (2) **No existing leg could exercise the
+feature** — `mix` writes on one op in ten with C=4, giving 20 writes and mean
+batch 1.01, so a `wmix` write-concurrent leg had to be added or the payoff was
+unevaluable either way. (3) **The before-p99 was off the instrument** —
+`hist_add` clamps at 20000 µs and both before-runs pinned there, so the gain is
+*at least* 2.3× and the true old p99 is unknown.
+
+**Dependencies unblocked — and one dependency invalidated.** `WO_T_IO` is
+unreachable from a DB write: a failed stage or barrier now ends the process
+(exit 74, diagnosed), replacing three behaviours that disagreed — `insert`
+un-applied itself while `update` and `delete` returned a catchable trap and
+admitted in their own comments that they left RAM ahead of disk. **Part B's
+premise is invalidated**: it was justified by "close the 66× durable gap", but
+that gap is two problems. Concurrent fan-in was a batching problem and is now
+~3× better; a **serial** writer waiting on one barrier is a latency problem that
+batching cannot touch and io_uring does not obviously help either. Part B should
+be re-brainstormed, not started.
+
+**Next steps:** either re-brainstorm part B against its corrected premise, or
+take chain 6 ([databasev2 3](databasev2/03-wal-checkpoint.md), WAL checkpoint),
+which now has the replay "before" it lacked. **(Superseded 2026-08-29: it
+landed.)** Two debts named rather than hidden:
+the abort path is not exercised (forcing a real `fdatasync` failure needs mount
+privileges), and single-shard concurrent batching needs the inline-path park —
+the same machinery part B would need.
+
+**`.dev/reference` used:** none this slice. The sources were the engine's own
+code and the Linux `fsync`-failure semantics that make retrying unsound.
+
+---
+
+### Landed 2026-08-27 — iteration 24, chat + actor lifecycle (absorbing 31 + 34)
+
+**Implemented last time (2026-08-27):** the slice closed and merged to master
+(`ed5334d`, fast-forward). T4 `monitor` + T5 `time.after` (ids 89/90) had
+landed on the branch; this session merged master in (adopting the `porch`
+rename), finished T8/T9, fixed the gate, found and fixed a runtime bug, and did
+T10. Iterations 31 and 34 land inside it.
+
+**Key findings (measured, not asserted):** finishing the gate mattered more than
+finishing the sample. Making **every leg start its own server** — instead of the
+drain leg inheriting the soak's warmed one — exposed that **5 of 16**
+fresh-server SIGTERM drains left a client at EOF with no close frame and no
+diagnostic. Traced to `shard_main`: `NEXT_RUNNABLE()` already stated the
+contract ("a WORKER on stop keeps DRAINING … close frames!") but the **idle**
+branch reaped and broke, abandoning its inbox. An actor between messages is
+exactly that idle case. Split out as
+[40](language-runtime-database/40-shutdown-drain-guarantee.md); **20 of 20
+clean** after. Also measured: the fd check had been core-count dependent — lazy
+per-shard init takes one `io_uring` + one `eventfd` per shard, capped at
+`nproc`, so 26 → 44 on a 20-core box read as a leak. **1000 connections left it
+at 44**, which settled it.
+
+**Learned:** three of the four gate failures were **stale build artifacts**, not
+code. A branch switch leaves `compiler/_build/` and `runtime/build/` holding the
+other branch's binaries, and a `woc` emitting `.wob` v7 against a v6 runtime
+surfaces only as "no listener" — rebuild both before believing a gate failure.
+And a gate that reuses another leg's server is not merely untidy: it hid a real
+bug, and when its own leg failed it orphaned a listener that broke the *next*
+run. Example apps now log to `/tmp/<app>.log` so a developer can `tail -F` them.
+
+**Dependencies unblocked:** PUBSUB2 (WebSockets + pub/sub, rejected until this
+point) is done; the porch ledger's WebSocket rows are ✅ and its cancellation row
+is unblocked-not-built. Chain position 4 is complete, so **the chain's next link
+is [databasev2 4](databasev2/04-io-uring-commit.md)** (io_uring group-commit).
+Still blocked: CSRF and sessions — iteration 34 shipped HMAC but **there is
+still no RNG**, and HMAC authenticates a token without being able to mint one,
+which is [39](language-runtime-database/39-web-framework-parity.md)'s leading
+item.
+
+**Next steps:** databasev2 4, or databasev2 2's outstanding 5c/5d. One debt is
+named rather than hidden: iteration 40's guarantee is proven only by the chat
+gate — nothing in `runtime/test/` drives `wo_engine_start`/`wo_engine_stop` and
+no corpus fixture can trigger a stop, so pinning it lower needs new
+multithreaded test infrastructure.
+
+**`.dev/reference` used:** none this slice. The sources were RFC 6455, RFC
+3174/4231 for the digest vectors, and the kernel's own interfaces for the drain.
 ### Landed 2026-08-27 — databasev2 1, the RAM ceiling measured
 
 **Implemented last time (2026-08-27):** databasev2 1 refined (three forks
@@ -226,10 +381,16 @@ no reference project was consulted for the implementation).
 **The concurrency + fiber chain — ✅ stage 3 → ✅ 22 → 🔄 24 (absorbing
 31 + 34) → 23 → 32.** The chain's original order put 31 before 24; the
 2026-08-23 directive absorbed 31 INTO 24, and 34 resolved with it, so
-those three are one slice. **The live slice is iteration 24** — spec and
-plan approved 2026-08-23, executing on branch `chat-ws-lifecycle`, five
-of ten tasks landed. Its running state is the marker doc
-([`2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)),
+those three are one slice. **Iteration 24 is nine of ten tasks landed and MERGED TO MASTER
+on 2026-08-27** (fast-forward, `ed5334d`): T1 crypto, T2 bounded mailboxes,
+T3 call/reply, T4 `monitor` + T5 `time.after` (ids 89/90 — the reserved holes
+are now filled), T6 ws upgrade, T7 frame codec, T8 chat sample, T9 the chat
+gate. Verified on master: chat 11 checks 0 failures at the full 1000-client
+soak, runtime battery 36 suites 0 fail, compiler 556 checks 0 fail, corpus
+119 checks 0 fail. Only **T10 closeout** remains — which is what still holds
+stories 24/31/34 open. Finishing T9 exposed and fixed a real runtime bug,
+split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md). Its running state is the marker doc
+(the marker doc, deleted at closeout per the convention),
 which is the file to read for what is done and what is next; stories
 [31](language-runtime-database/31-actor-lifecycle.md) and
 [34](language-runtime-database/34-crypto-builtins.md) keep
@@ -279,6 +440,9 @@ both still literal holes in `wob.h`'s builtin enum; then T8 the chat
 sample, T9 its gate, T10 closeout setting 24/31/34 to `status: done`) → 23
 (io_uring group-commit — target: close the 4.5k→297k durable gap) →
 32 (WAL checkpoint). Held tail resumes on its own precedence notes.
+> (**Superseded 2026-08-28:** 24 landed, and 23's part A landed with it —
+> "close the 4.5k→297k durable gap" turned out to be the wrong target; see
+> the databasev2 4 row.)
 
 **`.dev/reference` used:** none this slice (the LW_SOAK discipline and
 linkcheck.py precedent came from in-repo scripts).
@@ -436,11 +600,15 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 19  | [Float + Bytes](language-runtime-database/19-missing-scalar-types.md) | ✅ **landed 2026-08-20** — `.wob` v5: Float constant tag, field kinds 6/7, opcodes 34-41 (IEEE-quiet f64), builtins 70-83. Full stack: literals, arithmetic, `@table` column, WAL bit-exact replay, json fractions in / shortest-round-trip out, `?Float` reserved-NaN nil, total-order index (NaN last, `-0.0` == `+0.0`), Bytes + base64. No implicit Int/Float mixing (WO-E201); `float`/`trunc` are the only bridges. Proof: web-app price is a real Float (`{"price":9.99}`), `just web-app` 23/0; corpus 103/0 |
 | 11  | [Fibers](language-runtime-database/11-fibers.md)                                     | ✅ **landed 2026-08-21** with the arc (`just fibers` 10/0); fs-park re-scoped out of v1, disclosed in the story |
 | 22  | [Durability, throughput, scale](language-runtime-database/22-durability-throughput-scale.md) | ✅ **landed 2026-08-21** — db-bench + baseline.json (74 metrics) + restart/kill -9 proofs both shard counts; durable 4.5k vs ram 297k inserts/s, reads O(table), msgrate 13.4M/2.45M |
-| 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | 🔄 **absorbed into 24** (directive 2026-08-23) and half landed there: `call` request/response with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), and actor death that traps callers instead of hanging them. Still open: `monitor` and `time.after` — ids **89 and 90 are reserved holes** in `wob.h`, which is the machine-checkable proof of what is left. Supervision trees stay out of v1 |
-| 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | 🔄 **the live slice** (absorbing 31 + 34, directive 2026-08-23) — branch `chat-ws-lifecycle`, 5/10 tasks landed: crypto, bounded mailboxes, WS upgrade, frame codec, `call`/reply + actor death. Pending: `monitor`, `time.after`, the chat sample, its gate, closeout. State lives in [the marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) |
+| 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | ✅ **LANDED 2026-08-27 inside 24** (directive 2026-08-23). All four mechanisms: `call`/reply with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), actor death that traps callers instead of hanging them, **`monitor` (89)** and **`time.after` (90)** — the reserved holes in `wob.h` are filled. A fifth mechanism it did not anticipate came out of proving the gate: the shutdown drain guarantee, [40](language-runtime-database/40-shutdown-drain-guarantee.md). Supervision trees stay out of v1 |
+| 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | ✅ **LANDED 2026-08-27** (absorbing 31 + 34) — all ten tasks; merged to master `ed5334d`. `just chat` **11 checks, 0 failures** at the full 1000-client soak: handshake, functional matrix on both `WO_IO` backends and on one shard, the soak, the fd invariant, the SIGTERM drain, `WO_MAILBOX=8` backpressure, ASan clean. Finishing its gate found a real runtime bug, split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md) |
+| 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md) | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
+| 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md) | ✅ **LANDED 2026-08-29 — the chain's last link.** Compaction rewrites the log as one record per live row and swaps it in with `rename`, so **recovery is completely unchanged** and crash safety comes from the filesystem rather than from code. **2.16× space reclaimed** (1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs** against a stated 50 ms budget. Read `.dev/reference/postgresql` for it: PG *never* compacts its WAL — its records are page deltas, so it needs heap files, a control file, a redo pointer and a separate process. Ours are full row images, so a compacted log IS a store, which deletes all of that. `kill -9` during compaction: 40 rounds/run, 10 clean runs, and **mutation-proven** — against in-place rewrite instead of `rename` the battery fails every time. Outstanding: the **`resident: keys` offset map** (compaction moves every record; the obligation is recorded at the compactor) and the O(live rows) pause, ~5.5 s at 1 GB, which is what an incremental design must be bought against |
+| 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
 | 38  | [Content platform capabilities](language-runtime-database/38-content-platform-capabilities.md) | ⬜ off-chain, needs a spec — the two capability families no iteration owns, confirmed against `runtime/src/wob.h`: `fs` mutation verbs (six fs builtins, ids 40–45; `append` creates-if-absent, so nothing is ever replaced, truncated, deleted or renamed) and `net.connect` (ids 51–55 + 91–95, no connect, and no `connect()` anywhere in `runtime/src/` — so no OIDC/SMTP/object-store/webhook/federation). Driven by a `docs/examples/vault` content-collaboration workload, in 28's mould. New builtins from 96 (89/90 reserved for 31); no `.wob` bump (`WOB_VERSION 6u`, last moved by 36). Story written 2026-08-26 from the "can it build a Nextcloud?" ask |
 | 39  | [Web framework parity](language-runtime-database/39-web-framework-parity.md) | ⬜ off-chain, needs a spec — from [the Fiber v3.5.0 study](../plan/exploration/fiber/00-fiber-parity.md) (all 32 of its middleware read against `porch`; **nine already have a counterpart**). Leads with a **random-bytes builtin**: the framework ledger claimed CSRF/sessions were unblocked by iteration 34's HMAC, but HMAC authenticates a token and cannot mint one — there is no RNG anywhere in the runtime. Then cookies (absent both ways; `Resp.headers` being a map cannot carry two `Set-Cookie` lines), then limiter/idempotency (cheapest wins — `@table` + `time.ticks`, nothing new), sessions, CSRF, and the routing/response sugar. Streaming/SSE/compression, `@derive` binding, TTL cache, `proxy` and metrics all excluded with owners named |
+| 40  | [Shutdown drain guarantee](language-runtime-database/40-shutdown-drain-guarantee.md) | ✅ **LANDED 2026-08-27 — chain 3, with 31; split out of 24.** One rule: **a message sent before the stop flag is observed must be delivered and run before the engine stops.** Found by measurement, not review: making the chat gate's drain leg start its OWN (cold) server exposed that **5 of 16** fresh-server SIGTERM drains left a WebSocket client at EOF with no close frame and no diagnostic. Traced to `shard_main` — `NEXT_RUNNABLE()` already stated the contract ("a WORKER on stop keeps DRAINING … close frames!") but the IDLE branch reaped and broke, abandoning its inbox for teardown to free. An actor between messages is exactly that idle case, which is why a WARM soak server hid it for so long. Fix is one branch honouring the primary's drain window, yielding on an empty poll. **20 of 20 clean after**; `just chat` 11 checks 0 failures at the full 1000-client soak (which also settled the fd question: 1000 connections left the count at 44); runtime battery 36 suites 0 fail, compiler 556 checks 0 fail. Ruled out: a bigger spin (a 1 s wall-clock deadline still failed 2 of 12) and spawn-during-shutdown. Outstanding: a pin below the gate — nothing in `runtime/test/` drives the engine start/stop and no corpus fixture can trigger a stop |
 | 37  | [wo-html components](language-runtime-database/37-wo-html-components.md) | ✅ off-chain — LANDED 2026-08-25. Raw text literal (backtick, margin stripped at lex time, `{{ }}` auto-escapes) + the component layer: `Component`/`render_all`/`Layout` in wo-html, `ok_html` moved into the framework, site and shop both migrated |
 | 35  | [net runtime seams](language-runtime-database/35-net-runtime-seams.md)            | ⬜ off-chain — fd deadlines on the park plane, Unix sockets, peer address; owns the ledger's three 🔧 rows (story written 2026-08-22) |
 | 25  | [HTTP service layer](../superpowers/plans/2026-08-01-http-service-layer.md)                   | ⏸ hold (2026-08-21) — story file removed; the plan doc remains |
@@ -461,13 +629,16 @@ that sequences its tasks. Read one, approve, then the next starts.
 | Language | 🔄 [iteration 36 — operator parity](language-runtime-database/36-operator-parity.md): `not`, bitwise `& \| ^ << >>`, hex/binary/`_` literals, compound assigns — CODE LANDED 2026-08-22 (branch operator-parity, `.wob` v6, all gates green; reference project `.dev/reference/go` drove the design). Awaiting the developer's MANUAL pass on `docs/examples/operators/` (no test fixtures by directive); unblocks story 34's pure-`.wo` HMAC question | [plan](../superpowers/plans/2026-08-22-operator-parity.md) |
 | Language | the framework v1-polish slice landed 2026-08-20 (branch framework-v1, awaiting merge); next per the order: brainstorm 20/21's forks | [order](#implementation-order-re-sequenced-2026-08-21--concurrency-chain) |
 | Runtime  | ✅ **iteration 35 landed 2026-08-23** (branch `framework-v1b`, with framework v1 slice 2 + the serving slice): net deadlines/unix/peer (ids 91–95), fiber pooling, serve_conn + web-app fiber-per-connection — web-app gate 41/0, both WO_IO backends | [design](../superpowers/specs/2026-08-23-net-seams-park-design.md) |
-| Runtime  | 🔄 **iteration 24 (absorbing 31 + 34): chat + actor lifecycle** — spec + plan approved 2026-08-23 (24 absorbs 31 by directive; 34 resolved C-builtins); executing on branch `chat-ws-lifecycle` | [marker](../active-slice-2026-08-23-chat-ws-lifecycle.md) · [plan](../superpowers/plans/2026-08-23-chat-ws-lifecycle.md) |
 
-The active slice's marker doc is
-[`docs/active-slice-2026-08-23-chat-ws-lifecycle.md`](../active-slice-2026-08-23-chat-ws-lifecycle.md)
-— one file, deleted when the slice lands. Everything else pending is the
-concurrency chain (see *Pending* below); the held tail is every story
-whose frontmatter reads `status: hold`.
+**No slice is active.** Iteration 24 landed 2026-08-27 and its marker doc was
+deleted per the convention. Everything pending is the concurrency chain (see
+*Pending* below) — **the chain's next link is
+[databasev2 4](databasev2/04-io-uring-commit.md)** (chain 5, the io_uring
+group-commit write path, `was_language_iteration: 23`), which now has iteration
+22's fsync-per-commit numbers in hand, plus databasev2 1's finding that the
+write path is *not* where memory pressure bites (appending under a cap costs
+~1%, random reads 273×). The held tail is every story whose frontmatter reads
+`status: hold`.
 
 ### Landed 2026-08-14 — the compile-and-run milestone
 
@@ -705,8 +876,8 @@ the language arc as v1 history.
 | --- | --- | --- |
 | 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ✅ **MEASURED 2026-08-27** — `readiness: ready`, `status: done`; forks settled, harness landed (**148 checks**). Footprint **96.5–100 B/row** Int vs **320.6–324 B/row** text = **3.3×** (not the "order of magnitude" three docs claimed), read as median-of-marginals because doublings swing a two-point slope 2×. **Both predicted exits were wrong:** table storage has no checked ceiling and is **SIGKILLed** (overcommit lets `malloc` succeed, kernel kills on page touch), and swap is not latency collapse — 900k rows finished **148 s capped-with-swap vs 150 s uncapped**, ~1%, returning 0 while serving from disk. **Ack-after-fsync survives an OOM kill:** ~40 000 rows recovered as an intact prefix, gated as the `ceiling` leg. Also measured: **random reads over an oversized table collapse 273×** (1.85M vs 6 771 reads/s, p99 1 µs vs 487 µs) — so the two access patterns sit ~270× apart under the same pressure, and departure is a **step, not a curve**. Replay measured too: **≈5.5 µs/record, 1.9× history penalty** (10M records ≈ 55 s of boot) — iteration 3's missing "before", now gated. Iteration 2's budget dependency is **removed, not satisfied** — there is no "swap onset" to derive it from |
 | 2 | [per-table storage: `durable` and `resident`](databasev2/02-table-storage-modes.md) | 🔄 **the language enrichment — the `durable` half is DONE and usable.** Two optional `@table` keys, `durable: true\|false` and `resident: all\|keys`, both defaulting to today's behaviour (all 28 existing declarations compile unchanged, no golden moved). Landed: the grammar, WO-E224 (a durable `ref` into a volatile table is refused), `.wob` v7 carrying both properties in spare `flags` bits, `durable: false` actually skipping the WAL (measured: 50 inserts → 1500 bytes durable, **0** volatile) with a mode-mismatch startup refusal, plus offset capture and read-a-row-from-an-offset. Outstanding: 5c/5d (the id→offset map and rewiring `wo_row_ptr`'s 11 call sites, slab scans and `@unique`/FK across the boundary — not yet written up), the two runtime refusals, and closeout. [spec](../superpowers/specs/2026-08-26-table-residency-design.md) · [plan](../superpowers/plans/2026-08-26-table-residency.md) |
-| 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
-| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ⬜ **`readiness: ready` — the one startable iteration in the repo** (four forks confirmed settled 2026-08-20). Close the 66× gap iteration 22 measured (durable 4.5k vs ram 297k inserts/s) |
+| 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ✅ **LANDED 2026-08-29 — the chain's last link.** Compaction rewrites the log as one record per live row and swaps it in with `rename`, so **recovery is completely unchanged** and crash safety comes from the filesystem rather than from code. **2.16× space reclaimed** (1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs** against a stated 50 ms budget. Read `.dev/reference/postgresql` for it: PG *never* compacts its WAL — its records are page deltas, so it needs heap files, a control file, a redo pointer and a separate process. Ours are full row images, so a compacted log IS a store, which deletes all of that. `kill -9` during compaction: 40 rounds/run, 10 clean runs, and **mutation-proven** — against in-place rewrite instead of `rename` the battery fails every time. Outstanding: the **`resident: keys` offset map** (compaction moves every record; the obligation is recorded at the compactor) and the O(live rows) pause, ~5.5 s at 1 GB, which is what an incremental design must be bought against |
+| 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
 | 5 | [Bounded tables and eviction](databasev2/05-bounded-tables-eviction.md) | ⬜ a declared capacity + refuse/evict/back-pressure, and a process-level pressure signal that sheds **before** the allocator or OS gets involved — turning the invisible failure into a managed one |
 | 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⚠ **largely superseded by 2** — `resident: keys` took the ceiling-raising role; its user-space-working-set premise was rejected for the kernel page cache. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |
 | 7 | [Single-file store](databasev2/07-single-file-db.md) *(was 33)* | ⬜ `WO_DATA=<path>.db`; driver-only, independent |

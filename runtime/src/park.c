@@ -296,6 +296,8 @@ static void tick_arm_uring(wo_vm *vm, int64_t now) {
     for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
         if (fb->state == WO_FIB_PARKED && fb->park_fd >= 0 && fb->park_deadline > 0)
             if (next == 0 || fb->park_deadline < next) next = fb->park_deadline;
+    int64_t tn = wo_vm_timers_next(vm); /* iteration 24 T5: armed timers */
+    if (tn > 0 && (next == 0 || tn < next)) next = tn;
     if (next == 0) return;
     if (vm->tick_armed && vm->tick_at <= next) return;
     int64_t rel = next - now;
@@ -323,7 +325,27 @@ static void efd_drain(wo_vm *vm) {
 
 int wo_io_wait(wo_vm *vm) {
     for (;;) {
-        if (wo_sys_stop_pending()) return WO_IO_STOP;
+        if (wo_sys_stop_pending()) {
+            /* iteration 24 (the drain): a STOP does not kill parked fibers
+             * from the outside — it WAKES them all, and each blocking
+             * builtin resolves per its own stop contract (deadline'd waits
+             * answer their timeout result, sleeps return early, plain
+             * waits answer WO_SYS_STOPPED and that fiber unwinds). The
+             * program's own code then drains and returns. Nothing parked
+             * = nothing to resolve: the old immediate-stop answer. */
+            int woke = 0;
+            wo_fiber *fb = vm->parked;
+            while (fb) {
+                wo_fiber *nx = fb->pnext;
+                if (fb->state == WO_FIB_PARKED) {
+                    wake(vm, fb);
+                    woke = 1;
+                }
+                fb = nx;
+            }
+            if (woke) return 0;
+            return WO_IO_STOP;
+        }
         if (vm->io_kind == 0) {
             /* keep the wake eventfd armed (oneshot POLL_ADD, re-armed
              * after each firing) so inbox pushes interrupt the wait */
@@ -371,7 +393,9 @@ int wo_io_wait(wo_vm *vm) {
                 head++;
             }
             __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
-            if (deadline_sweep_uring(vm, now_ms()) && woke != 2) woke = 1;
+            int64_t swnow = now_ms();
+            if (wo_vm_timers_fire(vm, swnow) && woke != 2) woke = 1;
+            if (deadline_sweep_uring(vm, swnow) && woke != 2) woke = 1;
             if (woke == 2) return 1; /* adopt-needed */
             if (woke) return 0;
             continue;
@@ -389,6 +413,14 @@ int wo_io_wait(wo_vm *vm) {
         }
         int timeout = -1;
         int64_t now = now_ms();
+        {
+            int64_t tn = wo_vm_timers_next(vm); /* iteration 24 T5 */
+            if (tn > 0) {
+                int64_t rel = tn - now;
+                if (rel < 0) rel = 0;
+                timeout = (int)rel;
+            }
+        }
         for (wo_fiber *fb = vm->parked; fb; fb = fb->pnext)
             if (fb->park_fd == -1
                 || (fb->park_fd >= 0 && fb->park_deadline > 0)) {
@@ -417,6 +449,7 @@ int wo_io_wait(wo_vm *vm) {
             }
         }
         now = now_ms();
+        if (wo_vm_timers_fire(vm, now)) woke = 1;
         wo_fiber *fb = vm->parked;
         while (fb) {
             wo_fiber *nx = fb->pnext;

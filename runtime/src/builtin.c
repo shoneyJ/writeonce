@@ -200,6 +200,18 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     }
     case WO_B_CALL: /* iteration 24: park/reply protocol lives in vm.c */
         return wo_vm_actor_call(vm, R, ins, msg);
+    case WO_B_MONITOR: {
+        int rc = wo_vm_actor_monitor(vm, R[B], R[B + 1], R[B + 2], msg);
+        if (rc) return rc;
+        R[A] = 0;
+        return 0;
+    }
+    case WO_B_TIME_AFTER: {
+        int rc = wo_vm_timer_after(vm, (int64_t)R[B], R[B + 1], R[B + 2], msg);
+        if (rc) return rc;
+        R[A] = 0;
+        return 0;
+    }
     case WO_B_NOW: { /* wall-clock milliseconds */
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);

@@ -56,7 +56,8 @@ place it runs.
   feature.
 - **Why `main` waits.** `main` is not an actor and has no mailbox, so it sleeps
   rather than awaiting — the gap iteration 31's `call` closes for actors and
-  [24's marker](../../active-slice-2026-08-23-chat-ws-lifecycle.md) tracks.
+  [iteration 24](../../stories/language-runtime-database/24-chat-websocket-workload.md)
+  landed 2026-08-27.
 
 Reasoning under the engine side: [`database/src/CODE-LOGIC.md`](../../../database/src/CODE-LOGIC.md).
 Contract: [`plan/oop-vm/04-db-binding.md`](../../plan/oop-vm/04-db-binding.md).

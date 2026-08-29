@@ -257,3 +257,100 @@ layout.
 - **`listen_unix` sets O_NONBLOCK on the listener itself** — accept4's
   SOCK_NONBLOCK flags the ACCEPTED socket only; a blocking listener
   would block the whole shard (found by the seam probe, both backends).
+
+## Actor lifecycle: call, death, monitor, timers (iteration 24, ids 88–90)
+
+Four pieces that together answer "what happens to an actor that is waiting,
+that dies, that watches, or that wants to be woken later". All four live in
+`vm.c` with their entry points in `builtin.c`; the structures are in `vm.h`.
+
+**`call` (id 88) — a send that waits.** An ordinary `send` returns immediately;
+`call` parks the calling fiber and resumes it with the receive's return value.
+The reply is a **typed scalar**, which is what let the agreement be checked at
+compile time (WO-E226) rather than carried as a tagged value at runtime. The
+caller is never left hanging: if the callee dies mid-call, or the address is
+already dead, the caller **traps catchably** instead of parking forever. That
+is the property worth keeping in mind when reading the code — every path out of
+a call either resumes the fiber or traps it.
+
+**Death.** A `receive` that traps uncaught marks the actor dead on its home
+thread. From then on sends to it drop silently, calls trap, queued callers are
+error-unparked, and its state and mailbox are released. Silent-drop for sends
+is deliberate: a sender cannot handle another actor's failure, and making every
+`send` fallible would put a `try` on every line.
+
+**The mailbox cap and its counter.** One cap for every mailbox (default 1024,
+`WO_MAILBOX` overrides at boot; the chat gate shrinks it to 8 to force the
+policy). `pending` counts sent-but-not-delivered. It is incremented by the
+**sender**, on any shard, and decremented by the **home thread** at delivery —
+so it is touched only through `wo_mbox_reserve`/`wo_mbox_release` and their
+`__atomic` builtins. The consequence is disclosed rather than hidden: the cap
+can overshoot by at most the number of in-flight sends. Overflow is fail-fast —
+the send raises a catchable `WO_T_ACTOR` (trap 13), which is what lets a room
+drop a slow member instead of growing without bound.
+
+**`monitor` (id 89) — the death notice.** `wo_monitor` is one registration:
+observer, the moved-in notice message, next. The list lives on the **watched**
+actor and is owned by its home thread, so the death walk needs no lock — dying
+is a home-thread event and the list is right there. The notice is the
+observer's own M-typed message, so an observer receives death notices in the
+same shape as everything else. Monitoring an already-dead actor fires
+immediately rather than silently doing nothing. An observer whose mailbox is
+full loses the notice, with a disclosed stderr line — the alternative was
+blocking a death walk on a slow observer.
+
+It takes **three arguments** (`watched, observer, msg`), not the two the spec
+first proposed, because the caller may be `main`, which has no mailbox and so
+cannot be an implicit observer.
+
+**`time.after` (id 90) — one-shot, no cancel.** `wo_timer` is `at` (wall ms),
+target, message, next. The list lives on the **arming fiber's shard** and is
+scanned by the same deadline machinery that already serves fd-park deadlines,
+so timers cost no new wait mechanism. Firing is an ordinary runtime send, which
+means it inherits the ordinary rules: a full target drops with a stderr line, a
+dead target drops silently. There is no cancel; the idiom is a generation
+counter in the message, which the `timer-generation` corpus fixture pins.
+
+**Where to look when a lifecycle thing misbehaves:** `wo_vm_actor_monitor` and
+`wo_vm_timer_after` in `vm.c` are the two entry points; `shard_main` and
+`NEXT_RUNNABLE()` decide when a shard runs, adopts, or stops. The corpus
+fixtures `monitor-death`, `timer-delivery` and `timer-generation` are the
+smallest working examples of each.
+
+## The shutdown drain guarantee (iteration 40)
+
+**A message sent before the stop flag is observed is delivered and run before
+the engine stops.** Stated because it was once untrue in a way nothing caught.
+
+`wo_engine_stop` sets `eng_shutdown`, wakes every worker, joins them, and only
+then tears down — freeing whatever envelopes are still queued. So a worker that
+leaves its loop early takes its inbox with it. `NEXT_RUNNABLE()` has always
+encoded the right behaviour for a worker holding a live fiber: on a stop it
+returns 2 and keeps draining, because "only the PRIMARY's stop ends the
+program". `shard_main`'s **idle** branch did the opposite — it reaped and broke
+— so a shard whose actors happened to be between messages at `SIGTERM`
+abandoned everything still in flight.
+
+It now honours the same contract: while the primary's window is open an idle
+worker adopts its inbox and runs what arrives, `sched_yield`ing on an empty
+poll so a drain cannot burn a core per shard and starve the actors it exists to
+let run. Only `eng_shutdown` — which the primary sets after `main` returns —
+ends it.
+
+Two things follow that are easy to get wrong. The window is the **primary's**,
+so a program that wants a longer drain holds it open itself; `main` cannot park
+after the stop flag, because a park there unwinds. And the whole path is
+unreachable at `WO_SHARDS=1`, where `wo_engine_stop` returns at `nshards <= 1`.
+
+## Digests: sha1, sha256, hmac_sha256 (iteration 34, ids 85–87)
+
+`crypto.c` holds SHA-1 and SHA-256 over a single buffer and HMAC-SHA-256 on top
+of the latter, each returning a fresh `Bytes`. No streaming API and no other
+primitives — these exist because WebSocket's handshake needs SHA-1 and ETags
+need SHA-256, and that is the whole of the demand so far.
+
+Correctness is pinned to the published vectors rather than to itself:
+RFC 3174 for SHA-1, the FIPS/RFC 6234 vectors for SHA-256, RFC 4231 for HMAC,
+in `runtime/test/test_crypto.c` (18 checks). **There is still no RNG anywhere
+in the runtime** — HMAC authenticates a token but cannot mint one, which is why
+iteration 39 leads with a random-bytes builtin.

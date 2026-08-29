@@ -183,6 +183,17 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
          * nowhere to live. woc refuses this at compile time; the loader
          * refuses it again because what the loader accepts, the interpreter
          * trusts — this combination must never reach the engine. */
+        /* databasev2 2: `resident: keys` PARSES and sets this bit, but the
+         * storage half (tasks 5c/5d) is not implemented — rows are still fully
+         * resident. Accepting it would be an annotation the compiler honours
+         * in name only: a developer could declare a 120 GB table keys-resident,
+         * see it compile, and be OOM-killed. Refuse until the storage lands. */
+        if (flags & WO_CLASSF_RESIDENT_KEYS)
+            BAIL("class %u declares `resident: keys`, which is NOT IMPLEMENTED "
+                 "yet — rows are still fully resident, so the annotation would "
+                 "be honoured in name only. Remove it until databasev2 2 tasks "
+                 "5c/5d land; `resident: all` is what actually runs",
+                 (unsigned)i);
         if ((flags & WO_CLASSF_VOLATILE) && (flags & WO_CLASSF_RESIDENT_KEYS))
             BAIL("class %u: durable:false with resident:keys — rows would have "
                  "nowhere to be read from", (unsigned)i);

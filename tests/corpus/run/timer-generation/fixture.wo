@@ -1,0 +1,28 @@
+use time
+
+-- iteration 24 T5: the CANCEL idiom — no cancel builtin, a generation
+-- counter instead. The actor bumps its generation; a stale timer's
+-- message names the old one and is recognized and ignored on arrival.
+class Timer {
+  gen: Int
+}
+
+class Gate {
+  gen: Int
+  fn receive(msg: Timer) {
+    if msg.gen == self.gen {
+      print("fired gen ${msg.gen}");
+    } else {
+      print("stale gen ${msg.gen} ignored");
+    }
+  }
+}
+
+fn main() -> Int {
+  let g: actor Timer = spawn Gate { gen: 2 };
+  time.after(30, g, Timer { gen: 1 });
+  time.after(60, g, Timer { gen: 2 });
+  time.sleep(200);
+  print("done");
+  return 0;
+}

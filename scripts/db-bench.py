@@ -26,6 +26,24 @@ QUICK = "--quick" in sys.argv
 WRITE_BASELINE = "--write-baseline" in sys.argv
 
 N = 2000 if QUICK else 20000
+# databasev2 4: the write-concurrent leg. `mix` writes on one op in ten with
+# C=4, so group commit had almost nothing to batch there (measured mean batch
+# 1.01, peak 3) — a property of that workload, not of the mechanism. C is high
+# on purpose: batching is a function of how many writes are in flight, and
+# measured mean batch rose 1.13 -> 1.76 -> 5.35 at C = 4 -> 16 -> 64.
+WMIX_N = 4000 if QUICK else 20000
+WMIX_C = 32 if QUICK else 64
+# databasev2 3: the checkpoint leg. Ages a store by UPDATING the same rows, so
+# history grows while the live set does not — otherwise the leg measures insert
+# throughput instead of compaction.
+CKPT_SEED = 2000 if QUICK else 5000
+CKPT_OPS = 8000 if QUICK else 20000
+# The stop-the-world budget. 50ms is a stall a serving process can absorb
+# without a client noticing a timeout; measured at ~13ms for a 2MB live set,
+# so this leaves real headroom while still failing before a stall becomes
+# user-visible. Compaction is O(live rows), so this budget is what eventually
+# forces the incremental design the spec deliberately did not buy in advance.
+CKPT_PAUSE_BUDGET_US = 50000
 MSG_N = 20000 if QUICK else 200000
 WAL_N = 800 if QUICK else 4000
 CRASH_REPS = 1 if QUICK else 3
@@ -95,6 +113,55 @@ def parse_metrics(lines, into, prefix):
         if m:
             into[f"{prefix}.msgrate.msgs_sec"] = int(m.group(2))
 
+def wmix_leg(metrics, tag, env, data):
+    """Every op a durable write, WMIX_C at once — the leg that actually
+    exercises group commit.
+
+    It reuses the store the `all` run just seeded (a fresh process replays it,
+    so `kmod` is there) and asks the runtime for its group-commit counters via
+    WO_WAL_STATS. The counters matter as much as the throughput: if batches are
+    always one the mechanism is inert and any throughput change came from
+    somewhere else, so a payoff would be attributed to the wrong cause."""
+    e = dict(env); e["WO_WAL_STATS"] = "1"
+    rc, lines, _, _ = run(["wmix", str(WMIX_N), str(WMIX_C)], e, 1800)
+    if rc != 0:
+        bad(f"{tag}.wmix", f"rc={rc} tail={lines[-2:]}")
+        return
+    ops = p50 = p99 = None
+    batches = records = peak_batch = peak_staged = None
+    for l in lines:
+        f = l.split()
+        if f and f[0] == "wmix" and len(f) == 5:
+            ops, p50, p99 = int(f[2]), int(f[3]), int(f[4])
+        elif f and f[0] == "walstats":
+            kv = dict(x.split("=", 1) for x in f[1:] if "=" in x)
+            batches = int(kv.get("batches", 0)); records = int(kv.get("records", 0))
+            peak_batch = int(kv.get("peak_batch", 0)); peak_staged = int(kv.get("peak_staged", 0))
+    if ops is None or batches is None:
+        bad(f"{tag}.wmix", "no report or no walstats line")
+        return
+    metrics[f"{tag}.wmix.ops_sec"] = ops
+    metrics[f"{tag}.wmix.p50us"] = p50
+    metrics[f"{tag}.wmix.p99us"] = p99
+    metrics[f"{tag}.wmix.peak_batch"] = peak_batch
+    metrics[f"{tag}.wmix.peak_staged"] = peak_staged
+    mean = round(records / batches, 2) if batches else 0
+    metrics[f"{tag}.wmix.mean_batch"] = mean
+    ok(f"{tag}.wmix: {ops} ops/sec, p50 {p50}us p99 {p99}us; "
+       f"{records} records over {batches} barriers (mean {mean}, peak {peak_batch}), "
+       f"peak staged {peak_staged}B")
+    # The gate that matters. Only the MULTI-shard leg can batch: a worker's
+    # statements marshal to shard 0 and queue, while shard-0 statements run
+    # inline and commit one at a time by design (see db.c).
+    if tag.endswith(".sN"):
+        if mean > 1.0:
+            ok(f"{tag}.wmix batches form (mean {mean} > 1)")
+        else:
+            bad(f"{tag}.wmix-inert",
+                f"mean batch {mean} — group commit is not engaging, so a "
+                f"throughput change would not be attributable to it")
+
+
 def campaign():
     metrics = {}
     ncores = os.cpu_count() or 1
@@ -123,6 +190,8 @@ def campaign():
                         bad(f"{tag}.mix.fds", f"grew {fdg}")
                     else:
                         ok(f"{tag}.mix.fds flat")
+            if flavor == "durable" and data:
+                wmix_leg(metrics, tag, env, data)
             if data: shutil.rmtree(data, ignore_errors=True)
         # msgrate once per shard count, RAM only (no store dependency)
     for shards in (1, ncores):
@@ -235,6 +304,49 @@ def tolerance_for(key):
     if key.startswith("ceiling."): return 100
     if key.startswith("randread."): return 100
     if key.startswith("replay."): return 100
+    # databasev2 4: batch SHAPE follows arrival timing, so gating it tightly
+    # would gate the scheduler — what must hold is that the mean exceeds one
+    # under contention, which wmix_leg asserts directly against the live run.
+    # wmix's throughput and latency are NOT waived: they are the payoff, and a
+    # blanket waiver here would have left the whole leg ungated.
+    if key.endswith((".wmix.mean_batch", ".wmix.peak_batch", ".wmix.peak_staged")):
+        return 100
+    # databasev2 4: DURABLE multi-shard p99 is an fsync TAIL, and group commit
+    # made it both noisier and legitimately higher. Measured across three full
+    # runs of the same build, durable.sN.mixread.p99 was 1043 / 2318 / 4147 us
+    # and wmix.p99 8758 / 20000 — a 2-4x spread with the box near idle, because
+    # a barrier now blocks the owner shard LONGER (more records per fsync) even
+    # though it blocks LESS OFTEN. That is the trade group commit makes on a
+    # single-threaded owner, and part B (async submission) is what would undo
+    # it. Gating a 2-4x-variable tail at 50% gates the disk, not the engine, so
+    # the FLOOR is the real guard here — and it is not slack: mixread's floor
+    # (4172us) came within 25us of tripping on the worst run.
+    if key.startswith("durable.sN.") and key.endswith(".p99us"):
+        # Widened again 2026-08-29 with more evidence: mixread p99 was measured
+        # at 1043 / 2318 / 4147us and mixwrite at 1623 / 4446us across runs of
+        # the SAME build on a near-idle box — a 3-4x spread. 100% was still
+        # gating the disk. The FLOOR stays the real guard and is not slack:
+        # mixread's came within 25us of tripping on the worst run observed.
+        return 300
+    # databasev2 3: the RECLAIM ratio is structural and gated tightly — it is
+    # the feature's whole claim. Boot time and the pause are wall-clock on a
+    # shared box and are not: waiving them all would have left the leg ungated,
+    # which is the mistake part A's task 4 made and had to undo.
+    if key in ("ckpt.boot_off_ms", "ckpt.boot_on_ms", "ckpt.pause_us_max",
+               "ckpt.compactions", "ckpt.bytes_off", "ckpt.bytes_on"):
+        return 400
+    # compaction BANDWIDTH is the engine's own property, so it is gated for
+    # real — it is what regressed 8x when the dump was fsyncing per flush
+    if key == "ckpt.pause_us_per_mb":
+        return 100
+    # msgrate is actor-to-actor throughput and is scheduling-bound, so its
+    # run-to-run spread is far wider than its old 15%. MEASURED across the 10
+    # full runs recorded on 2026-08-28/29 — several of them predating the
+    # checkpoint work — it ranged 10.7M to 17.9M msgs/sec, a 1.67x spread. A
+    # 15% gate on that gates the scheduler and fails intermittently whatever
+    # the engine does. Pre-existing; found while closing databasev2 3, not
+    # caused by it.
+    if ".msgrate." in key: return 70
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -246,7 +358,11 @@ def write_baseline(metrics):
                                 "tolerances come from tolerance_for() in the driver"}}
     for k, v in sorted(metrics.items()):
         if k.endswith(("rss_growth_kb", "fd_growth")): continue
-        higher = k.endswith(("ops_sec", "msgs_sec"))
+        # reclaim_x: MORE reclaimed is better. Recorded as lower-is-better by
+        # the default detector, which would have passed "no reclaim at all" and
+        # failed an improvement — the feature's central claim, gated backwards.
+        higher = k.endswith(("ops_sec", "msgs_sec", "mean_batch", "peak_batch",
+                             "reclaim_x"))
         floor_div = 8 if k.endswith("msgs_sec") else 4
         # latency floors never sit below 100µs: at post-index µs scale a
         # 4×1µs "catastrophe line" is noise; the tripwire means "µs became
@@ -520,9 +636,12 @@ def randread(metrics):
 def wal_used(data_dir):
     """Bytes actually written across the store's WAL files.
 
-    The non-zero prefix, NOT the file size: shard WALs are fallocate'd to
-    1 MiB up front, so getsize reports 1048576 for an empty store and proves
-    nothing. Same reason scripts/residency-accept.sh measures it this way."""
+    The non-zero prefix, NOT the file size: shard WALs are preallocated, so
+    getsize reports the preallocation (1 MiB) even for an empty store. Same
+    reason scripts/residency-accept.sh measures it this way.
+
+    databasev2 1 and databasev2 3 each grew their own copy of this helper on
+    separate branches; this is the single one they now share."""
     total = 0
     for name in sorted(os.listdir(data_dir)):
         with open(os.path.join(data_dir, name), "rb") as f:
@@ -621,6 +740,96 @@ def replay(metrics):
     metrics["replay.history_penalty_x"] = round(penalty, 2)
     ok(f"replay: identical dataset, {penalty:.2f}x the boot cost from history alone "
        f"({ins_ms:.0f} -> {his_ms:.0f} ms) -- what a checkpoint would collapse")
+def checkpoint_leg(metrics):
+    """Space reclaimed, boot time, and the stop-the-world PAUSE.
+
+    The same workload runs twice, differing only in whether checkpointing can
+    fire: an enormous floor disables it, a small one lets it. Comparing two runs
+    of one build is what isolates compaction from everything else the workload
+    does.
+
+    Boot is measured with the sample's `boot` mode, which does nothing at all —
+    with WO_DATA set the runtime replays the whole log before main runs, so a
+    mode with no work of its own is the only honest way to price replay."""
+    ncores = os.cpu_count() or 1
+    out = {}
+    for name, knobs in (("off", {"WO_CHECKPOINT_BYTES": "1000000000"}),
+                        ("on", {"WO_CHECKPOINT_BYTES": "65536", "WO_CHECKPOINT_RATIO": "2"})):
+        data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.ckpt.{name}")
+        shutil.rmtree(data, ignore_errors=True); os.makedirs(data, exist_ok=True)
+        env = {"WO_DATA": data, "WO_SHARDS": str(ncores), "WO_WAL_STATS": "1"}
+        env.update(knobs)
+        rc, _, _, _ = run(["seed", str(CKPT_SEED)], env, 1800)
+        if rc != 0:
+            bad(f"ckpt.{name}.seed", f"rc={rc}"); shutil.rmtree(data, ignore_errors=True); return
+        rc, lines, _, _ = run(["wmix", str(CKPT_OPS), "16"], env, 1800)
+        if rc != 0:
+            bad(f"ckpt.{name}.age", f"rc={rc}"); shutil.rmtree(data, ignore_errors=True); return
+        stats = {}
+        for l in lines:
+            f = l.split()
+            if f and f[0] == "walstats":
+                stats = dict(x.split("=", 1) for x in f[1:] if "=" in x)
+        used = wal_used(data)
+        # NOT through run(): it samples RSS on a 250ms poll, so every timing it
+        # produces floors at the poll quantum — boot measured that way reported
+        # 251ms both with and without checkpointing, which is the harness's
+        # clock, not the engine's. Median of 3 because this is wall-clock.
+        benv = dict(os.environ)
+        benv.update({"WO_DATA": data, "WO_SHARDS": str(ncores)})
+        samples = []
+        brc = 0
+        for _ in range(3):
+            t0 = time.monotonic()
+            pr = subprocess.run([BIN, "boot"], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, env=benv, timeout=900)
+            samples.append((time.monotonic() - t0) * 1000.0)
+            brc = pr.returncode or brc
+        boot_ms = sorted(samples)[1]
+        if brc != 0:
+            bad(f"ckpt.{name}.boot", f"rc={brc}"); shutil.rmtree(data, ignore_errors=True); return
+        out[name] = (used, boot_ms, stats)
+        shutil.rmtree(data, ignore_errors=True)
+
+    (off_b, off_boot, _), (on_b, on_boot, st) = out["off"], out["on"]
+    comps = int(st.get("compactions", 0))
+    if comps == 0:
+        bad("ckpt.inert", "no compaction ran — the leg proves nothing about checkpointing")
+        return
+    metrics["ckpt.compactions"] = comps
+    metrics["ckpt.bytes_off"] = off_b
+    metrics["ckpt.bytes_on"] = on_b
+    metrics["ckpt.reclaim_x"] = round(off_b / max(on_b, 1), 2)
+    metrics["ckpt.boot_off_ms"] = int(round(off_boot))
+    metrics["ckpt.boot_on_ms"] = int(round(on_boot))
+    metrics["ckpt.pause_us_max"] = int(st.get("compact_us_max", 0))
+    # The RAW pause scales with the live set, and this workload's live set is
+    # not fixed: wmix's hist_dump inserts a row per latency bucket, so a noisier
+    # box produces more buckets, more rows, and a longer pause. Gating the raw
+    # number against a baseline therefore gates the box. What belongs to the
+    # ENGINE is the rate, so that is what carries a real tolerance; the raw
+    # pause keeps the absolute budget assertion below as its guard.
+    cb = int(st.get("compacted_bytes", 0))
+    if cb > 0 and metrics["ckpt.pause_us_max"] > 0:
+        metrics["ckpt.pause_us_per_mb"] = int(round(
+            metrics["ckpt.pause_us_max"] / (cb / (1024.0 * 1024.0))))
+    ok(f"ckpt: {off_b} -> {on_b} bytes ({metrics['ckpt.reclaim_x']}x reclaimed) over "
+       f"{comps} compactions; boot {off_boot:.0f} -> {on_boot:.0f} ms; "
+       f"stop-the-world pause max {metrics['ckpt.pause_us_max']}us "
+       f"({metrics.get('ckpt.pause_us_per_mb', 0)}us/MB)")
+    # the space claim is the point of the feature, so it is asserted, not just recorded
+    if off_b <= on_b:
+        bad("ckpt.no-reclaim", f"checkpointing did not shrink the log ({off_b} -> {on_b})")
+    else:
+        ok(f"ckpt: the log is smaller with checkpointing on")
+    # THE BUDGET. Stated, not assumed — the spec refused to assume it.
+    if metrics["ckpt.pause_us_max"] > CKPT_PAUSE_BUDGET_US:
+        bad("ckpt.pause-budget",
+            f"stop-the-world pause {metrics['ckpt.pause_us_max']}us exceeds the stated "
+            f"{CKPT_PAUSE_BUDGET_US}us budget — alternatives (incremental copy, "
+            f"fork-and-dump) are bought against THIS number")
+    else:
+        ok(f"ckpt: pause within budget ({metrics['ckpt.pause_us_max']} <= {CKPT_PAUSE_BUDGET_US}us)")
 
 
 def main():
@@ -639,6 +848,7 @@ def main():
     ceiling(metrics)
     randread(metrics)
     replay(metrics)
+    checkpoint_leg(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS_DIR, f"run-{stamp}{'-quick' if QUICK else ''}.json")

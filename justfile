@@ -60,6 +60,13 @@ site:
 fibers:
     ./scripts/fibers-accept.sh
 
+# chat: iteration 24's gate (docs/examples/chat) — rooms/presence/broadcast
+# over WebSocket via actors: functional on both WO_IO backends, the
+# 1k-clients-one-hot-room soak (fds/RSS accounted), SIGTERM drain with
+# close frames, and an ASan leg. `just chat` runs it (CHAT_SOAK=N trims).
+chat:
+    ./scripts/chat-accept.sh
+
 # db-actor: arc stage 3's gate (docs/examples/db-actor) — worker-shard
 # actors read/write the database through the transparent DB actor; WAL
 # replay pair included. `just db-actor` runs it.

@@ -295,6 +295,7 @@ let b_sha1 = 85
 let b_sha256 = 86
 let b_hmac_sha256 = 87
 let b_call = 88
+let b_monitor = 89
 let b_split = 28
 let b_split_ws = 29
 let b_join = 30
@@ -1110,7 +1111,7 @@ let is_builtin_name (n : string) =
       "substr"; "trim"; "to_lower"; "char_of"; "parse_int"; "split"; "split_ws"; "join"; "slice";
       "pop"; "shift"; "sort"; "reverse"; "remove"; "key_at"; "val_at";
       (* the concurrency arc *)
-      "send"; "call";
+      "send"; "call"; "monitor";
       (* iteration 19: Float bridges and Bytes surface *)
       "float"; "trunc"; "parse_float"; "float_to_text"; "float_cmp"; "bytes_len"; "bytes_at";
       "bytes_slice"; "bytes_eq"; "bytes_concat"; "base64_encode"; "base64_decode";
@@ -3441,11 +3442,18 @@ and emit_call (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : As
               put f (ins_abc op_builtin dst base sm.Types.sm_builtin);
               (* every stdlib member only READS its arguments, so one that was
                  freshly built here (`net.write(c, head .. resp.body)`) has no
-                 other owner and dies with the call *)
+                 other owner and dies with the call. The ONE exception:
+                 `time.after`'s message (arg 2) MOVES to the runtime — the
+                 timer owns it until delivery (iteration 24 T5). *)
+              let moves i =
+                alias = "time" && mname = "after" && i = 2
+              in
               List.iteri
                 (fun i (a : Ast.expr) ->
-                  drop_fresh_owned ~keep:dst p f (base + i) a;
-                  drop_fresh_text ~keep:dst p f (base + i) a)
+                  if not (moves i) then begin
+                    drop_fresh_owned ~keep:dst p f (base + i) a;
+                    drop_fresh_text ~keep:dst p f (base + i) a
+                  end)
                 args
             end)
         | Some u -> (
@@ -3722,7 +3730,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
          dangle the value just read) and the stores, which either copy (Text,
          handled by copied_container_call) or take ownership (OWNED/GCREF). *)
       let reader = List.mem name [ "get"; "latest"; "key_at"; "val_at" ] in
-      (if not (List.mem name [ "push"; "set"; "send"; "call" ]) then
+      (if not (List.mem name [ "push"; "set"; "send"; "call"; "monitor" ]) then
          List.iteri
            (fun i (a : Ast.expr) ->
              (* a reader's result points into arg0 (the container) — dropping
@@ -3754,6 +3762,7 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   match name with
   | "send" -> fixed b_send (* arc: msg (arg1) moved to the runtime — never dropped here *)
   | "call" -> fixed b_call (* iteration 24: same move; the SCALAR reply lands in dst *)
+  | "monitor" -> fixed b_monitor (* T4: notice msg (arg2) moves to the runtime *)
   | "now" -> fixed b_now
   | "print" -> fixed b_print
   | "print_int" -> fixed b_print_int

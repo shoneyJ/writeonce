@@ -1348,6 +1348,10 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
        iteration 24: call(addr, msg) moves its message identically. *)
     | Ident "send" -> i = 1 && Types.StringMap.find_opt "send" ctx.syms.Types.free_fns = None
     | Ident "call" -> i = 1 && Types.StringMap.find_opt "call" ctx.syms.Types.free_fns = None
+    (* T4/T5: the notice / timer message moves to the runtime too *)
+    | Ident "monitor" ->
+      i = 2 && Types.StringMap.find_opt "monitor" ctx.syms.Types.free_fns = None
+    | Field ({ kind = Ident "time"; _ }, "after") -> i = 2
     | _ -> false
   in
   List.iteri
@@ -1365,7 +1369,8 @@ and analyze_call (ctx : ctx) (call_e : Ast.expr) (callee : Ast.expr) (args : Ast
              transfer ctx p
                ~what:
                  (match callee.kind with
-                 | Ident "send" | Ident "call" ->
+                 | Ident "send" | Ident "call" | Ident "monitor"
+                 | Field ({ kind = Ident "time"; _ }, "after") ->
                    "cannot be sent — a message moves to the receiver"
                  | _ -> "cannot be stored in a container")
            then record_move ctx p (MvArg "element"))
