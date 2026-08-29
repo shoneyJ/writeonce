@@ -124,6 +124,19 @@ Met:
 
 Outstanding:
 
+- **Given** a `delete` of a row on a `resident: keys` table, **when** it runs,
+  **then** the row is gone and nothing else is touched. ✅ **fixed 2026-08-29,
+  and it was memory corruption before the fix.** `wo_row_remove` read the id
+  map's value as a slot, but on a keys table that value is a LOG OFFSET, and
+  `slot_row` does no bounds check — so a delete indexed the slab array with a
+  byte offset and then freed whatever it landed on. Pinned by
+  `test_keys_resident_delete`, which SEGVs against the old code. The same
+  latent trap in `wo_row_ptr` is closed too: it now returns NULL rather than a
+  wild pointer when the value is an offset.
+
+  **This is why the loader refusal earns its keep.** The gap was not one
+  missing operation but a second one that corrupted memory silently, found
+  only by auditing every reader of the id map.
 - **Given** an `update` to a row on a `resident: keys` table, **when** it runs,
   **then** it is applied. ❌ **refused explicitly** by
   `wo_row_update_field{,_slot}`. A keys row lives in the log with no slab slot

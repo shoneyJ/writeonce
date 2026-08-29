@@ -733,6 +733,21 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
     if (!t->row_size) return NULL;
     uint64_t s1 = hget(t, id);
     if (!s1) return NULL;
+    /* databasev2 2 (5d): on a keys-resident table the map value means one of
+     * two things — a SLOT while the row is still in its slab (between the
+     * insert and the post-barrier drop, which is when wo_wal_append_insert
+     * legitimately calls this) and a LOG OFFSET afterwards. Nothing in the
+     * value distinguishes them, so this function refuses to guess: an index
+     * past the slabs, or one whose bitmap bit is clear, is an offset and the
+     * row is not in RAM. Without this a caller that had not read 5d got
+     * slot_row() applied to a byte offset — slot_row does no bounds check —
+     * and a wild pointer that was then freed. Callers already handle NULL. */
+    if (wo_table_is_keys_resident(db, class_id)) {
+        uint64_t g = s1 - 1;
+        uint64_t total = (uint64_t)t->slab_cnt * DB_SLAB_ROWS;
+        if (g >= total) return NULL;
+        if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) return NULL;
+    }
     return slot_row(t, (uint32_t)(s1 - 1));
 }
 
@@ -1185,6 +1200,27 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id) {
     if (!t->row_size) return -1;
     uint64_t s1 = hget(t, id);
     if (!s1) return -1;
+
+    /* databasev2 2 (5d): a keys-resident row's map entry is a LOG OFFSET, not
+     * a slot. Falling through to the slab path below would index t->slabs[]
+     * with a byte offset — slot_row does no bounds check — and then free
+     * whatever it landed on. That is memory corruption, not a missing feature,
+     * which is why the loader still refuses the annotation.
+     *
+     * The row has no slab slot, no bitmap bit and no free-list entry to give
+     * back; only the indexes and the id map know about it. The index hook
+     * needs the row's column VALUES to find its bucket, and those live in the
+     * log, so the row is borrowed for exactly as long as that takes. */
+    if (wo_table_is_keys_resident(db, class_id)) {
+        db_row *r = wo_row_borrow(db, class_id, id, NULL);
+        if (!r) return -1;
+        idx_remove_row(db, t, r);
+        wo_row_release(db, class_id, r); /* frees the materialised values */
+        hdel(t, id);
+        t->count--;
+        return 0;
+    }
+
     uint32_t g = (uint32_t)(s1 - 1);
     db_row *r = slot_row(t, g);
     /* the index hook's remove side: before the row's values die, while the

@@ -96,6 +96,24 @@ Minor, same family: iteration 6 is "largely superseded" and to be revisited
 condition — yet its status is `pending` while genuinely parked iterations 8, 9
 and 10 are `hold`.
 
+## Addendum 2026-08-29 — the recommendation this review implied was wrong
+
+This review argued the next step was to measure `resident: keys` before
+investing further, and that measuring required narrowing the loader refusal so
+a benchmark could declare such a table. **Auditing the code before narrowing it
+found that `delete` on a keys-resident table was memory corruption**, not a
+missing feature: `wo_row_remove` read the id map's value as a slot when on such
+a table it is a log offset, and `slot_row` bounds-checks nothing.
+
+The refusal was therefore load-bearing in a way nobody had written down. It was
+justified in the docs by "updates are unimplemented" — one honest gap — while
+actually standing in front of two, one of which frees arbitrary pointers.
+
+Both are now closed or contained (`wo_row_remove` fixed, `wo_row_ptr` returns
+NULL rather than a wild pointer), but the lesson generalises: **a guard whose
+stated reason is narrower than its real one will eventually be removed by
+someone who believes the stated reason.**
+
 ## What is actually blocked
 
 Nothing in databasev2 is blocked on anything else in databasev2. Iteration 2's
