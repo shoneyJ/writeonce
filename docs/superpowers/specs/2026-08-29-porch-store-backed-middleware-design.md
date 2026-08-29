@@ -123,11 +123,20 @@ History. A keyed request does not run its own handler; it calls its pool actor,
 passing the request and the route's `Handler`, and the actor invokes the
 handler inside its own `receive`.
 
-| Actor state for that key | What `receive` returns |
-| --- | --- |
-| A stored response exists, digest matches | the stored response; the handler never runs |
-| A stored response exists, digest differs | a refusal verdict, answered as 422 |
-| No record | run the handler here, store the response, return it |
+**The reply is a scalar, so the response travels through the table.** `call`'s
+reply must be a copyable scalar (WO-E226), and every `receive` program-wide
+must declare the same return type. A response object cannot cross the mailbox.
+So the actor stores the response in the `@table` and returns an outcome code;
+the middleware reads the stored row and builds the response from it. Owner and
+duplicate therefore read the *same durable row* — which is what the store is
+for, and it means the replay is byte-identical by construction rather than by
+careful copying.
+
+| Actor state for that key | Actor does | Returns |
+| --- | --- | --- |
+| A stored response exists, digest matches | nothing; the handler never runs | "replayed" |
+| A stored response exists, digest differs | nothing | "mismatch", answered as 422 |
+| No record | runs the handler here and stores the response | "executed" |
 
 There is no fourth row, and that is the point. **A duplicate arriving while the
 owner's handler runs waits in the mailbox**, because an actor processes one

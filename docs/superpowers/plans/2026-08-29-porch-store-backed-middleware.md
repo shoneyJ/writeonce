@@ -216,11 +216,18 @@ from Task 1.
 - [ ] **Step 3 — the digest.** Compute a digest of method, path and body when
       `include_body` is set, and pass it alongside the bare key. Keep `use
       json` — the file did not typecheck without it.
-- [ ] **Step 4 — the actor arm for the begin message.** Look the bare key up.
-      A hit whose digest matches returns the stored response. A hit whose
-      digest differs returns a refusal, answered as **422**. A miss runs the
-      handler, stores status, body and `content-type` with the digest and the
-      current tick, and returns the response.
+- [ ] **Step 4 — the actor arm for the begin message.** `call`'s reply must be
+      a copyable scalar (WO-E226 — a response object cannot cross the mailbox),
+      so the arm returns an **outcome code** and the response travels through
+      the table. Look the bare key up. A hit whose digest matches returns
+      "replayed" without running the handler. A hit whose digest differs
+      returns "mismatch". A miss runs the handler, stores status, body and
+      `content-type` with the digest and the current tick, and returns
+      "executed". The middleware then reads the stored row and builds the
+      response from it — so owner and duplicate return the same durable row,
+      and byte-identical replay is structural rather than careful.
+      **Keep the return type identical to the one Task 2's count arm uses**;
+      WO-E226 also requires every `receive` program-wide to agree.
 - [ ] **Step 5 — the replay allowlist.** Store and replay `content-type` only.
       Never `Set-Cookie`, never `Date`. Cookies arrive in porch 2; this is
       cheap now and expensive to retrofit after.
