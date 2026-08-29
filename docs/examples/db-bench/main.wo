@@ -550,7 +550,7 @@ fn all_mode(n: Int) -> Int {
 fn usage() -> Int {
   print_err("usage: db-bench <mode>");
   print_err("  all N | seed N | read N | query N | write N | wal N");
-  print_err("  mix N C | wmix N C | msgrate N | verify | verify-acked M");
+  print_err("  mix N C | wmix N C | msgrate N | verify | verify-acked M | boot");
   return 2;
 }
 
@@ -560,6 +560,12 @@ fn main(args: multi Text) -> Int {
   }
   if args[0] == "verify" {
     return verify();
+  }
+  -- databasev2 3: does NOTHING. With WO_DATA set the runtime replays the whole
+  -- log before main runs, so a mode with no work of its own measures replay
+  -- plus a fixed process start — which is what "boot time" has to mean.
+  if args[0] == "boot" {
+    return 0;
   }
   if len(args) < 2 {
     return usage();

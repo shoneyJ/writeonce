@@ -4,6 +4,7 @@
 #include "wal.h"
 
 #include <errno.h>
+#include <time.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -493,9 +494,39 @@ static void sync_parent_dir(const char *path) {
     close(fd);
 }
 
+/* databasev2 3: write the staged bytes WITHOUT a durability barrier.
+ *
+ * Only compaction's dump uses this. Intermediate durability there is worthless:
+ * the temp file is not authoritative until the rename, and it is fsynced once
+ * immediately before that. Using wo_wal_commit for the dump instead cost one
+ * fdatasync per 256 records — measured, that was most of the stop-the-world
+ * pause (~22 MB/s, where the fixed cost plus ~150 redundant syncs dominated a
+ * 2 MB dump). */
+static int wal_write_nosync(wo_wal *w) {
+    size_t at = 0;
+    while (at < w->len) {
+        ssize_t n = pwrite(w->fd, w->buf + at, w->len - at, (off_t)(w->off + at));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        at += (size_t)n;
+    }
+    w->off += w->len;
+    w->len = 0;
+    return 0;
+}
+
+static uint64_t mono_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
 int wo_wal_compact(wo_wal *w, wo_db *db) {
     /* staged records would be written into a file about to be replaced */
     if (!w->path || w->len != 0) return -1;
+    uint64_t t0 = mono_us();
 
     char tmp[4096];
     if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", w->path, WO_WAL_TMP_SUFFIX) >= sizeof tmp)
@@ -526,13 +557,15 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
                                    (size_t)(g % DB_SLAB_ROWS) * t->row_size);
             if (wo_wal_append_insert(&nw, db, cid, r->id) != 0) goto fail;
             if (++pending >= WO_WAL_COMPACT_FLUSH) {
-                if (wo_wal_commit(&nw) != 0) goto fail;
+                if (wal_write_nosync(&nw) != 0) goto fail;
                 pending = 0;
             }
         }
     }
-    if (wo_wal_commit(&nw) != 0) goto fail; /* the tail batch */
-    if (fsync(nw.fd) != 0) goto fail;       /* commit fdatasyncs; this is for the size */
+    if (wal_write_nosync(&nw) != 0) goto fail; /* the tail batch */
+    /* THE dump's one and only barrier: everything above is just bytes in the
+     * page cache until this, and nothing reads the temp before the rename. */
+    if (fsync(nw.fd) != 0) goto fail;
 
     uint64_t new_bytes = nw.off;
     wo_wal_close(&nw);
@@ -551,6 +584,12 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
     w->off = new_bytes;
     w->len = 0;
     w->compacted_bytes = new_bytes;
+    {   /* the stop-the-world pause: nothing was served while this ran */
+        uint64_t el = mono_us() - t0;
+        w->stat_compactions++;
+        w->stat_compact_us_total += el;
+        if (el > w->stat_compact_us_max) w->stat_compact_us_max = el;
+    }
     return 0;
 
 fail:

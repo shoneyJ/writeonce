@@ -166,3 +166,69 @@ the "close the 66× gap" framing part B was originally given.
 because a 2–4×-variable tail gated at 50% gates the disk rather than the engine.
 The **floor** is the real guard there, and it is not slack: `mixread`'s floor
 (4172 µs) came within 25 µs of tripping on the worst observed run.
+
+## 7. WAL checkpoint: compaction (databasev2 3)
+
+**Measured 2026-08-29.** Before this the log grew forever: nothing ever removed
+superseded records, so boot replayed all history and the file only ever got
+bigger. Compaction rewrites it as one record per live row and swaps it in with
+`rename`.
+
+### Space and boot — the same workload, twice
+
+Identical work, differing only in whether checkpointing may fire (an enormous
+floor disables it). Full campaign:
+
+| | checkpointing off | checkpointing on |
+| --- | --- | --- |
+| WAL used | 1 962 358 B | **907 094 B** |
+| boot (median of 3, `boot` mode) | 114 ms | **64 ms** |
+| compactions | 0 | 6 |
+
+**2.16× space reclaimed, 1.78× faster boot.** Boot is measured with a mode that
+does nothing at all: with `WO_DATA` set the runtime replays the whole log before
+`main` runs, so a mode with no work of its own is the only honest way to price
+replay. It is *not* measured through the driver's `run()` helper, which samples
+RSS on a 250 ms poll — timings taken that way reported "251 ms" both with and
+without checkpointing, which is the harness's clock rather than the engine's.
+
+### The stop-the-world pause, and why it stopped being 8× worse
+
+Compaction blocks the owner shard for its duration. The spec refused to assume
+that was acceptable, so it is measured and gated against a stated **50 ms**
+budget: a stall a serving process can absorb without a client seeing a timeout.
+
+Measured **2 651 µs** on the full campaign — comfortably inside it.
+
+It was not always. The first implementation flushed the dump through
+`wo_wal_commit`, which `fdatasync`s, so a dump paid one barrier per 256 records:
+
+| live set | pause, per-flush fsync | pause, one final fsync |
+| --- | --- | --- |
+| ~107 KB | 23 948 µs | **2 903 µs** |
+| ~500 KB | 36 361 µs | **7 526 µs** |
+| ~1.98 MB | 107 649 µs | **13 212 µs** |
+
+Marginal rate went from **~22 MB/s to ~181 MB/s** — from sync-bound to
+bandwidth-bound. Intermediate durability during a dump is worthless: the temp
+file is not authoritative until the rename and is fsynced once immediately
+before it, so those barriers bought nothing and cost 8×.
+
+**The pause is O(live rows), and that is the number that eventually forces an
+incremental design.** At ~181 MB/s a 1 GB live set implies roughly 5.5 s — well
+past any interactive budget. The spec deliberately did not buy incremental
+copying in advance; this is the measurement it is to be bought against.
+
+### Gating
+
+`ckpt.reclaim_x` is the feature's central claim and is gated tightly (15%).
+Everything else in the leg — boot times, the pause, the byte counts — is
+wall-clock or workload-shaped on a shared box and carries a wide tolerance,
+because waiving them *all* would have left the leg ungated. The leg also
+asserts two things directly rather than trusting a metric: that some compaction
+actually ran (otherwise it proves nothing), and that the log really is smaller
+with checkpointing on.
+
+One direction bug worth recording: `reclaim_x` was first recorded as
+lower-is-better by the default detector, which would have **passed "reclaimed
+nothing" and failed an improvement** — the central claim gated backwards.

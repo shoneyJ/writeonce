@@ -130,9 +130,15 @@ static void gc_pump(wo_vm *vm) {
  * of every durable program; a gate that wants the numbers asks for them. */
 static void wal_stats_report(const wo_wal *w) {
     if (!w || !getenv("WO_WAL_STATS")) return;
-    fprintf(stderr, "walstats batches=%llu records=%llu peak_batch=%llu peak_staged=%llu\n",
+    fprintf(stderr,
+            "walstats batches=%llu records=%llu peak_batch=%llu peak_staged=%llu "
+            "compactions=%llu compact_us_max=%llu compact_us_total=%llu compacted_bytes=%llu\n",
             (unsigned long long)w->stat_batches, (unsigned long long)w->stat_records,
-            (unsigned long long)w->stat_peak_batch, (unsigned long long)w->stat_peak_staged);
+            (unsigned long long)w->stat_peak_batch, (unsigned long long)w->stat_peak_staged,
+            (unsigned long long)w->stat_compactions,
+            (unsigned long long)w->stat_compact_us_max,
+            (unsigned long long)w->stat_compact_us_total,
+            (unsigned long long)w->compacted_bytes);
 }
 
 int main(int argc, char **argv) {

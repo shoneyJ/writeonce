@@ -73,6 +73,12 @@ typedef struct wo_wal {
      * appends never extend the file, which is what lets fdatasync alone be the
      * ack barrier. A replacement without it silently weakens durability. */
     uint64_t prealloc;
+    /* databasev2 3: what compaction actually did, reported under WO_WAL_STATS.
+     * The PAUSE is the number the spec refused to assume — compaction is
+     * stop-the-world, so its duration is the cost being weighed. */
+    uint64_t stat_compactions;
+    uint64_t stat_compact_us_max;
+    uint64_t stat_compact_us_total;
 } wo_wal;
 
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;

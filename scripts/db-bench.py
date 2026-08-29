@@ -33,6 +33,17 @@ N = 2000 if QUICK else 20000
 # measured mean batch rose 1.13 -> 1.76 -> 5.35 at C = 4 -> 16 -> 64.
 WMIX_N = 4000 if QUICK else 20000
 WMIX_C = 32 if QUICK else 64
+# databasev2 3: the checkpoint leg. Ages a store by UPDATING the same rows, so
+# history grows while the live set does not — otherwise the leg measures insert
+# throughput instead of compaction.
+CKPT_SEED = 2000 if QUICK else 5000
+CKPT_OPS = 8000 if QUICK else 20000
+# The stop-the-world budget. 50ms is a stall a serving process can absorb
+# without a client noticing a timeout; measured at ~13ms for a 2MB live set,
+# so this leaves real headroom while still failing before a stall becomes
+# user-visible. Compaction is O(live rows), so this budget is what eventually
+# forces the incremental design the spec deliberately did not buy in advance.
+CKPT_PAUSE_BUDGET_US = 50000
 MSG_N = 20000 if QUICK else 200000
 WAL_N = 800 if QUICK else 4000
 CRASH_REPS = 1 if QUICK else 3
@@ -302,6 +313,13 @@ def tolerance_for(key):
     # (4172us) came within 25us of tripping on the worst run.
     if key.startswith("durable.sN.") and key.endswith(".p99us"):
         return 100
+    # databasev2 3: the RECLAIM ratio is structural and gated tightly — it is
+    # the feature's whole claim. Boot time and the pause are wall-clock on a
+    # shared box and are not: waiving them all would have left the leg ungated,
+    # which is the mistake part A's task 4 made and had to undo.
+    if key in ("ckpt.boot_off_ms", "ckpt.boot_on_ms", "ckpt.pause_us_max",
+               "ckpt.compactions", "ckpt.bytes_off", "ckpt.bytes_on"):
+        return 100
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -313,7 +331,11 @@ def write_baseline(metrics):
                                 "tolerances come from tolerance_for() in the driver"}}
     for k, v in sorted(metrics.items()):
         if k.endswith(("rss_growth_kb", "fd_growth")): continue
-        higher = k.endswith(("ops_sec", "msgs_sec", "mean_batch", "peak_batch"))
+        # reclaim_x: MORE reclaimed is better. Recorded as lower-is-better by
+        # the default detector, which would have passed "no reclaim at all" and
+        # failed an improvement — the feature's central claim, gated backwards.
+        higher = k.endswith(("ops_sec", "msgs_sec", "mean_batch", "peak_batch",
+                             "reclaim_x"))
         floor_div = 8 if k.endswith("msgs_sec") else 4
         # latency floors never sit below 100µs: at post-index µs scale a
         # 4×1µs "catastrophe line" is noise; the tripwire means "µs became
@@ -324,6 +346,97 @@ def write_baseline(metrics):
     os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
     json.dump(base, open(BASELINE, "w"), indent=1, sort_keys=True)
     ok(f"baseline written ({len(base) - 1} metrics)")
+
+def wal_used_bytes(data):
+    """Bytes actually written, as the non-zero prefix — never the file size:
+    shard WALs are preallocated, so getsize reports the preallocation."""
+    total = 0
+    for name in sorted(os.listdir(data)):
+        with open(os.path.join(data, name), "rb") as f:
+            total += len(f.read().rstrip(b"\x00"))
+    return total
+
+
+def checkpoint_leg(metrics):
+    """Space reclaimed, boot time, and the stop-the-world PAUSE.
+
+    The same workload runs twice, differing only in whether checkpointing can
+    fire: an enormous floor disables it, a small one lets it. Comparing two runs
+    of one build is what isolates compaction from everything else the workload
+    does.
+
+    Boot is measured with the sample's `boot` mode, which does nothing at all —
+    with WO_DATA set the runtime replays the whole log before main runs, so a
+    mode with no work of its own is the only honest way to price replay."""
+    ncores = os.cpu_count() or 1
+    out = {}
+    for name, knobs in (("off", {"WO_CHECKPOINT_BYTES": "1000000000"}),
+                        ("on", {"WO_CHECKPOINT_BYTES": "65536", "WO_CHECKPOINT_RATIO": "2"})):
+        data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.ckpt.{name}")
+        shutil.rmtree(data, ignore_errors=True); os.makedirs(data, exist_ok=True)
+        env = {"WO_DATA": data, "WO_SHARDS": str(ncores), "WO_WAL_STATS": "1"}
+        env.update(knobs)
+        rc, _, _, _ = run(["seed", str(CKPT_SEED)], env, 1800)
+        if rc != 0:
+            bad(f"ckpt.{name}.seed", f"rc={rc}"); shutil.rmtree(data, ignore_errors=True); return
+        rc, lines, _, _ = run(["wmix", str(CKPT_OPS), "16"], env, 1800)
+        if rc != 0:
+            bad(f"ckpt.{name}.age", f"rc={rc}"); shutil.rmtree(data, ignore_errors=True); return
+        stats = {}
+        for l in lines:
+            f = l.split()
+            if f and f[0] == "walstats":
+                stats = dict(x.split("=", 1) for x in f[1:] if "=" in x)
+        used = wal_used_bytes(data)
+        # NOT through run(): it samples RSS on a 250ms poll, so every timing it
+        # produces floors at the poll quantum — boot measured that way reported
+        # 251ms both with and without checkpointing, which is the harness's
+        # clock, not the engine's. Median of 3 because this is wall-clock.
+        benv = dict(os.environ)
+        benv.update({"WO_DATA": data, "WO_SHARDS": str(ncores)})
+        samples = []
+        brc = 0
+        for _ in range(3):
+            t0 = time.monotonic()
+            pr = subprocess.run([BIN, "boot"], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, env=benv, timeout=900)
+            samples.append((time.monotonic() - t0) * 1000.0)
+            brc = pr.returncode or brc
+        boot_ms = sorted(samples)[1]
+        if brc != 0:
+            bad(f"ckpt.{name}.boot", f"rc={brc}"); shutil.rmtree(data, ignore_errors=True); return
+        out[name] = (used, boot_ms, stats)
+        shutil.rmtree(data, ignore_errors=True)
+
+    (off_b, off_boot, _), (on_b, on_boot, st) = out["off"], out["on"]
+    comps = int(st.get("compactions", 0))
+    if comps == 0:
+        bad("ckpt.inert", "no compaction ran — the leg proves nothing about checkpointing")
+        return
+    metrics["ckpt.compactions"] = comps
+    metrics["ckpt.bytes_off"] = off_b
+    metrics["ckpt.bytes_on"] = on_b
+    metrics["ckpt.reclaim_x"] = round(off_b / max(on_b, 1), 2)
+    metrics["ckpt.boot_off_ms"] = int(round(off_boot))
+    metrics["ckpt.boot_on_ms"] = int(round(on_boot))
+    metrics["ckpt.pause_us_max"] = int(st.get("compact_us_max", 0))
+    ok(f"ckpt: {off_b} -> {on_b} bytes ({metrics['ckpt.reclaim_x']}x reclaimed) over "
+       f"{comps} compactions; boot {off_boot:.0f} -> {on_boot:.0f} ms; "
+       f"stop-the-world pause max {metrics['ckpt.pause_us_max']}us")
+    # the space claim is the point of the feature, so it is asserted, not just recorded
+    if off_b <= on_b:
+        bad("ckpt.no-reclaim", f"checkpointing did not shrink the log ({off_b} -> {on_b})")
+    else:
+        ok(f"ckpt: the log is smaller with checkpointing on")
+    # THE BUDGET. Stated, not assumed — the spec refused to assume it.
+    if metrics["ckpt.pause_us_max"] > CKPT_PAUSE_BUDGET_US:
+        bad("ckpt.pause-budget",
+            f"stop-the-world pause {metrics['ckpt.pause_us_max']}us exceeds the stated "
+            f"{CKPT_PAUSE_BUDGET_US}us budget — alternatives (incremental copy, "
+            f"fork-and-dump) are bought against THIS number")
+    else:
+        ok(f"ckpt: pause within budget ({metrics['ckpt.pause_us_max']} <= {CKPT_PAUSE_BUDGET_US}us)")
+
 
 def main():
     # --check <results.json>: gate-only evaluation of a recorded run — the
@@ -337,6 +450,7 @@ def main():
     build()
     metrics = campaign()
     durability(metrics)
+    checkpoint_leg(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS_DIR, f"run-{stamp}{'-quick' if QUICK else ''}.json")
