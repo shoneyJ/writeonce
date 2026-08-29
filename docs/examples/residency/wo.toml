@@ -1,0 +1,6 @@
+name        = "residency"
+version     = "0.1.0"
+description = "databasev2 2: per-table storage — durable: true|false and resident: all|keys, shown across a restart"
+
+[runtime]
+wo = ">= 0.1"

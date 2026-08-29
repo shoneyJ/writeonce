@@ -9,7 +9,9 @@ readiness: ready
 
 > Part of [Story — databasev2: the database beyond RAM](00-story.md).
 > Spec: [`2026-08-26-table-residency-design.md`](../../superpowers/specs/2026-08-26-table-residency-design.md)
-> · plan: [`2026-08-26-table-residency.md`](../../superpowers/plans/2026-08-26-table-residency.md).
+> · plan: [`2026-08-26-table-residency.md`](../../superpowers/plans/2026-08-26-table-residency.md)
+> · runnable example: [`docs/examples/residency`](../../examples/residency/README.md),
+> gated by `just residency`.
 >
 > **The language enrichment this track exists for.** Before this, durability was
 > one environment variable for a whole process: `WO_DATA` set and every `@table`

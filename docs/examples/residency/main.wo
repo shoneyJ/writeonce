@@ -1,0 +1,109 @@
+-- residency — databasev2 2's per-table storage, demonstrated across a
+-- restart.
+--
+-- Before this iteration, durability was ONE environment variable for a whole
+-- process: WO_DATA set and every @table is WAL-logged, or unset and none are.
+-- Real applications are not uniform. A session table is disposable, an orders
+-- table is precious. One global switch forces "everything is precious" or
+-- "nothing is", and the developer pays for the wrong one.
+--
+-- Run it twice against the same WO_DATA directory:
+--
+--   mkdir -p /tmp/residency-data      -- WO_DATA must exist already
+--   WO_DATA=/tmp/residency-data wovm residency.wob seed
+--   WO_DATA=/tmp/residency-data wovm residency.wob
+--
+-- The second run inserts nothing. Orders come back from the log; Sessions do
+-- not, because they were never written to it.
+
+-- Precious: WAL-logged, replayed at boot. `durable: true` is the default, and
+-- is written out here only because this example is about the annotation.
+@table(name: "orders", index: [sku], durable: true, resident: all)
+class Order {
+  sku:   Text
+  cents: Int
+}
+
+-- Scratch: never written to the WAL, so it costs no disk and no fsync, and it
+-- is EMPTY after a restart. That is the point — not a bug to work around.
+@table(name: "sessions", index: [token], durable: false)
+class Session {
+  token: Text
+  uid:   Int
+}
+
+-- WHAT DOES NOT COMPILE YET, and why it is written here rather than omitted:
+--
+--   @table(name: "audit", index: [at], durable: true, resident: keys)
+--   class AuditEntry {
+--     at:   Int
+--     what: Text
+--   }
+--
+-- `resident: keys` is the mode for a table too large for RAM: the id map stays
+-- resident, the row payload lives in the WAL and is read back by offset. The
+-- storage, the read paths, deletes and checkpoint survival all work today.
+-- UPDATING such a row does not — the row has no slab slot to mutate, and doing
+-- it properly means read-modify-append. The loader therefore REFUSES the
+-- annotation outright rather than honouring it in name only:
+--
+--   wovm: class 0 declares `resident: keys`, which is INCOMPLETE: rows are
+--   stored and read keys-only, but UPDATING one is not implemented (it needs
+--   read-modify-append). Remove it until databasev2 2 lands updates;
+--   `resident: all` is what runs
+--
+-- Note WHERE it is refused: the compiler accepts it and emits a .wob — the
+-- annotation is a load-time property, so `woc` is green and `wovm` exits 2.
+--
+-- Refusing at load rather than at the first update is deliberate: a developer
+-- who declared a 120 GB table keys-resident, saw it compile, and shipped would
+-- discover the gap in production.
+
+fn count_orders() -> Int {
+  let n = 0;
+  for _o in from o in Order select o { n = n + 1; }
+  return n;
+}
+
+fn count_sessions() -> Int {
+  let n = 0;
+  for _s in from s in Session select s { n = n + 1; }
+  return n;
+}
+
+fn report(label: Text) {
+  print("${label}: orders=${count_orders()} sessions=${count_sessions()}");
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) > 0 {
+    if args[0] == "seed" {
+      -- Both tables get the same number of rows, from the same code path.
+      -- Only the annotation differs, so anything that differs after the
+      -- restart is the annotation's doing and nothing else's.
+      let i = 0;
+      while i < 3 {
+        insert Order { sku: "sku-${i}", cents: 100 + i };
+        insert Session { token: "tok-${i}", uid: i };
+        i = i + 1;
+      }
+      report("seeded");
+      return 0;
+    }
+  }
+
+  -- Second run: no inserts at all. Whatever is here came from the log.
+  report("after restart");
+
+  -- The claim this example exists to make, checked rather than narrated.
+  if count_sessions() != 0 {
+    print("UNEXPECTED: a durable:false table survived a restart");
+    return 1;
+  }
+  if count_orders() == 0 {
+    print("UNEXPECTED: a durable:true table did not replay");
+    return 1;
+  }
+  print("ok: durable replayed, volatile did not");
+  return 0;
+}

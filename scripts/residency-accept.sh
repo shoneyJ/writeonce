@@ -133,6 +133,46 @@ grep -q 'WO-E224' <<<"$dref_out" \
   && ok "durable ref into a volatile table is WO-E224" \
   || bad "dangling ref refused" "got: $dref_out"
 
+# ---- 5. the doc example actually runs, and its README's claim holds --------
+# The example is the readable half of this gate. An example no gate runs rots,
+# and its README quotes the loader's refusal verbatim — so that message is
+# checked here too, not merely trusted.
+LOG=/tmp/residency.log
+: > "$LOG"
+echo "residency-accept: example output -> $LOG (tail -F it)"
+EX="docs/examples/residency"
+{
+  echo "===================== residency example ====================="
+} >> "$LOG"
+if "$WOC" --emit "$EX/main.wo" -o "$WORK/residency.wob" >>"$LOG" 2>&1; then
+  ok "the doc example compiles"
+  mkdir -p "$WORK/exdata"
+  {
+    echo "--------------------- run 1: seed ---------------------"
+    WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" seed 2>&1
+    echo "--------------------- run 2: restart ------------------"
+  } >> "$LOG"
+  ex2="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" 2>&1)"
+  printf '%s\n' "$ex2" >> "$LOG"
+  grep -q 'orders=3 sessions=0' <<<"$ex2" \
+    && ok "example: durable replayed, volatile did not" \
+    || bad "example restart" "got: $ex2"
+else
+  bad "the doc example compiles" "see $LOG"
+fi
+
+# the README quotes this message; drift between them is a doc bug
+printf '@table(name: "audit", durable: true, resident: keys)\nclass A {\n  at: Int\n}\nfn main() -> Int { return 0; }\n' > "$WORK/keys.wo"
+if "$WOC" --emit "$WORK/keys.wo" -o "$WORK/keys.wob" >>"$LOG" 2>&1; then
+  keys_out="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/keys.wob" 2>&1)"
+  printf '%s\n' "$keys_out" >> "$LOG"
+  grep -q 'resident: keys.*INCOMPLETE' <<<"$keys_out" \
+    && ok "resident: keys is refused at LOAD with the documented message" \
+    || bad "keys refusal message" "got: $keys_out"
+else
+  bad "resident: keys compiles (the refusal is load-time, not compile-time)" "woc rejected it"
+fi
+
 echo
 echo "residency-accept: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]] || exit 1
