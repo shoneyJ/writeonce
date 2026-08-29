@@ -484,7 +484,7 @@ sleep 0.5
 expect "product survives a restart (WAL)" "$(hit GET /products)" 200 '"name":"mug"'
 kill -TERM "$SRV" 2>/dev/null; SRV=""
 
-# ---- 16. porch-store task 2: the key pool counts 1 then 2 ----
+# ---- 16. porch-store task 2: the key pool counts 1 then 2, reset_at is wall-clock ----
 # A flat copy of porch (manifest stripped, so it compiles as one ordinary
 # multi-file program with a real entry point rather than the manifest's
 # library build) plus a tiny driver dropped into middleware/ — same
@@ -494,20 +494,35 @@ KP="$W/keypool-check"
 cp -r "$ROOT/docs/examples/porch" "$KP"
 rm -f "$KP/wo.toml"
 rm -rf "$KP/target"
-cat >"$KP/middleware/kptest_main.wo" <<'WOEOF'
+KP_WINDOW_US=60000000
+cat >"$KP/middleware/kptest_main.wo" <<WOEOF
 fn main() -> Int {
   let pool = make_pool(4);
-  let v1 = pool_count(pool, "ip:test", 5, 60_000_000);
-  let v2 = pool_count(pool, "ip:test", 5, 60_000_000);
-  print("${v1.count} ${v2.count}");
+  let v1 = pool_count(pool, "ip:test", 5, ${KP_WINDOW_US});
+  let v2 = pool_count(pool, "ip:test", 5, ${KP_WINDOW_US});
+  print("\${v1.count} \${v2.count} \${v1.reset_at}");
   return 0;
 }
 WOEOF
 if kp_out="$("$WOC" --emit "$KP" -o "$KP/kptest.wob" 2>&1)"; then
+  kp_before_ms="$(date +%s%3N)"
   kp_vm="$("$WOVM" "$KP/kptest.wob" 2>&1)"
-  [[ "$kp_vm" == "1 2" ]] \
-    && ok "keypool: two sequential counts return 1 then 2" \
-    || bad "keypool" "expected '1 2', got '$kp_vm'"
+  kp_after_ms="$(date +%s%3N)"
+  read -r kp_c1 kp_c2 kp_reset <<<"$kp_vm"
+  # v1 is the FIRST-ever hit for this key — the "fresh window" path
+  # (msg.window skipped its µs->ms conversion before the fix, landing
+  # reset_at ~1000x too far out: a 60s window read back as ~16.7h away).
+  # A tight few-second band around time.now() + window_ms catches that
+  # regression without being timing-flaky.
+  kp_window_ms=$((KP_WINDOW_US / 1000))
+  kp_lo=$((kp_before_ms + kp_window_ms - 5000))
+  kp_hi=$((kp_after_ms + kp_window_ms + 5000))
+  if [[ "$kp_c1" == "1" && "$kp_c2" == "2" && "$kp_reset" =~ ^[0-9]+$ \
+        && "$kp_reset" -ge "$kp_lo" && "$kp_reset" -le "$kp_hi" ]]; then
+    ok "keypool: counts 1 then 2, reset_at ~window ms ahead of time.now()"
+  else
+    bad "keypool" "counts=$kp_c1,$kp_c2 reset_at=$kp_reset expected in [$kp_lo,$kp_hi]"
+  fi
 else
   bad "keypool" "compile: $(printf '%s' "$kp_out" | head -1)"
 fi

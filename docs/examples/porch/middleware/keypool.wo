@@ -75,7 +75,7 @@ class KeyActor {
 
     if len(hits) == 0 {
       insert RateLimitCounter { key: msg.key, count: 1, window: now };
-      return pool_pack(1, msg.window);
+      return pool_pack(1, msg.window / 1000);
     }
 
     let row = hits[0];
@@ -86,7 +86,7 @@ class KeyActor {
       -- sweeper; this lazy expiry on access is it.
       delete row;
       insert RateLimitCounter { key: msg.key, count: 1, window: now };
-      return pool_pack(1, msg.window);
+      return pool_pack(1, msg.window / 1000);
     }
 
     row.count = row.count + 1;
