@@ -108,8 +108,9 @@ class KeyActor {
           -- Expired: lazy delete (no sweeper exists), fall through to miss.
           delete stored;
         } else if stored.digest == msg.digest {
-          -- Same request (the owner's own retry, or a duplicate that
-          -- waited in the mailbox): the row already holds the response.
+          -- A row lives under the BARE key only when it is durable (see
+          -- below) -- an ephemeral one never does -- so any hit here is
+          -- already a stable, valid replay target.
           return pool_pack(1, 0);
         } else {
           -- Same key, a different request: refuse rather than serve the
@@ -118,6 +119,9 @@ class KeyActor {
         }
       }
 
+      -- Miss: fresh key, an expired row just deleted, or the prior
+      -- attempt (if any) was ephemeral and so is invisible to the
+      -- bare-key lookup above -- all three run the handler fresh.
       let resp = msg.handler.handle(msg.req);
       let hdrs: map<Text, Text> = {};
       let ct = resp.headers["content-type"];
@@ -125,27 +129,39 @@ class KeyActor {
       let stored_json = json.encode(IdempotentStoredResp {
         status: resp.status, headers: hdrs, body: resp.body
       });
-      -- unguarded, same as kind 1's own insert: this actor is the only
-      -- writer for this key (messages are processed one at a time), so a
-      -- @unique violation here would mean something is genuinely wrong,
-      -- not a race to paper over. A swallowed failure would answer a
-      -- stored/ephemeral outcome for a response that was never actually
-      -- written -- let it trap instead, so a saturated-looking 503 is
-      -- what the middleware answers, never a false success.
-      insert IdempotencyKey {
-        key: msg.key, response: stored_json, created_at: now, digest: msg.digest
-      };
       if resp.status >= 200 and resp.status < 400 {
-        -- 2xx/3xx: a real answer worth replaying for the TTL.
+        -- 2xx/3xx: a real answer worth replaying for the TTL, stored
+        -- under the bare key -- one stable row per key, unguarded same
+        -- as kind 1's own insert (this actor is the only writer for
+        -- this key; a @unique violation here would mean something is
+        -- genuinely wrong, not a race to paper over -- a swallowed
+        -- failure would answer "stored" for a response never written).
+        insert IdempotencyKey {
+          key: msg.key, response: stored_json, created_at: now, digest: msg.digest
+        };
         return pool_pack(1, 0);
       }
-      -- 4xx/5xx: the row above exists only so the scalar-only reply can
-      -- still hand the caller its exact response (WO-E226 -- a Resp
-      -- cannot ride the mailbox). It must NOT survive to answer a later
-      -- retry: caching a transient 500 for the TTL (default 24h) would
-      -- make every retry fail until it expires, worse than no idempotency
-      -- at all. idempotent.wo reads this row once and deletes it.
-      return pool_pack(3, 0);
+      -- 4xx/5xx: never a replay target, so it does NOT go under the bare
+      -- key -- a bare-key row is memoryless (this file's own doc above),
+      -- but a SHARED, mutable row is not: a second message racing the
+      -- first could delete-and-replace it before the first caller's own
+      -- middleware-side read (necessarily outside receive -- WO-E226,
+      -- a Resp cannot ride the mailbox) ever runs, so the FIRST caller
+      -- could read back the SECOND caller's answer. Every miss instead
+      -- gets its own row, keyed by a nonce carried back in the scalar's
+      -- low digits (the same slot pool_pack's remaining_ms uses for
+      -- kind 1) so idempotent.wo can reconstruct the exact same key and
+      -- read only ever what THIS call produced -- immune to any other
+      -- message touching this bare key, ever. (Trade-off, disclosed:
+      -- unlike the bare-key row, this one is never revisited by a bare-
+      -- key lookup, so it is never lazily pruned by TTL either -- it is
+      -- a permanent row per failed attempt. There is no sweeper in this
+      -- codebase by design; this is that same trade-off, not a new one.)
+      let nonce = now % 1_000_000_000;
+      insert IdempotencyKey {
+        key: "${msg.key}#eph:${nonce}", response: stored_json, created_at: now, digest: msg.digest
+      };
+      return pool_pack(3, nonce);
     }
 
     -- kind 1: count.
@@ -245,15 +261,18 @@ pub fn pool_count(pool: Pool, key: Text, limit: Int, window: Int) -> Verdict {
 }
 
 -- The begin accessor idempotent.wo calls: hides pool_select/call the same
--- way pool_count does. Returns the raw packed outcome — 1 means a 2xx/3xx
--- response is durably in IdempotencyKey (fresh store or matched replay);
--- 2 means a digest mismatch (422, nothing to read); 3 means a 4xx/5xx
--- miss whose row is a one-read-then-delete relay only, never a replay
--- target (see the kind-2 arm above). Never 0: idempotent.wo's own
--- `try ... catch (e) nil` cannot tell a literal 0 reply apart from a
--- trapped call, so the encoding avoids it on purpose. A trapped call (a
--- saturated mailbox) propagates to the caller uncaught, same as
--- pool_count -- the middleware's own try/catch answers 503.
+-- way pool_count does. Returns the raw packed outcome — 1 means the
+-- BARE key names a durable (2xx/3xx) replay target; 2 means a digest
+-- mismatch (422, nothing to read); 3 means this call's own 4xx/5xx
+-- answer lives under "${key}#eph:${raw % 1_000_000_000}" instead --
+-- the low digits of the reply are that row's own nonce, not a window
+-- size (kind 1's use of the same slot), so idempotent.wo can rebuild
+-- the exact key and read only ever what THIS call produced. Never 0:
+-- idempotent.wo's own `try ... catch (e) nil` cannot tell a literal 0
+-- reply apart from a trapped call, so the encoding avoids it on
+-- purpose. A trapped call (a saturated mailbox) propagates to the
+-- caller uncaught, same as pool_count -- the middleware's own
+-- try/catch answers 503.
 pub fn pool_begin(pool: Pool, key: Text, digest: Text, ttl: Int, req: Req, handler: Handler) -> Int {
   let a = pool_select(pool, key);
   return call(a, PoolMsg {

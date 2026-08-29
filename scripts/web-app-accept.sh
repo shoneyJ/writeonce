@@ -794,12 +794,40 @@ class FlakyHandler {
   }
 }
 
+-- second reviewer follow-up: the SAME fails-once handler and table,
+-- separate from FlakyMark/FlakyHandler above so the sequential leg
+-- (18d) can't consume the one-time failure this leg (18e) needs -- but
+-- this time hit by two GENUINELY concurrent duplicates, to pin that
+-- neither ever receives a replayed 5xx from the other's ephemeral row.
+@table(name: "flaky_marks2")
+class FlakyMark2 {
+  n: Int
+}
+
+class FlakyHandler2 {
+  fn handle(req: Req) -> Resp {
+    let n = len(from f in FlakyMark2 select f);
+    insert FlakyMark2 { n: 1 };
+    if n == 0 { return server_error(); }
+    return ok_json("{\"ok\":true}");
+  }
+}
+
+class FlakyCount2 {
+  fn handle(req: Req) -> Resp {
+    let n = len(from f in FlakyMark2 select f);
+    return ok_json("{\"count\":${n}}");
+  }
+}
+
 fn build_app(slot: actor PoolMsg) -> App {
   let app = App { middleware: [], routes: [] };
   let p = Pool { actors: [PoolSlot { a: slot }] };
   app.post("/create", Idempotent { key_header: "idempotency-key", pool: p, inner: SlowHandler {} });
   app.post("/flaky", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler {} });
+  app.post("/flaky2", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler2 {} });
   app.get("/execs", ExecCount {});
+  app.get("/flaky2count", FlakyCount2 {});
   return app;
 }
 
@@ -938,8 +966,54 @@ if ip_out="$("$WOC" --emit "$IP" -o "$IP/idempotent_check.wob" 2>&1)"; then
     && ok "idempotent: a transient 5xx is not replayed -- retry re-executes (500 then 200)" \
     || bad "idempotent-5xx-not-cached" "first=$f1 second=$f2 want 500 then 200"
 
+  # ---- 18e. gate leg: a 5xx is never replayed to a CONCURRENT duplicate ---
+  # (coordinator follow-up on 18d's residual). Two backgrounded clients,
+  # launched together, same key, against a handler that fails only its
+  # first-ever invocation. Whichever message the actor's mailbox happens
+  # to process first gets that real failure; the second message must find
+  # the row ephemeral and re-run the handler itself -- never read back a
+  # replayed 500. Which of the two clients goes first is a race this test
+  # cannot pin, so it asserts the UNORDERED outcome instead: the statuses
+  # are exactly one 500 and one 200 (both requests genuinely executed --
+  # FlakyMark2 count = 2). The pre-fix behavior (middleware-side delete,
+  # racing the actor) would show 500 and 500 with count = 1 whenever the
+  # duplicate is dequeued before the owner's delete lands -- deterministic
+  # either way, no ordering assumption needed.
+  ( s="$(curl -s -o "$W/i12a.body" -w '%{http_code}' --max-time 5 -X POST \
+      -H "Host: a" -H "Idempotency-Key: leg12-key" -H "Content-Type: text/plain" \
+      --data-binary "x" "http://127.0.0.1:$IPORT/flaky2")"; echo "$s" >"$W/i12a.status" ) &
+  cf1=$!
+  ( s="$(curl -s -o "$W/i12b.body" -w '%{http_code}' --max-time 5 -X POST \
+      -H "Host: a" -H "Idempotency-Key: leg12-key" -H "Content-Type: text/plain" \
+      --data-binary "x" "http://127.0.0.1:$IPORT/flaky2")"; echo "$s" >"$W/i12b.status" ) &
+  cf2=$!
+  wait "$cf1" "$cf2"
+  g1="$(cat "$W/i12a.status")"; g2="$(cat "$W/i12b.status")"
+  gsorted="$(printf '%s\n%s\n' "$g1" "$g2" | sort | tr '\n' ' ')"
+  [[ "$gsorted" == "200 500 " ]] \
+    && ok "idempotent: concurrent duplicates never replay a 5xx (one 500, one 200)" \
+    || bad "idempotent-5xx-concurrent" "g1=$g1 g2=$g2 want one 500 and one 200"
+  fc2="$(curl -s --max-time 5 -H "Host: a" "http://127.0.0.1:$IPORT/flaky2count" \
+    | grep -o '"count":[0-9]*' | cut -d: -f2)"
+  [[ "$fc2" == "2" ]] \
+    && ok "idempotent: both concurrent attempts genuinely executed (FlakyMark2 count = 2)" \
+    || bad "idempotent-5xx-concurrent-execs" "FlakyMark2 count=$fc2 want 2"
+
   kill -TERM "$SRV" 2>/dev/null
-  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  istopped=1
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { istopped=0; break; }; sleep 0.1; done
+  [[ $istopped -eq 0 ]] && ok "idempotent: SIGTERM stops the server" || bad "idempotent-stop" "still running"
+  if [[ $istopped -eq 1 ]]; then
+    # §14/§17b's own pattern clears SRV here unconditionally, which is
+    # exactly how an orphan survives past this leg: the EXIT trap only
+    # kills a non-empty $SRV, so a still-running process that this loop
+    # gave up on would otherwise keep the port bound for the NEXT run of
+    # this whole script. Force it dead right here instead of trusting the
+    # trap -- the bad-verdict line above already told the reader SIGTERM
+    # alone did not work.
+    kill -9 "$SRV" 2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  fi
   SRV=""
 else
   bad "idempotent-compile" "$(printf '%s' "$ip_out" | head -1)"
