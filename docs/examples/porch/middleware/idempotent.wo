@@ -1,0 +1,105 @@
+-- porch/middleware/idempotent.wo — idempotency middleware backed by @table.
+-- Stores successful responses keyed by Idempotency-Key header (+ optional body digest).
+-- Replays stored response on subsequent requests with same key.
+-- Iteration 1 of the porch track.
+
+use time
+use http
+
+-- Idempotent middleware: before (check/replay) + after (store on miss).
+-- Key composition: "idem:${header}" or "idem:${header}:${sha256(method|path|body)}"
+-- Only stores status, body, content-type (allowlist). Never replays Set-Cookie, Date, etc.
+-- In-flight collision: returns 409 if key exists but response not yet stored.
+-- Lazy expiry: deletes expired keys on access (TTL default 24h).
+pub class Idempotent {
+  key_header:   Text        -- e.g., "Idempotency-Key"
+  include_body: Bool = true -- digest method+path+body into key
+  ttl:          Int = 86_400_000_000  -- 24h in µs
+
+  fn before(mut req: Req) -> ?Resp {
+    let header_val = req.headers[self.key_header];
+    if header_val == nil { return nil; }
+
+    let key = idempotent_key(self, header_val, req);
+    let now = time.ticks();
+
+    -- Look up existing key
+    let hits = from k in IdempotencyKey where k.key == key take 1 select k;
+
+    if len(hits) > 0 {
+      let stored = hits[0];
+      -- Check expiry
+      if now - stored.created_at > self.ttl {
+        -- Expired: delete and treat as miss
+        delete stored;
+      } else {
+        -- Check if response is stored (created_at within last 10s = in-flight)
+        if now - stored.created_at < 10_000_000 {
+          -- In-flight collision: another request with same key is being processed
+          let r = Resp { status: 409, headers: {}, body: "{\"error\":\"idempotency key in flight\"}" };
+          set_header(r, "content-type", "application/json");
+          return r;
+        }
+        -- Valid stored response: decode and replay
+        let resp_json = stored.response;
+        -- Parse JSON response (status, headers, body)
+        let resp = json.decode(resp_json) as IdempotentStoredResp;
+        if resp != nil {
+          let r = Resp { status: resp.status, headers: resp.headers, body: resp.body };
+          return r;
+        }
+        -- Corrupted stored response: delete and fall through to miss
+        delete stored;
+      }
+    }
+
+    -- Miss: mark request so after() knows to store the response
+    req.ctx["idem_miss"] = "true";
+    req.ctx["idem_key"] = key;
+    return nil;
+  }
+
+  fn after(req: Req, mut resp: Resp) {
+    -- Only store on successful responses (2xx/3xx) and only if before() was a miss
+    if req.ctx["idem_miss"] != "true" { return; }
+    if resp.status < 200 { return; }
+    if resp.status >= 400 { return; }
+
+    let key = req.ctx["idem_key"];
+    if key == nil { return; }
+
+    -- Allowlist headers for replay: only content-type
+    let hdrs: map<Text, Text> = {};
+    let ct = resp.headers["content-type"];
+    if ct != nil { hdrs["content-type"] = ct; }
+
+    let stored = IdempotentStoredResp {
+      status:  resp.status,
+      headers: hdrs,
+      body:    resp.body
+    };
+    let resp_json = json.encode(stored);
+
+    let now = time.ticks();
+    try insert IdempotencyKey { key: key, response: resp_json, created_at: now } catch (e) nil;
+  }
+}
+
+-- Internal typedef for JSON decode of stored response
+typedef IdempotentStoredResp = {
+  status:  Int,
+  headers: map<Text, Text>,
+  body:    Text
+}
+
+-- Key composition function
+pub fn idempotent_key(self: Idempotent, header_val: Text, req: Req) -> Text {
+  if self.key_header == "" { return "idem:${header_val}"; }
+  if self.include_body == false { return "idem:${self.key_header}:${header_val}"; }
+  -- Include body digest: sha256(method|path|body)
+  let digest_input = "${req.method}|${req.path}|${req.body}";
+  let digest = sha256(bytes_of_text(digest_input));
+  -- Take first 16 chars of hex digest for brevity (base64_encode of bytes)
+  let short_digest = base64_encode(bytes_slice(digest, 0, 16));
+  return "idem:${self.key_header}:${header_val}:${short_digest}";
+}
