@@ -508,6 +508,72 @@ static void test_compact_crash_battery(void) {
     }
 }
 
+/* databasev2 2 (5c): the keys-resident round trip. A row is inserted, its
+ * record committed, its PAYLOAD DROPPED from the slab, and then read back out
+ * of the log by offset — including its heap-valued column, which is the case
+ * that would silently return garbage if the materialisation were wrong. */
+static const uint8_t keys_kinds[] = {WO_K_SCALAR, WO_K_TEXT};
+static const wo_classdesc KEYS_CLASSES[] = {
+    {.name = 0, .flags = WO_CLASSF_RESIDENT_KEYS, .field_cnt = 2, .kinds = keys_kinds},
+};
+
+static void test_keys_resident_round_trip(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysres.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt;        /* the loop a borrow reads the WAL through */
+    rt.wal = &w;
+    rt.db = &db;
+    const char *msg = "";
+
+    T_CHECK(wo_table_is_keys_resident(&db, 0) == 1);
+
+    wo_str *s = wo_str_new(&rt, "hello", 5);
+    uint64_t vals[2] = {4242, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+
+    /* the offset this record WILL occupy — valid because the commit below
+     * succeeds; a failed commit is fatal since databasev2 4 */
+    uint64_t off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* while still resident, the row reads out of the slab */
+    db_row *res = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(res != NULL && res->slots[0] == 4242);
+    wo_row_release(&db, 0, res);
+
+    /* drop the payload: slot freed, id kept, indexes untouched, still live */
+    uint64_t before = db.tables[0].count;
+    T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
+    T_CHECK(db.tables[0].count == before); /* still LIVE, only unbacked */
+
+    /* and now it comes back out of the LOG */
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_CHECK(r->id == id);
+    T_CHECK(r->slots[0] == 4242);
+    wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 5 && memcmp(back->data, "hello", 5) == 0);
+    wo_row_release(&db, 0, r);
+
+    /* the scratch is reusable: a second borrow must succeed, which it cannot
+     * if release failed to clear the busy flag */
+    db_row *again = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(again != NULL && again->slots[0] == 4242);
+    wo_row_release(&db, 0, again);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -927,6 +993,7 @@ int main(void) {
     test_roundtrip_replay();
     test_commit_failure_detected();
     test_compact_shortens_and_replays_equal();
+    test_keys_resident_round_trip();
     test_stale_compact_temp_is_removed();
     test_should_compact_policy();
     test_compact_refuses_with_staged_records();

@@ -217,6 +217,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     VM.rt.db = &DB;
+    DB.rt = &VM.rt; /* databasev2 2 (5c): the loop a borrow reads the WAL through */
     const char *data_dir = getenv("WO_DATA");
     if (data_dir && data_dir[0]) {
         char wal_path[512];

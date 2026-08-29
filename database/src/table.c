@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "cont.h"
+#include "gc.h"   /* databasev2 2 (5c): VM-side drops for materialised rows */
+#include "wal.h" /* databasev2 2 (5c): a keys-resident borrow reads the log */
 
 /* ---- engine-owned value encode / free / decode ------------------------- */
 
@@ -729,14 +731,57 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
 }
 
 db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **msg) {
-    (void)msg;
-    /* databasev2 2: only the resident backing exists so far. When
-     * `resident: keys` storage lands, this is where hvals is read as an
-     * OFFSET (it is already a uint64 holding slot+1, so offset+1 fits the
-     * same field) and 5b's wo_wal_read_row_at fills the table's scratch.
-     * Keeping the seam here, unused, is what makes that a local change
-     * instead of another sweep of every reader. */
-    return wo_row_ptr(db, class_id, id);
+    /* Fully-resident tables: exactly today's lookup, and releasing is a no-op.
+     * The hot path pays one predicate. */
+    if (!wo_table_is_keys_resident(db, class_id)) return wo_row_ptr(db, class_id, id);
+
+    /* Keys-resident: the id map holds the record's LOG OFFSET (off + 1), not a
+     * slot, so the row is materialised into the table's scratch. */
+    db_table *t = &db->tables[class_id];
+    if (!t->row_size) return NULL;
+    uint64_t o1 = hget(t, id);
+    if (!o1) return NULL;
+    if (!db->rt || !db->rt->wal) {
+        /* a keys-resident table cannot exist without a log to read from; the
+         * loader refuses the annotation outright, so this is a defensive arm */
+        if (msg) *msg = "resident: keys table without a write-ahead log";
+        return NULL;
+    }
+    if (t->scratch_busy) {
+        /* One scratch per TABLE, so two live borrows on the same table would
+         * hand back the same buffer. The unique shadow borrows one candidate
+         * at a time, which is why per-table is enough — but say so rather than
+         * corrupting the first borrow silently. */
+        if (msg) *msg = "nested borrow on one table";
+        return NULL;
+    }
+    if (t->scratch_cap < t->row_size) {
+        uint8_t *nb = realloc(t->scratch, t->row_size);
+        if (!nb) {
+            if (msg) *msg = "out of memory";
+            return NULL;
+        }
+        t->scratch = nb;
+        t->scratch_cap = t->row_size;
+    }
+    db_row *r = (db_row *)t->scratch;
+    uint32_t got_cid = 0;
+    uint64_t got_id = 0;
+    if (wo_wal_read_row_at((wo_wal *)db->rt->wal, db, db->rt, o1 - 1, &got_cid, &got_id,
+                           r->slots, msg) != 0)
+        return NULL;
+    if (got_cid != class_id || got_id != id) {
+        /* the offset pointed at someone else's record — a compaction that
+         * moved records without rebuilding this map would land here, which is
+         * exactly the obligation recorded at wo_wal_compact */
+        if (msg) *msg = "log offset does not hold the expected row";
+        return NULL;
+    }
+    r->id = id;
+    r->class_id = class_id;
+    r->flags = 0;
+    t->scratch_busy = 1;
+    return r;
 }
 
 void wo_row_release(wo_db *db, uint32_t class_id, db_row *r) {
@@ -744,7 +789,13 @@ void wo_row_release(wo_db *db, uint32_t class_id, db_row *r) {
     db_table *t = &db->tables[class_id];
     if (!t->scratch_busy || (uint8_t *)r != t->scratch) return; /* slab-backed */
     const wo_classdesc *c = &db->classes[class_id];
-    for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], r->slots[i]);
+    /* These are VM values, not engine values. wo_wal_read_row_at is the
+     * out-gate — it always COPIES, producing fresh runtime allocations — so
+     * they must be dropped through the runtime. Freeing them with the engine's
+     * allocator (as this did while the materialising path was still a stub)
+     * is a bad-free the moment a keys-resident row is actually read back. */
+    if (db->rt)
+        for (uint32_t i = 0; i < c->field_cnt; i++) wo_drop_kind(db->rt, c->kinds[i], r->slots[i]);
     t->scratch_busy = 0;
 }
 
@@ -1032,6 +1083,38 @@ int wo_row_has_referrers(wo_db *db, uint32_t class_id, uint64_t id) {
             }
         }
     }
+    return 0;
+}
+
+int wo_table_is_keys_resident(const wo_db *db, uint32_t class_id) {
+    if (class_id >= db->class_cnt) return 0;
+    return (db->classes[class_id].flags & WO_CLASSF_RESIDENT_KEYS) != 0u;
+}
+
+int wo_row_drop_payload(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off) {
+    if (class_id >= db->class_cnt) return -1;
+    db_table *t = &db->tables[class_id];
+    if (!t->row_size) return -1;
+    uint64_t s1 = hget(t, id);
+    if (!s1) return -1;
+    uint32_t g = (uint32_t)(s1 - 1);
+    db_row *r = slot_row(t, g);
+    /* the values are engine-owned; the log holds their bytes now */
+    const wo_classdesc *c = &db->classes[class_id];
+    for (uint32_t i = 0; i < c->field_cnt; i++) db_val_free(c->kinds[i], r->slots[i]);
+    t->bitmap[g >> 6] &= ~(1ull << (g & 63));
+    /* the id STAYS, now pointing at the log rather than at a slab. No
+     * idx_remove_row and no count change: the row is live, only its backing
+     * moved. */
+    if (hput(t, id, wal_off + 1) != 0) return -1;
+    if (t->free_cnt == t->free_cap) {
+        uint32_t ncap = t->free_cap ? t->free_cap * 2 : 16;
+        uint32_t *nf = realloc(t->free_slots, (size_t)ncap * 4);
+        if (!nf) return 0; /* slot simply not recycled; the bitmap still frees it */
+        t->free_slots = nf;
+        t->free_cap = ncap;
+    }
+    t->free_slots[t->free_cnt++] = g;
     return 0;
 }
 

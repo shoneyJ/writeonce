@@ -133,6 +133,14 @@ typedef struct db_table {
 } db_table;
 
 typedef struct wo_db {
+    /* databasev2 2 (5c): the runtime this store belongs to, so a borrow can
+     * reach the WAL. wo_rt already carries `db` and `wal` as opaque handles,
+     * so this closes the loop without threading a wal pointer through
+     * wo_row_borrow's eleven call sites — which is the whole reason 5c is one
+     * accessor rather than eleven rewrites. NULL in test binaries and with
+     * durability off; a `resident: keys` table cannot exist in either case,
+     * because it has no log to read rows back from. */
+    wo_rt *rt;
     const wo_classdesc *classes;
     uint32_t class_cnt;
     uint32_t shard, nshards; /* S of N; ids interleave S+1, S+1+N, … */
@@ -159,6 +167,35 @@ int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
 /* Remove: free the row's engine-owned field values, clear the slot, recycle
  * it. 0 ok, -1 no such row. */
 int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
+
+/* databasev2 2 (5c): drop a row's PAYLOAD while keeping it live.
+ *
+ * The operation the plan recorded as missing. For a `resident: keys` table the
+ * row's bytes live in the log, not in a slab: this frees the slot and its
+ * engine-owned values, then re-points the id map at [wal_off] (stored as
+ * off + 1, reusing the same 0-is-empty trick the slot encoding uses — a table
+ * is wholly `all` or wholly `keys`, so the interpretation is per-table and
+ * never ambiguous).
+ *
+ * What it deliberately does NOT do, and why:
+ *   - it does not touch the secondary indexes. They store row IDS, not slots
+ *     (see db_ibucket), so they are already indirect through the id map and
+ *     stay correct across this.
+ *   - it does not decrement `count`. The row is still LIVE; only its backing
+ *     moved.
+ *   - it does not remove the id. The id is how the row is found afterwards.
+ *
+ * [wal_off] must be the offset of a record whose commit succeeded. Since
+ * databasev2 4 made a failed commit fatal, no execution can reach here with an
+ * offset that never became durable — which is what wo_wal_next_offset's
+ * contract asks for, now guaranteed by process death rather than by an inline
+ * check the deferred barrier no longer allows.
+ *
+ * 0 ok, -1 unknown class/row. */
+int wo_row_drop_payload(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off);
+
+/* databasev2 2 (5c): is this table's row data in the log rather than in slabs? */
+int wo_table_is_keys_resident(const wo_db *db, uint32_t class_id);
 
 /* iteration 9b FK restrict: 1 if some row in some class holds a non-nullable
  * `ref` to [class_id] equal to [id] — i.e. deleting this row would dangle a
