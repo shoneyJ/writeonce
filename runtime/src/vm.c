@@ -227,7 +227,13 @@ static int wo_vm_adopt(wo_vm *vm) {
      * (see db.c), so a drain must never leave a record behind. */
     if (staged) {
         wo_wal *cw = (wo_wal *)vm->rt.wal;
-        if (cw) wo_wal_commit_fatal(cw, staged);
+        if (cw) {
+            wo_wal_commit_fatal(cw, staged);
+            /* databasev2 2 (5c): NOW the batch's offsets are readable, so any
+             * keys-resident payload staged behind this barrier can be dropped.
+             * Before the barrier those offsets pread zeros. */
+            wo_db_flush_drops((wo_db *)vm->rt.db, cw);
+        }
     }
     while (rhead) {
         wo_envelope *rn = rhead->next;

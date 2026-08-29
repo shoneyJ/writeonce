@@ -76,6 +76,15 @@ typedef struct wo_wal {
     /* databasev2 3: what compaction actually did, reported under WO_WAL_STATS.
      * The PAUSE is the number the spec refused to assume — compaction is
      * stop-the-world, so its duration is the cost being weighed. */
+    /* databasev2 2 (5c): rows whose payload may be dropped ONCE the barrier
+     * they are staged behind succeeds. A keys-resident row cannot be dropped
+     * at append time: with group commit the record is still in the staging
+     * buffer, so its offset would pread zeros. Recorded here and performed by
+     * wo_db_flush_drops after the commit — the same shape as the drain's held
+     * replies, and for the same reason. If the process dies first the list
+     * dies with it, which is correct: nothing was dropped and nothing lost. */
+    struct wo_wal_pend { uint32_t cid; uint64_t id; uint64_t off; } *pend;
+    size_t pend_len, pend_cap;
     uint64_t stat_compactions;
     uint64_t stat_compact_us_max;
     uint64_t stat_compact_us_total;
@@ -138,6 +147,14 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
  * no syscall. 0 ok, WO_WAL_ERR_WRITE / WO_WAL_ERR_SYNC on failure (the
  * batch stays staged: a failed commit consumes nothing). */
 int wo_wal_commit(wo_wal *w);
+
+/* databasev2 2 (5c): note a payload that may be dropped after the next commit.
+ * 0 ok, -1 out of memory (the row simply stays resident, which is safe). */
+int wo_wal_pend_drop(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off);
+
+/* databasev2 2 (5c): perform every pending drop. Call ONLY after a commit has
+ * succeeded — that is what makes the recorded offsets readable. */
+void wo_db_flush_drops(wo_db *db, wo_wal *w);
 
 /* databasev2 3: the checkpoint trigger, as a PURE decision so it can be tested
  * without a store — which is the only way a policy like this gets tested at all.

@@ -330,7 +330,29 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
     return 0;
 }
 
+int wo_wal_pend_drop(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off) {
+    if (w->pend_len == w->pend_cap) {
+        size_t nc = w->pend_cap ? w->pend_cap * 2 : 16;
+        struct wo_wal_pend *np = realloc(w->pend, nc * sizeof *np);
+        if (!np) return -1; /* the row stays resident: safe, just not dropped */
+        w->pend = np;
+        w->pend_cap = nc;
+    }
+    w->pend[w->pend_len].cid = cid;
+    w->pend[w->pend_len].id = id;
+    w->pend[w->pend_len].off = off;
+    w->pend_len++;
+    return 0;
+}
+
+void wo_db_flush_drops(wo_db *db, wo_wal *w) {
+    for (size_t i = 0; i < w->pend_len; i++)
+        (void)wo_row_drop_payload(db, w->pend[i].cid, w->pend[i].id, w->pend[i].off);
+    w->pend_len = 0;
+}
+
 void wo_wal_close(wo_wal *w) {
+    free(w->pend);
     if (w->fd >= 0) close(w->fd);
     free(w->path);
     free(w->buf);
@@ -753,6 +775,16 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
                                            | ((uint32_t)payload[3] << 16)
                                            | ((uint32_t)payload[4] << 24)
                                      : 0u;
+        /* databasev2 2 (5c): a keys-resident row must end boot pointing at the
+         * LOG, not at a slab. The record is applied normally (so indexes and
+         * uniqueness are built exactly as for any other table) and then its
+         * payload is dropped, leaving the id map holding THIS record's offset.
+         * For an update the later record wins, because each apply overwrites
+         * the map in order — which is the same rule replay already follows. */
+        uint8_t rec_kind = len >= 1u ? payload[0] : 0u;
+        uint64_t rec_id = 0;
+        if (len >= 13u)
+            for (int b = 0; b < 8; b++) rec_id |= (uint64_t)payload[5 + b] << (8 * b);
         int rc = apply_record(db, payload, len);
         free(payload);
         if (rc != 0) {
@@ -760,6 +792,9 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
             if (rc == -2 && volatile_cid) *volatile_cid = rec_cid;
             return rc == -2 ? -2 : -1;
         }
+        if ((rec_kind == WO_WAL_INSERT || rec_kind == WO_WAL_UPDATE) && rec_id &&
+            wo_table_is_keys_resident(db, rec_cid))
+            (void)wo_row_drop_payload(db, rec_cid, rec_id, off);
         off += 8u + len + 4u;
         applied++;
     }

@@ -70,8 +70,16 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
              * neither this barrier nor the compaction check below.
              *
              * Failure is fatal, not a trap: the row is already in RAM. */
+            /* databasev2 2 (5c): the offset this record WILL occupy. Taken
+             * BEFORE the append, recorded as pending, and acted on only after
+             * the commit below — a keys-resident payload dropped any earlier
+             * would leave an offset whose bytes are still in the staging
+             * buffer. */
+            uint64_t koff = wo_wal_next_offset(w);
             if (wo_wal_append_insert(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+            if (wo_table_is_keys_resident(db, cid)) (void)wo_wal_pend_drop(w, cid, id, koff);
             wo_wal_commit_fatal(w, 1);
+            wo_db_flush_drops(db, w);
             maybe_compact(db, w);
         }
         R[A] = id;
@@ -259,7 +267,12 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
              * already in RAM; of the three verbs only insert could undo
              * itself, so continuing means RAM ahead of disk. One rule: once a
              * statement has mutated RAM, the outcomes are durable or death. */
+            uint64_t koff = wo_wal_next_offset(w);
             if (wo_wal_append_insert(w, db, q->cid, id) != 0) wo_wal_stage_fatal(w);
+            /* recorded, not performed: this batch's barrier runs in the drain
+             * (vm.c), and only then are these offsets readable */
+            if (wo_table_is_keys_resident(db, q->cid))
+                (void)wo_wal_pend_drop(w, q->cid, id, koff);
         }
         q->result = id;
         break;
