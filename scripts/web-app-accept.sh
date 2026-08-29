@@ -484,6 +484,34 @@ sleep 0.5
 expect "product survives a restart (WAL)" "$(hit GET /products)" 200 '"name":"mug"'
 kill -TERM "$SRV" 2>/dev/null; SRV=""
 
+# ---- 16. porch-store task 2: the key pool counts 1 then 2 ----
+# A flat copy of porch (manifest stripped, so it compiles as one ordinary
+# multi-file program with a real entry point rather than the manifest's
+# library build) plus a tiny driver dropped into middleware/ — same
+# folder as keypool.wo, so it sees make_pool/pool_count with no `use`
+# needed, matching the rest of the middleware package's own convention.
+KP="$W/keypool-check"
+cp -r "$ROOT/docs/examples/porch" "$KP"
+rm -f "$KP/wo.toml"
+rm -rf "$KP/target"
+cat >"$KP/middleware/kptest_main.wo" <<'WOEOF'
+fn main() -> Int {
+  let pool = make_pool(4);
+  let v1 = pool_count(pool, "ip:test", 5, 60_000_000);
+  let v2 = pool_count(pool, "ip:test", 5, 60_000_000);
+  print("${v1.count} ${v2.count}");
+  return 0;
+}
+WOEOF
+if kp_out="$("$WOC" --emit "$KP" -o "$KP/kptest.wob" 2>&1)"; then
+  kp_vm="$("$WOVM" "$KP/kptest.wob" 2>&1)"
+  [[ "$kp_vm" == "1 2" ]] \
+    && ok "keypool: two sequential counts return 1 then 2" \
+    || bad "keypool" "expected '1 2', got '$kp_vm'"
+else
+  bad "keypool" "compile: $(printf '%s' "$kp_out" | head -1)"
+fi
+
 echo
 printf 'web-app-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
 [[ $fail -eq 0 ]]

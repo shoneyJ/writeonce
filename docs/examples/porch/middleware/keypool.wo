@@ -1,0 +1,166 @@
+-- porch/middleware/keypool.wo — the key pool: an actor per shard, picked by
+-- hash of the key, that serializes rate-limit counting (this file, kind 1)
+-- and idempotency begin (Task 4, kind 2) against the @table rows in
+-- store.wo. This is the only file that knows a pool exists — the
+-- middlewares call through it and never touch RateLimitCounter or
+-- IdempotencyKey themselves.
+--
+-- `call`'s reply crosses the actor boundary as a single copyable scalar
+-- (WO-E226 — no class, no Text can ride it). The exact count is decided
+-- atomically inside `receive`; `pool_count` packs it with the window's
+-- remaining time into one Int and unpacks that into the `Verdict` callers
+-- actually read, so the packing never leaks outside this file.
+
+use time
+use http
+
+-- To a pool actor. kind 1 = count (this file); kind 2 = begin (Task 4
+-- fills in the arm — the fields below are already shaped for it: the
+-- bare idempotency key travels in `key`, the body digest in `digest`,
+-- and the actor runs `handler` against `req` itself so a duplicate waits
+-- in the mailbox rather than needing a held reply).
+class PoolMsg {
+  kind:    Int
+  key:     Text
+  limit:   Int     -- count: max requests per window
+  window:  Int     -- count: window size, µs
+  digest:  Text     -- begin: sha256(method|path|body), Task 4
+  req:     Req      -- begin: the request, Task 4
+  handler: Handler  -- begin: the route's handler, invoked inside receive, Task 4
+}
+
+-- What the limiter reads back from a count. `allowed` and `limit` are
+-- filled in by `pool_count` — the caller already knows `limit`, it is the
+-- one it sent. `count` and `reset_at` come from the actor.
+class Verdict {
+  allowed:  Bool
+  count:    Int
+  limit:    Int
+  reset_at: Int -- wall-clock ms (time.now()) when this key's window resets
+}
+
+-- PoolMsg requires `req`/`handler` on every construction (an actor
+-- message's fields are all required, like RoomMsg's `writer` in
+-- docs/examples/chat/main.wo). A count message has no request to run, so
+-- it fills those two with an inert placeholder — same shape as chat's
+-- dummy_writer() for RoomMsg's shutdown message.
+class NullHandler {
+  fn handle(req: Req) -> Resp {
+    return Resp { status: 500, headers: {}, body: "" };
+  }
+}
+
+fn dummy_req() -> Req {
+  return Req {
+    method: "", path: "", params: {}, query: {}, headers: {},
+    body: "", principal: "", ctx: {}, conn: 0 - 1
+  };
+}
+
+-- One actor per shard. Reads the row for the key, decides, and writes the
+-- new count by assigning to the row's field — that writes through and
+-- maintains indexes; never delete-then-insert as an update.
+class KeyActor {
+  fn receive(msg: PoolMsg) -> Int {
+    if msg.kind == 2 {
+      -- Task 4: look up the idempotency key, replay on a digest match,
+      -- refuse on a mismatch, or run msg.handler and store the result.
+      -- Placeholder until then.
+      return 0 - 1;
+    }
+
+    -- kind 1: count.
+    let now = time.ticks();
+    let hits = from c in RateLimitCounter where c.key == msg.key take 1 select c;
+
+    if len(hits) == 0 {
+      insert RateLimitCounter { key: msg.key, count: 1, window: now };
+      return pool_pack(1, msg.window);
+    }
+
+    let row = hits[0];
+    if now - row.window > msg.window {
+      -- the window fully elapsed: prune the stale row rather than reset it
+      -- in place — resetting keeps one row forever for every key ever
+      -- seen, an unbounded leak for IP-keyed limiting. There is no
+      -- sweeper; this lazy expiry on access is it.
+      delete row;
+      insert RateLimitCounter { key: msg.key, count: 1, window: now };
+      return pool_pack(1, msg.window);
+    }
+
+    row.count = row.count + 1;
+    let remaining_us = row.window + msg.window - now;
+    if remaining_us < 0 { remaining_us = 0; }
+    return pool_pack(row.count, remaining_us / 1000);
+  }
+}
+
+-- Packs (count, remaining-ms-in-window) into one Int: count * 1e9 +
+-- remaining_ms, remaining_ms clamped to stay under 1e9 (~11.5 days —
+-- far past any realistic rate-limit window). That clamp only blurs the
+-- advisory reset header on an absurdly long window; it never touches the
+-- count, which is the correctness-critical half.
+fn pool_pack(count: Int, remaining_ms: Int) -> Int {
+  let r = remaining_ms;
+  if r < 0 { r = 0; }
+  if r >= 1_000_000_000 { r = 999_999_999; }
+  return count * 1_000_000_000 + r;
+}
+
+-- One actor address per slot. `multi actor PoolMsg` does not parse (a
+-- `multi`'s element type is one token) — chat/main.wo's RoomRef wraps an
+-- actor handle in a one-field class for exactly this reason, mirrored
+-- here as PoolSlot.
+class PoolSlot {
+  a: actor PoolMsg
+}
+
+class Pool {
+  actors: multi PoolSlot
+}
+
+-- Spawns n identical actors and returns the pool. n is a capacity knob:
+-- too small and a hot key's mailbox saturates under load (a `call` trap,
+-- answered 503 by the middleware — never a silent bypass).
+pub fn make_pool(n: Int) -> Pool {
+  let actors: multi PoolSlot = [];
+  let i = 0;
+  while i < n {
+    push(actors, PoolSlot { a: spawn KeyActor {} });
+    i = i + 1;
+  }
+  return Pool { actors: actors };
+}
+
+-- Hashes a key to one of the pool's actors — sum of bytes modulo n, a
+-- shard selector, not a security hash. The same key always selects the
+-- same actor, which is the entire per-key serialization mechanism.
+pub fn pool_select(pool: Pool, key: Text) -> actor PoolMsg {
+  let sum = 0;
+  let i = 0;
+  while i < len(key) {
+    sum = sum + byte_at(key, i);
+    i = i + 1;
+  }
+  let idx = sum % len(pool.actors);
+  return pool.actors[idx].a;
+}
+
+-- The count accessor every later task's limiter calls. Unpacks the
+-- actor's scalar reply into the Verdict the limiter reads.
+pub fn pool_count(pool: Pool, key: Text, limit: Int, window: Int) -> Verdict {
+  let a = pool_select(pool, key);
+  let raw = call(a, PoolMsg {
+    kind: 1, key: key, limit: limit, window: window,
+    digest: "", req: dummy_req(), handler: NullHandler {}
+  });
+  let count = raw / 1_000_000_000;
+  let remaining_ms = raw % 1_000_000_000;
+  return Verdict {
+    allowed:  count <= limit,
+    count:    count,
+    limit:    limit,
+    reset_at: time.now() + remaining_ms
+  };
+}
