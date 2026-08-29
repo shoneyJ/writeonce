@@ -2,7 +2,7 @@
 track: databasev2
 iteration: "3"
 was_language_iteration: "32"
-status: in-progress
+status: done
 chain: 6
 ---
 
@@ -67,6 +67,72 @@ chain: 6
 > leaves a 986 614-byte log; 20 000 updates take it to **2 590 262 bytes with the
 > same live rows** (2.6× history for no data), and boot+verify on that store is
 > **155 ms**.
+
+## Progress — landed 2026-08-29
+
+| # | Task | State |
+| --- | --- | --- |
+| 1 | `wo_wal_compact` — rewrite, fsync, rename, fsync parent, reopen | ✅ `8ea510d` |
+| 2 | a stale compaction temp is removed at open | ✅ `8bfbd4b` |
+| 3 | the trigger (pure decision + env knobs) and the ordering guard | ✅ `6dbcb9a` |
+| 4 | `kill -9` DURING compaction — 40 rounds, mutation-proven | ✅ `9b283d5` |
+| 5 | measure space, boot and the stop-the-world pause | ✅ `d87f65a` |
+| 6 | closeout | ✅ this change |
+
+### Measured
+
+| | checkpointing off | checkpointing on |
+| --- | --- | --- |
+| WAL used | 1 962 358 B | **907 094 B** |
+| boot | 114 ms | **64 ms** |
+
+**2.16× space reclaimed, 1.78× faster boot**, stop-the-world pause **2 651 µs**
+against a stated 50 ms budget. Full details, including the pause's scaling, are
+in [`perf-targets.md`](../../plan/perf-targets.md) §7.
+
+### Two bugs the work found, both mine
+
+**Wiring only the drain left `WO_SHARDS=1` never compacting** — its log grew
+forever (536 KB where the multi-shard run held 446 KB), because a statement on
+the owner shard never enters that drain. Both write paths now check.
+
+**The dump was 8× slower than it needed to be**, flushing through the
+committing path and so paying one `fdatasync` per 256 records for durability
+that is worthless before the rename. One final barrier took the pause from
+107 649 µs to 13 212 µs on a 2 MB live set — ~22 MB/s to ~181 MB/s.
+
+## Acceptance Criteria
+
+Met:
+
+- **Given** an aged store, **when** it is compacted, **then** disk is reclaimed.
+  ✅ 2.16× on the full campaign, asserted rather than merely recorded — the leg
+  fails if the log is not smaller with checkpointing on.
+- **Given** the same store, **when** it boots, **then** replay is bounded by the
+  live set rather than by history. ✅ 114 → 64 ms.
+- **Given** `kill -9` at ANY instant during a checkpoint, **when** the process
+  restarts, **then** recovery produces the same consistent store as if the
+  checkpoint had never started, with no acknowledged write lost. ✅ 40 rounds
+  per run, 10 consecutive clean runs, and **proven to have teeth**: against the
+  design's rejected alternative (in-place rewrite instead of `rename`) the
+  battery fails every run with the log destroyed.
+- **Given** the iteration-22 replay numbers, **then** a before/after delta is
+  recorded. ✅ `perf-targets.md` §7.
+- **Given** writes arriving while a checkpoint runs, **then** the ack contract
+  holds. ✅ compaction runs only where nothing is staged, asserted by a test
+  that stages and requires refusal; `wo_wal_compact` also refuses as a backstop.
+
+Outstanding:
+
+- **The `resident: keys` offset map.** Compaction moves every record, so it
+  invalidates every WAL offset [iteration 2](02-table-storage-modes.md) stores.
+  The compactor must rebuild that map as it writes. **Nothing fails today**
+  because iteration 2's storage half is unimplemented — which is exactly why the
+  obligation is written at the compactor in `wal.c`, where the next implementer
+  hits it, rather than only in a spec they may not read.
+- **The pause is O(live rows).** At ~181 MB/s a 1 GB live set implies ~5.5 s,
+  past any interactive budget. Incremental or forked copying was deliberately
+  not bought in advance; this is the number to buy it against.
 
 ## Goals
 

@@ -50,6 +50,59 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-29 — databasev2 3, WAL checkpoint (the chain's last link)
+
+**Implemented last time (2026-08-29):** compaction. The log used to grow forever
+— nothing removed superseded records, so boot replayed all history. It is now
+rewritten as one record per live row into a temp file and swapped in with
+`rename`. Six tasks, brainstormed and spec'd first
+([spec](../superpowers/specs/2026-08-28-wal-checkpoint-design.md) ·
+[plan](../superpowers/plans/2026-08-28-wal-checkpoint.md)).
+
+**Key findings (measured, not asserted):** **2.16× space reclaimed**
+(1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs**
+against a stated 50 ms budget. Reading `.dev/reference/postgresql` was what made
+the design defensible rather than lazy: **Postgres never compacts its WAL**,
+because its records are page deltas and a compacted redo log is not a store —
+hence heap files, a control file, a redo pointer, a second recovery source and a
+separate checkpointer process. Ours are **full row images**, so a compacted log
+*is* a complete store, and all of that machinery disappears. What was worth
+porting is the ordering discipline — publish the switch atomically and last — and
+one `rename` provides it.
+
+**Learned — two bugs of mine that measurement found, not review:** wiring the
+trigger only into the drain left **`WO_SHARDS=1` never compacting**, its log
+growing forever (536 KB where multi-shard held 446 KB), because a statement on
+the owner shard never enters that drain. And the dump was **8× slower than
+necessary**, flushing through the committing path and paying one `fdatasync` per
+256 records for durability that is worthless before the rename — one final
+barrier took a 2 MB dump from 107 649 µs to 13 212 µs, ~22 MB/s to ~181 MB/s.
+Separately, the crash battery's *first* version failed on correct code ~1 run in
+3: it acked deletes after committing them, so a kill in between made it demand a
+row the engine was right to remove. Deletes now announce intent first.
+
+**Dependencies unblocked:** every link in the concurrency + fiber chain has now
+landed its planned work — stage 3 → 22 → 24 (absorbing 31 + 34) → 40 →
+databasev2 4 part A → databasev2 3. **Not "complete", precisely:** chain 5 stays
+`in-progress` because databasev2 4's part B was never done, and its premise was
+invalidated by part A rather than satisfied. Nothing in the chain is blocked on
+anything else in it.
+
+**Next steps:** the honest queue is (1) databasev2 2's outstanding 5c/5d, whose
+`resident: keys` half is unimplemented and now carries a recorded obligation —
+compaction invalidates every WAL offset it stores, so the compactor must rebuild
+that map; (2) databasev2 4 **part B**, whose premise was invalidated by part A
+and which needs re-brainstorming rather than starting; (3) the O(live rows)
+pause, ~5.5 s at a 1 GB live set, which is the number an incremental checkpoint
+must be bought against.
+
+**`.dev/reference` used:** `postgresql` — `xlog.c` (`CreateCheckPoint`, segment
+recycling), `checkpointer.c` (the time-or-volume trigger), and
+`controldata_utils.c`, which also corrected a prior exploration doc: Postgres
+updates its control file **in place with a CRC**, not by rename.
+
+---
+
 ### Landed 2026-08-28 — databasev2 4 part A, WAL group commit
 
 **Implemented last time (2026-08-28):** one durability barrier per drain
@@ -94,7 +147,8 @@ be re-brainstormed, not started.
 
 **Next steps:** either re-brainstorm part B against its corrected premise, or
 take chain 6 ([databasev2 3](databasev2/03-wal-checkpoint.md), WAL checkpoint),
-which now has the replay "before" it lacked. Two debts named rather than hidden:
+which now has the replay "before" it lacked. **(Superseded 2026-08-29: it
+landed.)** Two debts named rather than hidden:
 the abort path is not exercised (forcing a real `fdatasync` failure needs mount
 privileges), and single-shard concurrent batching needs the inline-path park —
 the same machinery part B would need.
@@ -465,7 +519,7 @@ that sequences its tasks. Read one, approve, then the next starts.
 | 31  | [Actor lifecycle](language-runtime-database/31-actor-lifecycle.md) | ✅ **LANDED 2026-08-27 inside 24** (directive 2026-08-23). All four mechanisms: `call`/reply with a typed scalar reply (`WO_B_CALL = 88`, WO-E226), bounded mailboxes (`WO_MAILBOX`, cap 1024, catchable `WO_T_ACTOR`), actor death that traps callers instead of hanging them, **`monitor` (89)** and **`time.after` (90)** — the reserved holes in `wob.h` are filled. A fifth mechanism it did not anticipate came out of proving the gate: the shutdown drain guarantee, [40](language-runtime-database/40-shutdown-drain-guarantee.md). Supervision trees stay out of v1 |
 | 24  | [chat: WebSocket workload](language-runtime-database/24-chat-websocket-workload.md) | ✅ **LANDED 2026-08-27** (absorbing 31 + 34) — all ten tasks; merged to master `ed5334d`. `just chat` **11 checks, 0 failures** at the full 1000-client soak: handshake, functional matrix on both `WO_IO` backends and on one shard, the soak, the fd invariant, the SIGTERM drain, `WO_MAILBOX=8` backpressure, ASan clean. Finishing its gate found a real runtime bug, split out as [40](language-runtime-database/40-shutdown-drain-guarantee.md) |
 | 23  | [io_uring group-commit](databasev2/04-io-uring-commit.md) | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
-| 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md)            | ⬜ last in chain, after 23 — disk reclamation + bounded replay (story written 2026-08-21) |
+| 32  | [WAL checkpoint](databasev2/03-wal-checkpoint.md) | ✅ **LANDED 2026-08-29 — the chain's last link.** Compaction rewrites the log as one record per live row and swaps it in with `rename`, so **recovery is completely unchanged** and crash safety comes from the filesystem rather than from code. **2.16× space reclaimed** (1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs** against a stated 50 ms budget. Read `.dev/reference/postgresql` for it: PG *never* compacts its WAL — its records are page deltas, so it needs heap files, a control file, a redo pointer and a separate process. Ours are full row images, so a compacted log IS a store, which deletes all of that. `kill -9` during compaction: 40 rounds/run, 10 clean runs, and **mutation-proven** — against in-place rewrite instead of `rename` the battery fails every time. Outstanding: the **`resident: keys` offset map** (compaction moves every record; the obligation is recorded at the compactor) and the O(live rows) pause, ~5.5 s at 1 GB, which is what an incremental design must be bought against |
 | 33  | [Single-file store](databasev2/07-single-file-db.md)            | ⬜ off-chain, small — `WO_DATA=<path>.db` file form; driver-only (story written 2026-08-22) |
 | 34  | [Crypto builtins](language-runtime-database/34-crypto-builtins.md)            | 🔄 **code landed** as 24's T1 (`d14fa9f`): `sha1`/`sha256`/`hmac_sha256`, ids 85–87 in `wob.h`, `runtime/src/crypto.c`, RFC/FIPS vectors 18/0, corpus pin. The 24 gate that once needed it is cleared. Frontmatter keeps `status: refine` only until 24's T10 closeout sets it to `done` |
 | 38  | [Content platform capabilities](language-runtime-database/38-content-platform-capabilities.md) | ⬜ off-chain, needs a spec — the two capability families no iteration owns, confirmed against `runtime/src/wob.h`: `fs` mutation verbs (six fs builtins, ids 40–45; `append` creates-if-absent, so nothing is ever replaced, truncated, deleted or renamed) and `net.connect` (ids 51–55 + 91–95, no connect, and no `connect()` anywhere in `runtime/src/` — so no OIDC/SMTP/object-store/webhook/federation). Driven by a `docs/examples/vault` content-collaboration workload, in 28's mould. New builtins from 96 (89/90 reserved for 31); no `.wob` bump (`WOB_VERSION 6u`, last moved by 36). Story written 2026-08-26 from the "can it build a Nextcloud?" ask |
@@ -738,7 +792,7 @@ the language arc as v1 history.
 | --- | --- | --- |
 | 1 | [RAM ceiling: measure the breaking point](databasev2/01-ram-ceiling-measurement.md) | ⬜ **first, and startable today** — nobody here can say what happens at 90% RAM. Curve not cliff: swap onset, latency departure, the three exits (checked trap / swap thrash / OOM killer), and `kill -9` durability *at exhaustion*. Output is `perf-targets.md` + baseline rows, not prose |
 | 2 | [`@table` storage modes](databasev2/02-table-storage-modes.md) | ⬜ **the language enrichment** — `mode: ram \| durable \| cold` per table, replacing the global switch. `durable` defaults so nothing changes silently; the compiler refuses a `durable` row holding a `ref` into a `ram` table. `.wob` format change. Grammar is small (`Ast.table_cfg` gains a key); semantics are the iteration |
-| 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | ⬜ snapshot + truncate: disk reclaimed, replay bounded |
+| 3 | [WAL checkpoint](databasev2/03-wal-checkpoint.md) *(was 32)* | | ✅ **LANDED 2026-08-29 — the chain's last link.** Compaction rewrites the log as one record per live row and swaps it in with `rename`, so **recovery is completely unchanged** and crash safety comes from the filesystem rather than from code. **2.16× space reclaimed** (1 962 358 → 907 094 B), **boot 114 → 64 ms**, stop-the-world pause **2 651 µs** against a stated 50 ms budget. Read `.dev/reference/postgresql` for it: PG *never* compacts its WAL — its records are page deltas, so it needs heap files, a control file, a redo pointer and a separate process. Ours are full row images, so a compacted log IS a store, which deletes all of that. `kill -9` during compaction: 40 rounds/run, 10 clean runs, and **mutation-proven** — against in-place rewrite instead of `rename` the battery fails every time. Outstanding: the **`resident: keys` offset map** (compaction moves every record; the obligation is recorded at the compactor) and the O(live rows) pause, ~5.5 s at 1 GB, which is what an incremental design must be bought against |
 | 4 | [io_uring group commit](databasev2/04-io-uring-commit.md) *(was 23)* | ✅ **part A LANDED 2026-08-28 — group commit**, one barrier per drain instead of one per statement (the engine was fsync-per-STATEMENT, not per commit; the story's premise was wrong). Shard 0 holds each reply, commits once when its queue empties, releases all — so a writer is acked after the barrier carrying ITS record. **≈2.9× durable write throughput, ≈2.1× lower p50**, two measurement methods agreeing (2.9× controlled, 3.5× s1-vs-sN); mean batch 5.43, peak 57. A durability failure is now **fatal (exit 74), not a catchable `WO_T_IO`** — replacing three behaviours that disagreed, two of which admitted leaving RAM ahead of disk. **What it did NOT do:** `durable.sN.mixwrite` 480→492 (unchanged — that workload does 20 writes at C=4, mean batch 1.01) and `seed` unchanged (serial writers have nothing to batch with). **This row used to say "close the 66× gap"; that target was mis-stated** — the gap is two problems and part A fixes only the concurrent one. ⬜ part B (io_uring) **needs re-brainstorming**, not starting on the old premise |
 | 5 | [Bounded tables and eviction](databasev2/05-bounded-tables-eviction.md) | ⬜ a declared capacity + refuse/evict/back-pressure, and a process-level pressure signal that sheds **before** the allocator or OS gets involved — turning the invisible failure into a managed one |
 | 6 | [Cold tiering](databasev2/06-cold-tiering.md) | ⬜ the iteration that raises the ceiling, and the riskiest. Mostly forks: which shape, whether the index itself fits, whether the *language* surfaces the fault cost, and whether `@unique` on a cold table is refused outright. A paged B-tree stays rejected — if tiering needs one, reject tiering |

@@ -523,6 +523,24 @@ static uint64_t mono_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
+/* ============================================================================
+ * OBLIGATION FOR WHOEVER IMPLEMENTS `resident: keys` (databasev2 2, tasks
+ * 5c/5d) — READ THIS BEFORE STORING WAL OFFSETS.
+ *
+ * Compaction rewrites the log and MOVES EVERY RECORD. Any WAL byte offset
+ * captured from the old file is meaningless afterwards — not stale-but-
+ * readable, but pointing at an arbitrary byte of a different file.
+ *
+ * `resident: keys` stores exactly such an offset per row and reads rows back
+ * through it. So the loop below, which knows each record's NEW position as it
+ * writes it, MUST also rebuild that map. It is the cheap direction and the only
+ * one that keeps both features usable together; the alternative is forbidding
+ * compaction whenever such a table is live, which would mean the feature for
+ * huge tables is incompatible with the feature that stops their log growing.
+ *
+ * Nothing fails today because that storage half does not exist yet. It will
+ * fail later, and it will look like data corruption rather than a design gap.
+ * ==========================================================================*/
 int wo_wal_compact(wo_wal *w, wo_db *db) {
     /* staged records would be written into a file about to be replaced */
     if (!w->path || w->len != 0) return -1;

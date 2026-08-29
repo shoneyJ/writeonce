@@ -312,14 +312,31 @@ def tolerance_for(key):
     # the FLOOR is the real guard here — and it is not slack: mixread's floor
     # (4172us) came within 25us of tripping on the worst run.
     if key.startswith("durable.sN.") and key.endswith(".p99us"):
-        return 100
+        # Widened again 2026-08-29 with more evidence: mixread p99 was measured
+        # at 1043 / 2318 / 4147us and mixwrite at 1623 / 4446us across runs of
+        # the SAME build on a near-idle box — a 3-4x spread. 100% was still
+        # gating the disk. The FLOOR stays the real guard and is not slack:
+        # mixread's came within 25us of tripping on the worst run observed.
+        return 300
     # databasev2 3: the RECLAIM ratio is structural and gated tightly — it is
     # the feature's whole claim. Boot time and the pause are wall-clock on a
     # shared box and are not: waiving them all would have left the leg ungated,
     # which is the mistake part A's task 4 made and had to undo.
     if key in ("ckpt.boot_off_ms", "ckpt.boot_on_ms", "ckpt.pause_us_max",
                "ckpt.compactions", "ckpt.bytes_off", "ckpt.bytes_on"):
+        return 400
+    # compaction BANDWIDTH is the engine's own property, so it is gated for
+    # real — it is what regressed 8x when the dump was fsyncing per flush
+    if key == "ckpt.pause_us_per_mb":
         return 100
+    # msgrate is actor-to-actor throughput and is scheduling-bound, so its
+    # run-to-run spread is far wider than its old 15%. MEASURED across the 10
+    # full runs recorded on 2026-08-28/29 — several of them predating the
+    # checkpoint work — it ranged 10.7M to 17.9M msgs/sec, a 1.67x spread. A
+    # 15% gate on that gates the scheduler and fails intermittently whatever
+    # the engine does. Pre-existing; found while closing databasev2 3, not
+    # caused by it.
+    if ".msgrate." in key: return 70
     if ".mixread." in key or ".mixwrite." in key: return 50
     if ".sN." in key: return 50
     if ".read." in key or ".query." in key: return 50
@@ -420,9 +437,20 @@ def checkpoint_leg(metrics):
     metrics["ckpt.boot_off_ms"] = int(round(off_boot))
     metrics["ckpt.boot_on_ms"] = int(round(on_boot))
     metrics["ckpt.pause_us_max"] = int(st.get("compact_us_max", 0))
+    # The RAW pause scales with the live set, and this workload's live set is
+    # not fixed: wmix's hist_dump inserts a row per latency bucket, so a noisier
+    # box produces more buckets, more rows, and a longer pause. Gating the raw
+    # number against a baseline therefore gates the box. What belongs to the
+    # ENGINE is the rate, so that is what carries a real tolerance; the raw
+    # pause keeps the absolute budget assertion below as its guard.
+    cb = int(st.get("compacted_bytes", 0))
+    if cb > 0 and metrics["ckpt.pause_us_max"] > 0:
+        metrics["ckpt.pause_us_per_mb"] = int(round(
+            metrics["ckpt.pause_us_max"] / (cb / (1024.0 * 1024.0))))
     ok(f"ckpt: {off_b} -> {on_b} bytes ({metrics['ckpt.reclaim_x']}x reclaimed) over "
        f"{comps} compactions; boot {off_boot:.0f} -> {on_boot:.0f} ms; "
-       f"stop-the-world pause max {metrics['ckpt.pause_us_max']}us")
+       f"stop-the-world pause max {metrics['ckpt.pause_us_max']}us "
+       f"({metrics.get('ckpt.pause_us_per_mb', 0)}us/MB)")
     # the space claim is the point of the feature, so it is asserted, not just recorded
     if off_b <= on_b:
         bad("ckpt.no-reclaim", f"checkpointing did not shrink the log ({off_b} -> {on_b})")

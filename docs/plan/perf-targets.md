@@ -232,3 +232,23 @@ with checkpointing on.
 One direction bug worth recording: `reclaim_x` was first recorded as
 lower-is-better by the default detector, which would have **passed "reclaimed
 nothing" and failed an improvement** — the central claim gated backwards.
+
+**Gate-tolerance corrections made while closing this iteration**, both recorded
+because a widened tolerance that is not justified is indistinguishable from a
+silenced regression:
+
+- **`ckpt.pause_us_max` is no longer gated against a baseline.** The raw pause
+  scales with the live set, and this workload's live set is not fixed —
+  `wmix`'s `hist_dump` inserts a row per latency bucket, so a noisier box makes
+  more buckets, more rows, and a longer pause. What belongs to the engine is the
+  **rate**, so `ckpt.pause_us_per_mb` carries the real tolerance and the raw
+  pause keeps the absolute 50 ms budget as its guard.
+- **`ram.*.msgrate.msgs_sec` moved from 15% to 70%, and this one is
+  pre-existing.** Across the ten full runs recorded on 2026-08-28/29 — several
+  predating the checkpoint work — it ranged **10.7M to 17.9M msgs/sec, a 1.67×
+  spread**. A 15% gate on a scheduling-bound throughput metric fails
+  intermittently whatever the engine does.
+- **`durable.sN.*.p99us` moved from 100% to 300%**, with more evidence than the
+  first widening had: mixread p99 measured 1043 / 2318 / 4147 µs and mixwrite
+  1623 / 4446 µs across runs of the same build. The floors remain the real
+  guard, and they are not slack — mixread's came within 25 µs of tripping.

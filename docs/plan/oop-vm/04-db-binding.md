@@ -136,6 +136,26 @@ Measured: ~2.9× durable write throughput and ~2.1× lower p50 on a
 write-concurrent workload; unchanged for a serial writer, which has nothing to
 batch with.
 
+**Compaction (databasev2 3, 2026-08-29) may run only where NOTHING IS STAGED.**
+That is a correctness requirement, not a scheduling preference: the staging
+buffer holds records destined for a file that compaction is about to replace, so
+compacting with a non-empty buffer would either write them into a file about to
+be discarded or lose them with it. In practice the safe points are immediately
+after a barrier — the drain's, and the inline path's — and both are wired.
+`wo_wal_compact` refuses a non-empty buffer as a backstop rather than trusting
+its callers.
+
+**Recovery is unchanged by compaction.** The result is an ordinary log in the
+ordinary record grammar, replayed from byte 0; there is no snapshot, no second
+source, no cutoff offset and no control file. Crash safety comes from `rename`
+being atomic: before it the live log is intact and the temp file is not
+authoritative, after it the new log is complete, and no reader can observe a
+mixture. A crash mid-rewrite leaves a temp file, which the next open removes.
+
+A failed compaction is a **missed optimisation, not a durability event** — the
+original log is left usable and the process continues. It must not take the
+fatal path below.
+
 A failed commit **no longer traps — it ends the process** (exit 74, with a
 diagnostic naming the operation, log path, `errno` and batch size). So does a
 failed staging. `WO_T_IO` is unreachable from a DB write. One rule: once a

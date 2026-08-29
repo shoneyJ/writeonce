@@ -163,3 +163,76 @@ never have shown whether batching worked.
 **If you are looking at this because writes got slower**, check the mean batch
 first. Mean 1.0 means the mechanism is not engaging, which is expected for a
 serial writer or a single-shard configuration and a bug anywhere else.
+
+## Checkpoint: compaction by rewrite + rename (databasev2 3, 2026-08-29)
+
+**The problem:** nothing ever removed superseded records, so the log grew
+forever and boot replayed all history. Measured before this: 20 000 rows seeded
+gave a 986 KB log; updating those same rows 20 000 times took it to 2.6 MB with
+**the same live data**.
+
+**Why one file and not a snapshot plus a tail.** Postgres does the opposite —
+its WAL is a redo tail and the data lives in heap files, so a checkpoint flushes
+pages and then recycles log segments; it never compacts. It cannot: its records
+are page deltas, so a compacted redo log is not a store. **Ours are full row
+images** — `apply_record` implements UPDATE as remove-then-recreate — so a log
+of one record per live row *is* a complete store. That single difference deletes
+the control file, the redo pointer, the second recovery source and the separate
+process from this design. Recovery is not merely compatible with compaction; it
+is completely unaware of it.
+
+**Why `rename` is the whole crash-safety story.** The dump goes to a temp file,
+which is fsynced, renamed over the live log, and then the parent directory is
+fsynced (the rename is atomic in-kernel, but the directory entry is not durable
+until the parent is — Postgres does the same for the same reason). Before the
+rename the live log is intact and the temp is not authoritative; after it the new
+log is complete. There is no instant at which a reader sees a mixture, so this
+needs no recovery logic of its own. What Postgres achieves with a redo pointer
+computed at checkpoint start and a control file written at the end, one syscall
+achieves here — because we can swap the entire data set atomically and Postgres
+cannot.
+
+A crash mid-rewrite leaves a temp file. The next open **removes it**, and it is
+deleted rather than ignored because a file full of well-formed records sitting
+beside the log is exactly what a later reader mistakes for data.
+
+**Why the dump flushes periodically, and why it does NOT fsync when it does.**
+`stage()` grows the staging buffer by doubling and never shrinks it, so pushing a
+whole store through one buffer would hold the entire store in RAM on top of the
+store — the unbounded growth databasev2 1 measured as how this engine dies. So
+the dump flushes every 256 records. It flushes with a plain write, **not** a
+commit: intermediate durability is worthless because the temp is not
+authoritative until the rename and is fsynced once immediately before it. Using
+the committing path cost one barrier per 256 records and made the pause 8×
+larger — measured 107 649 µs against 13 212 µs for a 2 MB live set, ~22 MB/s
+against ~181 MB/s.
+
+**Why the replacement is preallocated like the original.** The WAL is
+preallocated so that appends never extend the file, which is what lets
+`fdatasync` alone serve as the ack barrier. A replacement opened without it
+would silently change that property, and the zero-padded tail the open-time scan
+relies on.
+
+**When it runs.** Only where the staging buffer is empty — right after a
+barrier. Both write paths check: the drain (`vm.c`, after its commit and after
+releasing held replies, since those records are already durable and should not
+wait out a rewrite) and the inline path (`db.c`). Wiring only the drain left
+`WO_SHARDS=1` never compacting, with its log growing forever: measured 536 KB
+where the multi-shard run held 446 KB.
+
+**The trigger** compares the log against what the *last* compaction actually
+wrote, with an absolute floor. The denominator is measured rather than
+estimated, because estimating the live size means estimating Text and the
+compactor already knows the true number. There is deliberately **no timer**:
+Postgres needs one because its dirty buffers are not durable until flushed, and
+ours are durable at commit — an idle log does not grow.
+
+**A failed compaction is a missed optimisation, not a durability event.** It
+leaves the original log intact and returns an error the callers ignore. It must
+never take `wo_wal_commit_fatal`'s path, which exists for a different problem.
+
+**If you are here because a checkpoint misbehaved:** `WO_WAL_STATS=1` reports
+compaction count, the stop-the-world pause (max and total) and the last
+compaction's size. `WO_CHECKPOINT_BYTES` and `WO_CHECKPOINT_RATIO` move the
+policy; setting a tiny floor forces compaction in a few writes, which is how the
+gate tests it at all.
