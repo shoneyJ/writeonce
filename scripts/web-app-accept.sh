@@ -735,6 +735,183 @@ else
   bad "limiter-compile" "$(printf '%s' "$lp_out" | head -1)"
 fi
 
+# ---- 18. porch-store task 4: idempotency runs the handler inside the actor --
+# Same flattening trick as the keypool/limiter legs. Idempotent wraps a
+# SLOW route handler (500ms) so two genuinely-parallel duplicates actually
+# overlap in the pool's mailbox. The handler's side effect (ExecMark) is
+# a real @table row count read back over GET /execs -- never a log line,
+# per the brief. One server serves all three legs with distinct keys, so
+# the exec count accumulates 1 -> 2 -> 3 across them.
+IP="$W/idempotent-check"
+cp -r "$ROOT/docs/examples/porch" "$IP"
+rm -f "$IP/wo.toml"
+rm -rf "$IP/target"
+cat >"$IP/idempotent_check_main.wo" <<'WOEOF'
+use net
+use env
+use http
+use router
+use middleware
+use time
+
+@table(name: "exec_marks")
+class ExecMark {
+  n: Int
+}
+
+-- a deliberately slow handler: the concurrency leg's workload. Records
+-- one row per REAL execution so a duplicate that wrongly ran it too
+-- shows up as a row-count of 2, never as a log line.
+class SlowHandler {
+  fn handle(req: Req) -> Resp {
+    insert ExecMark { n: 1 };
+    let n = len(from e in ExecMark select e);
+    time.sleep(500);
+    return ok_json("{\"echo\":\"${req.body}\",\"exec\":${n}}");
+  }
+}
+
+class ExecCount {
+  fn handle(req: Req) -> Resp {
+    let n = len(from e in ExecMark select e);
+    return ok_json("{\"count\":${n}}");
+  }
+}
+
+fn build_app(slot: actor PoolMsg) -> App {
+  let app = App { middleware: [], routes: [] };
+  let p = Pool { actors: [PoolSlot { a: slot }] };
+  app.post("/create", Idempotent { key_header: "idempotency-key", pool: p, inner: SlowHandler {} });
+  app.get("/execs", ExecCount {});
+  return app;
+}
+
+class Conn { fd: net.Conn }
+
+class ConnWorker {
+  slot: actor PoolMsg
+  fn receive(msg: Conn) {
+    let app = build_app(self.slot);
+    app.handle_conn(msg.fd, 5000, 5000);
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 1 {
+    print_err("usage: idempotent_check <port>");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil { print_err("bad port"); return 2; }
+  let ka: actor PoolMsg = spawn KeyActor {};
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    let c = net.accept_dl(srv, 250);
+    if c != nil {
+      let w: actor Conn = spawn ConnWorker { slot: ka };
+      send(w, Conn { fd: c });
+    }
+  }
+}
+WOEOF
+
+if ip_out="$("$WOC" --emit "$IP" -o "$IP/idempotent_check.wob" 2>&1)"; then
+  ok "idempotent: compiles (actor-run handler, digest, pool_begin)"
+
+  IPORT=$((PORT + 2))
+  IDATA="$W/idempotent-data"; mkdir -p "$IDATA"
+  printf '\n===== idempotent check — port %s =====\n' "$IPORT" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$IDATA" "$WOVM" "$IP/idempotent_check.wob" "$IPORT" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  iwait_listen() {
+    for _ in $(seq 1 40); do
+      tail -n "+$LEGFROM" "$SRVLOG" 2>/dev/null | grep -q listening && return
+      sleep 0.1
+    done
+  }
+  iwait_listen
+
+  ipost() { # key body outfile -> prints STATUS, leaves the body in outfile
+    curl -s -o "$3" -w '%{http_code}' --max-time 5 -X POST \
+      -H "Host: a" -H "Idempotency-Key: $1" -H "Content-Type: text/plain" \
+      --data-binary "$2" "http://127.0.0.1:$IPORT/create"
+  }
+  iexecs() { # -> the ExecMark row count
+    curl -s --max-time 5 -H "Host: a" "http://127.0.0.1:$IPORT/execs" \
+      | grep -o '"count":[0-9]*' | cut -d: -f2
+  }
+
+  # ---- 18a. gate leg: replay is exact (brief step 8) ----------------------
+  s1="$(ipost leg8-key hello "$W/i8a.body")"
+  s2="$(ipost leg8-key hello "$W/i8b.body")"
+  [[ "$s1" == "200" && "$s2" == "200" ]] \
+    && ok "idempotent: same key + same body both answer 200" \
+    || bad "idempotent-replay-status" "s1=$s1 s2=$s2"
+  if cmp -s "$W/i8a.body" "$W/i8b.body"; then
+    ok "idempotent: replay is byte-identical"
+  else
+    bad "idempotent-replay-bytes" "$(cat "$W/i8a.body") != $(cat "$W/i8b.body")"
+  fi
+  ec="$(iexecs)"
+  [[ "$ec" == "1" ]] \
+    && ok "idempotent: handler ran exactly once (ExecMark row count = 1)" \
+    || bad "idempotent-replay-execs" "ExecMark count=$ec want 1"
+
+  # ---- 18b. gate leg: digest mismatch is 422 (brief step 9) ---------------
+  m1="$(ipost leg9-key bodyA "$W/i9a.body")"
+  m2="$(ipost leg9-key bodyB "$W/i9b.body")"
+  [[ "$m1" == "200" && "$m2" == "422" ]] \
+    && ok "idempotent: same key + different body is 422, not 200" \
+    || bad "idempotent-mismatch-status" "m1=$m1 m2=$m2"
+  if ! cmp -s "$W/i9a.body" "$W/i9b.body"; then
+    ok "idempotent: 422 body is the refusal, not the other request's response"
+  else
+    bad "idempotent-mismatch-bytes" "422 body equals the first request's stored response"
+  fi
+  ec="$(iexecs)"
+  [[ "$ec" == "2" ]] \
+    && ok "idempotent: the refused request never ran the handler (ExecMark row count = 2)" \
+    || bad "idempotent-mismatch-execs" "ExecMark count=$ec want 2"
+
+  # ---- 18c. gate leg: concurrent duplicates (brief step 10) ---------------
+  # Two backgrounded curl clients, launched together, hitting the SAME
+  # slow (500ms) handler through the SAME key -- a sequential version of
+  # this passes against the old before/after flow too and proves nothing.
+  t0=$(date +%s%3N)
+  ( s="$(ipost leg10-key samebody "$W/i10a.body")"; echo "$s" >"$W/i10a.status" ) &
+  cc1=$!
+  ( s="$(ipost leg10-key samebody "$W/i10b.body")"; echo "$s" >"$W/i10b.status" ) &
+  cc2=$!
+  wait "$cc1" "$cc2"
+  t1=$(date +%s%3N)
+  elapsed=$((t1 - t0))
+  cs1="$(cat "$W/i10a.status")"; cs2="$(cat "$W/i10b.status")"
+  [[ "$cs1" == "200" && "$cs2" == "200" ]] \
+    && ok "idempotent concurrency: both parallel duplicates answer 200" \
+    || bad "idempotent-cc-status" "cs1=$cs1 cs2=$cs2"
+  if cmp -s "$W/i10a.body" "$W/i10b.body"; then
+    ok "idempotent concurrency: both clients got the same response body"
+  else
+    bad "idempotent-cc-bytes" "$(cat "$W/i10a.body") != $(cat "$W/i10b.body")"
+  fi
+  [[ "$elapsed" -lt 900 ]] \
+    && ok "idempotent concurrency: genuinely overlapped (${elapsed}ms, serial would be ~1000ms+)" \
+    || bad "idempotent-cc-elapsed" "${elapsed}ms"
+  ec="$(iexecs)"
+  [[ "$ec" == "3" ]] \
+    && ok "idempotent concurrency: exactly one execution despite 2 parallel duplicates (ExecMark row count = 3)" \
+    || bad "idempotent-cc-execs" "ExecMark count=$ec want 3"
+
+  kill -TERM "$SRV" 2>/dev/null
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  SRV=""
+else
+  bad "idempotent-compile" "$(printf '%s' "$ip_out" | head -1)"
+fi
+
 echo
 printf 'web-app-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
 [[ $fail -eq 0 ]]

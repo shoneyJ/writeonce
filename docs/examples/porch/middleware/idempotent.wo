@@ -1,110 +1,85 @@
--- porch/middleware/idempotent.wo — idempotency middleware backed by @table.
--- Stores successful responses keyed by Idempotency-Key header (+ optional body digest).
--- Replays stored response on subsequent requests with same key.
--- Iteration 1 of the porch track.
-
-use time
+-- porch/middleware/idempotent.wo — idempotency, actor-run.
+-- Iteration 1 of the porch track, porch-store task 4.
+--
+-- Rebuilt, not patched: the old before/after shape ran the handler and
+-- stored the response afterward, so two simultaneous duplicates both
+-- missed and both executed — before() has nothing to find until after()
+-- runs, which is too late for the request that is racing it. The fix is
+-- that the ACTOR runs the handler: Idempotent wraps the route's own
+-- Handler and hands both the request and that handler to the pool. A
+-- duplicate for the same key then simply waits in the actor's mailbox
+-- (one message at a time) and is dequeued once the owner's receive has
+-- already committed the row — no in-flight heuristic needed, because
+-- there is no window where a duplicate can see "nothing yet".
+--
+-- `call`'s reply is a copyable scalar only (WO-E226): keypool.wo's kind-2
+-- arm answers with the SAME pool_pack(count, remaining_ms) encoding kind-1
+-- uses, never the response itself. The response travels through the
+-- @table instead — the actor stores it, this file reads the same row
+-- back and builds the Resp from it, so owner and duplicate answer with
+-- byte-identical bytes structurally, not by careful bookkeeping.
 use http
 use json
 
--- Idempotent middleware: before (check/replay) + after (store on miss).
--- Key composition: "idem:${header}" or "idem:${header}:${sha256(method|path|body)}"
--- Only stores status, body, content-type (allowlist). Never replays Set-Cookie, Date, etc.
--- In-flight collision: returns 409 if key exists but response not yet stored.
--- Lazy expiry: deletes expired keys on access (TTL default 24h).
+-- Idempotent wraps a route's Handler. Registration: Idempotent { key_header:
+-- "Idempotency-Key", pool: p, inner: CreateOrder {} } in place of the bare
+-- handler in app.post(...). Only the digest allowlists content-type for
+-- replay (never Set-Cookie, never Date) — cookies arrive in porch 2.
 pub class Idempotent {
   key_header:   Text        -- e.g., "Idempotency-Key"
-  include_body: Bool = true -- digest method+path+body into key
-  ttl:          Int = 86_400_000_000  -- 24h in µs
+  pool:         Pool
+  inner:        Handler     -- the real route handler; the actor runs this
+  include_body: Bool = true -- digest method+path+body, refuse a key reused with a different one
+  ttl:          Int = 86_400_000_000  -- 24h in µs, lazy-expired on access
 
-  fn before(mut req: Req) -> ?Resp {
+  fn handle(req: Req) -> Resp {
     let header_val = req.headers[self.key_header];
-    if header_val == nil { return nil; }
+    if header_val == nil { return self.inner.handle(req); }
 
-    let key = idempotent_key(self, header_val, req);
-    let now = time.ticks();
-
-    -- Look up existing key
-    let hits = from k in IdempotencyKey where k.key == key take 1 select k;
-
-    if len(hits) > 0 {
-      let stored = hits[0];
-      -- Check expiry
-      if now - stored.created_at > self.ttl {
-        -- Expired: delete and treat as miss
-        delete stored;
-      } else {
-        -- Check if response is stored (created_at within last 10s = in-flight)
-        if now - stored.created_at < 10_000_000 {
-          -- In-flight collision: another request with same key is being processed
-          let r = Resp { status: 409, headers: {}, body: "{\"error\":\"idempotency key in flight\"}" };
-          set_header(r, "content-type", "application/json");
-          return r;
-        }
-        -- Valid stored response: decode and replay
-        let resp_json = stored.response;
-        -- Parse JSON response (status, headers, body)
-        let resp = json.decode(resp_json) as IdempotentStoredResp;
-        if resp != nil {
-          let r = Resp { status: resp.status, headers: resp.headers, body: resp.body };
-          return r;
-        }
-        -- Corrupted stored response: delete and fall through to miss
-        delete stored;
-      }
+    let key = "idem:${self.key_header}:${header_val}";
+    let digest = "";
+    if self.include_body {
+      let digest_input = "${req.method}|${req.path}|${req.body}";
+      digest = base64_encode(bytes_slice(sha256(bytes_of_text(digest_input)), 0, 16));
     }
 
-    -- Miss: mark request so after() knows to store the response
-    req.ctx["idem_miss"] = "true";
-    req.ctx["idem_key"] = key;
-    return nil;
-  }
+    let raw = try pool_begin(self.pool, key, digest, self.ttl, req, self.inner) catch (e) nil;
+    if raw == nil {
+      let r = Resp { status: 503, headers: {}, body: "{\"error\":\"idempotency store saturated\"}" };
+      set_header(r, "content-type", "application/json");
+      set_header(r, "retry-after", "1");
+      return r;
+    }
 
-  fn after(req: Req, mut resp: Resp) {
-    -- Only store on successful responses (2xx/3xx) and only if before() was a miss
-    if req.ctx["idem_miss"] != "true" { return; }
-    if resp.status < 200 { return; }
-    if resp.status >= 400 { return; }
+    if raw / 1_000_000_000 == 2 {
+      -- Same key, a different request: refuse rather than serve the
+      -- other request's response.
+      let r = Resp { status: 422, headers: {}, body: "{\"error\":\"idempotency key reused with a different request\"}" };
+      set_header(r, "content-type", "application/json");
+      return r;
+    }
 
-    let key = req.ctx["idem_key"];
-    if key == nil { return; }
-
-    -- Allowlist headers for replay: only content-type
+    -- Stored (fresh miss or matched replay): the actor already committed
+    -- this row before returning, so it is there to read.
+    let hits = from k in IdempotencyKey where k.key == key take 1 select k;
+    if len(hits) == 0 { return server_error(); }
+    let stored = json.decode(hits[0].response) as IdempotentStoredResp;
+    if stored == nil { return server_error(); }
+    -- `.. ""` forces a fresh, independently-owned Text for every key/value
+    -- copied out of the decoded record: json.decode's Text values do not
+    -- survive being handed onward as-is once the decoded record itself
+    -- goes out of scope (a stale row read back corrupted mid-response
+    -- otherwise) — concat is documented to always allocate new owned text.
     let hdrs: map<Text, Text> = {};
-    let ct = resp.headers["content-type"];
-    if ct != nil { hdrs["content-type"] = ct; }
-
-    let stored = IdempotentStoredResp {
-      status:  resp.status,
-      headers: hdrs,
-      body:    resp.body
-    };
-    let resp_json = json.encode(stored);
-
-    let now = time.ticks();
-    -- Compute digest of method|path|body
-    let digest_input = "${req.method}|${req.path}|${req.body}";
-    let digest = sha256(bytes_of_text(digest_input));
-    let digest_hex = base64_encode(bytes_slice(digest, 0, 16));
-    try insert IdempotencyKey { key: key, response: resp_json, created_at: now, digest: digest_hex } catch (e) nil;
+    for k, v in stored.headers { hdrs[k .. ""] = v .. ""; }
+    return Resp { status: stored.status, headers: hdrs, body: stored.body .. "" };
   }
 }
 
--- Internal typedef for JSON decode of stored response
+-- JSON shape of IdempotencyKey.response. Allowlisted headers only:
+-- content-type, never Set-Cookie or Date.
 typedef IdempotentStoredResp = {
   status:  Int,
   headers: map<Text, Text>,
   body:    Text
-}
-
--- Key composition function
-pub fn idempotent_key(self: Idempotent, header_val: Text, req: Req) -> Text {
-  if self.key_header == "" { return "idem:${header_val}"; }
-  if self.include_body == false { return "idem:${self.key_header}:${header_val}"; }
-  -- Include body digest: sha256(method|path|body)
-  let digest_input = "${req.method}|${req.path}|${req.body}";
-  let digest = sha256(bytes_of_text(digest_input));
-  -- Take first 16 chars of hex digest for brevity (base64_encode of bytes)
-  let short_digest = base64_encode(bytes_slice(digest, 0, 16));
-  return "idem:${self.key_header}:${header_val}:${short_digest}";
 }
