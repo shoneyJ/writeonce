@@ -118,18 +118,35 @@ request — and paying it is what makes the restart criterion true.
 
 A keyed request calls its pool actor and receives one of three outcomes.
 
-| Actor state for that key | Reply | Caller does |
-| --- | --- | --- |
-| A stored response exists, digest matches | the stored response | returns it; handler never runs |
-| A stored response exists, digest differs | a refusal verdict | answers 422 |
-| No record, no owner | ownership | runs the handler, then reports the result back |
-| An owner is already running | *nothing yet* | stays parked until the owner reports |
+**The actor runs the handler.** This is the correction of 2026-08-29 — see
+History. A keyed request does not run its own handler; it calls its pool actor,
+passing the request and the route's `Handler`, and the actor invokes the
+handler inside its own `receive`.
 
-The fourth row is the design. The actor does not answer a duplicate while an
-owner holds the key; it records that someone is waiting and replies to every
-waiter once the owner reports its result. Because `call` already parks the
-caller, waiting costs a parked fiber and no polling. There is no 409, and no
-timestamp heuristic.
+| Actor state for that key | What `receive` returns |
+| --- | --- |
+| A stored response exists, digest matches | the stored response; the handler never runs |
+| A stored response exists, digest differs | a refusal verdict, answered as 422 |
+| No record | run the handler here, store the response, return it |
+
+There is no fourth row, and that is the point. **A duplicate arriving while the
+owner's handler runs waits in the mailbox**, because an actor processes one
+message at a time. It is dequeued after the owner's `receive` returns, finds
+the stored response, and is answered with it. The queue that blocking needs
+already exists and is the mailbox; nothing has to hold a reply.
+
+Why it must be this way: `call`'s reply **is** the return value of `receive`.
+There is no handle to stash and answer later. An actor that tried to hold a
+waiter would have to not return from `receive`, and while it has not returned
+it processes nothing else — including the owner's completion message. That
+deadlocks. Verified before committing to it: an actor can receive a message
+carrying an interface-typed value and invoke it, so passing the route's
+`Handler` through the mailbox works.
+
+The cost is real and must be stated: the actor is occupied for the whole
+duration of the handler it runs, so a slow keyed handler blocks other keys that
+hash to the same actor. Pool size is what bounds that, and it is the same knob
+that bounds saturation.
 
 The lookup key is the **bare** idempotency key. The digest of method, path and
 body is a column, compared on a hit. Equal means a genuine retry and earns the
@@ -210,6 +227,27 @@ TTL cache — language iteration 18 owns that and its spec is already approved.
 Added: **verifying** that a peer really is the trusted proxy. This design lets an
 author declare it; story 35 owns proving it.
 
+## History — one correction, made before any code
+
+**`call` cannot defer a reply, and the first version of this spec assumed it
+could.** The design said the actor would hold a duplicate's reply and answer it
+once the owner reported. That is not expressible: `call`'s reply is the return
+value of `receive` (`tests/corpus/run/call-echo/fixture.wo`; `msg_caller` in
+`runtime/src/vm.c` is answered on handler completion), so holding a waiter
+means never returning, and an actor that never returns processes nothing else —
+including the completion it is waiting for.
+
+The error behind it is worth keeping: the brainstorm established that `spawn`,
+`send`, `call`, `monitor` and `time.after` had all landed, and concluded from
+that that blocking needed no new runtime surface. **The primitives existing is
+not the same as one of them supporting deferred reply.** The conclusion was
+right by luck — blocking is achievable — but the reasoning did not support it,
+and the shape it produced was unimplementable.
+
+Inverting so the actor runs the handler gets the same semantics from the
+mailbox itself, and was verified with a throwaway fixture before adoption
+rather than after.
+
 ## Risks
 
 - **The pool is now on every request path.** Exact counting was chosen over a
@@ -217,6 +255,8 @@ author declare it; story 35 owns proving it.
   concern, and the fail-closed rule converts undersizing into 503s rather than
   into silent overshoot. That trade is the point, and it needs to be measured
   before it is defended.
-- **A parked duplicate waits as long as its owner runs.** A slow handler holds
-  its waiters. No deadline is specified here; if one proves necessary it belongs
-  with the measurement, not ahead of it.
+- **A duplicate waits as long as its owner's handler runs**, and so does every
+  other key that hashes to the same actor, because the actor is occupied while
+  it runs a handler. This is the sharpest cost of the inversion. No deadline is
+  specified here; if one proves necessary it belongs with the measurement, not
+  ahead of it.
