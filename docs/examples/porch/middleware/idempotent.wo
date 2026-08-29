@@ -82,7 +82,11 @@ pub class Idempotent {
     let resp_json = json.encode(stored);
 
     let now = time.ticks();
-    try insert IdempotencyKey { key: key, response: resp_json, created_at: now } catch (e) nil;
+    -- Compute digest of method|path|body
+    let digest_input = "${req.method}|${req.path}|${req.body}";
+    let digest = sha256(bytes_of_text(digest_input));
+    let digest_hex = base64_encode(bytes_slice(digest, 0, 16));
+    try insert IdempotencyKey { key: key, response: resp_json, created_at: now, digest: digest_hex } catch (e) nil;
   }
 }
 

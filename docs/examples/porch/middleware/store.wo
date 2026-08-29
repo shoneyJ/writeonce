@@ -21,4 +21,5 @@ class IdempotencyKey {
   key:        Text @unique
   response:   Text
   created_at: Int
+  digest:     Text
 }
