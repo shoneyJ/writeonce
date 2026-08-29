@@ -84,10 +84,16 @@ pub class Limiter {
 }
 
 -- Key selection: identity first, then the trust_proxy-gated peer address.
+-- An absent X-Forwarded-For under trust_proxy means there is nothing to
+-- trust, not an empty identity: client_ip(req) == "" falls through to
+-- net.peer(req.conn) rather than keying every such client on the literal
+-- "ip:" bucket (that collapse was a real bug -- one client omitting the
+-- header could exhaust the shared bucket and deny/hide the rest).
 pub fn limiter_key(self: Limiter, req: Req) -> Text {
   if req.principal != "" { return "principal:${req.principal}"; }
   if self.trust_proxy {
-    return "ip:${client_ip(req)}";
+    let ip = client_ip(req);
+    if ip != "" { return "ip:${ip}"; }
   }
   let peer = net.peer(req.conn);
   if peer != "" { return "ip:${peer}"; }

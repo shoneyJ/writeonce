@@ -23,6 +23,11 @@ if [[ ! -x "$WOC" || ! -x "$WOVM" ]]; then
   exit 1
 fi
 
+if ! command -v curl >/dev/null 2>&1; then
+  echo "web-app-accept: curl is required (the limiter gate legs drive the server with it)" >&2
+  exit 1
+fi
+
 ulimit -n 8192 2>/dev/null || true  # the 1k soak needs headroom
 W="$(mktemp -d "${TMPDIR:-/tmp}/web-app-accept.XXXXXX")"
 SRV=""
@@ -610,6 +615,9 @@ if lp_out="$("$WOC" --emit "$LP" -o "$LP/limiter_check.wob" 2>&1)"; then
   lhit() { # xff-value -> "STATUS\nHEADERS..." for one request keyed on it
     curl -sD - -o /dev/null --max-time 5 -H "X-Forwarded-For: $1" -H "Host: a" "http://127.0.0.1:$LPORT/ping" | tr -d '\r'
   }
+  lhit_noxff() { # -> "STATUS\nHEADERS..." for one request with NO X-Forwarded-For at all
+    curl -sD - -o /dev/null --max-time 5 -H "Host: a" "http://127.0.0.1:$LPORT/ping" | tr -d '\r'
+  }
   lstatus() { printf '%s' "$1" | head -1 | awk '{print $2}'; }
   lwait_listen() { # from-line
     for _ in $(seq 1 40); do
@@ -651,6 +659,24 @@ if lp_out="$("$WOC" --emit "$LP" -o "$LP/limiter_check.wob" 2>&1)"; then
   printf '%s\n' "$allowed" | grep -qi "^x-ratelimit-limit: $LLIMIT\$" \
     && ok "limiter allowed path carries X-RateLimit-* headers (Mw+Aw)" \
     || bad "limiter-allowed-headers" "$(printf '%s' "$allowed" | head -1)"
+
+  # ---- 17a2. trust_proxy peer fallback: absent XFF must not share the "ip:" bucket ----
+  # Each curl below is its own TCP connection (a fresh ephemeral source
+  # port), so a correct net.peer(req.conn) fallback gives every one of
+  # these LLIMIT+1 requests its OWN key -- none should be refused. The bug
+  # this pins: keying an absent X-Forwarded-For on the literal "ip:" (empty
+  # client_ip) collapses every such client onto ONE shared bucket, and the
+  # (LLIMIT+1)th request would then be 429 instead of 200.
+  noxff_codes=""
+  for i in $(seq 1 $((LLIMIT + 1))); do
+    r="$(lhit_noxff)"
+    noxff_codes="$noxff_codes$(lstatus "$r") "
+  done
+  want_noxff=""
+  for i in $(seq 1 $((LLIMIT + 1))); do want_noxff="${want_noxff}200 "; done
+  [[ "$noxff_codes" == "$want_noxff" ]] \
+    && ok "limiter trust_proxy: absent X-Forwarded-For falls back to net.peer, not one shared \"ip:\" bucket" \
+    || bad "limiter-noxff-peer-fallback" "codes=$noxff_codes want=$want_noxff"
 
   # ---- 17b. SIGTERM + restart: same WO_DATA, same key, still limited ----
   kill -TERM "$SRV" 2>/dev/null
