@@ -365,7 +365,12 @@ int wo_idx_probe(wo_db *db, uint32_t class_id, uint32_t index, uint64_t key_scal
     if (!ids) return -1;
     uint32_t n = 0;
     for (uint32_t i = 0; i < b->len; i++) {
-        db_row *r = wo_row_ptr(db, class_id, b->ids[i]);
+        /* databasev2 2 (5d): THE unique shadow — the site the plan called the
+         * real coupling, because it needs a row it cannot get from a slab. For
+         * a keys-resident table each candidate costs a pread and a
+         * materialisation: the disclosed price of `@unique` there, bounded by
+         * the bucket rather than the table. */
+        db_row *r = wo_row_borrow(db, class_id, b->ids[i], NULL);
         if (!r) continue;
         int eq;
         if (kind == WO_K_TEXT) {
@@ -378,6 +383,7 @@ int wo_idx_probe(wo_db *db, uint32_t class_id, uint32_t index, uint64_t key_scal
              * exact comparison, so probe results never differ from scan
              * results (the hash canonicalized only to FIND the bucket) */
             eq = r->slots[col] == key_scalar;
+        wo_row_release(db, class_id, r); /* before any use of the result */
         if (eq) ids[n++] = b->ids[i];
     }
     if (!n) {
@@ -801,14 +807,20 @@ void wo_row_release(wo_db *db, uint32_t class_id, db_row *r) {
 
 int wo_row_read(wo_db *db, wo_rt *rt, uint32_t class_id, uint64_t id,
                 uint64_t *out_vals, const char **msg) {
-    db_row *r = wo_row_ptr(db, class_id, id);
+    db_row *r = wo_row_borrow(db, class_id, id, msg);
     if (!r) return -1;
     const wo_classdesc *c = &db->classes[class_id];
     int ok = 1;
     for (uint32_t i = 0; i < c->field_cnt; i++) {
+        /* decode out of the row BEFORE releasing: a keys-resident row's slots
+         * point into the scratch that release frees */
         out_vals[i] = db_val_decode(rt, c->kinds[i], r->slots[i], &ok, msg);
-        if (!ok) return -2;
+        if (!ok) {
+            wo_row_release(db, class_id, r);
+            return -2;
+        }
     }
+    wo_row_release(db, class_id, r);
     return 0;
 }
 
@@ -942,6 +954,17 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
 int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                         uint64_t vm_val, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
+    /* databasev2 2 (5d): a keys-resident row lives in the LOG, so there is no
+     * slab slot to mutate — writing into the borrow's scratch would discard
+     * the update silently, which is the one failure mode this iteration must
+     * not ship. Updating such a row means read-modify-APPEND (a new record,
+     * then re-point the offset), and that is not built yet. Refuse loudly.
+     * The loader refuses `resident: keys` outright, so this is defence in
+     * depth and a marker for the next implementer. */
+    if (wo_table_is_keys_resident(db, class_id)) {
+        *msg = "update on a `resident: keys` table is not implemented";
+        return -1;
+    }
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) {
         *msg = "no such row";
@@ -1042,6 +1065,14 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
 int wo_row_update_field_slot(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                              uint64_t slot, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
+    /* databasev2 2 (5d): same reason as wo_row_update_field — a keys-resident
+     * row has no slab slot to mutate, and writing into the borrow's scratch
+     * would discard the update silently. Read-modify-APPEND is the shape that
+     * works, and it is not built yet. */
+    if (wo_table_is_keys_resident(db, class_id)) {
+        *msg = "update on a `resident: keys` table is not implemented";
+        return -1;
+    }
     /* bounds first: the RPC requester validated cid/field to encode at all,
        so these are defensive; the slot's kind is unknowable on a class
        violation and the value leaks rather than dies by the wrong kind */
@@ -1173,4 +1204,37 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id) {
     }
     t->free_slots[t->free_cnt++] = g;
     return 0;
+}
+
+/* databasev2 2 (5d): re-point a keys-resident row at a NEW log offset.
+ *
+ * Deliberately not hput(): hput runs the load-factor check and can rehash,
+ * which would reorder hkeys/hvals underneath a wo_row_next_id cursor. This
+ * only ever overwrites the value of a key that already exists, so the table's
+ * shape cannot change and a walk in progress stays valid. That property is
+ * what lets compaction re-point rows as it writes them instead of buffering
+ * one (cid, id, offset) triple per live row. Returns -1 if the id is absent. */
+int wo_row_set_offset(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off) {
+    if (class_id >= db->class_cnt) return -1;
+    db_table *t = &db->tables[class_id];
+    if (!t->hcap) return -1;
+    size_t j = hmix(id) & (t->hcap - 1);
+    while (t->hkeys[j]) {
+        if (t->hkeys[j] == id) {
+            t->hvals[j] = wal_off + 1;
+            return 0;
+        }
+        j = (j + 1) & (t->hcap - 1);
+    }
+    return -1;
+}
+
+/* databasev2 2 (5d): the log offset a keys-resident row currently reads from,
+ * as stored (off + 1), so 0 means "no such row". Compaction needs the raw
+ * offset to copy the record without materialising it. */
+uint64_t wo_row_offset1(const wo_db *db, uint32_t class_id, uint64_t id) {
+    if (class_id >= db->class_cnt) return 0;
+    const db_table *t = &db->tables[class_id];
+    if (!t->hcap) return 0;
+    return hget(t, id);
 }

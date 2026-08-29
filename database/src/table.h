@@ -193,6 +193,8 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
  *
  * 0 ok, -1 unknown class/row. */
 int wo_row_drop_payload(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off);
+int wo_row_set_offset(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off);
+uint64_t wo_row_offset1(const wo_db *db, uint32_t class_id, uint64_t id);
 
 /* databasev2 2 (5d): iterate the live row IDS of a table, whichever backing it
  * has. [*cursor] starts at 0 and is opaque; returns 1 with *id_out set, or 0

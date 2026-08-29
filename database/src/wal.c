@@ -390,6 +390,12 @@ static int stage(wo_wal *w, const wbuf *payload) {
 }
 
 int wo_wal_append_insert(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
+    /* wo_row_ptr, NOT wo_row_borrow: at append time a keys-resident row is
+     * still in its slab and the id map still holds a SLOT, not an offset —
+     * the drop happens after the commit. Borrowing here would read the log at
+     * a byte position that is really a slot number. (Compaction, which does
+     * face rows that live only in the log, moves their bytes instead — see
+     * copy_record.) */
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) return -1; /* commit order: RAM apply comes FIRST */
     wbuf p = {0};
@@ -404,6 +410,9 @@ int wo_wal_append_insert(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
 }
 
 int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
+    /* wo_row_ptr is right here for the same reason as append_insert, and the
+     * keys case cannot arrive at all: wo_row_update_field{,_slot} refuse a
+     * keys-resident table before any log record is staged. */
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) return -1;
     wbuf p = {0};
@@ -563,10 +572,58 @@ static uint64_t mono_us(void) {
  * Nothing fails today because that storage half does not exist yet. It will
  * fail later, and it will look like data corruption rather than a design gap.
  * ==========================================================================*/
+/* databasev2 2 (5d): move one already-durable record from the old log into
+ * the new one, VERBATIM.
+ *
+ * Compaction cannot re-encode a keys-resident row the way it re-encodes a
+ * resident one. enc_val expects the ENGINE representation a slab row holds
+ * (db_text: len + bytes), while a row read back out of the log arrives in the
+ * VM representation (wo_str: len + data). The two are not the same struct, so
+ * feeding a borrowed row to enc_val reads the length out of the wrong field —
+ * ASan caught exactly that as a 4294967292-byte memcpy.
+ *
+ * Copying the bytes sidesteps the whole question, and is strictly better than
+ * decode-then-encode anyway: no allocation per row, no arena pressure, and the
+ * record that lands is bit-identical to the one that was acked. scan_record
+ * verifies the CRC, so a torn record is refused rather than propagated.
+ *
+ * The kind byte is normalised to INSERT: a live row's newest image may have
+ * been logged as an UPDATE, and the compacted log is supposed to read as one
+ * INSERT per live row. */
+static int copy_record(wo_wal *nw, wo_wal *ow, uint64_t off, uint32_t want_cid,
+                       uint64_t want_id, const char **why) {
+    uint32_t len = 0;
+    uint8_t *payload = NULL;
+    if (scan_record(ow->fd, off, &len, &payload) != 0) {
+        *why = "no intact record at a row's recorded offset";
+        return -1;
+    }
+    rbuf r = {payload, payload + len, 0};
+    uint8_t kind = rd_u8(&r);
+    uint32_t cid = rd_u32(&r);
+    uint64_t id = rd_u64(&r);
+    if (r.bad || cid != want_cid || id != want_id ||
+        (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE)) {
+        free(payload);
+        *why = "a row's recorded offset does not hold that row";
+        return -1;
+    }
+    payload[0] = WO_WAL_INSERT;
+    wbuf p = {0};
+    wput(&p, payload, len);
+    int rc = stage(nw, &p);
+    free(p.b);
+    free(payload);
+    if (rc != 0) *why = "staging a moved record failed";
+    return rc;
+}
+
 int wo_wal_compact(wo_wal *w, wo_db *db) {
     /* staged records would be written into a file about to be replaced */
     if (!w->path || w->len != 0) return -1;
     uint64_t t0 = mono_us();
+    int repointed = 0; /* has any keys-resident row been moved to the new log? */
+    const char *why = NULL; /* the reason a fail arm was taken, when it is known */
 
     char tmp[4096];
     if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", w->path, WO_WAL_TMP_SUFFIX) >= sizeof tmp)
@@ -587,15 +644,40 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
      * append path — so replay needs no second decoder and ids are preserved
      * exactly (wo_wal_append_insert takes the id and reads the row) */
     uint32_t pending = 0;
+    /* databasev2 2 (5d): the walk is wo_row_next_id, not the bitmap. A
+     * keys-resident row has NO bitmap bit — its slot was returned to the free
+     * list when the payload was dropped — so a bitmap walk would omit every
+     * such row from the new log and call it compaction. That is silent data
+     * loss, and it is the failure the obligation note above was written for. */
     for (uint32_t cid = 0; cid < db->class_cnt; cid++) {
         db_table *t = &db->tables[cid];
-        if (!t->slabs) continue; /* tables are created lazily */
-        uint32_t total = t->slab_cnt * DB_SLAB_ROWS;
-        for (uint32_t g = 0; g < total; g++) {
-            if (!(t->bitmap[g >> 6] & (1ull << (g & 63)))) continue;
-            db_row *r = (db_row *)(t->slabs[g / DB_SLAB_ROWS] +
-                                   (size_t)(g % DB_SLAB_ROWS) * t->row_size);
-            if (wo_wal_append_insert(&nw, db, cid, r->id) != 0) goto fail;
+        if (!t->row_size) continue; /* tables are created lazily */
+        int keys = wo_table_is_keys_resident(db, cid);
+        size_t cur = 0;
+        uint64_t id;
+        while (wo_row_next_id(db, cid, &cur, &id)) {
+            if (!keys) {
+                if (wo_wal_append_insert(&nw, db, cid, id) != 0) goto fail;
+            } else {
+                /* read from the OLD log (still open, still the live file at
+                 * this point), write into the new one, and re-point the map
+                 * to where it landed. The offset is captured BEFORE staging:
+                 * off is what has reached the file, len what is staged behind
+                 * it, so their sum is the position of the next record. */
+                uint64_t o1 = wo_row_offset1(db, cid, id);
+                if (!o1) {
+                    why = "a live keys-resident row has no recorded offset";
+                    goto fail;
+                }
+                uint64_t at = nw.off + (uint64_t)nw.len;
+                if (copy_record(&nw, w, o1 - 1, cid, id, &why) != 0) goto fail;
+                /* value-only update: cannot rehash, so `cur` stays valid */
+                if (wo_row_set_offset(db, cid, id, at) != 0) {
+                    why = "row vanished from the id map mid-compaction";
+                    goto fail;
+                }
+                repointed = 1;
+            }
             if (++pending >= WO_WAL_COMPACT_FLUSH) {
                 if (wal_write_nosync(&nw) != 0) goto fail;
                 pending = 0;
@@ -635,6 +717,21 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
 fail:
     wo_wal_close(&nw);
     (void)unlink(tmp);
+    if (repointed) {
+        /* databasev2 2 (5d): rows already re-pointed name offsets inside the
+         * temp file just unlinked, so the id map now describes a file that no
+         * longer exists — reads would return another row's bytes or nothing.
+         * The log ON DISK is still the intact original, so replay rebuilds the
+         * map correctly; carrying on in this process cannot. Same doctrine as
+         * a failed commit barrier: stop rather than serve wrong rows. */
+        fprintf(stderr,
+                "writeonce: DURABILITY FAILURE — compaction of %s failed after "
+                "moving rows: %s\n"
+                "  No data was lost: the original log is intact on disk.\n"
+                "  The process is stopping: replay rebuilds the row offsets.\n",
+                w->path, why ? why : "write or sync error");
+        exit(WO_EXIT_DURABILITY);
+    }
     return -1; /* the live log is untouched and still usable */
 }
 

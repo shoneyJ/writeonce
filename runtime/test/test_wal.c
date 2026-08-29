@@ -578,6 +578,77 @@ static void test_keys_resident_round_trip(void) {
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
  * exactly as a restart would. */
+static void test_keys_resident_survives_compaction(void) {
+    /* databasev2 2 (5d): the obligation recorded at wo_wal_compact. Two ways
+     * to fail it, both checked here:
+     *   1. compaction walks the bitmap, so keys-resident rows — which hold no
+     *      bitmap bit — are never written to the new log and vanish;
+     *   2. compaction writes them but leaves the id map naming OLD offsets.
+     * Rows are written back in HASH order, not insertion order, so almost
+     * every offset really does move: a map left un-repointed cannot pass by
+     * coincidence, it lands on another row and fails the id check. */
+    char path[128];
+    snprintf(path, sizeof path, "%s/keyscompact.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    enum { N = 5 };
+    uint64_t ids[N];
+    char texts[N][8];
+    for (int i = 0; i < N; i++) {
+        /* varying lengths, so a record's position depends on what precedes it */
+        int tl = 1 + i;
+        memset(texts[i], 'a' + i, (size_t)tl);
+        texts[i][tl] = 0;
+        wo_str *sv = wo_str_new(&rt, texts[i], (size_t)tl);
+        uint64_t vals[2] = {(uint64_t)(i * 101 + 7), (uint64_t)(uintptr_t)sv};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(ids[i] != 0);
+        uint64_t off = wo_wal_next_offset(&w);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_drop_payload(&db, 0, ids[i], off), 0);
+    }
+
+    T_EQ(wo_wal_compact(&w, &db), 0);
+
+    /* every row still readable, with its own values, through the new log */
+    for (int i = 0; i < N; i++) {
+        db_row *r = wo_row_borrow(&db, 0, ids[i], &msg);
+        T_CHECK(r != NULL);
+        T_CHECK(r->slots[0] == (uint64_t)(i * 101 + 7));
+        wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
+        T_CHECK(back != NULL && back->len == (size_t)(1 + i));
+        T_CHECK(memcmp(back->data, texts[i], (size_t)(1 + i)) == 0);
+        wo_row_release(&db, 0, r);
+    }
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* and the compacted log replays to the same set in a fresh process */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KEYS_CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), N);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    db2.rt = &rt; rt.wal = &w2; rt.db = &db2;
+    for (int i = 0; i < N; i++) {
+        db_row *r = wo_row_borrow(&db2, 0, ids[i], &msg);
+        T_CHECK(r != NULL);
+        T_CHECK(r->slots[0] == (uint64_t)(i * 101 + 7));
+        wo_row_release(&db2, 0, r);
+    }
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 static void test_keys_resident_replay(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/keysboot.wal", g_dir);
@@ -1047,6 +1118,7 @@ int main(void) {
     test_compact_shortens_and_replays_equal();
     test_keys_resident_round_trip();
     test_keys_resident_replay();
+    test_keys_resident_survives_compaction();
     test_stale_compact_temp_is_removed();
     test_should_compact_policy();
     test_compact_refuses_with_staged_records();

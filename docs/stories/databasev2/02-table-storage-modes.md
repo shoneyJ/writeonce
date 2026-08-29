@@ -61,8 +61,8 @@ declared per-table policy. Durability is untouched and unconditional.
 | 4 | `durable: false` skips the WAL append and replay | ✅ `dd67e31` |
 | 5a | `wo_wal_next_offset` — exact record offsets | ✅ `ac7d8af` |
 | 5b | `wo_wal_read_row_at` — a row from a log offset | ✅ `d0c370c` |
-| 5c | shared borrow/release accessor, then id→offset storage | 🔄 step 1 ✅ `2e347de` (pure refactor, `db-bench --quick` 85/0); offset storage next |
-| 5d | rewire the readers: remaining `wo_row_ptr` sites (6 table.c, 2 db.c, 2 wal.c), slab scans, FK restrict, `@unique` across the boundary | ⬜ scope recorded |
+| 5c | shared borrow/release accessor, then id→offset storage | ✅ `2e347de` (accessor, pure refactor, `db-bench --quick` 85/0), `18ce4d5` (offset storage), `f9c36ef` (insert + boot wiring) |
+| 5d | rewire the readers: remaining `wo_row_ptr` sites, slab scans, FK restrict, `@unique` across the boundary | ✅ `11a92df` (db.c), + this commit (table.c, wal.c, compaction). Updates **refused**, not rewired — see below |
 | 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
 | 7 | measure, gate, document, close out | ⬜ |
 
@@ -102,15 +102,36 @@ Met:
 - **Given** a v6 image, **when** loaded, **then** refused on version rather
   than misread. ✅
 
+- **Given** a `resident: keys` table, **when** rows are read by id and scanned,
+  **then** every row is byte-identical including heap-valued columns. ✅ 5d.
+  Every read path goes through `wo_row_borrow`/`wo_row_release`, and the scans
+  go through `wo_row_next_id` — deliberately the id map for a keys table and
+  the bitmap for a resident one, since hash order would reorder every
+  unordered query.
+- **Given** `@unique` on a `resident: keys` table, **when** a duplicate arrives
+  whose conflicting row is not resident, **then** it is refused. ✅ 5d. The
+  shadow probe borrows each bucket candidate, so the check costs one `pread`
+  per candidate — bounded by the bucket, not the table — and never silently
+  narrows to the resident subset.
+- **Given** a `resident: keys` table and a WAL checkpoint, **when** the log is
+  compacted, **then** every such row survives and still reads correctly. ✅ 5d,
+  and this is the obligation databasev2 3 left behind. Two independent ways to
+  fail it, both pinned by `test_keys_resident_survives_compaction`: compaction
+  walked the *bitmap*, which a keys row has no bit in, so every one of them
+  would have been dropped from the new log; and the id map would still have
+  named offsets into the replaced file. Rows are rewritten in hash order, so
+  offsets genuinely move and a missing re-point cannot pass by luck.
+
 Outstanding:
 
-- **Given** a `resident: keys` table larger than any plausible resident budget,
-  **when** rows are read by id and scanned, **then** every row is byte-identical
-  including heap-valued columns. *(needs 5c/5d)*
-- **Given** `@unique` on a `resident: keys` table, **when** a duplicate arrives
-  whose conflicting row is not resident, **then** it is refused. *(5d — the
-  correctness core; a constraint that silently checks only resident rows must
-  never ship)*
+- **Given** an `update` to a row on a `resident: keys` table, **when** it runs,
+  **then** it is applied. ❌ **refused explicitly** by
+  `wo_row_update_field{,_slot}`. A keys row lives in the log with no slab slot
+  to mutate; writing into the borrow's scratch would discard the write
+  *silently*, which is the one failure this iteration must not ship. Doing it
+  properly is read-modify-**append** — a new record, then re-point the offset —
+  and that is its own piece of work. **The loader's refusal of `resident: keys`
+  stays until it lands**, so no program can reach the half-feature.
 - **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
   **then** it refuses. *(task 6 — today this combination silently discards
   every write)*
