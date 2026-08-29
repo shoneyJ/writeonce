@@ -34,8 +34,11 @@ value of `receive`, and there is no deferred-reply primitive.
 - Any header carrying a timestamp to a client uses `time.now()` — wall clock.
   Monotonic ticks are seconds-since-boot and meaningless to a client.
 - Mutating a stored row is a field assignment on the row, which writes through
-  and maintains indexes. Never delete-then-insert: it doubles WAL traffic and
-  leaves a window where a failed insert after a successful delete loses the row.
+  and maintains indexes. Never delete-then-insert **as a way to update**: it
+  doubles WAL traffic and leaves a window where a failed insert after a
+  successful delete loses the row. This does not forbid deleting a row you
+  genuinely mean to remove — pruning an expired row is a plain delete and is
+  required.
 - A saturated mailbox (`call` trapping `WO_T_ACTOR`) answers **503** with
   `Retry-After`, for both features. Saturation must never become the limiter's
   bypass.
@@ -92,9 +95,13 @@ CSRF from each re-implementing serialization in iterations 2 and 3.
 **Produces:** the message classes and the pool accessor every later task uses.
 Name them once here and do not rename them later:
 
-- a **count** message carrying the key, the limit and the window size;
-- a **begin** message carrying the key, the digest, the request, and the
-  route's `Handler`;
+- **ONE message class** carrying a `kind: Int` discriminator and the union of
+  what both operations need: the key, the limit and the window size for a
+  count; the digest, the request and the route's `Handler` for a begin. An
+  actor handle is typed to a single message class, so a second `receive`
+  compiles but is unreachable through that handle. `docs/examples/chat/main.wo`
+  is the repo's precedent — its registry takes `kind: 1` for lookup and
+  `kind: 2` for shutdown. Use `kind: 1` for count and `kind: 2` for begin;
 - a pool type holding a list of actor addresses, and a selector that maps a key
   to one of them by hash;
 - a verdict class the limiter reads: whether the request is allowed, the count,
@@ -109,8 +116,10 @@ Name them once here and do not rename them later:
       to report a compile failure naming the missing class.
 - [ ] **Step 3 — define the message classes and the verdict class.** Fields
       only; no behaviour yet.
-- [ ] **Step 4 — define the actor class with a `receive` per message type.**
-      Give it a `receive` that handles the count message and returns a verdict.
+- [ ] **Step 4 — define the actor class with ONE `receive`,** switching on
+      `kind`. Implement the count arm (`kind: 1`) now and leave the begin arm
+      (`kind: 2`) for Task 4. Counting reads the row for the key, decides, and
+      returns a verdict.
       Counting reads the row for the key, decides, and writes the new count by
       **assigning to the row's field** so it writes through.
 - [ ] **Step 5 — window arithmetic.** If the elapsed monotonic time since the
@@ -183,7 +192,9 @@ a `trust_proxy` flag defaulting to false.
 
 ### Task 4 — idempotency, with the actor running the handler
 
-**Files:** modify `docs/examples/porch/middleware/idempotent.wo`.
+**Files:** modify `docs/examples/porch/middleware/idempotent.wo` and
+`docs/examples/porch/middleware/keypool.wo` (step 4 adds the actor's begin
+arm, which lives in the pool file).
 
 **Consumes:** the begin message and the pool from Task 2; the digest column
 from Task 1.
