@@ -124,8 +124,15 @@ indexes are very much resident.
   each field. Both functions already exist in `wal.c` and are already exercised
   by replay; the change is that they are called on demand rather than only at
   boot.
-- **Update** — append a new record, repoint the offset. The superseded record
-  becomes garbage, reclaimed by the checkpoint.
+- **Update** — ~~append a new record, repoint the offset~~. **SUPERSEDED
+  2026-08-30** by
+  [`2026-08-30-keys-resident-delta-updates-design.md`](2026-08-30-keys-resident-delta-updates-design.md).
+  This line was written before any of the mode was built and describes a
+  full-row append, which the motivating workload rejects: a product catalogue
+  changes one narrow field of a wide row on every order, so a full-row append
+  rewrites every field to move one integer. Updates append a **delta** carrying
+  a back-pointer, folded on read, with compaction doing the fold that keeps
+  chains short. The superseded-record-becomes-garbage half is still true.
 - **Delete** — append a tombstone, drop the id from the map and every index.
 - **Scan** — a sequential walk of the log, which is the case log-structured
   storage is best at. Cost changes from memory-speed to sequential-disk; the
