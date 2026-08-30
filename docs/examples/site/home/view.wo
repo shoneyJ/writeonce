@@ -24,7 +24,7 @@ pub class HomePage {
     -- why-cards (2x2 grid, collapses on small screens)
     let cards = card("One binary", "woc build emits a self-contained executable: VM, your bytecode, the database engine. Deploys are a file copy; the runtime swaps code in place.");
     cards = cards .. card("Memory safety, no tax", "Rust-shaped ownership checked at compile time; where ownership cannot express the shape, the compiler infers GC — per shard, no global pause.");
-    cards = cards .. card("The database is built in", "Every class is a table. Inserts are WAL-logged before they acknowledge; restart replays. No server to operate, no connection string.");
+    cards = cards .. card("The database is built in", "Every class is a table. Inserts are WAL-logged before they acknowledge; restart replays. No server to operate, no connection string — and a table can declare itself RAM-only, or keep only its keys in memory and outgrow RAM.");
     cards = cards .. card("Actors on every core", "spawn returns an address, send moves ownership. Fibers park on io_uring instead of blocking threads — no async/await, ever.");
     let grid = el("div", "grid grid-cols-2 gap-6 mb-8", cards);
 

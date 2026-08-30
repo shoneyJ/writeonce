@@ -52,6 +52,20 @@ fn ch_tables() -> Text {
   return b;
 }
 
+fn ch_storage() -> Text {
+  let b = el("p", "leading-relaxed mb-4",
+    "Two optional <code>@table</code> keys decide where a table's rows LIVE. Both default " .. "to today's behaviour, so every table above keeps working untouched. " .. "<code>durable: false</code> keeps a table entirely in RAM — a full table in-process, " .. "same indexes, same <code>@unique</code>, same queries — that is simply empty after a " .. "restart. That is what a session store or a rate-limit counter wants: losing it on " .. "reboot is correct, and paying to make it durable is waste.");
+  b = b .. code_block("@table(name: \"sessions\", durable: false)\nclass Session {\n  sid:  Text @unique\n  hits: Int\n}\n\n@table(name: \"catalog\", resident: keys, index: [sku])\nclass Product {\n  sku:   Text @unique\n  price: Int\n  blurb: Text\n}");
+  b = b .. el("p", "leading-relaxed mt-4 mb-4",
+    "<code>resident: keys</code> is the other direction: only the KEY stays in memory. The " .. "row body lives in the write-ahead log and is read back on demand, so a table can be " .. "far larger than RAM without a page-fault cliff. Measured on a product catalogue, the " .. "resident set is <strong>2.55× smaller</strong> than the same table fully resident. " .. "Such a table has nowhere to keep its rows without a log, so declaring it and starting " .. "without <code>WO_DATA</code> is REFUSED at startup rather than silently ignored.");
+  b = b .. el("p", "leading-relaxed mb-4",
+    "Reads and writes are unchanged — the storage mode is not a different API:");
+  b = b .. code_block("let hits = from x in Product where x.sku == \"a-1\" take 1 select x;\nif len(hits) == 1 {\n  hits[0].price = 1299;   -- an ordinary assignment\n}");
+  b = b .. el("p", "leading-relaxed mt-4",
+    "Underneath, that assignment appends a <em>delta</em> — which field changed, plus a " .. "back-pointer to the row's previous record — instead of rewriting the whole row. A read " .. "walks that chain backward, newest wins. Left alone the chain would grow forever on a " .. "hot row, so it is BOUNDED: past 16 links an update writes a full row image and the " .. "chain restarts at zero. A row updated a million times still costs a bounded number of " .. "record reads, on read and on replay alike.");
+  return b;
+}
+
 fn ch_actors() -> Text {
   let b = el("p", "leading-relaxed mb-4",
     "Concurrency is actors on fibers: <code>spawn</code> makes an actor from a class with a " .. "<code>receive</code> method, <code>send</code> delivers one message at a time, and " .. "ownership MOVES with the message — no locks, no shared mutable state, no data races " .. "by construction. Blocking calls park the fiber; the shard serves others meanwhile. " .. "One VM per core by default; mailboxes are bounded (a full one is a catchable trap).");
@@ -94,7 +108,8 @@ pub fn seed_chapters() {
   insert Chapter { slug: "classes",    ord: 4, title: "Classes and interfaces",      body: ch_classes() };
   insert Chapter { slug: "optionals",  ord: 5, title: "Optionals and traps",         body: ch_optionals() };
   insert Chapter { slug: "tables",     ord: 6, title: "@table: the built-in database", body: ch_tables() };
-  insert Chapter { slug: "actors",     ord: 7, title: "Actors and fibers",           body: ch_actors() };
-  insert Chapter { slug: "deps",       ord: 8, title: "Dependencies",                body: ch_deps() };
-  insert Chapter { slug: "serving",    ord: 9, title: "Serving the web (this site)", body: ch_serving() };
+  insert Chapter { slug: "storage",    ord: 7, title: "Storage modes: durable and resident", body: ch_storage() };
+  insert Chapter { slug: "actors",     ord: 8, title: "Actors and fibers",           body: ch_actors() };
+  insert Chapter { slug: "deps",       ord: 9, title: "Dependencies",                body: ch_deps() };
+  insert Chapter { slug: "serving",    ord: 10, title: "Serving the web (this site)", body: ch_serving() };
 }

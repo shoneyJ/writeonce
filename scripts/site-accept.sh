@@ -119,6 +119,8 @@ expect "tailwind sheet inlined"         "$(hit /)"           200 ".btn{"
 expect "chapter renders a code sample"  "$(hit /ch/hello)"   200 "fn main"
 expect "escaped interpolation visible"  "$(hit /ch/values)"  200 '${port}'
 expect "unknown chapter is a 404 page"  "$(hit /ch/nope)"    404 "No such chapter"
+expect "storage chapter documents both modes" "$(hit /ch/storage)" 200 "resident: keys"
+expect "storage chapter states the chain bound"  "$(hit /ch/storage)" 200 "past 16 links"
 expect "install guide renders"          "$(hit /install)"    200 "tar -C /usr/local"
 expect "packages index lists both"      "$(hit /packages)"   200 "/packages/porch"
 expect "package detail shows its dep"   "$(hit /packages/view)" 200 "writeonce-view"

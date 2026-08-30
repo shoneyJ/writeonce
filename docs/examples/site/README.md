@@ -50,7 +50,7 @@ MVC, laid out exactly like the program template
 | this app | layer |
 | --- | --- |
 | `types.wo` | MODEL — the `Chapter` `@table`, and seed-if-empty |
-| `content.wo` | the nine chapter bodies + `seed_chapters()` |
+| `content.wo` | the ten chapter bodies + `seed_chapters()` |
 | `layout/` | the chrome: `AppShell` (+ the two named widths), header, footer, `html_error` |
 | `home/`, `chapter/`, `install/`, `packages/` | one module per feature: its `view.wo` (components: fields in, Text out) and its `controller.wo` (query the model, fill the components, answer a `Resp`) |
 | `admin/`, `health/`, `favicon/` | controller-only features — a redirect, a text probe, an SVG |

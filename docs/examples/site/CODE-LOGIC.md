@@ -9,7 +9,7 @@ samples now read the same way.
 | file | layer | what it owns |
 | --- | --- | --- |
 | `types.wo` | MODEL | the `Chapter` `@table`, the `ChapterLink` projection, `Chapters.links()`, and `seed_if_empty()` |
-| `content.wo` | MODEL (content) | the nine chapter bodies as fragment-returning functions, plus `seed_chapters()` |
+| `content.wo` | MODEL (content) | the ten chapter bodies as fragment-returning functions, plus `seed_chapters()` |
 | `layout/app.wo` | VIEW (chrome) | `AppShell` — the component that fills writeonce-view's `Layout` — the two named widths, and `html_error` |
 | `layout/header.wo`, `layout/footer.wo` | VIEW (chrome) | the shared nav bar (brand = mark + wordmark) and footer |
 | `layout/logo.wo` | VIEW (chrome) | the mark as inline SVG, plus the `<head>` links |
