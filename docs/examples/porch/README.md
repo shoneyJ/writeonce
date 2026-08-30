@@ -152,7 +152,7 @@ first (pure `.wo` cannot express it yet).
 
 | Item | State |
 | --- | --- |
-| Rate limiting (fixed window, durable) | ✅ counting serializes through a per-key actor pool (`middleware/keypool.wo`, `limiter.wo`) — no handler-fiber read-modify-write left to lose an increment. Gate-proven: exact count under genuine concurrency (30 parallel requests, no lost increments), WAL-durable restart still limiting, `trust_proxy`'s peer fallback, and pool saturation failing closed (503, never a bypass) — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
+| Rate limiting (fixed window, durable) | ✅ counting serializes through a per-key actor pool (`middleware/keypool.wo`, `limiter.wo`) — no handler-fiber read-modify-write left to lose an increment. Gate-proven: exact count under genuine concurrency (30 parallel requests, no lost increments), WAL-durable restart still limiting, and `trust_proxy`'s peer fallback — [porch 1](../../stories/porch/01-store-backed-middleware.md). Saturation failing closed (503) shares `limiter.wo`'s own `try/catch` code path with idempotency's, but is gate-proven only via `Idempotent`/`pool_begin`'s own saturation leg in `scripts/web-app-accept.sh` — no leg drives `Limiter`'s own 503 arm directly |
 | Idempotent replay of unsafe requests | ✅ the pool actor runs the route's `Handler` itself (`middleware/idempotent.wo`), so a duplicate blocks in the actor's mailbox until the owner's row commits — no in-flight heuristic, no window where a duplicate can see "nothing yet". Gate-proven: byte-identical replay, digest-mismatch refusal (422), concurrent duplicates never double-executing, a transient 5xx never replayed (solo or concurrent), ephemeral rows not leaking, and pool saturation failing closed (503) — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
 | Transaction-per-request middleware (commit on 2xx, roll back otherwise) | ⏸ **v2** — needs iteration 18's `transaction { }` |
 | Cancellation → rollback | ⏸ arc landed; still needs v2's `transaction { }` (iteration 18) |
@@ -169,25 +169,41 @@ needs to know, found in the course of building them ([porch 1](../../stories/por
   not via `app.use_mw`. This was forced, not stylistic: the actor has to be
   handed the route's `Handler` so it can run it inside `receive`, and only the
   handler slot exposes it.
-- **`Pool` cannot live in actor state or in a message.** It is demand-promoted
-  to "traced" and WO-E222 refuses it there. A real fiber-per-connection porch
-  app holds the bare `actor PoolMsg` handle in its connection-worker state and
-  re-wraps it as `Pool { actors: [PoolSlot { a: handle }] }` wherever a
-  `Limiter` or `Idempotent` needs one — see `ConnWorker` in the accept gate's
-  own limiter/idempotent/saturation checks (`scripts/web-app-accept.sh`).
+- **`Pool` cannot live in actor state or in a message — `multi PoolSlot` can,
+  and that's how a real app shards across MORE than one connection.** `Pool`
+  is demand-promoted to "traced" the moment an app aliases it (a
+  `Limiter`/`Idempotent`'s own `pool: Pool` field, read on every request) and
+  WO-E222 refuses a traced value in actor state or a message. `PoolSlot` (and
+  `multi PoolSlot`) never gets pulled into that traced set on its own — an
+  actor holding `slots: multi PoolSlot` directly is the same shape
+  `docs/examples/chat/main.wo`'s `Room { members: multi Mem }` already uses
+  for a multi of actor handles, and it compiles and runs. Call `make_pool(n)`
+  **exactly ONCE, at process start** — never per connection, which would give
+  every connection its own actors and silently restore the lost-increment
+  race this whole design exists to prevent — then hand `pool_slots(pool)`
+  (`middleware/keypool.wo`) to every connection actor's spawn. Each
+  connection rebuilds a transient `Pool` via `pool_of(self.slots)` wherever a
+  `Limiter` or `Idempotent` needs one. Disclosure: the accept gate's own
+  `ConnWorker` fixtures (`scripts/web-app-accept.sh`) still build a
+  deliberately ONE-slot `Pool { actors: [PoolSlot { a: slot }] }` per leg —
+  the limiter/idempotent legs are testing other properties, and the
+  saturation leg wants exactly one actor to force mailbox overflow — so no
+  gate leg yet exercises `pool_slots`/`pool_of` sharding N actors across
+  connections.
 - **A `call` reply is a copyable scalar only (WO-E226), and every `receive` in
   the program must agree on one return type.** That is why the stored response
   travels through the `@table` rather than the mailbox, and why outcome codes
   are packed into an `Int` (`pool_pack`/`pool_count`/`pool_begin` in
   `middleware/keypool.wo`).
-- **Pool size is a capacity decision, not a default to ignore.** `make_pool(n)`
-  spawns `n` actors, sharded by hash of the key; a hot key's actor has a
-  bounded mailbox (`WO_MAILBOX`, default 1024), and once it saturates under
-  load every further request for that key answers 503 rather than being
-  served uncounted or queued indefinitely. Undersizing the pool produces more
-  503s under load — it does not silently let requests through uncounted, and
-  it does not silently overshoot the limiter's or idempotency store's
-  guarantees.
+- **Pool size is a capacity decision made ONCE, not a default to ignore or a
+  knob to re-tune per connection.** `make_pool(n)` — called once, per the
+  bullet above — spawns `n` actors, sharded by hash of the key; a hot key's
+  actor has a bounded mailbox (`WO_MAILBOX`, default 1024), and once it
+  saturates under load every further request for that key answers 503 rather
+  than being served uncounted or queued indefinitely. Undersizing `n`
+  produces more 503s under load — it does not silently let requests through
+  uncounted, and it does not silently overshoot the limiter's or idempotency
+  store's guarantees.
 
 ### Security
 
