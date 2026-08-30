@@ -34,7 +34,10 @@ pub class Limiter {
 
   fn before(mut req: Req) -> ?Resp {
     let key = limiter_key(self, req);
-    let v = try pool_count(self.pool, key, self.limit, self.window) catch (e) nil;
+    let v = try pool_count(self.pool, key, self.limit, self.window) catch (e) {
+      print_err("limiter: pool_count trapped: ${e.msg}");
+      nil
+    };
 
     if v == nil {
       let r = Resp { status: 503, headers: {}, body: "{\"error\":\"rate limiter saturated\"}" };
