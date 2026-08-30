@@ -502,12 +502,25 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
  * but from a row the caller already holds — a keys-resident row whose payload
  * has been dropped has no slab image for wo_row_ptr to find, and the update
  * path is the one caller that legitimately has the full, post-update values in
- * hand because it folded them to maintain indexes. */
+ * hand because it folded them to maintain indexes.
+ *
+ * WO_WAL_UPDATE, not WO_WAL_INSERT, and the distinction is not cosmetic.
+ * Compaction's own flattening (stage_flattened_row) writes INSERT because it
+ * builds a FRESH log in which each row appears exactly once. This function
+ * appends into a LIVE log that already carries the row's original insert, so
+ * an INSERT here is a duplicate id, and replay correctly refuses a duplicate as
+ * corruption — caught by test_delta_chain_flatten_replays, which is the only
+ * way this could have been caught: the record reads back perfectly in-process
+ * and only fails on the next boot.
+ *
+ * UPDATE is exactly right anyway: replay applies it as remove-then-recreate,
+ * which is what replacing a row wholesale means, and the fold terminates on
+ * either full-row kind. */
 int wo_wal_append_row_image(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
                             const db_row *r) {
     if (!r) return -1;
     wbuf p = {0};
-    wput_u8(&p, WO_WAL_INSERT);
+    wput_u8(&p, WO_WAL_UPDATE);
     wput_u32(&p, class_id);
     wput_u64(&p, id);
     const wo_classdesc *c = &db->classes[class_id];
@@ -618,15 +631,19 @@ int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t
      *
      *   - without a triggering term, garbage that is large in bytes but small
      *     relative to a big live set is never reclaimed;
-     *   - without a ceiling, a very large live set defers compaction forever,
-     *     which is what autovacuum_vacuum_max_threshold exists to stop. */
+     *   - a very large live set would otherwise defer compaction forever,
+     *     which is what autovacuum_vacuum_max_threshold exists to stop.
+     *
+     * ONE term does both jobs here, and a separate ceiling was tried and
+     * removed as dead code. PostgreSQL needs two because its threshold counts
+     * TUPLES and its two constants sit at opposite ends (base 50, max 1e8).
+     * Ours counts BYTES, so "compact once garbage exceeds X" already caps
+     * deferral: any ceiling above X is unreachable, and any ceiling below it
+     * would be the trigger. Caught by trying to write a test that exercised
+     * the ceiling and finding none could. */
     uint64_t garbage = used > last ? used - last : 0;
     if (garbage >= WO_CKPT_ABS_BYTES) return 1;
-
-    uint64_t trigger = last * (uint64_t)ratio;
-    uint64_t ceiling = last + WO_CKPT_MAX_GARBAGE;
-    if (trigger > ceiling) trigger = ceiling;
-    return used > trigger;
+    return used > last * (uint64_t)ratio;
 }
 
 /* databasev2 3: how many records the dump stages before flushing.

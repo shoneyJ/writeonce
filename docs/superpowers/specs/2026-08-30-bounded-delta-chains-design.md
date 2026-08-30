@@ -122,6 +122,18 @@ whole-log policy's shape so it stops being blind to absolute garbage.
 - **A ceiling** — cap the proportional term so a very large live set does not
   defer compaction indefinitely. This is `autovacuum_vacuum_max_threshold`.
 
+> **Implementation outcome (2026-08-30): the ceiling was built and then removed
+> as dead code — the absolute term above already does its job.** Borrowing both
+> constants from postgres was the wrong inference. Postgres needs two because it
+> thresholds on *tuples*, with its pair at opposite ends of the range (base 50,
+> max 1e8). This design thresholds on *bytes*, and "compact once garbage exceeds
+> X bytes" is itself a cap on deferral: with the absolute term at 64 MiB, any
+> garbage large enough to reach a 256 MiB ceiling has already tripped it, so the
+> branch is unreachable. Any ceiling above the absolute term is dead; any below
+> it would simply be the trigger. Caught by trying to write a test for the
+> ceiling and finding no input could reach it. Do not reintroduce it without
+> also changing what the absolute term means.
+
 The existing floor keeps its current meaning — do not bother with a tiny log —
 but the doc comment must stop calling it a floor in postgres's sense, because it
 does the opposite thing.

@@ -935,6 +935,182 @@ static const wo_classdesc KEYS_IDX_CLASSES[] = {
  * from the log (table.c's idx_cols_equal path), so the probes below must
  * run AFTER the caller's commit + re-point — mirroring db.c's inline arm —
  * not straight after wo_row_update_field, which now only stages. */
+/* databasev2 11: helper — drive one update through the full commit/re-point
+ * dance the request path performs, so a chain can be built in a loop. */
+static void chain_update(wo_db *db, wo_wal *w, uint32_t cid, uint64_t id,
+                         uint32_t field, uint64_t v) {
+    const char *msg = "";
+    int ek = 0;
+    uint64_t roff = wo_wal_next_offset(w);
+    T_EQ(wo_row_update_field(db, cid, id, field, v, &msg, &ek), 0);
+    T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_commit(w), 0);
+    T_EQ(wo_row_set_offset(db, cid, id, roff), 0);
+}
+
+/* databasev2 11: the branch this iteration exists for. Past WO_DELTA_MAX_HOPS
+ * an update must TERMINATE the chain with a full-row record rather than
+ * lengthening it — otherwise read cost and replay cost grow without bound,
+ * because compaction's trigger is a whole-log byte ratio and cannot see one
+ * row's chain.
+ *
+ * The assertion is on the DEPTH the fold reports, not on timing: a test that
+ * measured speed would pass on a slow box with an unbounded chain. */
+/* databasev2 11 tier 2: the compaction policy's two new terms. A pure
+ * function, so this is cheap and exact — no log, no timing.
+ *
+ * The trap being guarded: our `floor` SUPPRESSES compaction on a small log,
+ * the opposite of PostgreSQL's vac_base_thresh, which TRIGGERS on a small
+ * absolute problem the proportion would hide. Before this iteration we had the
+ * proportion and the suppressor and neither real guard. */
+static void test_should_compact_absolute_and_ceiling(void) {
+    const uint64_t floor_b = 1024;
+
+    /* unchanged behaviour: below the floor, never */
+    T_EQ(wo_wal_should_compact(512, 256, floor_b, 2), 0);
+    /* unchanged: never compacted yet, past the floor -> once, to set a denominator */
+    T_EQ(wo_wal_should_compact(4096, 0, floor_b, 2), 1);
+    /* unchanged: ratio 0 disables the policy rather than dividing by nothing */
+    T_EQ(wo_wal_should_compact(1u << 30, 1024, floor_b, 0), 0);
+
+    /* THE ABSOLUTE TERM. A live set so large that the ratio will not trip for
+     * a very long time, but with more than WO_CKPT_ABS_BYTES of garbage
+     * already reclaimable. The old policy said no; the point of the term is
+     * that garbage large in BYTES is worth reclaiming even when it is small in
+     * PROPORTION. */
+    {
+        uint64_t live = 4ull * 1024 * 1024 * 1024;      /* 4 GiB live */
+        uint64_t used = live + WO_CKPT_ABS_BYTES + 1;   /* just over the term */
+        T_CHECK(used < live * 2);                       /* ratio 2 would NOT fire */
+        T_EQ(wo_wal_should_compact(used, live, floor_b, 2), 1);
+    }
+    /* and just under it, the ratio still governs */
+    {
+        uint64_t live = 4ull * 1024 * 1024 * 1024;
+        uint64_t used = live + (WO_CKPT_ABS_BYTES / 2);
+        T_EQ(wo_wal_should_compact(used, live, floor_b, 2), 0);
+    }
+
+    /* DEFERRAL IS CAPPED by the same term — no separate ceiling exists, and
+     * one was removed as unreachable. With an 8 GiB live set, ratio 2 would
+     * wait for the log to double; the absolute term fires long before that. */
+    {
+        uint64_t live = 8ull * 1024 * 1024 * 1024;      /* 8 GiB live */
+        uint64_t used = live + WO_CKPT_ABS_BYTES + 1;
+        T_CHECK(used < live * 2);                       /* the ratio alone would defer */
+        T_EQ(wo_wal_should_compact(used, live, floor_b, 2), 1);
+    }
+
+    /* the ratio still governs BELOW the absolute term, which is what keeps the
+     * two complementary rather than one subsuming the other: a small live set
+     * trips the ratio with far less garbage than 64 MiB */
+    T_EQ(wo_wal_should_compact(3072, 1024, floor_b, 2), 1);   /* 3 KiB > 1 KiB * 2 */
+    T_EQ(wo_wal_should_compact(2048, 1024, floor_b, 2), 0);   /* not yet */
+}
+
+static void test_delta_chain_flattens_at_k(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/chainflat.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 18), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sv = wo_str_new(&rt, "flat", 4);
+    uint64_t vals[2] = {0, (uint64_t)(uintptr_t)sv};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
+
+    /* Walk the depth up one update at a time and watch it reset. Without the
+     * flatten branch this climbs forever; with it, it must never exceed K. */
+    uint32_t peak = 0;
+    int saw_reset = 0;
+    for (uint32_t n = 1; n <= WO_DELTA_MAX_HOPS * 2u + 2u; n++) {
+        chain_update(&db, &w, 0, id, 0, (uint64_t)n);
+
+        uint32_t hops = 0;
+        uint32_t got_cid = 0;
+        uint64_t got_id = 0;
+        uint64_t out[2] = {0, 0};
+        const char *fm = "";
+        uint64_t o1 = wo_row_offset1(&db, 0, id);
+        T_CHECK(o1 != 0);
+        T_EQ(wo_wal_fold_row_at(&w, &db, o1 - 1, &got_cid, &got_id, out, &hops, &fm), 0);
+        T_CHECK(got_cid == 0 && got_id == id);
+        T_CHECK(out[0] == (uint64_t)n);          /* the value is still right */
+        for (uint32_t i = 0; i < 2; i++) wo_db_val_free(&db, KEYS_CLASSES[0].kinds[i], out[i]);
+
+        if (hops > peak) peak = hops;
+        if (n > 1 && hops == 0) saw_reset = 1;   /* a chain was terminated */
+    }
+    T_CHECK(peak <= WO_DELTA_MAX_HOPS);          /* the bound holds */
+    T_CHECK(saw_reset);                          /* and it was actually reached */
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 11: a flattened row must survive a restart identically. Replay
+ * meets a WO_WAL_INSERT where a chain used to be; if flattening wrote a shape
+ * replay mishandled, this is where it shows. */
+static void test_delta_chain_flatten_replays(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/chainflatreplay.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 18), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sv = wo_str_new(&rt, "rep", 3);
+    uint64_t vals[2] = {0, (uint64_t)(uintptr_t)sv};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    uint64_t off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
+
+    /* enough updates to guarantee at least one flatten */
+    uint64_t last = 0;
+    for (uint32_t n = 1; n <= WO_DELTA_MAX_HOPS + 3u; n++) {
+        chain_update(&db, &w, 0, id, 0, (uint64_t)n);
+        last = n;
+    }
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KEYS_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt; rt.wal = NULL; rt.db = &db2;
+    T_CHECK(wo_wal_replay(path, &db2) >= 0);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 18), 0);
+    rt.wal = &w2;
+
+    db_row *r = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_CHECK(r->slots[0] == last);                /* the newest value survived */
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 3 && memcmp(back->bytes, "rep", 3) == 0);
+    wo_row_release(&db2, 0, r);
+
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 static void test_keys_resident_update_indexed(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/keysidx.wal", g_dir);
@@ -997,6 +1173,110 @@ static void test_keys_resident_update_indexed(void) {
 
     wo_wal_close(&w);
     wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* databasev2 11: the third leg the story called out — a delta on an INDEXED
+ * column, with flattening in play. The two are independent features that meet
+ * on the same write path, and the meeting is where a bug would live:
+ * `row_apply_field_keys` picks DELTA or full-row image AFTER the index has
+ * already been re-pointed, so a flattened image that captured the wrong value
+ * would leave the index pointing at a row the fold disagrees with.
+ *
+ * Drives enough updates on the indexed column to cross WO_DELTA_MAX_HOPS
+ * several times, so at least one update lands on each branch, then checks the
+ * index and the fold agree at the end and after replay. */
+static void test_keys_resident_indexed_across_flatten(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysidxflat.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sa = wo_str_new(&rt, "a", 1);
+    uint64_t va[2] = {100, (uint64_t)(uintptr_t)sa};
+    uint64_t a = wo_row_insert(&db, 0, va, &msg, NULL);
+    T_CHECK(a != 0);
+    uint64_t off_a = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, a), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, a, off_a), 0);
+
+    /* cross the bound several times over; ROUNDS is deliberately not a
+     * multiple of the bound, so the run does not end on a reset */
+    const uint64_t ROUNDS = WO_DELTA_MAX_HOPS * 3 + 5;
+    uint64_t val = 100;
+    int saw_reset = 0;
+    db_table *t = &db.tables[0];
+    for (uint64_t i = 0; i < ROUNDS; i++) {
+        uint64_t prev = val;
+        val = 200 + i;
+        int ek = 0;
+        uint64_t roff = wo_wal_next_offset(&w);
+        T_EQ(wo_row_update_field(&db, 0, a, 0, val, &msg, &ek), 0);
+        T_EQ(ek, DB_ERR_NONE);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_set_offset(&db, 0, a, roff), 0);
+
+        /* every intermediate step, not only the last: the row is findable by
+         * the value just written and absent from the one it replaced */
+        uint64_t *ids; uint32_t cnt;
+        T_EQ(wo_idx_probe(&db, 0, 0, val, NULL, 0, &ids, &cnt), 1);
+        T_CHECK(cnt == 1 && ids[0] == a);
+        free(ids);
+        T_EQ(wo_idx_probe(&db, 0, 0, prev, NULL, 0, &ids, &cnt), 1);
+        T_CHECK(cnt == 0 && ids == NULL);
+
+        db_row *r = wo_row_borrow(&db, 0, a, &msg);
+        T_CHECK(r != NULL && r->slots[0] == val);
+        if (t->scratch_hops == 0) saw_reset = 1;
+        T_CHECK(t->scratch_hops <= WO_DELTA_MAX_HOPS);
+        wo_row_release(&db, 0, r);
+    }
+    T_CHECK(saw_reset);        /* flattening actually fired during the run */
+
+    /* the Text column, never updated, must survive every flatten: the image
+     * is rebuilt from a borrowed row, which is exactly where a value of the
+     * wrong representation would be written back */
+    db_row *r = wo_row_borrow(&db, 0, a, &msg);
+    T_CHECK(r != NULL && r->slots[0] == val);
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];   /* engine repr, not wo_str */
+    T_CHECK(back != NULL && back->len == 1 && back->bytes[0] == 'a');
+    wo_row_release(&db, 0, r);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* And the index rebuilds from the replayed log, flattened records and all.
+     * A keys-resident table comes back offset-valued, so both the probe's
+     * verification and any read need a live log: replay with rt.wal NULL (it
+     * lends its own read-only view), then reopen before touching the rows. */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KEYS_IDX_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt; rt.wal = NULL; rt.db = &db2;
+    T_CHECK(wo_wal_replay(path, &db2) >= 0);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2;
+
+    uint64_t *ids; uint32_t cnt;
+    T_EQ(wo_idx_probe(&db2, 0, 0, val, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == a);
+    free(ids);
+    T_EQ(wo_idx_probe(&db2, 0, 0, 100, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 0 && ids == NULL);
+
+    db_row *r2 = wo_row_borrow(&db2, 0, a, &msg);
+    T_CHECK(r2 != NULL && r2->slots[0] == val);
+    wo_row_release(&db2, 0, r2);
+
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
     wo_rt_destroy(&rt);
 }
 
@@ -2392,6 +2672,10 @@ int main(void) {
     test_fold_refuses_forward_pointing_delta();
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
+    test_keys_resident_indexed_across_flatten();
+    test_should_compact_absolute_and_ceiling();
+    test_delta_chain_flattens_at_k();
+    test_delta_chain_flatten_replays();
     test_keys_resident_update_indexed_text();
     test_keys_resident_update_unique_violation_refused();
     test_keys_resident_two_updates_one_drain();

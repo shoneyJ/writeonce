@@ -224,12 +224,13 @@ void wo_db_flush_drops(wo_db *db, wo_wal *w);
  * Past this much reclaimable garbage, compact regardless of proportion, so
  * garbage that is large absolutely but small against a big live set still gets
  * reclaimed.
- *
- * WO_CKPT_MAX_GARBAGE caps the proportional term, mirroring
- * `autovacuum_vacuum_max_threshold`, so a very large live set cannot defer
- * compaction indefinitely. */
+ * It also does the job PostgreSQL splits into a second constant
+ * (`autovacuum_vacuum_max_threshold`): capping how long a very large live set
+ * can defer compaction. A separate ceiling was implemented and then removed as
+ * unreachable — postgres needs two constants because it counts TUPLES with its
+ * pair at opposite ends (50 and 1e8); this counts BYTES, so any ceiling above
+ * this value can never fire and any below it would simply be the trigger. */
 #define WO_CKPT_ABS_BYTES    (64u * 1024u * 1024u)
-#define WO_CKPT_MAX_GARBAGE  (256u * 1024u * 1024u)
 
 int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t ratio);
 

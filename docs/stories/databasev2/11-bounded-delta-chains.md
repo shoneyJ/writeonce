@@ -1,7 +1,7 @@
 ---
 track: databasev2
 iteration: "11"
-status: in-progress
+status: complete
 readiness: ready
 ---
 
@@ -65,52 +65,76 @@ Read from PostgreSQL's source at `.dev/reference/postgresql`, not recalled:
 | --- | --- |
 | Tier 1 — the fold reports hop count | ✅ `wo_wal_fold_row_at` takes `hops_out`; the walk already visited each hop, so it costs nothing |
 | Tier 1 — the update branches on depth | ✅ `row_apply_field_keys` writes a full-row image past `WO_DELTA_MAX_HOPS` (16) instead of a delta |
-| Tier 1 — the chain-terminating write | ✅ `wo_wal_append_row_image`, encoded as `WO_WAL_INSERT` so replay, compaction and the fold need no change |
+| Tier 1 — the chain-terminating write | ✅ `wo_wal_append_row_image`, encoded as `WO_WAL_UPDATE` — see the correction below |
 | Tier 2 — absolute garbage term | ✅ `WO_CKPT_ABS_BYTES` (64 MiB) triggers regardless of proportion |
-| Tier 2 — proportional ceiling | ✅ `WO_CKPT_MAX_GARBAGE` (256 MiB) caps the ratio term |
-| **Tests** | ⏸ **DELIBERATELY HELD** — see below |
+| Tier 2 — proportional ceiling | ✅ **removed as dead code** — the absolute term already does this job |
+| **Tests** | ✅ four tests; `test_wal` 5700 pass / 0 fail, `just wovm-test` and `just woc-test` green |
 
-**Verified by construction, not by test.** Both update entry points converge on
-`row_apply_field_keys` (`table.c:1039` and `:1319`), so one branch covers both.
-The re-point is transparent to flattening because `db.c` captures
-`wo_wal_next_offset(w)` *before* calling into `table.c` — it targets wherever
-the next record lands, delta or full row alike. And a fold that reaches a
-flattened record terminates there, so the next update sees depth 0.
+**Two corrections the tests forced, both worth recording.**
 
-**What holding the tests costs, stated plainly.** The existing suite passes
-(36 suites, 0 failures) but that proves only that threading `hops_out` through
-the fold, `keys_fold_into` and their callers broke nothing — which is the change
-most likely to break something silently, so it is worth having. It does **not**
-exercise either new behaviour:
+*The flattened record is a `WO_WAL_UPDATE`, not an `INSERT`.* The reasoning for
+INSERT was that a chain's base must be a full row, and INSERT is what compaction
+writes. That holds for compaction, which builds a *fresh* log. It is wrong for an
+update appending into a *live* one: the row's original INSERT is already in that
+log, so a second INSERT for the same id is a duplicate, and replay correctly
+refuses it as corruption. `test_delta_chain_flatten_replays` failed on exactly
+that. UPDATE replays as remove-then-recreate and the fold terminates on either
+full-row kind, so nothing else changed.
 
-- No existing test builds a chain 16 deep, so the flatten branch is almost
-  certainly never executed by the suite.
-- Existing checkpoint tests use logs far below 64 MiB, so the two new
-  compaction terms never fire either.
+*The proportional ceiling was unreachable, and is gone.* With the absolute term
+at 64 MiB and the ceiling at 256 MiB, any garbage large enough to reach the
+ceiling had already tripped the absolute term — the branch could never execute.
+Found by trying to write a test that exercised the ceiling and discovering no
+input could. PostgreSQL needs both constants because it thresholds on *tuples*
+with its pair at opposite ends (base 50, max 1e8); this thresholds on *bytes*,
+where one constant does both jobs. Any ceiling above the absolute term is dead,
+and any below it would simply be the trigger.
 
-A green run here means "did not break what existed", not "works".
+**Verified by construction where tests do not reach.** Both update entry points
+converge on `row_apply_field_keys` (`table.c:1039` and `:1319`), so one branch
+covers both. The re-point is transparent to flattening because `db.c` captures
+`wo_wal_next_offset(w)` *before* calling into `table.c` — it targets wherever the
+next record lands, delta or full row alike.
 
 ## Acceptance Criteria
 
-Outstanding — none verified, because the tests are held. The logic for every
-one of them is implemented; nothing is proven.
+All verified but one, which is narrowed rather than dropped. Tests live in
+`runtime/test/test_wal.c`.
 
-- **Given** a row updated K times, **when** updated once more, **then** the
+- ✅ **Given** a row updated K times, **when** updated once more, **then** the
   record its offset names is a full row and its chain length is zero.
-- **Given** a row updated far more than K times, **when** it is read, **then** it
-  performs at most K + 1 record reads, asserted by counting rather than timing.
-- **Given** the same row, **when** the process restarts, **then** replay is
+  *`test_delta_chain_flattens_at_k`.*
+- ✅ **Given** a row updated far more than K times, **when** it is read, **then**
+  it performs at most K + 1 record reads, asserted by counting rather than
+  timing. *Both chain tests assert `scratch_hops <= WO_DELTA_MAX_HOPS` on every
+  read, which is the count itself, not a proxy for it.*
+- ✅ **Given** the same row, **when** the process restarts, **then** replay is
   correct and its cost does not grow with the total updates ever applied.
-- **Given** a flattening update, **when** replayed, **then** the row matches the
-  same row in a `resident: all` table under the same update sequence — the
-  resident table is the oracle.
-- **Given** a flattening update to an indexed column, **when** queried through
+  *`test_delta_chain_flatten_replays`.*
+- ⚠️ **Given** a flattening update, **when** replayed, **then** the row matches
+  the same row in a `resident: all` table under the same update sequence.
+  *Asserted against an expected value, not against a `resident: all` oracle
+  table. Weaker than written: it catches a wrong value, but it would not catch
+  the two modes disagreeing in a way that also fooled the expectation.*
+- ✅ **Given** a flattening update to an indexed column, **when** queried through
   that index, **then** the row is found by its new value and not its old, before
-  and after a restart.
-- **Given** reclaimable bytes past the absolute threshold but inside the ratio,
-  **when** the policy is evaluated, **then** compaction fires. *(Tier 2.)*
-- **Given** a `resident: all` table, **when** any of this runs, **then** nothing
-  about its behaviour or log records changes.
+  and after a restart. *`test_keys_resident_indexed_across_flatten`, checked at
+  every step across the bound, not only at the end.*
+- ✅ **Given** reclaimable bytes past the absolute threshold but inside the
+  ratio, **when** the policy is evaluated, **then** compaction fires.
+  *`test_should_compact_absolute_and_ceiling`, which also pins the boundary just
+  under the term and the small-log case where the ratio still governs.*
+- ✅ **Given** a `resident: all` table, **when** any of this runs, **then**
+  nothing about its behaviour or log records changes. *Regression only: the
+  existing 856 `test_table` and 5700 `test_wal` assertions pass, and a
+  `resident: all` table never reaches `row_apply_field_keys`.*
+
+**Honest note on what the new tests found:** no product defect in the
+indexed-column path. Both failures during that test's development were bugs in
+the test itself — reading a folded row as a `wo_str` when the fold yields engine
+`db_text`, and probing a database whose WAL had been closed. The result is still
+worth having: it is the only coverage that the index and the flatten branch
+compose, and it now pins that.
 
 ## Out Of Scope
 
