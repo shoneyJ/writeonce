@@ -152,13 +152,42 @@ first (pure `.wo` cannot express it yet).
 
 | Item | State |
 | --- | --- |
-| Rate limiting (fixed window, durable) | 🔶 tables + a first limiter exist (`middleware/store.wo`, `limiter.wo`); the counting path is being rebuilt to serialize through an actor pool, because read-modify-write from a handler fiber loses increments — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
-| Idempotent replay of unsafe requests | 🔶 tables + a first middleware exist (`middleware/idempotent.wo`); being rebuilt to block on the in-flight owner rather than store-after-completion, which cannot detect a collision at all — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
+| Rate limiting (fixed window, durable) | ✅ counting serializes through a per-key actor pool (`middleware/keypool.wo`, `limiter.wo`) — no handler-fiber read-modify-write left to lose an increment. Gate-proven: exact count under genuine concurrency (30 parallel requests, no lost increments), WAL-durable restart still limiting, `trust_proxy`'s peer fallback, and pool saturation failing closed (503, never a bypass) — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
+| Idempotent replay of unsafe requests | ✅ the pool actor runs the route's `Handler` itself (`middleware/idempotent.wo`), so a duplicate blocks in the actor's mailbox until the owner's row commits — no in-flight heuristic, no window where a duplicate can see "nothing yet". Gate-proven: byte-identical replay, digest-mismatch refusal (422), concurrent duplicates never double-executing, a transient 5xx never replayed (solo or concurrent), ephemeral rows not leaking, and pool saturation failing closed (503) — [porch 1](../../stories/porch/01-store-backed-middleware.md) |
 | Transaction-per-request middleware (commit on 2xx, roll back otherwise) | ⏸ **v2** — needs iteration 18's `transaction { }` |
 | Cancellation → rollback | ⏸ arc landed; still needs v2's `transaction { }` (iteration 18) |
 | Migration generation + review workflow | ⬜ recorded future story (script-based destructive migrations) |
 | Eager-loading API (N+1) | ⬜ query-surface work (9-series), not framework code |
 | Tenant-scoped query roots | ⬜ future; wants the query surface to grow scoped roots first |
+
+Four things anyone wiring the rate limiter or idempotency into a real app
+needs to know, found in the course of building them ([porch 1](../../stories/porch/01-store-backed-middleware.md)):
+
+- **`Idempotent` is a `Handler` decorator, not a `Middleware`.** It holds
+  `pool` + `inner` and implements `handle`, registered in place of the route's
+  own handler (`app.post("/x", Idempotent { ..., inner: RealHandler {} })`),
+  not via `app.use_mw`. This was forced, not stylistic: the actor has to be
+  handed the route's `Handler` so it can run it inside `receive`, and only the
+  handler slot exposes it.
+- **`Pool` cannot live in actor state or in a message.** It is demand-promoted
+  to "traced" and WO-E222 refuses it there. A real fiber-per-connection porch
+  app holds the bare `actor PoolMsg` handle in its connection-worker state and
+  re-wraps it as `Pool { actors: [PoolSlot { a: handle }] }` wherever a
+  `Limiter` or `Idempotent` needs one — see `ConnWorker` in the accept gate's
+  own limiter/idempotent/saturation checks (`scripts/web-app-accept.sh`).
+- **A `call` reply is a copyable scalar only (WO-E226), and every `receive` in
+  the program must agree on one return type.** That is why the stored response
+  travels through the `@table` rather than the mailbox, and why outcome codes
+  are packed into an `Int` (`pool_pack`/`pool_count`/`pool_begin` in
+  `middleware/keypool.wo`).
+- **Pool size is a capacity decision, not a default to ignore.** `make_pool(n)`
+  spawns `n` actors, sharded by hash of the key; a hot key's actor has a
+  bounded mailbox (`WO_MAILBOX`, default 1024), and once it saturates under
+  load every further request for that key answers 503 rather than being
+  served uncounted or queued indefinitely. Undersizing the pool produces more
+  503s under load — it does not silently let requests through uncounted, and
+  it does not silently overshoot the limiter's or idempotency store's
+  guarantees.
 
 ### Security
 

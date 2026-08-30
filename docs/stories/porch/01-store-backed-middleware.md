@@ -1,7 +1,7 @@
 ---
 track: porch
 iteration: "1"
-status: in-progress
+status: done
 readiness: ready
 ---
 
@@ -63,10 +63,14 @@ globally.
 
 | Phase | State |
 | --- | --- |
-| A — store convention | ✅ `519d411` — two purpose-shaped tables. **Outstanding**: the request-digest column the refusal criterion needs |
-| B — rate limiter | ⚠️ **superseded** — `5b1e82a` built the store-after shape; see History |
-| C — idempotency | ⚠️ **superseded** — `aee7926` built the same shape; `5c3544d` fixed its missing `use json`, which had made the whole porch library uncompilable |
-| D — gate and ledger | ⬜ not started; the restart leg is the one that must not be skipped |
+| A — store convention | ✅ `519d411` two purpose-shaped tables; `3a9bddc` added the digest column the refusal criterion needs |
+| B — rate limiter | ✅ `676e651` the shared key-pool actor (also C's foundation), `153fd29` its `reset_at` unit fix; `a653dd0` the limiter delegates all counting to the pool, `831e9d8` `trust_proxy`'s absent-XFF fallback fix |
+| C — idempotency | ✅ `eae1b06` rebuilt on the same pool actor (the actor runs the route's `Handler` itself); three fix rounds: `e61015f` never replay a transient 5xx, `464147a` close the ephemeral-row race, `9ad5947` delete the ephemeral row after one read |
+| D — gate and ledger | ✅ + this commit — the pool-saturation gate leg (§19, `scripts/web-app-accept.sh`), README ledger rows to ✅, pool-size capacity docs, `make_pool`'s mod-by-zero guard |
+
+Superseded pre-rewrite commits (`5b1e82a`, `aee7926`, `5c3544d`) are kept in
+History below rather than deleted — the reasoning for the rebuild survives
+there.
 
 ## Phases
 
@@ -123,35 +127,61 @@ globally.
 
 - **Given** a limiter of N requests per window, **when** a client sends N+1,
   **then** the first N succeed and the last is 429 with `Retry-After` set.
+  **Met** — `scripts/web-app-accept.sh` §17a: 5 requests pass, the 6th is 429,
+  carrying `Retry-After` and `X-RateLimit-Remaining: 0`.
 - **Given** counters at their limit, **when** the process is SIGTERMed and
   restarted, **then** the client is still limited — the counters replayed from
-  the WAL rather than resetting to zero.
+  the WAL rather than resetting to zero. **Met** — §17b: same client, same
+  key, still 429 after a restart against the same `WO_DATA`.
 - **Given** a window that has fully elapsed, **when** the same client returns,
-  **then** it is served, and the expired row is pruned on that access.
+  **then** it is served, and the expired row is pruned on that access. **Met
+  by construction, not gate-exercised** — `keypool.wo`'s kind-1 arm deletes the
+  stale row and inserts a fresh count-1 row once `now - row.window >
+  msg.window`; no gate leg waits out a full window (the keypool leg's own
+  window is 60s) to observe it end to end.
 - **Given** the system clock jumping backwards, **when** the window is
   evaluated, **then** no extra allowance is granted (`time.ticks` is monotonic).
+  **Met by construction, not gate-exercised** — the counting path reads only
+  `time.ticks()`, never `time.now()`; `time.now()` feeds only the advisory
+  `reset_at`/`X-RateLimit-Reset` value, never the count itself. No gate leg
+  fakes a backward clock jump.
 - **Given** a POST with an idempotency key that has been seen, **when** it is
   replayed, **then** the stored response is returned byte-identically and the
   handler's side effect count is unchanged — proven by a row count, not by a
-  log line.
+  log line. **Met** — §18a: same key + same body both 200, byte-identical
+  bodies, `ExecMark` row count stays 1.
 - **Given** a reused idempotency key with a different request body, **when** it
   arrives, **then** it is refused rather than answered with the other request's
-  response.
+  response. **Met** — §18b: 200 then 422, the 422 body is the refusal (never
+  the first response), the refused request never ran the handler.
 - **Given** two identical keyed requests in flight at once, **when** both are
   dispatched, **then** exactly one executes and the other receives that one's
   stored response — never a refusal, never a partial write. *(Restated
   2026-08-29: this used to permit 409. Blocking supersedes it — the duplicate
-  parks on `call` until the owner reports.)*
+  parks on `call` until the owner reports.)* **Met** — §18c: two genuinely
+  concurrent duplicates both answer 200 with identical bytes, overlap timing
+  proves genuine concurrency, and `ExecMark` shows exactly one execution.
 - **Given** N concurrent requests for one limiter key, **when** they are
   counted, **then** the total is exactly N and no increment is lost. *(Added:
   unreachable before the pool, and the defect that most undermines a limiter.)*
+  **Met** — §17c: 30 genuinely parallel requests, the count afterward is exact.
 - **Given** a saturated actor pool, **when** a request arrives, **then** it is
   refused with 503 rather than served uncounted. *(Added: fail-closed, because
-  saturating the pool must not become the limiter's bypass.)*
+  saturating the pool must not become the limiter's bypass.)* **Met** — §19: a
+  one-actor pool with `WO_MAILBOX` shrunk to 2, 15 concurrent requests, exactly
+  3 served (1 running + 2 queued) and 12 answer 503, each 503 carrying
+  `Retry-After` and naming the real cause; the `SatMark` execution count
+  matches the 200 count exactly — no overflow request ran uncounted.
 
-None of these are met yet — Phase D owns the gate, and B and C are being
-rebuilt. The concurrency legs need genuine parallelism: a test that cannot
-fail before the fix is not a test.
+Seven of nine criteria are gate-proven end to end
+(§17a/§17b/§17c/§18a/§18b/§18c/§19). The remaining two — window-elapse pruning
+and clock-monotonicity — are implemented and hold by construction and code
+inspection; neither was gated even in the original phase plan below, and
+gating them (a real wait-out-a-window run, a faked backward clock) is future
+work, not this task's. The concurrency legs needed genuine parallelism: a test
+that cannot fail before the fix is not a test, and `scripts/web-app-accept.sh`
+§17c/§18c/§19 all use backgrounded, concurrently-launched clients rather than
+a sequential loop.
 
 ## Out Of Scope
 
@@ -220,6 +250,45 @@ lives in the VM, and that is exactly the blocking primitive the design needs.
    iteration 2, so this is cheap now and expensive later.
 
 ## History
+
+**2026-08-30 — Task 5: the saturation leg, and closing out.** The gate now
+proves fail-closed saturation (§19 of `scripts/web-app-accept.sh`): a one-actor
+pool, `WO_MAILBOX` shrunk to 2, 15 genuinely concurrent requests — exactly 3
+served (1 running + 2 queued) and 12 answer 503, retry-after set, the real
+cause named, and the execution count matches the 200 count exactly. Also
+fixed while wiring pool size: `make_pool(n)` with `n < 1` was a mod-by-zero in
+`pool_select`; guarding it in `pool_select` alone would not have helped —
+every `pool_select` call runs inside the middleware's own `try ... catch (e)
+nil`, so the trap would have been swallowed and misreported as ordinary 503
+saturation forever. `make_pool` now clamps `n < 1` to 1.
+
+Four things discovered building Tasks 2–4, not in the original design, now
+recorded in `docs/examples/porch/README.md` (not only here, since anyone
+wiring this into a real app needs them): `Idempotent` is a `Handler`
+decorator, not a `Middleware`; `Pool` cannot live in actor state or a message
+(WO-E222) and must be re-wrapped from a bare `actor PoolMsg` handle per use;
+a `call` reply must be a copyable scalar (WO-E226), which is why the response
+travels through the `@table`; and pool size is a capacity decision — a
+saturated pool fails closed with 503, never a silent bypass.
+
+**Runtime defects found during this work — C runtime, not porch bugs:**
+
+- `try EXPR catch (e) nil` cannot distinguish a literal `Int 0` reply from a
+  trap. Worked around by never packing a zero outcome code (`pool_pack` in
+  `middleware/keypool.wo`).
+- A `Text`/map value read off `json.decode(...) as T` is corrupted once
+  embedded in a struct crossing a function-return boundary. Worked around by
+  forcing fresh text with `.. ""` on every field copied out of a decoded
+  record (`idempotent.wo`'s replay path).
+- Under concurrent `call()`-parked callers doing real per-request table I/O,
+  `main()` returns cleanly but the OS process sometimes hangs (~1-in-5); an
+  aggressive variant produced a segfault. Reproduces more readily at higher
+  sequential insert+delete volume against the same key (N=4/5 crashed; N=1–3
+  clean over 12+ trials). Both `idempotent-check`'s own SIGTERM leg (§18) and
+  the new saturation leg (§19) — the sharpest reproducer yet, by design — hit
+  this; both contain it with an unconditional `kill -9` fallback rather than
+  asserting graceful shutdown, so it cannot flake a leg whose actual subject
+  is something else. Root-causing this is C-runtime work, out of scope here.
 
 **2026-08-29 — Phases B and C superseded before review.** Both were built
 against the original framing and both store the response *after* the handler

@@ -223,11 +223,18 @@ class Pool {
 
 -- Spawns n identical actors and returns the pool. n is a capacity knob:
 -- too small and a hot key's mailbox saturates under load (a `call` trap,
--- answered 503 by the middleware — never a silent bypass).
+-- answered 503 by the middleware — never a silent bypass). n < 1 is a
+-- caller misconfiguration, not a capacity choice, and guarding it HERE
+-- (not in pool_select's division) is what matters: every pool_select call
+-- runs inside the middleware's own `try ... catch (e) nil`, so a
+-- mod-by-zero trap there would be swallowed and misreported as ordinary
+-- 503 saturation forever, never surfacing the real bug.
 pub fn make_pool(n: Int) -> Pool {
+  let count = n;
+  if count < 1 { count = 1; }
   let actors: multi PoolSlot = [];
   let i = 0;
-  while i < n {
+  while i < count {
     push(actors, PoolSlot { a: spawn KeyActor {} });
     i = i + 1;
   }

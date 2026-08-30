@@ -67,112 +67,53 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
-### Landed 2026-09-01 — iteration 42, bounded subprocess (brainstorm to gate in one day)
+### Landed 2026-08-30 — porch 1 DONE, store-backed middleware closed out
 
-**Implemented last time (2026-09-01):** iteration
-[42](language-runtime-database/42-bounded-subprocess.md) end to end —
-`proc.run` reworked from shard-blocking to parked (pipe read ends +
-pidfd behind one epoll fd, the `_dl` retry mould), bounds everywhere
-(30 s / 1 MiB / 64 KiB defaults; per-shard ceiling 32; every violation
-kills the child and traps `WO_T_IO` naming the bound), owner-bound
-reaping (`fib_reap`/`wo_vm_destroy`/stop all sweep), and `proc.run_dl`
-(id 96) stating bounds per call. New suite `runtime/test/test_proc.c`
-(128 checks) and `docs/examples/subprocess` + `just subprocess`
-(12 checks). [Spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md)
-· [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md).
+**porch 1 (store-backed middleware) is `status: done`.** Task 5 added the
+last gate leg — pool saturation fails closed — and closed out the story: a
+one-actor pool with `WO_MAILBOX` shrunk to 2, 15 genuinely concurrent
+requests, exactly 3 served (1 running + 2 queued) and 12 answer 503 with
+`Retry-After` and the real cause named, and the execution count matches the
+200 count exactly (no overflow request runs uncounted). `scripts/web-app-accept.sh`
+is now 79 checks, 0 failures (`just web-app`). README's two ledger rows (rate
+limiting, idempotency) moved 🔶 → ✅, scoped to exactly what the gate proves,
+plus four API facts anyone wiring this into a real app needs (`Idempotent` is
+a `Handler` decorator not a `Middleware`; `Pool` cannot live in actor state or
+a message, WO-E222; a `call` reply is a scalar only, WO-E226; pool size is a
+capacity decision — undersizing means more 503s, never a silent bypass).
+Fixed en route: `make_pool(n)` with `n < 1` was a mod-by-zero in
+`pool_select`, guarded by clamping in `make_pool` itself — guarding the
+division alone would not have helped, since every `pool_select` call runs
+inside the middleware's own `try ... catch (e) nil` and would have swallowed
+the trap as ordinary saturation forever.
 
-**Key findings (measured, not asserted):** the suspected drain deadlock
-was REAL — a child writing 200 KB to stdout while holding stderr open
-hung the old `proc.run` until the test's 5 s alarm (stdout silently
-truncated at 8,192 bytes, exit code lost to SIGPIPE); the parked rework
-answers the same child in 15 ms. A `ping` request was answered in 2 ms
-while a `sleep 2` child was parked on the same shard. One thousand
-sequential spawns left the fd table byte-flat. SIGTERM with a `sleep 30`
-child live: clean exit 0, child pid verifiably gone from outside.
+**What did NOT fully land:** 2 of the story's 9 acceptance criteria
+(window-elapse pruning, clock-monotonicity) are implemented and verified by
+code inspection only, not by an integration leg — neither was gated even in
+the original phase plan, and gating them (waiting out a real window, faking a
+backward clock) is future work. Also unresolved, and explicitly NOT this
+task's to fix: a pre-existing C-runtime defect (recorded in Task 4's own
+notes) where concurrent `call()`-parked callers doing real per-request table
+I/O leave `main()` returning cleanly while the OS process itself sometimes
+hangs (~1-in-5). The new saturation leg is, by design, the sharpest
+reproducer of it yet; it and idempotent-check's own SIGTERM leg both contain
+it with an unconditional `kill -9` rather than asserting graceful shutdown, so
+it cannot flake either leg's actual subject.
 
-**Learned:** a new sysio builtin id is THREE registrations, not one —
-the wob.h enum, the loader's arity table, and builtin.c's dispatch
-range; missing any of them surfaces as `unknown stdlib builtin` from a
-perfectly valid image. And glibc 2.35 (the release build floor) has no
-pidfd wrappers — raw `syscall(SYS_pidfd_open/…_send_signal)` or the
-release build breaks.
+**.dev / reference projects used:** none — this task was internal-only
+(runtime/src/vm.c read directly for `wo_mailbox_cap`/`WO_MAILBOX` semantics to
+design a deterministic saturation leg).
 
-**Dependencies unblocked:** the streaming form (long-lived children,
-output as mailbox messages) now has its registry/pidfd/cap machinery
-built; the tmux/alacritty studies' stage A and the zen study's CDP
-driver (stage C′) queue behind that plus their own named gaps
-(PTY/termios/fd-passing; ws-client). Iteration 28's "bounded subprocess
-first" ordering item is spent.
+**Dependencies unblocked:** none newly technical — porch 2 (randomness and
+cookies) was already sequenced next, blocked only on its own CSPRNG builtin
+(language track). What porch 1 settles is the store pattern and gate shape
+2/3/4 inherit: serialize through an actor pool, persist in a `@table`, prove
+every claim with a gate leg scoped to exactly what it shows.
 
-**Next steps:** cherry-pick lang42 to master when declared ready; the
-startable set otherwise unchanged. The exploration studies' next
-builtin-sized item is the WebSocket client (zen C′).
-
-**`.dev/reference` used:** alacritty, tmux, zen-browser (the three
-parity studies that promoted this gap to an iteration); the kernel's own
-pidfd/epoll interfaces for the mechanics.
-
-### Landed 2026-08-30 — keys-resident delta updates DONE, loader refusal lifted
-
-**Implemented last time (2026-08-30):** the six-task
-[keys-resident delta updates](../superpowers/plans/2026-08-30-keys-resident-delta-updates.md)
-plan's final task — lifting the `runtime/src/loader.c` refusal of
-`resident: keys` and proving update end to end. The refusal (databasev2 2's
-Outstanding criterion) is now Met: a keys-resident row updates through a WAL
-delta record, read-modify-**append**, folded back to a value by
-`wo_wal_fold_row_at` on every read, replay and compaction. Proven four ways —
-the fold itself (earlier tasks), group-commit staging with the id-map re-point
-deferred to the post-barrier flush, replay/compaction folding delta chains the
-same way reads do, and this task's oracle test
-(`test_oracle_all_vs_keys_same_update_sequence`, `runtime/test/test_wal.c`)
-driving the SAME update sequence against a `resident: all` table and a
-`resident: keys` table and asserting byte-identical rows at every step.
-`docs/examples/residency`'s `Product` table is genuinely `resident: keys` now;
-`scripts/residency-accept.sh`'s gate leg inverted from "the annotation is
-refused" to "the program runs and `place_order`'s stock decrement survives a
-restart" (11 checks, 0 failures).
-
-**A second bug surfaced auditing the request path before lifting the
-refusal** — the same audit class that caught `delete`'s memory corruption
-in the prior session. `idx_hash`, `idx_cols_equal` and `wo_idx_probe`
-(`database/src/table.c`) read a TEXT column's slot as an engine `db_text*`,
-but a keys-resident borrow was handing back VM-decoded `wo_str*` — a
-different struct layout, reproduced as a genuine ASan heap-buffer-overflow,
-not merely wrong values. The same bug was independently present in `db.c`'s
-`GET_FIELD` and `PROBE` arms (inline and request-path), unaudited until now
-because nothing could reach a keys-resident row through them while the
-annotation was refused. Fixed at the root: a keys-resident borrow now hands
-back engine values, exactly `wo_row_ptr`'s contract for `resident: all`
-(`table.h`'s own "a row stores NO VM pointer" doctrine) — no index function
-needed to change, and `db.c` needed none either. Pinned by
-`test_keys_resident_update_indexed_text`, which reproduces the overflow
-against the pre-fix code; all five pre-existing tests that read a
-keys-resident Text field directly were auditing the OLD (wrong) contract and
-are corrected alongside it. `test_wal` 4746/0 throughout.
-
-**What did NOT land, by design — three limitations documented, not fixed:**
-(1) mid-drain stale reads — a request reading a row in the same uncommitted
-drain as an earlier request's in-flight update to it may see the last durable
-value, not that write; (2) replay is O(N²) in a row's delta-chain length,
-since each replayed delta re-folds the whole chain; (3) compaction triggers on
-byte ratio only, with no per-row delta-count signal, so one hot row (a single
-popular SKU — this feature's own motivating workload) can grow a long chain
-without moving the aggregate ratio enough to checkpoint. Item 3 is the
-sharper finding: the design's decision not to cap chain length rests on
-compaction bounding it, and for a hot-row workload it does not. Recorded in
-[the story](databasev2/02-table-storage-modes.md) and the example's README.
-
-**.dev / reference projects used:** none — internal-only, `table.c`/`wal.c`/
-`db.c` read directly to audit the request path and trace the representation
-mismatch.
-
-**Dependencies unblocked:** none newly technical — databasev2 2's own tasks 6
-(the two runtime refusals: no-`WO_DATA`, the byte budget) and 7 (measure, gate,
-close out) were already the next items and do not depend on this.
-
-**Next steps:** databasev2 2 tasks 6/7, as before. `database/src/CODE-LOGIC.md`
-is current with the stage-here/commit-in-caller update contract and the
-engine-representation fix.
+**Next steps:** databasev2 2 tasks 6/7 remain the language-track's own
+critical path (unaffected by this session); on the porch track, porch 2's
+brainstorm (CSPRNG builtin id 96+, then repeated response headers) is next
+whenever that track resumes.
 
 ### Landed 2026-08-29 — databasev2 2 tasks 5c/5d, and a branch consolidation
 
@@ -1040,8 +981,6 @@ the language arc as v1 history.
 | 8 | [Query grammar from corpora](databasev2/08-query-grammar-corpus.md) *(was 27)* | ⬜ whole-query `count`, `exists`; independent |
 | 9 | [Cross-program tables](databasev2/09-cross-program-tables.md) *(was 20)* | ⏸ hold — attach to a running program's database over local IPC |
 | 10 | [Keypair attach auth](databasev2/10-keypair-attach-auth.md) *(was 21)* | ⏸ hold — program identity as a keypair; needs 9 |
-| 11 | [Bounded delta chains](databasev2/11-bounded-delta-chains.md) | ✅ **LANDED 2026-08-30.** A `resident: keys` row's delta chain is bounded in the UPDATE path, because the checkpoint is blind to per-row chain length — it thresholds on whole-log bytes, so one hot row can grow an unbounded chain inside a log that never trips compaction. The fold now reports hop count (free — the walk already visited every hop), and past `WO_DELTA_MAX_HOPS` (16) the update writes a full row image instead of a delta, resetting depth to 0. **Two things the tests corrected.** The flattened image is a `WO_WAL_UPDATE`, not an `INSERT`: the row's original INSERT is already in a live log, so a second one for the same id is a duplicate that replay correctly refuses as corruption — INSERT is right only for compaction, which builds a *fresh* log. And the **proportional ceiling was removed as dead code**: with the absolute term at 64 MiB, garbage large enough to reach a 256 MiB ceiling has already tripped it, so the branch was unreachable. Borrowing both constants from postgres was the wrong inference — PG needs two because it thresholds on *tuples* with its pair at opposite ends (base 50, max 1e8); this thresholds on *bytes*, where one constant does both jobs. Found by trying to write a test for the ceiling and finding no input could reach it. Four tests: depth stays bounded across 2K+2 updates, a flattened chain replays, a delta on an **indexed** column composes with flattening (checked at every step across the bound and after restart — found no product defect), and the policy's absolute term with its boundary. `test_wal` **5700 pass / 0 fail**; `wovm-test` and `woc-test` green. **One criterion is weaker than written:** the replay check asserts an expected value, not a `resident: all` oracle table. [spec](../superpowers/specs/2026-08-30-bounded-delta-chains-design.md) |
-| 12 | [Schema migrations](databasev2/12-schema-migrations.md) | ✅ **LANDED 2026-08-31.** A `@table` class is the schema, the log is the database, and boot now compares them — before this, an added or deleted field turned a healthy `WO_DATA` into "corruption" and reordering declarations silently decoded rows into the wrong class. Landed: `WO_WAL_SCHEMA` head record (written LAZILY ahead of the first real record — an eager head broke `durable: false`'s documented zero-bytes contract by 75 bytes and the gate caught it), a name-keyed diff whose refusals are per-class POISONS that bite only when a record of the class is met, and a record-level TRANSCODE: cids remap by name including inside stored owned values, deleted values freed, added fields zero-filled, delta back-pointers rewritten through an offset map with deltas on deleted fields SPLICED out; temp+fsync+rename, compaction's crash discipline. **Two bugs the tests forced out:** a poisoned class skipped plan identity so the retype refusal fell through to generic "corruption" (the message this iteration exists to replace), and early `goto corrupt` freed uninitialized memory. End-to-end: `migrating \`Note\`: +flag` then `flag=0`; retype refuses naming `val`, exit 2, old binary still boots the refused log. 21 new tests, `test_wal` **5966/0**; wovm/woc/site/residency gates green. v2 holds rename (`@renamed_from`), retypes, and data/seed migrations. [spec](../superpowers/specs/2026-08-31-schema-migrations-design.md) |
 
 ---
 
@@ -1055,7 +994,7 @@ the runtime and `Resp` are touched.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [Store-backed middleware](porch/01-store-backed-middleware.md) | ⬜ **startable today** — rate limiter + idempotency over a `@table`; needs no new primitive, only `time.ticks`. Durable counters are the differentiator over Fiber's in-memory default, so the gate includes a restart |
+| 1 | [Store-backed middleware](porch/01-store-backed-middleware.md) | ✅ **DONE 2026-08-30** — rate limiter + idempotency serialized through a per-key actor pool, both durable in a `@table`. Gate-proven end to end: threshold + restart + exact concurrent counts (limiter), byte-identical replay + digest refusal + concurrent duplicates + no-5xx-replay (idempotency), and pool saturation failing closed (503, never a bypass) |
 | 2 | [Randomness and cookies](porch/02-randomness-and-cookies.md) | ⬜ the foundation. Phase A is **language-track work**: a CSPRNG builtin (id 96+; 89/90 are iteration 31's reserved holes). Then repeated response headers — `Resp.headers` is a `map<Text,Text>` and structurally cannot emit two `Set-Cookie` lines — then `Cookie:` parsing and signed cookies |
 | 3 | [Sessions](porch/03-sessions.md) | ⬜ after 2. Server-side rows keyed by a random id, idle **and** absolute timeout, id rotation on login, revoke-all-for-principal, durable across restart |
 | 4 | [CSRF](porch/04-csrf.md) | ⬜ after 2 + 3. Session-bound tokens, trusted origins as the second layer, opt-in single use, and refusal classes that are distinguishable in logs |
@@ -1093,7 +1032,6 @@ check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 | 23  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 22                                               |
 | 27  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
-| 42  | [Bounded subprocess](language-runtime-database/42-bounded-subprocess.md) — `proc.run` bounded in place (deadline, output caps, per-shard ceiling, owner-bound reaping via pidfd, fiber parked) + `proc.run_dl`; streaming form deferred by name | ✅ **DONE 2026-09-01** — [spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md) · [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md); test_proc 128/0, `just subprocess` 12/0; see NEXT PLAN |
 | 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | ✅ **landed 2026-08-20** — [spec](../superpowers/specs/2026-08-20-library-kind-internal-design.md) · [plan](../superpowers/plans/2026-08-20-library-kind-internal.md) |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](../superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](../plan/exploration/blue-green-vm/00-vision.md)                   |

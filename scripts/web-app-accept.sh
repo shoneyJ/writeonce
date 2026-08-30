@@ -1062,6 +1062,193 @@ else
   bad "idempotent-compile" "$(printf '%s' "$ip_out" | head -1)"
 fi
 
+# ---- 19. porch-store task 5: pool saturation fails closed (503, no bypass) --
+# Same flattening trick as the earlier legs. WO_MAILBOX (runtime/src/vm.c,
+# wo_mailbox_cap, default 1024) shrinks the runtime's per-actor mailbox cap
+# so a handful of concurrent requests can actually exhaust it. A pool of
+# ONE actor -- the only address a one-slot Pool's pool_select can ever
+# return -- fed a handler that blocks it for SP_SLEEP_MS turns every
+# genuinely-concurrent request into a race for that one mailbox's slots.
+# Distinct idempotency keys per request rule out replay masking a request
+# that never actually ran the handler.
+#
+# The runtime frees a reserved slot the instant a message is POPPED for
+# delivery, not when its receive returns (wo_mbox_reserve/release), so
+# with cap C exactly the first C+1 concurrent calls to the one busy actor
+# ever get a slot -- one executing, C queued behind it -- and every later
+# concurrent call finds the mailbox full and traps (WO_T_ACTOR), which
+# idempotent.wo's own try/catch turns into 503. SP_SLEEP_MS only has to
+# outlast the time it takes SP_N curl clients to all reach their `call`,
+# comfortably true on localhost.
+SP="$W/saturation-check"
+cp -r "$ROOT/docs/examples/porch" "$SP"
+rm -f "$SP/wo.toml"
+rm -rf "$SP/target"
+cat >"$SP/saturation_check_main.wo" <<'WOEOF'
+use net
+use env
+use http
+use router
+use middleware
+use time
+
+@table(name: "sat_execs")
+class SatMark {
+  n: Int
+}
+
+-- Blocks the pool's one actor for a few seconds on every genuine
+-- (non-replay) execution -- the same shape as idempotent-check's
+-- SlowHandler (section 18), its own table so the two legs' counts can
+-- never be confused.
+class SlowSatHandler {
+  fn handle(req: Req) -> Resp {
+    insert SatMark { n: 1 };
+    time.sleep(3000);
+    return ok_json("{\"ok\":true}");
+  }
+}
+
+class SatExecCount {
+  fn handle(req: Req) -> Resp {
+    let n = len(from e in SatMark select e);
+    return ok_json("{\"count\":${n}}");
+  }
+}
+
+fn build_app(slot: actor PoolMsg) -> App {
+  let app = App { middleware: [], routes: [] };
+  let p = Pool { actors: [PoolSlot { a: slot }] };
+  app.post("/slow", Idempotent { key_header: "idempotency-key", pool: p, inner: SlowSatHandler {} });
+  app.get("/execs", SatExecCount {});
+  return app;
+}
+
+class Conn { fd: net.Conn }
+
+class ConnWorker {
+  slot: actor PoolMsg
+  fn receive(msg: Conn) {
+    let app = build_app(self.slot);
+    app.handle_conn(msg.fd, 8000, 8000);
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 1 {
+    print_err("usage: saturation_check <port>");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil { print_err("bad port"); return 2; }
+  let ka: actor PoolMsg = spawn KeyActor {};
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    let c = net.accept_dl(srv, 250);
+    if c != nil {
+      let w: actor Conn = spawn ConnWorker { slot: ka };
+      send(w, Conn { fd: c });
+    }
+  }
+}
+WOEOF
+
+if sp_out="$("$WOC" --emit "$SP" -o "$SP/saturation_check.wob" 2>&1)"; then
+  ok "saturation: compiles (one-actor pool, slow in-actor handler)"
+
+  SPORT=$((PORT + 3))
+  SPDATA="$W/saturation-data"; mkdir -p "$SPDATA"
+  SPSTATUS="$W/saturation-status"; mkdir -p "$SPSTATUS"
+  SP_CAP=2
+  SP_N=15
+  printf '\n===== saturation check — port %s (WO_MAILBOX=%s) =====\n' "$SPORT" "$SP_CAP" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$SPDATA" WO_MAILBOX="$SP_CAP" "$WOVM" "$SP/saturation_check.wob" "$SPORT" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  spwait_listen() {
+    for _ in $(seq 1 40); do
+      tail -n "+$LEGFROM" "$SRVLOG" 2>/dev/null | grep -q listening && return
+      sleep 0.1
+    done
+  }
+  spwait_listen
+
+  # SP_N genuinely-parallel duplicates, each its own idempotency key, all
+  # against the SAME (one-actor) pool -- a sequential version proves nothing,
+  # same reasoning as every other concurrency leg in this file.
+  sp_pids=()
+  for i in $(seq 1 $SP_N); do
+    ( st="$(curl -s -D "$SPSTATUS/$i.hdr" -o "$SPSTATUS/$i.body" -w '%{http_code}' --max-time 15 -X POST \
+        -H "Host: a" -H "Idempotency-Key: sat-key-$i" -H "Content-Type: text/plain" \
+        --data-binary "x" "http://127.0.0.1:$SPORT/slow")"
+      echo "$st" >"$SPSTATUS/$i.status" ) &
+    sp_pids+=("$!")
+  done
+  for p in "${sp_pids[@]}"; do wait "$p"; done
+
+  sp_200=0
+  sp_503=0
+  sp_other=0
+  sp_one503=""
+  for i in $(seq 1 $SP_N); do
+    st="$(cat "$SPSTATUS/$i.status" 2>/dev/null)"
+    case "$st" in
+      200) sp_200=$((sp_200 + 1)) ;;
+      503) sp_503=$((sp_503 + 1)); sp_one503="$i" ;;
+      *) sp_other=$((sp_other + 1)) ;;
+    esac
+  done
+  sp_want_ok=$((SP_CAP + 1))
+  sp_want_bad=$((SP_N - sp_want_ok))
+  [[ "$sp_other" -eq 0 ]] \
+    && ok "saturation: every one of $SP_N requests answered 200 or 503, nothing else" \
+    || bad "saturation-codes" "$sp_other requests answered neither (200=$sp_200 503=$sp_503)"
+  [[ "$sp_200" -eq "$sp_want_ok" && "$sp_503" -eq "$sp_want_bad" ]] \
+    && ok "saturation: exactly $sp_want_ok served (1 running + $SP_CAP queued), $sp_want_bad overflow answer 503" \
+    || bad "saturation-threshold" "200=$sp_200 503=$sp_503 want 200=$sp_want_ok 503=$sp_want_bad"
+
+  sp_execs="$(curl -s --max-time 5 -H "Host: a" "http://127.0.0.1:$SPORT/execs" \
+    | grep -o '"count":[0-9]*' | cut -d: -f2)"
+  [[ "$sp_execs" == "$sp_200" ]] \
+    && ok "saturation: handler ran exactly once per 200 (SatMark count=$sp_execs) -- no overflow request slipped through uncounted" \
+    || bad "saturation-execs" "SatMark count=$sp_execs want $sp_200 (== the 200 count)"
+
+  if [[ -n "$sp_one503" ]]; then
+    grep -qi '^retry-after:' "$SPSTATUS/$sp_one503.hdr" \
+      && ok "saturation 503 carries Retry-After" \
+      || bad "saturation-503-retry-after" "$(head -1 "$SPSTATUS/$sp_one503.hdr")"
+    grep -q 'idempotency store saturated' "$SPSTATUS/$sp_one503.body" \
+      && ok "saturation 503 names the real cause (idempotency store saturated), not a generic failure" \
+      || bad "saturation-503-body" "$(cat "$SPSTATUS/$sp_one503.body")"
+  else
+    bad "saturation-503-missing" "no 503 observed among $SP_N requests -- cannot verify overflow shape"
+  fi
+
+  # Teardown is deliberately NOT asserted pass/fail here (unlike the earlier
+  # legs' own SIGTERM checks): this leg's subject is saturation, not graceful
+  # shutdown -- already proven in §14 and (usually) §17b/§18. This exact
+  # workload -- many concurrent call()-parked callers against one busy actor
+  # doing real per-request table I/O -- is the sharpest known trigger for a
+  # pre-existing runtime defect (see the story's Outstanding notes): main()
+  # can return cleanly while the OS process itself hangs. Failing this leg
+  # over that already-documented, out-of-scope defect would be exactly the
+  # kind of flaky check that erodes trust in every other leg in this file, so
+  # it force-kills instead of asserting graceful-vs-forced.
+  kill -TERM "$SRV" 2>/dev/null
+  spstopped=1
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { spstopped=0; break; }; sleep 0.1; done
+  if [[ $spstopped -eq 1 ]]; then
+    kill -9 "$SRV" 2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  fi
+  ok "saturation: server torn down (graceful SIGTERM, or kill -9 on the known actor-pool hang)"
+  SRV=""
+else
+  bad "saturation-compile" "$(printf '%s' "$sp_out" | head -1)"
+fi
+
 echo
 printf 'web-app-accept: %d checks, %d failures\n' "$((pass + fail))" "$fail"
 [[ $fail -eq 0 ]]
