@@ -1149,6 +1149,79 @@ static void test_keys_resident_two_updates_one_drain(void) {
     wo_rt_destroy(&rt);
 }
 
+/* Task 4 follow-up (review finding): the unique shadow-check's candidate
+ * lookup must ALSO prefer a pending re-point over the durable map, for the
+ * same reason back_off does. Before this task, two keys-resident updates
+ * in one drain could not happen at all (the second crashed). Task 4 makes
+ * it possible, which makes THIS reachable: request 1 updates row A's
+ * unique-indexed column to a NEW value inside a drain (staged, not
+ * committed, its index bucket already moved — that part is unconditional
+ * RAM apply); request 2, same drain, updates a DIFFERENT row B to that
+ * SAME new value. The shadow check finds A sitting in the target bucket
+ * (correct — the bucket move is immediate) but, without the fix, verifies
+ * A by folding it from its still-DURABLE (pre-update) offset — reading
+ * A's OLD value, which does not match, so the real clash is missed and a
+ * duplicate would be committed. Request 2 must be REFUSED. */
+static void test_keys_resident_unique_clash_pending_repoint(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysuniqpend.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_UNIQUE_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_UNIQUE_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sa = wo_str_new(&rt, "a", 1);
+    wo_str *sb = wo_str_new(&rt, "b", 1);
+    uint64_t va[2] = {100, (uint64_t)(uintptr_t)sa};
+    uint64_t vb[2] = {200, (uint64_t)(uintptr_t)sb};
+    uint64_t a = wo_row_insert(&db, 0, va, &msg, NULL);
+    uint64_t b = wo_row_insert(&db, 0, vb, &msg, NULL);
+    T_CHECK(a != 0 && b != 0);
+    uint64_t off_a = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, a), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, a, off_a), 0);
+    uint64_t off_b = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, b), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, b, off_b), 0);
+
+    /* "request" 1: a's n 100 -> 300 — staged, NOT committed, map NOT moved
+       (only pending), exactly db.c's request arm */
+    int ek = 0;
+    uint64_t roff_a = wo_wal_next_offset(&w);
+    T_EQ(wo_row_update_field_slot(&db, 0, a, 0, 300, &msg, &ek), 0);
+    T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_pend_repoint(&w, 0, a, roff_a), 0);
+
+    /* "request" 2, SAME drain: b's n 200 -> 300 collides with a's NEW
+       (still only staged) value — must be refused */
+    T_EQ(wo_row_update_field_slot(&db, 0, b, 0, 300, &msg, &ek), -1);
+    T_EQ(ek, DB_ERR_UNIQUE);
+
+    /* the drain's barrier: commit a's delta, flush its pending re-point */
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_db_flush_drops(&db, &w);
+
+    /* b untouched: still 200, still the only hit for 200; a alone at 300 */
+    db_row *r = wo_row_borrow(&db, 0, b, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 200);
+    wo_row_release(&db, 0, r);
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db, 0, 0, 300, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == a);
+    free(ids);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* databasev2 2 (5c): boot. A keys-resident store must come back from replay
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
@@ -1801,6 +1874,7 @@ int main(void) {
     test_keys_resident_update_indexed();
     test_keys_resident_update_unique_violation_refused();
     test_keys_resident_two_updates_one_drain();
+    test_keys_resident_unique_clash_pending_repoint();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

@@ -298,6 +298,41 @@ static int scan_record(int fd, uint64_t off, uint32_t *len_out, uint8_t **payloa
     return 0;
 }
 
+/* Task 4 follow-up (review finding): scan_record's exact framing, but read
+ * from the STAGED bytes in [w->off, w->off + w->len) instead of the file.
+ * A record staged behind this batch's own not-yet-run barrier is real,
+ * fully-framed data sitting in `w->buf` — preading its file offset would
+ * see whatever was on disk BEFORE this batch (the pre-allocated zero
+ * tail, ordinarily), which scan_record correctly, but unhelpfully, reads
+ * as "no record here yet". Used only by wo_wal_fold_row_at, and only for
+ * an offset a caller got from wo_wal_repoint_offset1 (a PENDING re-point,
+ * not yet flushed) — never for a durable offset, which stays on the
+ * scan_record/pread path unchanged. 0 = intact, 1 = short/bad, same as
+ * scan_record. */
+static int scan_record_staged(const wo_wal *w, uint64_t off, uint32_t *len_out,
+                              uint8_t **payload_out) {
+    if (off < w->off) return 1;
+    uint64_t rel = off - w->off;
+    if (rel + 8 > w->len) return 1;
+    uint32_t len, crc;
+    memcpy(&len, w->buf + rel, 4);
+    memcpy(&crc, w->buf + rel + 4, 4);
+    if (len == 0 || len > (64u << 20)) return 1; /* garbage: not a real frame */
+    if (rel + 8 + (uint64_t)len + 4 > w->len) return 1; /* short: not fully staged */
+    const uint8_t *payload = w->buf + rel + 8;
+    uint32_t mark;
+    memcpy(&mark, payload + len, 4);
+    if (mark != WO_WAL_MARK || crc32(payload, len) != crc) return 1;
+    if (payload_out) {
+        uint8_t *cp = malloc((size_t)len + 4);
+        if (!cp) return 1;
+        memcpy(cp, payload, (size_t)len + 4);
+        *payload_out = cp;
+    }
+    *len_out = len;
+    return 0;
+}
+
 /* ---- public API ---------------------------------------------------------- */
 
 int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
@@ -926,7 +961,14 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
     for (;;) {
         uint32_t len;
         uint8_t *payload;
-        if (scan_record(w->fd, cur, &len, &payload) != 0) {
+        /* Task 4 follow-up: a hop into the currently-staged (not yet
+           durable) region reads from `w->buf`, not the file — see
+           scan_record_staged. Every other hop (the durable majority of
+           any real chain) is the original file read, unchanged. */
+        int src_rc = (cur >= w->off && cur < w->off + w->len)
+                         ? scan_record_staged(w, cur, &len, &payload)
+                         : scan_record(w->fd, cur, &len, &payload);
+        if (src_rc != 0) {
             *msg = "no intact record at that offset";
             rc = -1;
             break;

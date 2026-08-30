@@ -1227,7 +1227,18 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         }
         for (uint32_t i = 0; i < b->len; i++) {
             if (b->ids[i] == id) continue;
-            uint64_t cand_off1 = wo_row_offset1(db, class_id, b->ids[i]);
+            /* Task 4 follow-up (review finding): a candidate updated
+               earlier in this SAME, not-yet-committed drain has its
+               re-point only PENDING — the durable wo_row_offset1 would
+               still fold its PRE-update value, letting a real unique
+               clash through uncaught. Unlike back_off (a pure number),
+               keys_fold_into DOES need to read this record's bytes to
+               compare values — which is why wo_wal_fold_row_at now reads
+               the staging buffer for an offset in the not-yet-durable
+               range (see scan_record_staged in wal.c); a plain
+               wo_row_offset1 substitution here is not enough on its own. */
+            uint64_t cand_off1 = wo_wal_repoint_offset1(w, class_id, b->ids[i]);
+            if (!cand_off1) cand_off1 = wo_row_offset1(db, class_id, b->ids[i]);
             if (!cand_off1) continue; /* stale bucket entry: no row, no clash */
             const char *obmsg = "";
             db_row *other =
