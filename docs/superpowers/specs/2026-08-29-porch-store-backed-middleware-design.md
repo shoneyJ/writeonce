@@ -1,5 +1,16 @@
 # porch 1 — store-backed middleware: rate limiting and idempotency
 
+> **Status 2026-08-30 — half of this spec shipped, half is on hold.**
+> The rate limiter landed and is stable. Idempotency was implemented against
+> this design, passed review, and was then reverted whole to the tag
+> `archive/porch-idempotency` because it provokes a C-runtime SIGSEGV in
+> `wo_arena_alloc`/`wo_str_new`
+> ([language 41](../../stories/language-runtime-database/41-actor-arena-crash.md)).
+> **Nothing below is retracted** — the design is sound and was proven by a
+> working implementation. It is waiting on the runtime, and it is tracked as
+> [porch 9](../../stories/porch/09-idempotent-replay.md).
+
+
 Design settled 2026-08-29. Implements
 [porch 1](../../stories/porch/01-store-backed-middleware.md).
 

@@ -12,6 +12,27 @@ class RateLimitCounter {
   window: Int
 }
 
+-- ============================================================================
+-- KEPT DELIBERATELY, UNUSED TODAY.
+--
+-- Nothing in porch reads or writes this table right now. The idempotency
+-- middleware that did was reverted on 2026-08-30 — not because the design was
+-- wrong (it was built, reviewed and works) but because it provoked a C-runtime
+-- crash: a SIGSEGV in wo_arena_alloc / wo_str_new under concurrent
+-- call()-parked callers allocating heavily inside an actor's receive. Over ten
+-- gate runs every failure belonged to an idempotency leg and none to the rate
+-- limiter's, which drives the same pool through the same machinery but
+-- allocates a fifth as much.
+--
+-- The table stays because the schema is settled and re-adding it would be
+-- churn, not design: `digest` as its own column (never folded into the key, or
+-- "same key, different body" becomes undetectable) is the one decision that
+-- cost a review round to get right. The middleware, its actor arm and its gate
+-- legs are whole in the tag `archive/porch-idempotency`, which is also the
+-- reproduction harness for the runtime bug.
+--
+-- If the runtime bug is fixed and idempotency is NOT resumed, delete this.
+-- ============================================================================
 -- Idempotency: stored response for replay.
 -- Key format: "idem:keyheader" or "idem:keyheader:sha256(method|path|body)"
 -- Response = JSON-encoded Resp {status, headers, body} (headers allowlist:
