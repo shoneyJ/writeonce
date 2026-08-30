@@ -160,6 +160,7 @@ before its mechanism existed; the history is in
 | 8 | [Query grammar from corpora](08-query-grammar-corpus.md) *(was language 27)* | whole-query `count`, `exists` | independent |
 | 9 | [Cross-program tables](09-cross-program-tables.md) *(was language 20)* | attach to a running program's database over local IPC | independent |
 | 10 | [Keypair attach auth](10-keypair-attach-auth.md) *(was language 21)* | program identity as a keypair; mutual challenge–response | 9 |
+| 11 | [Bounded delta chains](11-bounded-delta-chains.md) | cap a keys-resident row's delta chain in the update path, and give the compaction policy an absolute term + ceiling | 2 (fixes a limitation it shipped) |
 
 ```
 An arrow points AT the iteration that NEEDS the other.

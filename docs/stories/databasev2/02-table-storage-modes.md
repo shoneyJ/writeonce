@@ -201,6 +201,13 @@ Met:
      not to cap chain length rests on compaction bounding it instead; for
      this shape it does not.
 
+     **Answered by [iteration 11](11-bounded-delta-chains.md)** (spec written
+     2026-08-30): the update path already folds the row and the fold already
+     walks hop by hop, so it reports the depth for free — past a fixed K the
+     update writes a full row instead of a delta, and the chain resets. Read
+     cost becomes at most K+1 reads and replay O(K²) per row, independent of
+     when a checkpoint fires. Limitations 2 and 3 above both fall to it.
+
 Outstanding:
 
 - **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
