@@ -66,7 +66,7 @@ declared per-table policy. Durability is untouched and unconditional.
 | 5c | shared borrow/release accessor, then id→offset storage | ✅ `2e347de` (accessor, pure refactor, `db-bench --quick` 85/0), `18ce4d5` (offset storage), `f9c36ef` (insert + boot wiring) |
 | 5d | rewire the readers: remaining `wo_row_ptr` sites, slab scans, FK restrict, `@unique` across the boundary | ✅ `11a92df` (db.c), + this commit (table.c, wal.c, compaction). Updates **refused**, not rewired — see below |
 | 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
-| 7 | measure, gate, document, close out | ⬜ |
+| 7 | measure, gate, document, close out | 🔄 measured 2026-08-30 (below); gate + closeout outstanding |
 
 **The `durable` half is complete and usable.** A volatile table is a full table
 in-process — same indexes, same `@unique`, same FK restrict, same query surface
@@ -207,6 +207,76 @@ Met:
      update writes a full row instead of a delta, and the chain resets. Read
      cost becomes at most K+1 reads and replay O(K²) per row, independent of
      when a checkpoint fires. Limitations 2 and 3 above both fall to it.
+
+### Task 7 — measured 2026-08-30, and the answer is qualified
+
+**The question**, in the words this file has carried since the iteration was
+written: `pread` through the page cache should beat the **273×** collapse
+iteration 1 measured for demand-paged anonymous memory, "and the whole value of
+`resident: keys` rests on how much better."
+
+**Method.** Two tables identical except the annotation, so any difference is the
+storage mode's doing: 200 000 rows, 40 000 reads in the same Weyl key order,
+`WO_SHARDS=1`, WAL on **ext4** (not `/tmp`, which is tmpfs here and would have
+put the "log" in RAM), memory capped with a rootless cgroup v2 scope.
+
+**First attempt measured the wrong thing, and is worth recording.** With
+Int-only rows the two modes were indistinguishable — 6 061 vs 5 599 ops/s, RSS
+15.0 MB vs 14.3 MB. The cause is structural: `wo_row_drop_payload` frees each
+field's *value* and returns the slot to a free list, **but never releases the
+slab**, and an `Int`'s value IS its inline slot word. So dropping an Int-only
+row frees nothing at all. The mode cannot help that shape, and a benchmark built
+on it would have condemned the feature for the wrong reason.
+
+**The wide shape (one `Int`, three `Text`) is where the mode can act.**
+
+| 200k rows, 40k reads | ops/s | p50 | p99 | RSS |
+| --- | --- | --- | --- | --- |
+| `resident: all`, no pressure (256 MB) | 1 354 554 | 1 µs | 2 µs | 87.5 MB |
+| `resident: keys`, no pressure (256 MB) | 320 053 | 3 µs | 5 µs | **34.4 MB** |
+| `resident: all`, 48 MB cap | 12 854 | 67 µs | 231 µs | 48.1 MB |
+| `resident: keys`, 48 MB cap | **19 635** | 65 µs | 227 µs | 34.4 MB |
+
+The 48 MB cap is chosen to sit between the two resident sets: `resident: all`
+needs 87 MB and must page, `resident: keys` needs 34 MB and fits.
+
+**What it buys.**
+
+- **2.55× smaller resident set** — 34.4 MB against 87.5 MB. This is the real,
+  unambiguous win, and it is the thing the mode was built for.
+- **A far gentler degradation curve**: under the cap `resident: all` collapses
+  **105×** from its own uncapped throughput, `resident: keys` only **16×**.
+- **1.53× faster than swapping at the same cap** — 19 635 vs 12 854 ops/s.
+
+**What it costs.**
+
+- **4.2× slower reads when memory is not tight** (320k vs 1.35M ops/s). A
+  `pread` and a fold per row against a pointer dereference.
+- **Writes are markedly slower**, uncosted by any design document so far: the
+  keys fill of 200 000 rows did not finish inside two minutes where the resident
+  fill plus 40 000 reads did. The per-insert drop-and-re-point work is the
+  difference; both tables are `durable: true`, so the WAL is not.
+
+**The finding that matters most, and it was not anticipated.** `resident: keys`
+is only 1.53× faster than swapping under the cap, not the order of magnitude the
+design implies — because **cgroup memory limits charge the page cache**. The WAL
+here is 37 MB; the resident set is 34 MB; a 48 MB cap cannot hold both, so the
+log's pages are evicted and every `pread` reaches the disk. Moving rows out of
+the heap and into a file does **not** escape a container memory limit — the
+cache the design leans on is charged to the same cgroup. The mode's premise,
+"the kernel's page cache will hold the hot rows", fails in precisely the
+containerised deployment it targets.
+
+**Verdict.** The feature is worth keeping, but for a narrower reason than
+claimed: it lets a given amount of RAM hold ~2.5× more data, and degrades far
+more gracefully than swapping. It is **not** a way to make an
+over-capacity table fast — under a hard memory cap it is within 1.5× of simply
+letting the kernel swap. The honest guidance is "use it to fit more, not to go
+faster", and the docs should say so.
+
+**Still outstanding for task 7:** wire these legs into `scripts/db-bench.py`
+with tolerances and a baseline entry, and re-measure the `resident: all` read
+baseline to confirm no cost for a feature not used.
 
 Outstanding:
 
