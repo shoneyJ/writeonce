@@ -23,27 +23,39 @@ use json
 
 -- Idempotent wraps a route's Handler. Registration: Idempotent { key_header:
 -- "Idempotency-Key", pool: p, inner: CreateOrder {} } in place of the bare
--- handler in app.post(...). Only the digest allowlists content-type for
+-- handler in app.post(...) -- key_header is matched case-insensitively
+-- (req.headers keys are lowercased on read, so any case here works). Only
+-- the response allowlists content-type, location, etag, cache-control for
 -- replay (never Set-Cookie, never Date) — cookies arrive in porch 2.
 pub class Idempotent {
-  key_header:   Text        -- e.g., "Idempotency-Key"
+  key_header:   Text        -- e.g., "Idempotency-Key" (matched case-insensitively)
   pool:         Pool
   inner:        Handler     -- the real route handler; the actor runs this
   include_body: Bool = true -- digest method+path+body, refuse a key reused with a different one
   ttl:          Int = 86_400_000_000  -- 24h in µs, lazy-expired on access
 
   fn handle(req: Req) -> Resp {
-    let header_val = req.headers[self.key_header];
+    -- req.headers keys are lowercased on read (internal/parse.wo); normalise
+    -- key_header the same way, or a documented `key_header: "Idempotency-Key"`
+    -- (capitalised, as app authors are told to write it) NEVER matches and
+    -- this middleware silently falls through to self.inner.handle(req) below
+    -- on every request -- idempotency disabled, no 503, no log.
+    let name = to_lower(self.key_header);
+    let header_val = req.headers[name];
     if header_val == nil { return self.inner.handle(req); }
 
-    let key = "idem:${self.key_header}:${header_val}";
-    let digest = "";
-    if self.include_body {
-      let digest_input = "${req.method}|${req.path}|${req.body}";
-      digest = base64_encode(bytes_slice(sha256(bytes_of_text(digest_input)), 0, 16));
-    }
+    let key = "idem:${name}:${header_val}";
+    -- method+path scope the digest unconditionally: with include_body false
+    -- a bare "" digest would match ANY other request under this same key,
+    -- letting a different route/method replay this one's stored response.
+    let digest_input = "${req.method}|${req.path}";
+    if self.include_body { digest_input = "${digest_input}|${req.body}"; }
+    let digest = base64_encode(bytes_slice(sha256(bytes_of_text(digest_input)), 0, 16));
 
-    let raw = try pool_begin(self.pool, key, digest, self.ttl, req, self.inner) catch (e) nil;
+    let raw = try pool_begin(self.pool, key, digest, self.ttl, req, self.inner) catch (e) {
+      print_err("idempotent: pool_begin trapped: ${e.msg}");
+      nil
+    };
     if raw == nil {
       let r = Resp { status: 503, headers: {}, body: "{\"error\":\"idempotency store saturated\"}" };
       set_header(r, "content-type", "application/json");
@@ -101,7 +113,7 @@ pub class Idempotent {
 }
 
 -- JSON shape of IdempotencyKey.response. Allowlisted headers only:
--- content-type, never Set-Cookie or Date.
+-- content-type, location, etag, cache-control, never Set-Cookie or Date.
 typedef IdempotentStoredResp = {
   status:  Int,
   headers: map<Text, Text>,
