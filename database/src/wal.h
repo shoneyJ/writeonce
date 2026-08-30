@@ -88,6 +88,16 @@ typedef struct wo_wal {
      * dies with it, which is correct: nothing was dropped and nothing lost. */
     struct wo_wal_pend { uint32_t cid; uint64_t id; uint64_t off; } *pend;
     size_t pend_len, pend_cap;
+    /* Task 4 (keys-resident delta updates): rows whose id-map entry must
+     * move to a NEW offset once the delta staged there is durable. Same
+     * three fields as `pend` above, deliberately its OWN list: a drop
+     * discards a payload and a re-point moves a live row's chain head — two
+     * different meanings a shared list would force a future reader to guess
+     * between. Same lifetime discipline as `pend`: recorded before the
+     * barrier, applied after it, and lost with the process if it dies
+     * first — which is correct, since nothing was re-pointed either. */
+    struct wo_wal_pend *repoint;
+    size_t repoint_len, repoint_cap;
     uint64_t stat_compactions;
     uint64_t stat_compact_us_max;
     uint64_t stat_compact_us_total;
@@ -162,8 +172,25 @@ int wo_wal_commit(wo_wal *w);
  * 0 ok, -1 out of memory (the row simply stays resident, which is safe). */
 int wo_wal_pend_drop(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off);
 
-/* databasev2 2 (5c): perform every pending drop. Call ONLY after a commit has
- * succeeded — that is what makes the recorded offsets readable. */
+/* Task 4 (keys-resident delta updates): note a keys-resident row's id-map
+ * entry that must move to [off] once the delta staged there is durable —
+ * the update-arm counterpart of wo_wal_pend_drop, on its own list (see the
+ * `repoint` field). 0 ok, -1 out of memory (the map simply stays where it
+ * was; a durable delta with a stale map is exactly what replay reconciles,
+ * so this is safe, just deferred further than intended). */
+int wo_wal_pend_repoint(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off);
+
+/* Task 4: the most recent PENDING re-point recorded for (cid, id), not yet
+ * flushed to the id map — needed so a second update to the same row, staged
+ * behind the SAME barrier as the first, computes its back-pointer against
+ * the first's delta instead of the row's last DURABLE offset (which would
+ * skip it). Off + 1, 0 = none pending (the caller falls back to
+ * wo_row_offset1). Does NOT consult the durable map itself. */
+uint64_t wo_wal_repoint_offset1(const wo_wal *w, uint32_t cid, uint64_t id);
+
+/* databasev2 2 (5c): perform every pending drop, THEN every pending
+ * re-point (Task 4). Call ONLY after a commit has succeeded — that is what
+ * makes the recorded offsets readable. */
 void wo_db_flush_drops(wo_db *db, wo_wal *w);
 
 /* databasev2 3: the checkpoint trigger, as a PURE decision so it can be tested

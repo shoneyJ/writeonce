@@ -90,14 +90,28 @@ int wo_builtin_db(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         uint64_t id = R[B + 1];
         uint32_t field = (uint32_t)R[B + 2];
         int ek = 0;
+        wo_wal *w = (wo_wal *)vm->rt.wal;
+        int keys_res = wo_table_is_keys_resident(db, cid);
+        /* databasev2 2 (5c) / Task 4: the delta's own offset, taken BEFORE
+         * the call the same way the insert arm takes koff — table.c stages
+         * the delta at exactly this position and nothing else stages bytes
+         * on `w` in between. */
+        uint64_t roff = (w && keys_res) ? wo_wal_next_offset(w) : 0;
         if (wo_row_update_field(db, cid, id, field, R[B + 3], msg, &ek) != 0)
             return ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
-        wo_wal *w = (wo_wal *)vm->rt.wal;
         if (w && table_is_durable(db, cid)) {
-            /* was: trap and leave RAM ahead of disk, which the old comment
-             * admitted. Now fatal — see the insert arm. */
-            if (wo_wal_append_update(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
-            wo_wal_commit_fatal(w, 1);
+            if (keys_res) {
+                /* the delta is already staged (table.c); this is the
+                 * inline path's OWN barrier, same as insert, then the map
+                 * moves — commit before re-point, always. */
+                wo_wal_commit_fatal(w, 1);
+                (void)wo_row_set_offset(db, cid, id, roff);
+            } else {
+                /* was: trap and leave RAM ahead of disk, which the old
+                 * comment admitted. Now fatal — see the insert arm. */
+                if (wo_wal_append_update(w, db, cid, id) != 0) wo_wal_stage_fatal(w);
+                wo_wal_commit_fatal(w, 1);
+            }
             maybe_compact(db, w);
         }
         R[A] = 0;
@@ -288,13 +302,24 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
     }
     case WO_B_DB_UPDATE_FIELD: {
         int ek = 0;
+        int keys_res = wo_table_is_keys_resident(db, q->cid);
+        /* Task 4: see the inline arm — the delta's own offset, captured
+         * BEFORE the call the same way insert's koff is. */
+        uint64_t roff = (w && keys_res) ? wo_wal_next_offset(w) : 0;
         if (wo_row_update_field_slot(db, q->cid, q->id, q->field, q->slots[0], &m, &ek) != 0) {
             q->status = ek == DB_ERR_UNIQUE ? WO_T_UNIQUE : ek == DB_ERR_OOM ? WO_T_OOM : WO_T_DB;
             q->msg = m;
             break;
         }
         if (w && table_is_durable(db, q->cid)) {
-            if (wo_wal_append_update(w, db, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
+            if (keys_res) {
+                /* recorded, not performed: this batch's barrier runs in the
+                 * drain (vm.c), and only then does the map move — mirrors
+                 * the insert arm's wo_wal_pend_drop exactly. */
+                (void)wo_wal_pend_repoint(w, q->cid, q->id, roff);
+            } else {
+                if (wo_wal_append_update(w, db, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
+            }
         }
         break;
     }

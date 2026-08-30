@@ -859,7 +859,13 @@ static void test_fold_refuses_forward_pointing_delta(void) {
 /* Task 3 (keys-resident delta updates): the plain case, through the real
  * API — wo_row_update_field, not a hand-rolled append+commit+set_offset like
  * the fold tests above. Before this task it refused outright with "update on
- * a `resident: keys` table is not implemented". */
+ * a `resident: keys` table is not implemented".
+ *
+ * Task 4 ruling: wo_row_update_field now only STAGES the delta and applies
+ * the index swap — it does not commit and does not move the id map (that
+ * mirrors insert, whose koff/commit/pend_drop live in the CALLER). So this
+ * test now does the caller's half itself, exactly as db.c's inline arm
+ * does: capture the offset before calling in, commit, then re-point. */
 static void test_keys_resident_update_field(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/keysupd.wal", g_dir);
@@ -882,8 +888,11 @@ static void test_keys_resident_update_field(void) {
     T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
 
     int ek = 0;
+    uint64_t roff = wo_wal_next_offset(&w);
     T_EQ(wo_row_update_field(&db, 0, id, 0, 999, &msg, &ek), 0);
     T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, roff), 0);
 
     db_row *r = wo_row_borrow(&db, 0, id, &msg);
     T_CHECK(r != NULL);
@@ -918,7 +927,12 @@ static const wo_classdesc KEYS_IDX_CLASSES[] = {
 /* Task 3, the test that matters: updating an INDEXED column on a
  * keys-resident row must move the row in the index too, not just in the
  * log — queried through wo_idx_probe, the row is found by its NEW value and
- * gone from its OLD one. */
+ * gone from its OLD one.
+ *
+ * Task 4 ruling: wo_idx_probe's bucket hit is verified by folding the row
+ * from the log (table.c's idx_cols_equal path), so the probes below must
+ * run AFTER the caller's commit + re-point — mirroring db.c's inline arm —
+ * not straight after wo_row_update_field, which now only stages. */
 static void test_keys_resident_update_indexed(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/keysidx.wal", g_dir);
@@ -955,8 +969,11 @@ static void test_keys_resident_update_indexed(void) {
     free(ids);
 
     int ek = 0;
+    uint64_t roff = wo_wal_next_offset(&w);
     T_EQ(wo_row_update_field(&db, 0, a, 0, 150, &msg, &ek), 0);
     T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, a, roff), 0);
 
     /* found by the NEW value */
     T_EQ(wo_idx_probe(&db, 0, 0, 150, NULL, 0, &ids, &cnt), 1);
@@ -1045,6 +1062,87 @@ static void test_keys_resident_update_unique_violation_refused(void) {
     T_EQ(wo_idx_probe(&db, 0, 0, 200, NULL, 0, &ids, &cnt), 1);
     T_CHECK(cnt == 1 && ids[0] == b);
     free(ids);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* Task 4 (keys-resident delta updates): the request path's group-commit
+ * shape, the test the brief asked for. Two updates to the SAME row through
+ * wo_row_update_field_slot (the request-path entry point) with NEITHER
+ * wo_wal_commit NOR the re-point called in between — exactly two requests
+ * landing in the SAME drain before its one barrier. The re-point for each
+ * is only RECORDED (wo_wal_pend_repoint), mirroring db.c's request arm;
+ * the barrier commits once, then wo_db_flush_drops applies both.
+ *
+ * The failure this catches: a back_off read straight off the (still stale,
+ * pre-barrier) durable map would have the second delta name the FIRST
+ * request's insert-time offset instead of the first delta — skipping it.
+ * Checked two ways: the final value must reflect BOTH updates in order,
+ * and delta 2's back-pointer, read straight off disk, must equal delta 1's
+ * own offset, not the base insert's. */
+static void test_keys_resident_two_updates_one_drain(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keys2upd.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *s = wo_str_new(&rt, "sku", 3);
+    uint64_t vals[2] = {111, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    /* "request" 1: field 0, 111 -> 222 — staged, NOT committed, the map
+       NOT moved (only recorded as pending) */
+    int ek = 0;
+    uint64_t roff1 = wo_wal_next_offset(&w);
+    T_EQ(wo_row_update_field_slot(&db, 0, id, 0, 222, &msg, &ek), 0);
+    T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_pend_repoint(&w, 0, id, roff1), 0);
+
+    /* "request" 2, SAME drain: field 0, 222 -> 333. The id map still names
+       the base insert (the re-point above is only PENDING) — back_off must
+       come from the pending list, not wo_row_offset1, or this chains to
+       the wrong predecessor. */
+    uint64_t roff2 = wo_wal_next_offset(&w);
+    T_EQ(wo_row_update_field_slot(&db, 0, id, 0, 333, &msg, &ek), 0);
+    T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_pend_repoint(&w, 0, id, roff2), 0);
+
+    /* the drain's barrier: ONE commit for both staged deltas, then both
+       pending re-points applied — db.c/vm.c's exact shape */
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_db_flush_drops(&db, &w);
+
+    /* both updates visible, in order */
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 333);
+    wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 3 && memcmp(back->data, "sku", 3) == 0);
+    wo_row_release(&db, 0, r);
+
+    /* the chain itself: delta 2's back-pointer names delta 1's OWN offset,
+       not the base insert's — payload layout established by
+       test_delta_record (kind|class|id|field_idx|back_off|value, 33 bytes
+       for a scalar field) */
+    uint8_t body[33];
+    T_EQ((int)pread(w.fd, body, 33, (off_t)(roff2 + 8)), 33);
+    T_EQ(body[0], WO_WAL_DELTA);
+    uint64_t back_off;
+    memcpy(&back_off, body + 17, 8);
+    T_EQ(back_off, roff1);
+    T_CHECK(back_off != base_off); /* the skip this test exists to catch */
 
     wo_wal_close(&w);
     wo_db_destroy(&db);
@@ -1702,6 +1800,7 @@ int main(void) {
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
     test_keys_resident_update_unique_violation_refused();
+    test_keys_resident_two_updates_one_drain();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

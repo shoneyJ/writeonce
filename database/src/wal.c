@@ -345,14 +345,48 @@ int wo_wal_pend_drop(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off) {
     return 0;
 }
 
+/* Task 4 (keys-resident delta updates): pend_drop's counterpart for a
+ * re-point, own list, same reason (see the `repoint` field in wal.h). */
+int wo_wal_pend_repoint(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off) {
+    if (w->repoint_len == w->repoint_cap) {
+        size_t nc = w->repoint_cap ? w->repoint_cap * 2 : 16;
+        struct wo_wal_pend *np = realloc(w->repoint, nc * sizeof *np);
+        if (!np) return -1; /* the map stays where it was: see the header */
+        w->repoint = np;
+        w->repoint_cap = nc;
+    }
+    w->repoint[w->repoint_len].cid = cid;
+    w->repoint[w->repoint_len].id = id;
+    w->repoint[w->repoint_len].off = off;
+    w->repoint_len++;
+    return 0;
+}
+
+uint64_t wo_wal_repoint_offset1(const wo_wal *w, uint32_t cid, uint64_t id) {
+    /* backward: the LATEST entry for (cid, id) is the one still current if
+       this row was updated more than once behind the same barrier */
+    for (size_t i = w->repoint_len; i > 0; i--) {
+        if (w->repoint[i - 1].cid == cid && w->repoint[i - 1].id == id)
+            return w->repoint[i - 1].off + 1;
+    }
+    return 0;
+}
+
 void wo_db_flush_drops(wo_db *db, wo_wal *w) {
     for (size_t i = 0; i < w->pend_len; i++)
         (void)wo_row_drop_payload(db, w->pend[i].cid, w->pend[i].id, w->pend[i].off);
     w->pend_len = 0;
+    /* Task 4: the request path's deferred update re-points, held behind the
+       same barrier as inserts' drops for the same reason — before the
+       commit above, these offsets pread zeros. */
+    for (size_t i = 0; i < w->repoint_len; i++)
+        (void)wo_row_set_offset(db, w->repoint[i].cid, w->repoint[i].id, w->repoint[i].off);
+    w->repoint_len = 0;
 }
 
 void wo_wal_close(wo_wal *w) {
     free(w->pend);
+    free(w->repoint);
     if (w->fd >= 0) close(w->fd);
     free(w->path);
     free(w->buf);
@@ -410,9 +444,12 @@ int wo_wal_append_insert(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
 }
 
 int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
-    /* wo_row_ptr is right here for the same reason as append_insert, and the
-     * keys case cannot arrive at all: wo_row_update_field{,_slot} refuse a
-     * keys-resident table before any log record is staged. */
+    /* wo_row_ptr is right here for the same reason as append_insert. A
+     * keys-resident update CAN succeed now (Task 3's row_apply_field_keys),
+     * but this function never runs for one: db.c routes a keys-resident
+     * update to a staged DELTA record instead (row_apply_field_keys), and
+     * never re-logs the whole row. This function stays reachable only for
+     * resident: all, guarded at both db.c call sites. */
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) return -1;
     wbuf p = {0};

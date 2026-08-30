@@ -1134,23 +1134,37 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
 /* keys-resident counterpart of row_apply_field_slot. There is no slab slot
  * to swap — the row lives in the log — so the shape is read-modify-APPEND:
  * borrow (folds), append a delta with the row's current offset as the
- * back-pointer, commit, THEN move the id map to the new record. [nv] is
- * already engine-encoded (same convention as row_apply_field_slot);
- * consumed on every path.
+ * back-pointer. [nv] is already engine-encoded (same convention as
+ * row_apply_field_slot); consumed on every path.
  *
  * The borrow's materialised row holds VM values (wo_row_release drops every
  * slot through the runtime), so [nv] is decoded to a VM value up front and
  * that is what ever lands in r->slots[field] — the engine encoding is used
- * only for the WAL record and freed once logged.
+ * only for the WAL record and freed once staged.
+ *
+ * Task 4 (keys-resident delta updates) ruling: this function stages the
+ * delta but does NOT commit and does NOT move the id map — mirroring
+ * insert, where table.c applies RAM and db.c owns staging/commit and the
+ * post-barrier map move (wo_wal_pend_drop / wo_db_flush_drops for insert;
+ * wo_wal_pend_repoint / wo_db_flush_drops for this). The caller re-points
+ * using the offset it captured via wo_wal_next_offset() BEFORE calling in
+ * here — insert's own `koff` pattern — since nothing between that capture
+ * and the wo_wal_append_delta call below stages any other bytes on [w].
  *
  * Ordering: the unique shadow-check (against a shadow of the row, mirroring
  * row_apply_field_slot's promise that a rejected update leaves the row
- * untouched) and the WAL append+commit both happen BEFORE either the index
- * or the id map move — so a failure at any point up to and including the
- * commit leaves the live row (offset AND index) exactly as it was. Only a
- * successful, durable commit is followed by the index swap and the offset
- * repoint, which — being pure RAM bookkeeping a replay rebuilds from the log
- * regardless — cannot itself meaningfully "fail" once reached. */
+ * untouched) is the only SOFT-trap gate and runs first, before anything
+ * moves. Once it passes, the index swap is RAM apply and happens
+ * unconditionally, mirroring wo_row_insert's doctrine order (RAM, then
+ * log) — from that point a failure to even STAGE the delta is fatal,
+ * exactly like insert's own append, because RAM has already moved and
+ * there is no undo.
+ *
+ * back_off checks a PENDING re-point first (wo_wal_repoint_offset1) before
+ * falling back to the durable wo_row_offset1: a second update to this same
+ * row, staged behind the same barrier as a first, must chain to the
+ * first's delta — the id map won't move until the barrier, but the delta
+ * itself is already staged and its offset already fixed. */
 static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
                                 uint32_t field, uint64_t nv, const char **msg,
                                 int *err_kind) {
@@ -1164,7 +1178,9 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         return -1;
     }
     /* successful borrow proves db->rt and db->rt->wal are both set */
-    uint64_t back_off = wo_row_offset1(db, class_id, id) - 1;
+    wo_wal *w = (wo_wal *)db->rt->wal;
+    uint64_t pending1 = wo_wal_repoint_offset1(w, class_id, id);
+    uint64_t back_off = (pending1 ? pending1 : wo_row_offset1(db, class_id, id)) - 1;
 
     int ok = 1;
     uint64_t nv_vm = wo_val_decode_vm(db, db->rt, c->kinds[field], nv, &ok, msg);
@@ -1235,34 +1251,21 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         }
     }
     free(cand_buf);
-    r->slots[field] = old_vm; /* restored: still the OLD row until committed */
+    r->slots[field] = old_vm; /* restored: still the OLD row until applied */
 
-    wo_wal *w = (wo_wal *)db->rt->wal;
-    uint64_t new_off = wo_wal_next_offset(w);
-    if (wo_wal_append_delta(w, db, class_id, id, field, back_off, nv) != 0) {
-        wo_row_release(db, class_id, r);
-        wo_drop_kind(db->rt, c->kinds[field], nv_vm);
-        db_val_free(c->kinds[field], nv);
-        if (err_kind) *err_kind = DB_ERR_OOM;
-        *msg = "out of memory appending delta";
-        return -1;
-    }
-    if (wo_wal_commit(w) != 0) {
-        wo_row_release(db, class_id, r);
-        wo_drop_kind(db->rt, c->kinds[field], nv_vm);
-        db_val_free(c->kinds[field], nv);
-        *msg = "wal commit failed";
-        return -1;
-    }
-    db_val_free(c->kinds[field], nv); /* durable now; the engine copy served the log */
-
-    /* commit: the borrowed row is the OLD row — out of every index under the
-       OLD value, then in again under the NEW one — then the id map moves */
+    /* RAM apply (Task 4 ruling): the borrowed row is the OLD row — out of
+       every index under the OLD value, then in again under the NEW one.
+       Unconditional from here: a failure below is fatal, not a trap. */
     idx_remove_row(db, t, r);
     r->slots[field] = nv_vm;
     (void)idx_add_row(db, t, r); /* cannot violate uniqueness: the shadow
                                     check above already cleared it */
-    wo_row_set_offset(db, class_id, id, new_off);
+
+    if (wo_wal_append_delta(w, db, class_id, id, field, back_off, nv) != 0)
+        wo_wal_stage_fatal(w); /* RAM already moved; see the insert arm */
+    db_val_free(c->kinds[field], nv); /* staged now; the engine copy served
+                                          the log record */
+
     wo_drop_kind(db->rt, c->kinds[field], old_vm);
     wo_row_release(db, class_id, r);
     if (err_kind) *err_kind = DB_ERR_NONE;
