@@ -14,7 +14,8 @@ class RateLimitCounter {
 
 -- Idempotency: stored response for replay.
 -- Key format: "idem:keyheader" or "idem:keyheader:sha256(method|path|body)"
--- Response = JSON-encoded Resp {status, headers, body} (allowlist: status, body, content-type)
+-- Response = JSON-encoded Resp {status, headers, body} (headers allowlist:
+-- content-type, location, etag, cache-control)
 -- created_at = time.ticks when stored (µs monotonic) for lazy expiry
 @table(name: "idempotency_keys", index: [key])
 class IdempotencyKey {

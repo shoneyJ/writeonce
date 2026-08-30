@@ -89,7 +89,9 @@ fn fresh_req(r: Req) -> Req {
 
 -- One actor per shard. Reads the row for the key, decides, and writes the
 -- new count by assigning to the row's field — that writes through and
--- maintains indexes; never delete-then-insert as an update.
+-- maintains indexes; never delete-then-insert as an update of the SAME
+-- row (the window prune below IS a delete-then-insert, but of a fresh
+-- row for the new window — the stale row is retired, not mutated).
 class KeyActor {
   fn receive(msg: PoolMsg) -> Int {
     if msg.kind == 2 {
@@ -123,9 +125,19 @@ class KeyActor {
       -- attempt (if any) was ephemeral and so is invisible to the
       -- bare-key lookup above -- all three run the handler fresh.
       let resp = msg.handler.handle(msg.req);
+      -- Allowlist, not denylist: an allowlist fails safe when Resp grows a
+      -- new header later (excluded from replay until reviewed, never
+      -- replayed by accident from day one). content-type alone dropped
+      -- Location off every redirect() and any Etag/Cache-Control a handler
+      -- set; matched case-insensitively since set_header writes the name
+      -- verbatim (a handler using "Content-Type" was silently losing it).
       let hdrs: map<Text, Text> = {};
-      let ct = resp.headers["content-type"];
-      if ct != nil { hdrs["content-type"] = ct; }
+      for hk, hv in resp.headers {
+        let lhk = to_lower(hk);
+        if lhk == "content-type" or lhk == "location" or lhk == "etag" or lhk == "cache-control" {
+          hdrs[lhk] = hv;
+        }
+      }
       let stored_json = json.encode(IdempotentStoredResp {
         status: resp.status, headers: hdrs, body: resp.body
       });
@@ -226,9 +238,10 @@ class Pool {
 -- answered 503 by the middleware — never a silent bypass). n < 1 is a
 -- caller misconfiguration, not a capacity choice, and guarding it HERE
 -- (not in pool_select's division) is what matters: every pool_select call
--- runs inside the middleware's own `try ... catch (e) nil`, so a
--- mod-by-zero trap there would be swallowed and misreported as ordinary
--- 503 saturation forever, never surfacing the real bug.
+-- runs inside the middleware's own `try ... catch (e) { print_err(...);
+-- nil }`, so a mod-by-zero trap there would be misreported as ordinary
+-- 503 saturation forever (though now at least logged, not silently
+-- swallowed), never surfacing the real bug on its own.
 pub fn make_pool(n: Int) -> Pool {
   let count = n;
   if count < 1 { count = 1; }
@@ -239,6 +252,42 @@ pub fn make_pool(n: Int) -> Pool {
     i = i + 1;
   }
   return Pool { actors: actors };
+}
+
+-- Pool itself is demand-promoted to traced (WO-E222) the moment an app
+-- aliases it — e.g. Limiter/Idempotent's own `pool: Pool` field, read on
+-- every request without being consumed — so it can never live in an
+-- actor's state or a message. PoolSlot is not: WO-E222's contains_traced
+-- check only recurses into a field typed as a class name (or a `multi`/
+-- `map` of one); `a: actor PoolMsg` is an actor handle, a different case
+-- entirely, so it never pulls PoolSlot (or `multi PoolSlot`) into the
+-- traced set the way wrapping it in Pool does. An actor CAN hold `multi
+-- PoolSlot` directly in its own state — the exact shape chat/main.wo's
+-- `Room { members: multi Mem }` already uses for a multi of actor
+-- handles — which is what makes real per-connection sharding possible:
+-- call make_pool(n) ONCE at process start, hand pool_slots(pool) to every
+-- connection actor's spawn, and each one rebuilds a transient Pool via
+-- pool_of(self.slots) wherever Limiter/Idempotent needs one. Calling
+-- make_pool per connection instead (the natural misreading of this pair
+-- sitting right after a capacity-sizing knob) gives every connection its
+-- own actors and silently restores the lost-increment race this whole
+-- design exists to prevent.
+--
+-- Both functions copy field-by-field, the same trick fresh_req uses above:
+-- an actor handle is a plain, freely-copyable scalar (not traced), so
+-- rebuilding each PoolSlot by value produces a list with no lingering
+-- alias into the traced Pool (pool_slots) or the caller's own copy
+-- (pool_of) — never a value some other reader could still be holding.
+pub fn pool_slots(p: Pool) -> multi PoolSlot {
+  let out: multi PoolSlot = [];
+  for s in p.actors { push(out, PoolSlot { a: s.a }); }
+  return out;
+}
+
+pub fn pool_of(s: multi PoolSlot) -> Pool {
+  let out: multi PoolSlot = [];
+  for x in s { push(out, PoolSlot { a: x.a }); }
+  return Pool { actors: out };
 }
 
 -- Hashes a key to one of the pool's actors — sum of bytes modulo n, a
@@ -281,7 +330,7 @@ pub fn pool_count(pool: Pool, key: Text, limit: Int, window: Int) -> Verdict {
 -- the low digits of the reply are that row's own nonce, not a window
 -- size (kind 1's use of the same slot), so idempotent.wo can rebuild
 -- the exact key and read only ever what THIS call produced. Never 0:
--- idempotent.wo's own `try ... catch (e) nil` cannot tell a literal 0
+-- idempotent.wo's own catch-and-log-nil handler cannot tell a literal 0
 -- reply apart from a trapped call, so the encoding avoids it on
 -- purpose. A trapped call (a saturated mailbox) propagates to the
 -- caller uncaught, same as pool_count -- the middleware's own
