@@ -219,6 +219,31 @@ int main(int argc, char **argv) {
     VM.rt.db = &DB;
     DB.rt = &VM.rt; /* databasev2 2 (5c): the loop a borrow reads the WAL through */
     const char *data_dir = getenv("WO_DATA");
+    if (!data_dir || !data_dir[0]) {
+        /* databasev2 3: the loader used to refuse `resident: keys` outright;
+         * now it is accepted because UPDATE landed, but every row still
+         * lives in the log, not RAM — refuse the same way the loader's own
+         * durable:false+resident:keys refusal does, rather than let reads
+         * silently misbehave with no WAL to fold from. */
+        for (uint32_t i = 0; i < mod.class_cnt; i++) {
+            if (!(mod.classes[i].flags & WO_CLASSF_RESIDENT_KEYS)) continue;
+            const char *cname = "?";
+            int cnlen = 1;
+            uint32_t k = mod.classes[i].name;
+            if (k < mod.const_cnt && mod.consts[k].s) {
+                cname = mod.consts[k].s->data;
+                cnlen = (int)mod.consts[k].s->len;
+            }
+            fprintf(stderr,
+                    "wovm: `%.*s` is declared `resident: keys` — its rows live only "
+                    "in the write-ahead log, so it cannot run without WO_DATA.\n",
+                    cnlen, cname);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+    }
     if (data_dir && data_dir[0]) {
         char wal_path[512];
         snprintf(wal_path, sizeof wal_path, "%s/shard-0.wal", data_dir);

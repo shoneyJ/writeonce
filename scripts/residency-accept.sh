@@ -170,6 +170,30 @@ else
   bad "the doc example compiles" "see $LOG"
 fi
 
+# ---- 6. resident:keys refuses to run without WO_DATA -----------------------
+# CRITICAL 1: the loader stopped refusing durable:true + resident:keys once
+# UPDATE landed, and nothing replaced that refusal at runtime — a table
+# declared this way ran with no WAL to fold its rows from, misreporting
+# every read as "no such row" instead of naming the real problem.
+printf '@table(name: "items", index: [k], durable: true, resident: keys)\nclass Items { k: Text }\nfn main() -> Int { insert Items { k: "a" }; return 0; }\n' > "$WORK/reskeys.wo"
+if "$WOC" --emit "$WORK/reskeys.wo" -o "$WORK/reskeys.wob" 2>"$WORK/e"; then
+  out="$("$WOVM" "$WORK/reskeys.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] \
+    && ok "resident:keys without WO_DATA exits 2" \
+    || bad "resident:keys without WO_DATA exits 2" "exit=$rc"
+  grep -q 'Items' <<<"$out" \
+    && ok "resident:keys refusal names the offending class" \
+    || bad "resident:keys refusal names the class" "got: $out"
+  mkdir -p "$WORK/d6"
+  WO_DATA="$WORK/d6" "$WOVM" "$WORK/reskeys.wob" >/dev/null 2>&1
+  rc2=$?
+  [[ $rc2 -eq 0 ]] \
+    && ok "resident:keys WITH WO_DATA still runs" \
+    || bad "resident:keys with WO_DATA runs" "exit=$rc2"
+else
+  bad "resident:keys refusal fixture compiles" "$(head -1 "$WORK/e")"
+fi
+
 echo
 echo "residency-accept: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]] || exit 1
