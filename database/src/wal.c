@@ -426,6 +426,21 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
     return rc;
 }
 
+int wo_wal_append_delta(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
+                         uint32_t field_idx, uint64_t back_off, uint64_t value) {
+    wbuf p = {0};
+    wput_u8(&p, WO_WAL_DELTA);
+    wput_u32(&p, class_id);
+    wput_u64(&p, id);
+    wput_u32(&p, field_idx);
+    wput_u64(&p, back_off);
+    const wo_classdesc *c = &db->classes[class_id];
+    enc_val(&p, db->classes, c->kinds[field_idx], value);
+    int rc = stage(w, &p);
+    free(p.b);
+    return rc;
+}
+
 int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id) {
     wbuf p = {0};
     wput_u8(&p, WO_WAL_REMOVE);

@@ -574,6 +574,67 @@ static void test_keys_resident_round_trip(void) {
     wo_rt_destroy(&rt);
 }
 
+/* databasev2 (task 1 of keys-resident delta updates): the delta record kind.
+ * A keys-resident row cannot be rewritten whole to update one field (its
+ * payload may already be gone from RAM), so a delta logs just the changed
+ * field plus a back-pointer to the row's previous record. Nothing reads
+ * deltas back yet — this only proves the encoder's bytes are what the format
+ * says: kind, class, id, field index, back-pointer, value. */
+static void test_delta_record(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/delta.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *s = wo_str_new(&rt, "hi", 2);
+    uint64_t vals[2] = {111, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* field 0 (scalar) changes from 111 to 999; back-pointer is the insert
+     * record this delta supersedes */
+    uint64_t delta_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 999), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* payload: kind u8 | class u32 | id u64 | field_idx u32 | back_off u64 |
+     * value u64 (scalar) — 33 bytes, after the 8-byte len+crc head */
+    uint8_t head[8], body[33];
+    T_EQ((int)pread(w.fd, head, 8, (off_t)delta_off), 8);
+    uint32_t len;
+    memcpy(&len, head, 4);
+    T_EQ(len, 33u);
+    T_EQ((int)pread(w.fd, body, 33, (off_t)(delta_off + 8)), 33);
+    T_EQ(body[0], WO_WAL_DELTA);
+    uint32_t cid;
+    uint64_t rid, back, val;
+    uint32_t fidx;
+    memcpy(&cid, body + 1, 4);
+    memcpy(&rid, body + 5, 8);
+    memcpy(&fidx, body + 13, 4);
+    memcpy(&back, body + 17, 8);
+    memcpy(&val, body + 25, 8);
+    T_EQ(cid, 0u);
+    T_EQ(rid, id);
+    T_EQ(fidx, 0u);
+    T_EQ(back, base_off);
+    T_EQ(val, 999u);
+
+    wo_str_free(&rt, s);
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* databasev2 2 (5c): boot. A keys-resident store must come back from replay
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
@@ -1217,6 +1278,7 @@ int main(void) {
     test_commit_failure_detected();
     test_compact_shortens_and_replays_equal();
     test_keys_resident_round_trip();
+    test_delta_record();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

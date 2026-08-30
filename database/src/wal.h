@@ -17,6 +17,9 @@
  *   kind     : 1 insert (body = the row's fields, engine encoding below)
  *              2 remove (no body)
  *              3 update (reserved for Task 5)
+ *              4 delta (single-field update; body = field_idx u32 |
+ *                back-pointer offset u64 | the one field's value, engine
+ *                encoding below — keys-resident tables only)
  *
  * Field encoding in a body walks the class table's kinds:
  *   SCALAR  8 bytes
@@ -43,7 +46,7 @@
 
 #define WO_WAL_MARK 0x574F4C31u /* "WOL1" LE */
 
-enum { WO_WAL_INSERT = 1, WO_WAL_REMOVE = 2, WO_WAL_UPDATE = 3 };
+enum { WO_WAL_INSERT = 1, WO_WAL_REMOVE = 2, WO_WAL_UPDATE = 3, WO_WAL_DELTA = 4 };
 
 typedef struct wo_wal {
     int fd;
@@ -126,6 +129,13 @@ int wo_wal_append_remove(wo_wal *w, uint32_t class_id, uint64_t id);
  * with the same id; the prefix/suffix delta trick from the survey is a
  * later optimization, recorded). Call AFTER the RAM update. */
 int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id);
+/* DELTA logs one field change, for a keys-resident row whose payload may
+ * already be gone from RAM (so there is no whole row to re-log). back_off
+ * is the row's PREVIOUS record's offset (insert or an earlier delta) — a
+ * caller parameter, not looked up here, so the encoder stays ignorant of
+ * table/map state. */
+int wo_wal_append_delta(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
+                         uint32_t field_idx, uint64_t back_off, uint64_t value);
 
 /* databasev2 4: which half of the barrier failed. A pwrite failure and an
  * fdatasync failure are different operational problems (a short write vs a
