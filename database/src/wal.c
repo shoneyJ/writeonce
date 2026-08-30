@@ -863,6 +863,33 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
     if (fd < 0) return errno == ENOENT ? 0 : -1; /* no WAL yet = fresh boot */
     uint64_t off = 0;
     int64_t applied = 0;
+
+    /* databasev2 2: replay must be able to READ rows back, not only write them.
+     * A REMOVE (or an UPDATE, which replays as remove-then-recreate) on a
+     * keys-resident table reaches wo_row_remove, whose keys arm borrows the row
+     * out of the log to find its index entries — and a borrow reads through
+     * db->rt->wal. At boot that pointer is not wired yet: main.c replays first
+     * and assigns rt.wal afterwards, so the borrow found no log, the remove
+     * failed, and replay reported a perfectly good tombstone as CORRUPTION.
+     *
+     * Lend the runtime a read-only view over the fd already open here, for the
+     * duration of the replay only, and restore whatever was there. Nothing in
+     * this window appends, so a view carrying just the descriptor is enough. */
+    wo_wal view;
+    memset(&view, 0, sizeof view);
+    view.fd = fd;
+    const void *saved_wal = NULL;
+    int lent = 0;
+    if (db->rt && !db->rt->wal) {
+        saved_wal = db->rt->wal;
+        db->rt->wal = &view;
+        lent = 1;
+    }
+#define REPLAY_RETURN(v)                                                       \
+    do {                                                                       \
+        if (lent) db->rt->wal = (void *)saved_wal;                             \
+        return (v);                                                            \
+    } while (0)
     for (;;) {
         uint32_t len;
         uint8_t *payload;
@@ -887,7 +914,7 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
         if (rc != 0) {
             close(fd);
             if (rc == -2 && volatile_cid) *volatile_cid = rec_cid;
-            return rc == -2 ? -2 : -1;
+            REPLAY_RETURN(rc == -2 ? -2 : -1);
         }
         if ((rec_kind == WO_WAL_INSERT || rec_kind == WO_WAL_UPDATE) && rec_id &&
             wo_table_is_keys_resident(db, rec_cid))
@@ -896,7 +923,8 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
         applied++;
     }
     close(fd);
-    return applied;
+    REPLAY_RETURN(applied);
+#undef REPLAY_RETURN
 }
 
 int64_t wo_wal_replay(const char *path, wo_db *db) {

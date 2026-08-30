@@ -633,6 +633,51 @@ static void test_keys_resident_delete(void) {
     wo_rt_destroy(&rt);
 }
 
+static void test_keys_resident_delete_then_replay(void) {
+    /* Does a keys-resident table survive a RESTART after a delete? The tombstone
+     * has to replay, and replay reaches wo_row_remove, whose keys arm borrows
+     * the row from the log to find its index entries. Replay runs BEFORE
+     * rt->wal is wired (main.c sets it after), so the borrow has no log to read
+     * and the remove fails — which replay reports as corruption. */
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysdelreplay.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    uint64_t ids[2];
+    for (int i = 0; i < 2; i++) {
+        wo_str *sv = wo_str_new(&rt, "dr", 2);
+        uint64_t vals[2] = {(uint64_t)(i + 900), (uint64_t)(uintptr_t)sv};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        uint64_t off = wo_wal_next_offset(&w);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_drop_payload(&db, 0, ids[i], off), 0);
+    }
+    /* delete one, logging the tombstone the way the request path does */
+    T_EQ(wo_row_remove(&db, 0, ids[0]), 0);
+    T_EQ(wo_wal_append_remove(&w, 0, ids[0]), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* the restart: replay has no rt->wal yet, exactly as main.c orders it */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KEYS_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt; rt.wal = NULL; rt.db = &db2;
+    int64_t n = wo_wal_replay(path, &db2);
+    T_CHECK(n >= 0); /* NOT corruption: a logged delete must replay */
+    T_CHECK(db2.tables[0].count == 1); /* one survivor */
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 static void test_keys_resident_survives_compaction(void) {
     /* databasev2 2 (5d): the obligation recorded at wo_wal_compact. Two ways
      * to fail it, both checked here:
@@ -1175,6 +1220,7 @@ int main(void) {
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();
+    test_keys_resident_delete_then_replay();
     test_stale_compact_temp_is_removed();
     test_should_compact_policy();
     test_compact_refuses_with_staged_records();

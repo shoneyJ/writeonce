@@ -139,6 +139,18 @@ Outstanding:
   **This is why the loader refusal earns its keep.** The gap was not one
   missing operation but a second one that corrupted memory silently, found
   only by auditing every reader of the id map.
+- **Given** a logged `delete` on a `resident: keys` table, **when** the process
+  restarts, **then** the tombstone replays. ✅ **fixed 2026-08-30 — and it was
+  broken by the delete fix itself.** `wo_row_remove`'s keys arm borrows the row
+  out of the log to find its index entries, and a borrow reads through
+  `db->rt->wal`. At boot that pointer is not wired yet — `main.c` replays first
+  and assigns `rt.wal` afterwards — so the borrow found no log, the remove
+  failed, and replay reported a valid tombstone as CORRUPTION. Replay now lends
+  the runtime a read-only view over the fd it already has open. Pinned by
+  `test_keys_resident_delete_then_replay`, which fails against the unfixed code.
+
+  Found by asking whether the read-modify-append plan was ready, not by a gate —
+  it is unreachable today only because the loader refuses the annotation.
 - **Given** an `update` to a row on a `resident: keys` table, **when** it runs,
   **then** it is applied. ❌ **refused explicitly** by
   `wo_row_update_field{,_slot}`. A keys row lives in the log with no slab slot
