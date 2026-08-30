@@ -988,20 +988,34 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
                                 db_row *r, uint32_t class_id, uint64_t id,
                                 uint32_t field, uint64_t nv, const char **msg,
                                 int *err_kind);
+static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
+                                uint32_t field, uint64_t nv, const char **msg,
+                                int *err_kind);
 
 int wo_row_update_field(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                         uint64_t vm_val, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
-    /* databasev2 2 (5d): a keys-resident row lives in the LOG, so there is no
-     * slab slot to mutate — writing into the borrow's scratch would discard
-     * the update silently, which is the one failure mode this iteration must
-     * not ship. Updating such a row means read-modify-APPEND (a new record,
-     * then re-point the offset), and that is not built yet. Refuse loudly.
-     * The loader refuses `resident: keys` outright, so this is defence in
-     * depth and a marker for the next implementer. */
+    /* databasev2 3 (keys-resident delta updates): a keys-resident row lives
+     * in the LOG, so there is no slab slot to mutate — row_apply_field_keys
+     * does read-modify-APPEND instead of a slot swap. wo_row_offset1 is the
+     * cheap existence check wo_row_ptr would otherwise give us. */
     if (wo_table_is_keys_resident(db, class_id)) {
-        *msg = "update on a `resident: keys` table is not implemented";
-        return -1;
+        if (!wo_row_offset1(db, class_id, id)) {
+            *msg = "no such row";
+            return -1;
+        }
+        const wo_classdesc *kc = &db->classes[class_id];
+        if (field >= kc->field_cnt) {
+            *msg = "no such field";
+            return -1;
+        }
+        int kok = 1;
+        uint64_t knv = db_val_encode(db->classes, kc->kinds[field], vm_val, &kok, msg);
+        if (!kok) {
+            if (err_kind) *err_kind = DB_ERR_BADKIND;
+            return -1;
+        }
+        return row_apply_field_keys(db, class_id, id, field, knv, msg, err_kind);
     }
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) {
@@ -1100,17 +1114,117 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
     return 0;
 }
 
+/* keys-resident counterpart of row_apply_field_slot. There is no slab slot
+ * to swap — the row lives in the log — so the shape is read-modify-APPEND:
+ * borrow (folds), append a delta with the row's current offset as the
+ * back-pointer, commit, THEN move the id map to the new record. [nv] is
+ * already engine-encoded (same convention as row_apply_field_slot);
+ * consumed on every path.
+ *
+ * The borrow's materialised row holds VM values (wo_row_release drops every
+ * slot through the runtime), so [nv] is decoded to a VM value up front and
+ * that is what ever lands in r->slots[field] — the engine encoding is used
+ * only for the WAL record and freed once logged.
+ *
+ * Ordering: the unique shadow-check (against a shadow of the row, mirroring
+ * row_apply_field_slot's promise that a rejected update leaves the row
+ * untouched) and the WAL append+commit both happen BEFORE either the index
+ * or the id map move — so a failure at any point up to and including the
+ * commit leaves the live row (offset AND index) exactly as it was. Only a
+ * successful, durable commit is followed by the index swap and the offset
+ * repoint, which — being pure RAM bookkeeping a replay rebuilds from the log
+ * regardless — cannot itself meaningfully "fail" once reached. */
+static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
+                                uint32_t field, uint64_t nv, const char **msg,
+                                int *err_kind) {
+    const wo_classdesc *c = &db->classes[class_id];
+    db_table *t = &db->tables[class_id];
+    const char *bmsg = "no such row";
+    db_row *r = wo_row_borrow(db, class_id, id, &bmsg);
+    if (!r) {
+        db_val_free(c->kinds[field], nv);
+        *msg = bmsg;
+        return -1;
+    }
+    /* successful borrow proves db->rt and db->rt->wal are both set */
+    uint64_t back_off = wo_row_offset1(db, class_id, id) - 1;
+
+    int ok = 1;
+    uint64_t nv_vm = wo_val_decode_vm(db, db->rt, c->kinds[field], nv, &ok, msg);
+    if (!ok) {
+        wo_row_release(db, class_id, r);
+        db_val_free(c->kinds[field], nv);
+        if (err_kind) *err_kind = DB_ERR_OOM;
+        return -1;
+    }
+
+    /* unique shadow-check: run with the NEW value before anything durable or
+       indexed moves, exactly row_apply_field_slot's promise */
+    uint64_t old_vm = r->slots[field];
+    r->slots[field] = nv_vm;
+    for (uint32_t x = 0; x < t->index_cnt; x++) {
+        db_index *ix = &t->indexes[x];
+        if (!(ix->flags & 1u)) continue;
+        int touches = 0;
+        for (uint32_t i = 0; i < ix->col_cnt; i++)
+            if (ix->cols[i] == field) touches = 1;
+        if (!touches) continue;
+        db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
+        if (!b) continue;
+        for (uint32_t i = 0; i < b->len; i++) {
+            if (b->ids[i] == id) continue;
+            const char *obmsg = "";
+            db_row *other = wo_row_borrow(db, class_id, b->ids[i], &obmsg);
+            int clash = other && idx_cols_equal(c, ix, r, other);
+            wo_row_release(db, class_id, other);
+            if (clash) {
+                r->slots[field] = old_vm; /* untouched, promised */
+                wo_row_release(db, class_id, r);
+                wo_drop_kind(db->rt, c->kinds[field], nv_vm);
+                db_val_free(c->kinds[field], nv);
+                if (err_kind) *err_kind = DB_ERR_UNIQUE;
+                *msg = "unique index violation";
+                return -1;
+            }
+        }
+    }
+    r->slots[field] = old_vm; /* restored: still the OLD row until committed */
+
+    wo_wal *w = (wo_wal *)db->rt->wal;
+    uint64_t new_off = wo_wal_next_offset(w);
+    if (wo_wal_append_delta(w, db, class_id, id, field, back_off, nv) != 0) {
+        wo_row_release(db, class_id, r);
+        wo_drop_kind(db->rt, c->kinds[field], nv_vm);
+        db_val_free(c->kinds[field], nv);
+        if (err_kind) *err_kind = DB_ERR_OOM;
+        *msg = "out of memory appending delta";
+        return -1;
+    }
+    if (wo_wal_commit(w) != 0) {
+        wo_row_release(db, class_id, r);
+        wo_drop_kind(db->rt, c->kinds[field], nv_vm);
+        db_val_free(c->kinds[field], nv);
+        *msg = "wal commit failed";
+        return -1;
+    }
+    db_val_free(c->kinds[field], nv); /* durable now; the engine copy served the log */
+
+    /* commit: the borrowed row is the OLD row — out of every index under the
+       OLD value, then in again under the NEW one — then the id map moves */
+    idx_remove_row(db, t, r);
+    r->slots[field] = nv_vm;
+    (void)idx_add_row(db, t, r); /* cannot violate uniqueness: the shadow
+                                    check above already cleared it */
+    wo_row_set_offset(db, class_id, id, new_off);
+    wo_drop_kind(db->rt, c->kinds[field], old_vm);
+    wo_row_release(db, class_id, r);
+    if (err_kind) *err_kind = DB_ERR_NONE;
+    return 0;
+}
+
 int wo_row_update_field_slot(wo_db *db, uint32_t class_id, uint64_t id, uint32_t field,
                              uint64_t slot, const char **msg, int *err_kind) {
     if (err_kind) *err_kind = DB_ERR_MISC;
-    /* databasev2 2 (5d): same reason as wo_row_update_field — a keys-resident
-     * row has no slab slot to mutate, and writing into the borrow's scratch
-     * would discard the update silently. Read-modify-APPEND is the shape that
-     * works, and it is not built yet. */
-    if (wo_table_is_keys_resident(db, class_id)) {
-        *msg = "update on a `resident: keys` table is not implemented";
-        return -1;
-    }
     /* bounds first: the RPC requester validated cid/field to encode at all,
        so these are defensive; the slot's kind is unknowable on a class
        violation and the value leaks rather than dies by the wrong kind */
@@ -1123,6 +1237,10 @@ int wo_row_update_field_slot(wo_db *db, uint32_t class_id, uint64_t id, uint32_t
         *msg = "no such field";
         return -1;
     }
+    /* databasev2 3 (keys-resident delta updates): a keys-resident row has no
+     * slab slot to mutate — row_apply_field_keys does read-modify-APPEND. */
+    if (wo_table_is_keys_resident(db, class_id))
+        return row_apply_field_keys(db, class_id, id, field, slot, msg, err_kind);
     db_row *r = wo_row_ptr(db, class_id, id);
     if (!r) {
         db_val_free(c->kinds[field], slot);
