@@ -579,31 +579,57 @@ static void test_keys_resident_round_trip(void) {
  * payload may already be gone from RAM), so a delta logs just the changed
  * field plus a back-pointer to the row's previous record. Nothing reads
  * deltas back yet — this only proves the encoder's bytes are what the format
- * says: kind, class, id, field index, back-pointer, value. */
+ * says: kind, class, id, field index, back-pointer, value.
+ *
+ * All-scalar 3-field class, dedicated to this test (not the shared
+ * KEYS_CLASSES): field_idx and back_off must each be a distinguishable
+ * nonzero value or a transposition between the u32 field_idx and the u64
+ * back_off is invisible (both would print as zero bytes either way). A
+ * scalar-only row keeps every field a fixed 8 bytes, so a third field gives
+ * a nonzero field_idx without a Text value's variable-length encoding
+ * complicating the fixed body-size assertion below. class_id stays 0: this
+ * fixture registers exactly one class, so there is no other value to give it
+ * without fabricating an unused second class purely to shift an index. */
+static const uint8_t delta_kinds[] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+static const wo_classdesc DELTA_CLASSES[] = {
+    {.name = 0, .flags = WO_CLASSF_RESIDENT_KEYS, .field_cnt = 3, .kinds = delta_kinds},
+};
+
 static void test_delta_record(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/delta.wal", g_dir);
     wo_rt rt;
-    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
     wo_db db;
-    T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
     wo_wal w;
     T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
     db.rt = &rt; rt.wal = &w; rt.db = &db;
     const char *msg = "";
 
-    wo_str *s = wo_str_new(&rt, "hi", 2);
-    uint64_t vals[2] = {111, (uint64_t)(uintptr_t)s};
+    /* filler row+record so the TARGET row's insert lands at a nonzero
+     * offset — a fresh WAL's first record is at offset 0, which would make
+     * back_off indistinguishable from a zeroed field either way */
+    uint64_t filler_vals[3] = {1, 2, 3};
+    uint64_t filler_id = wo_row_insert(&db, 0, filler_vals, &msg, NULL);
+    T_CHECK(filler_id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, filler_id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    uint64_t vals[3] = {111, 222, 555};
     uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
     T_CHECK(id != 0);
     uint64_t base_off = wo_wal_next_offset(&w);
+    T_CHECK(base_off != 0); /* the filler pushed this past offset 0 */
     T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
     T_EQ(wo_wal_commit(&w), 0);
 
-    /* field 0 (scalar) changes from 111 to 999; back-pointer is the insert
-     * record this delta supersedes */
+    /* field 2 (scalar) changes from 555 to 999; back-pointer is the insert
+     * record this delta supersedes. field_idx=2 and back_off=base_off are
+     * both nonzero and distinct from each other and from class_id=0, so a
+     * field_idx/back_off transposition changes the read-back bytes. */
     uint64_t delta_off = wo_wal_next_offset(&w);
-    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 999), 0);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 2, base_off, 999), 0);
     T_EQ(wo_wal_commit(&w), 0);
 
     /* payload: kind u8 | class u32 | id u64 | field_idx u32 | back_off u64 |
@@ -625,11 +651,10 @@ static void test_delta_record(void) {
     memcpy(&val, body + 25, 8);
     T_EQ(cid, 0u);
     T_EQ(rid, id);
-    T_EQ(fidx, 0u);
+    T_EQ(fidx, 2u);
     T_EQ(back, base_off);
     T_EQ(val, 999u);
 
-    wo_str_free(&rt, s);
     wo_wal_close(&w);
     wo_db_destroy(&db);
     wo_rt_destroy(&rt);
