@@ -97,7 +97,7 @@ back-pointer offset, then the field's value encoded by the existing `enc_val`.
 
 ### Task 2 — the fold, and reads through it
 
-**Files:** modify `database/src/wal.c` (near `wo_wal_read_row_at`, line ~600)
+**Files:** modify `database/src/wal.c` (near `wo_wal_read_row_at`, line 794)
 and `database/src/table.c` (`wo_row_borrow`).
 
 **Consumes:** `WO_WAL_DELTA` and the record layout from Task 1.
@@ -206,7 +206,7 @@ lines 88 and 289 — one inline, one on the request path) and
 ### Task 5 — replay and compaction fold the same way
 
 **Files:** modify `database/src/wal.c` (`apply_record` at line 738,
-`wo_wal_replay_ex` at line ~861, and `wo_wal_compact`).
+`wo_wal_replay_ex` at line 861, and `wo_wal_compact`).
 
 **Consumes:** the fold from Task 2.
 
