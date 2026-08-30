@@ -74,9 +74,11 @@ in-process — same indexes, same `@unique`, same FK restrict, same query surfac
 [porch 1–3](../porch/01-store-backed-middleware.md) need for sessions,
 rate-limit counters and idempotency keys.
 
-**The `resident: keys` half has its read path but no storage behind it.**
-Offsets can be captured and rows can be read back from them; nothing yet stores
-a table that way.
+**The `resident: keys` half is fully wired for CRUD.** Storage, reads, scans,
+`@unique`, deletes and updates (a WAL delta record, folded back to a value on
+every read) all work, and survive both a restart and a WAL checkpoint. Task
+6's two runtime refusals and task 7's measurement are what remain — see
+Outstanding below.
 
 ## Acceptance Criteria
 
@@ -123,9 +125,6 @@ Met:
   would have been dropped from the new log; and the id map would still have
   named offsets into the replaced file. Rows are rewritten in hash order, so
   offsets genuinely move and a missing re-point cannot pass by luck.
-
-Outstanding:
-
 - **Given** a `delete` of a row on a `resident: keys` table, **when** it runs,
   **then** the row is gone and nothing else is touched. ✅ **fixed 2026-08-29,
   and it was memory corruption before the fix.** `wo_row_remove` read the id
@@ -201,6 +200,9 @@ Outstanding:
      ratio enough to fire a checkpoint. The delta-updates design's decision
      not to cap chain length rests on compaction bounding it instead; for
      this shape it does not.
+
+Outstanding:
+
 - **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
   **then** it refuses. *(task 6 — today this combination silently discards
   every write)*
