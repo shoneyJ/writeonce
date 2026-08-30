@@ -1,0 +1,61 @@
+use json
+
+@table(name: "rows", index: [k])
+class Row {
+  k: Text
+  v: Text
+}
+
+class Ask { n: Int }
+class Go  { n: Int }
+
+typedef Stored = {
+  status: Int,
+  body:   Text
+}
+
+-- The shared actor: allocates inside receive, churns insert+delete on ONE key.
+class Churn {
+  fn receive(msg: Ask) -> Int {
+    let i = 0;
+    while i < 5 {
+      let enc = json.encode(Stored { status: 200 + i, body: "payload-${msg.n}-${i}" });
+      insert Row { k: "one", v: enc };
+      let hits = from r in Row where r.k == "one" take 1 select r;
+      if len(hits) > 0 {
+        let back = json.decode(hits[0].v) as Stored;
+        if back != nil { i = i + back.status - back.status; }
+        delete hits[0];
+      }
+      i = i + 1;
+    }
+    return msg.n;
+  }
+}
+
+-- Clients: each parks on `call` into the SAME churn actor, concurrently.
+class Client {
+  target: actor Ask
+  fn receive(msg: Go) -> Int {
+    let j = 0;
+    while j < 8 {
+      let r = call(self.target, Ask { n: msg.n * 100 + j });
+      j = j + 1;
+    }
+    return 0;
+  }
+}
+
+fn main() -> Int {
+  let churn: actor Ask = spawn Churn {};
+  let c1: actor Go = spawn Client { target: churn };
+  let c2: actor Go = spawn Client { target: churn };
+  let c3: actor Go = spawn Client { target: churn };
+  let c4: actor Go = spawn Client { target: churn };
+  send(c1, Go { n: 1 });
+  send(c2, Go { n: 2 });
+  send(c3, Go { n: 3 });
+  send(c4, Go { n: 4 });
+  print("dispatched");
+  return 0;
+}

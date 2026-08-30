@@ -658,6 +658,20 @@ int wo_engine_start(const wo_module *mod, size_t heap_cap, uint32_t nshards) {
         memset(sv, 0, sizeof *sv);
         sv->mod = mod;
         sv->shard_id = i;
+        /* language 41: stamp the RUNTIME's identity here too, not only at
+         * lazy init. A worker's rt is initialised when it adopts its first
+         * fiber (T6), but INBOX_READY[i] is set right below — at thread
+         * creation. So a shard that never adopts still gets settled at
+         * shutdown, with rt.shard_id left 0 by the memset above. It then
+         * IMPERSONATES shard 0: wo_drop_obj compares o->shard_id against
+         * rt->shard_id, sees 0 == 0 for any payload the primary allocated,
+         * concludes "we are home" instead of routing, and calls class_free
+         * against rt->classes — which lazy init never filled, so it is NULL.
+         * That is the SIGSEGV: &rt->classes[class_id] off a null base.
+         * An uninitialised shard has allocated nothing and therefore owns
+         * nothing, so carrying its real id makes every payload correctly
+         * foreign and routes it to the owner that can actually free it. */
+        sv->rt.shard_id = (uint16_t)i;
         sv->is_primary = 0;
         sv->wake_efd = eventfd(0, EFD_NONBLOCK);
         if (sv->wake_efd < 0) return -1;

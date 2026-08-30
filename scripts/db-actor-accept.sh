@@ -67,6 +67,40 @@ else
   bad "WAL replay" "r1=$r1 r2=$r2"
 fi
 
+# ---- language 41: an unadopted shard must not impersonate shard 0 ---------
+# A worker shard's runtime is initialised lazily, when it adopts its first
+# fiber -- but INBOX_READY is set at thread creation. A shard that never
+# adopts therefore still gets settled at shutdown, and before the fix its
+# rt.shard_id was left 0 by the memset. It then impersonated shard 0:
+# wo_drop_obj saw 0 == 0 for anything the primary allocated, took the "we
+# are home" branch instead of routing, and called class_free against a
+# class table lazy init never filled -- &rt->classes[id] off a NULL base.
+#
+# Needs MULTIPLE SHARDS (the corpus runner pins WO_SHARDS=1, which is why
+# this lives here) and the ASan build, because the arena is one hand-managed
+# malloc block: intra-arena reuse is invisible to ASan, so the failure
+# surfaces as a bare SEGV rather than a use-after-free report.
+L41_W="$(mktemp -d)"
+trap 'rm -rf "$L41_W"' EXIT
+L41_WOC="$ROOT/compiler/_build/default/bin/woc"
+L41_VM="$ROOT/runtime/build/wovm_asan"
+L41_SRC="$ROOT/tests/regress/lang-41/shard-settle-crash.wo"
+if [[ ! -x "$L41_VM" ]]; then
+  bad "lang-41 shard settle" "build it first: make -C runtime wovm-asan"
+elif "$L41_WOC" --emit "$L41_SRC" -o "$L41_W/l41.wob" >/dev/null 2>&1; then
+  mkdir -p "$L41_W/l41data"
+  l41_out="$(WO_DATA="$L41_W/l41data" WO_SHARDS=4 timeout 60 "$L41_VM" "$L41_W/l41.wob" 2>&1)"
+  if grep -q 'SEGV\|AddressSanitizer' <<<"$l41_out"; then
+    bad "lang-41 shard settle" "$(grep -m1 'ERROR' <<<"$l41_out")"
+  elif grep -q 'dispatched' <<<"$l41_out"; then
+    ok "lang-41: an unadopted shard routes instead of impersonating shard 0"
+  else
+    bad "lang-41 shard settle" "no output: $(head -c 120 <<<"$l41_out")"
+  fi
+else
+  bad "lang-41 shard settle" "fixture did not compile"
+fi
+
 echo
 echo "db-actor-accept: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]] || exit 1
