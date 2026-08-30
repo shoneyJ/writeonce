@@ -150,13 +150,19 @@ if "$WOC" --emit "$EX/main.wo" -o "$WORK/residency.wob" >>"$LOG" 2>&1; then
   {
     echo "--------------------- run 1: seed ---------------------"
     WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" seed 2>&1
-    echo "--------------------- run 2: restart ------------------"
+    echo "--------------------- run 2: restart + order ----------"
   } >> "$LOG"
-  ex2="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" 2>&1)"
+  ex2="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" order 2>&1)"
   printf '%s\n' "$ex2" >> "$LOG"
-  grep -q 'orders=3 sessions=0' <<<"$ex2" \
+  grep -q 'products=2 carts=0' <<<"$ex2" \
     && ok "example: durable replayed, volatile did not" \
     || bad "example restart" "got: $ex2"
+  # the stronger claim: a FIELD CHANGE survives, not just an insert
+  ex3="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" order 2>&1)"
+  printf '%s\n' "$ex3" >> "$LOG"
+  grep -q "an earlier order's decrement replayed" <<<"$ex3" \
+    && ok "example: a stock update replays across a restart" \
+    || bad "example update replay" "got: $ex3"
 else
   bad "the doc example compiles" "see $LOG"
 fi

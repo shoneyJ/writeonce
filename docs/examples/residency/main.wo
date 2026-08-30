@@ -1,51 +1,63 @@
--- residency — databasev2 2's per-table storage, demonstrated across a
--- restart.
+-- residency — databasev2 2's per-table storage, demonstrated across a restart
+-- with the workload the feature exists for: a product catalogue whose stock
+-- moves every time an order is placed.
 --
 -- Before this iteration, durability was ONE environment variable for a whole
 -- process: WO_DATA set and every @table is WAL-logged, or unset and none are.
--- Real applications are not uniform. A session table is disposable, an orders
--- table is precious. One global switch forces "everything is precious" or
--- "nothing is", and the developer pays for the wrong one.
+-- Real applications are not uniform. A cart session is disposable; a product's
+-- stock level is not; and a catalogue large enough to matter does not fit in
+-- RAM at all. One global switch forces "everything is precious" or "nothing
+-- is", and the developer pays for whichever is wrong.
 --
 -- Run it twice against the same WO_DATA directory:
 --
 --   mkdir -p /tmp/residency-data      -- WO_DATA must exist already
 --   WO_DATA=/tmp/residency-data wovm residency.wob seed
---   WO_DATA=/tmp/residency-data wovm residency.wob
+--   WO_DATA=/tmp/residency-data wovm residency.wob order
 --
--- The second run inserts nothing. Orders come back from the log; Sessions do
--- not, because they were never written to it.
+-- The second run places an order. Stock comes back decremented after a
+-- restart; the cart does not come back at all.
 
--- Precious: WAL-logged, replayed at boot. `durable: true` is the default, and
+-- Precious: WAL-logged, replayed at boot. `durable: true` is the default and
 -- is written out here only because this example is about the annotation.
-@table(name: "orders", index: [sku], durable: true, resident: all)
-class Order {
+@table(name: "products", index: [sku], durable: true, resident: all)
+class Product {
   sku:   Text
-  cents: Int
+  name:  Text
+  price: Int
+  stock: Int
 }
 
 -- Scratch: never written to the WAL, so it costs no disk and no fsync, and it
 -- is EMPTY after a restart. That is the point — not a bug to work around.
-@table(name: "sessions", index: [token], durable: false)
-class Session {
+@table(name: "carts", index: [token], durable: false)
+class Cart {
   token: Text
-  uid:   Int
+  sku:   Text
 }
 
--- WHAT DOES NOT COMPILE YET, and why it is written here rather than omitted:
+-- WHAT DOES NOT COMPILE YET, and why it is written here rather than omitted.
 --
---   @table(name: "audit", index: [at], durable: true, resident: keys)
---   class AuditEntry {
---     at:   Int
---     what: Text
+-- A real catalogue is the table that outgrows RAM first, so `Product` above is
+-- exactly what you would want to declare keys-resident:
+--
+--   @table(name: "products", index: [sku], durable: true, resident: keys)
+--   class Product {
+--     sku:   Text
+--     name:  Text
+--     price: Int
+--     stock: Int
 --   }
 --
--- `resident: keys` is the mode for a table too large for RAM: the id map stays
--- resident, the row payload lives in the WAL and is read back by offset. The
--- storage, the read paths, deletes and checkpoint survival all work today.
--- UPDATING such a row does not — the row has no slab slot to mutate, and doing
--- it properly means read-modify-append. The loader therefore REFUSES the
--- annotation outright rather than honouring it in name only:
+-- `resident: keys` keeps the id map in RAM and leaves each row's payload in the
+-- WAL, read back by offset. Storage, reads, scans, `@unique`, deletes and
+-- checkpoint survival all work today. **Updating such a row does not**, and
+-- `place_order` below is precisely why that matters: the row has no slab slot
+-- to mutate, so the write would land in a materialised scratch buffer and be
+-- discarded SILENTLY.
+--
+-- The loader therefore refuses the annotation rather than honouring it in name
+-- only:
 --
 --   wovm: class 0 declares `resident: keys`, which is INCOMPLETE: rows are
 --   stored and read keys-only, but UPDATING one is not implemented (it needs
@@ -55,55 +67,74 @@ class Session {
 -- Note WHERE it is refused: the compiler accepts it and emits a .wob — the
 -- annotation is a load-time property, so `woc` is green and `wovm` exits 2.
 --
--- Refusing at load rather than at the first update is deliberate: a developer
--- who declared a 120 GB table keys-resident, saw it compile, and shipped would
--- discover the gap in production.
+-- This example is also the argument for HOW updates should land. Only `stock`
+-- changes when an order is placed; `sku`, `name` and `price` do not. Appending
+-- the whole row on every sale would rewrite every field to change one integer,
+-- on the hottest write path a shop has.
 
-fn count_orders() -> Int {
+fn count_products() -> Int {
   let n = 0;
-  for _o in from o in Order select o { n = n + 1; }
+  for _p in from p in Product select p { n = n + 1; }
   return n;
 }
 
-fn count_sessions() -> Int {
+fn count_carts() -> Int {
   let n = 0;
-  for _s in from s in Session select s { n = n + 1; }
+  for _c in from c in Cart select c { n = n + 1; }
   return n;
 }
 
-fn report(label: Text) {
-  print("${label}: orders=${count_orders()} sessions=${count_sessions()}");
+fn stock_of(sku: Text) -> Int {
+  for p in from p in Product where p.sku == sku select p { return p.stock; }
+  return 0 - 1;
+}
+
+-- The update this example exists to show: one field of one row moves, and the
+-- other three do not.
+fn place_order(sku: Text, qty: Int) -> Int {
+  for p in from p in Product where p.sku == sku select p {
+    if p.stock < qty { return 0 - 1; }
+    p.stock = p.stock - qty;   -- writes through to the engine
+    return p.stock;
+  }
+  return 0 - 1;
 }
 
 fn main(args: multi Text) -> Int {
   if len(args) > 0 {
     if args[0] == "seed" {
-      -- Both tables get the same number of rows, from the same code path.
-      -- Only the annotation differs, so anything that differs after the
-      -- restart is the annotation's doing and nothing else's.
-      let i = 0;
-      while i < 3 {
-        insert Order { sku: "sku-${i}", cents: 100 + i };
-        insert Session { token: "tok-${i}", uid: i };
-        i = i + 1;
+      insert Product { sku: "SKU-1", name: "kettle", price: 2999, stock: 10 };
+      insert Product { sku: "SKU-2", name: "mug",    price:  799, stock: 40 };
+      -- a cart is scratch: same insert, different annotation, different fate
+      insert Cart { token: "cart-a", sku: "SKU-1" };
+      print("seeded: products=${count_products()} carts=${count_carts()} SKU-1 stock=${stock_of("SKU-1")}");
+      return 0;
+    }
+    if args[0] == "order" {
+      -- second run: no inserts. Whatever is here came from the log.
+      let before = stock_of("SKU-1");
+      let after = place_order("SKU-1", 3);
+      print("after restart: products=${count_products()} carts=${count_carts()}");
+      print("order: SKU-1 stock ${before} -> ${after}");
+      if count_carts() != 0 {
+        print("UNEXPECTED: a durable:false table survived a restart");
+        return 1;
       }
-      report("seeded");
+      if after != before - 3 {
+        print("UNEXPECTED: the stock update did not apply");
+        return 1;
+      }
+      -- Run `order` more than once and this is the interesting line: a stock
+      -- level below the seeded 10 can only mean an EARLIER order's update
+      -- survived a restart. The decrement is durable, not just the insert.
+      if before < 10 {
+        print("ok: an earlier order's decrement replayed from the log");
+      } else {
+        print("ok: first order placed; run `order` again to see it replay");
+      }
       return 0;
     }
   }
-
-  -- Second run: no inserts at all. Whatever is here came from the log.
-  report("after restart");
-
-  -- The claim this example exists to make, checked rather than narrated.
-  if count_sessions() != 0 {
-    print("UNEXPECTED: a durable:false table survived a restart");
-    return 1;
-  }
-  if count_orders() == 0 {
-    print("UNEXPECTED: a durable:true table did not replay");
-    return 1;
-  }
-  print("ok: durable replayed, volatile did not");
+  print("usage: residency seed | residency order");
   return 0;
 }
