@@ -761,6 +761,101 @@ static void test_delta_fold_same_field_newest_wins(void) {
     wo_rt_destroy(&rt);
 }
 
+/* keys-resident delta updates, Task 2 (review follow-up): a back-pointer
+ * naming ITS OWN offset is the boundary case of the fold's invariant —
+ * every hop must land on a STRICTLY earlier offset than the record naming
+ * it. back_off == cur violates that on the very first hop and must be
+ * refused immediately, not walked. */
+static void test_fold_refuses_self_pointing_delta(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/foldself.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt;
+    rt.wal = &w;
+    rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {10, 20, 30};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+
+    /* a delta whose back-pointer names ITS OWN offset */
+    uint64_t delta_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, delta_off, 999), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, delta_off), 0);
+
+    T_CHECK(wo_row_borrow(&db, 0, id, &msg) == NULL);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* The case a mere chain-length bound cannot rule out: a back-pointer that
+ * points FORWARD to a real, valid record for the SAME row. Nothing about
+ * this loops, so a cap on chain length would let it straight through in
+ * one hop and return a plausible-but-wrong answer. Only checking that
+ * every hop moves to a STRICTLY earlier offset catches it, immediately. */
+static void test_fold_refuses_forward_pointing_delta(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/foldfwd.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt;
+    rt.wal = &w;
+    rt.db = &db;
+    const char *msg = "";
+
+    /* filler row/record, same reason as test_delta_record's: a fresh WAL's
+       first record sits at offset 0, which would make the forged delta's
+       own offset indistinguishable from a zeroed field either way. */
+    uint64_t filler_vals[3] = {1, 2, 3};
+    uint64_t filler_id = wo_row_insert(&db, 0, filler_vals, &msg, NULL);
+    T_CHECK(filler_id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, filler_id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    uint64_t vals[3] = {10, 20, 30};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+
+    /* forge a delta BEFORE the row's real base record exists, naming the
+       offset the base record WILL occupy right after it. A scalar-field
+       delta payload is kind|class|id|field_idx|back_off|value(u64) = 33
+       bytes (established by test_delta_record); the frame is 8+33+4 = 45. */
+    uint64_t delta_off = wo_wal_next_offset(&w);
+    uint64_t insert_off = delta_off + 45u;
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, insert_off, 999), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_wal_next_offset(&w), insert_off); /* the hand-computed frame size held */
+
+    /* the row's TRUE base record, landing exactly where the forged delta
+       claimed — the row is still in RAM, so this is an ordinary insert-log */
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    /* point the row at the forged, forward-pointing delta */
+    T_EQ(wo_row_drop_payload(&db, 0, id, delta_off), 0);
+
+    /* the fold must refuse — not silently return {999, 20, 30} by walking
+       forward into the base record the forged back-pointer named */
+    T_CHECK(wo_row_borrow(&db, 0, id, &msg) == NULL);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* databasev2 2 (5c): boot. A keys-resident store must come back from replay
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
@@ -1407,6 +1502,8 @@ int main(void) {
     test_delta_record();
     test_delta_fold_two_fields();
     test_delta_fold_same_field_newest_wins();
+    test_fold_refuses_self_pointing_delta();
+    test_fold_refuses_forward_pointing_delta();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

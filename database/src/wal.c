@@ -877,15 +877,6 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
  * and compaction all call this one function — never a second copy. */
 int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
                        uint64_t *id_out, uint64_t *out_vals, const char **msg) {
-    /* Cycle guard: every legitimate back-pointer names a record already on
-     * disk before [off], so the chain cannot be longer than the number of
-     * minimal-sized records the bytes up to [off] could hold. 13 = the
-     * smallest an on-disk record can ever be (scan_record refuses len == 0,
-     * so 8-byte header + 1-byte payload + 4-byte mark). A malicious or
-     * corrupt back-pointer — even a record pointing at itself — still
-     * terminates here, loudly, instead of spinning forever. */
-    uint64_t max_steps = off / 13u + 1u;
-
     uint32_t cid = 0;
     uint64_t id = 0;
     uint32_t field_cnt = 0;
@@ -893,13 +884,9 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
     uint64_t *resolved_val = NULL; /* field idx -> its remembered engine value */
     uint64_t cur = off;
     int rc = 0;
+    int first = 1;
 
-    for (uint64_t step = 0;; step++) {
-        if (step >= max_steps) {
-            *msg = "delta chain exceeds what the log could hold (cycle?)";
-            rc = -1;
-            break;
-        }
+    for (;;) {
         uint32_t len;
         uint8_t *payload;
         if (scan_record(w->fd, cur, &len, &payload) != 0) {
@@ -917,7 +904,8 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
             rc = -1;
             break;
         }
-        if (step == 0) {
+        if (first) {
+            first = 0;
             cid = rec_cid;
             id = rec_id;
             field_cnt = db->classes[cid].field_cnt;
@@ -942,6 +930,21 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
             if (r.bad || field_idx >= field_cnt) {
                 free(payload);
                 *msg = "delta record is malformed";
+                rc = -1;
+                break;
+            }
+            /* THE cycle/forgery guard: a back-pointer names the row's
+             * PREVIOUS record, which by construction is earlier in the
+             * (append-only) log than the delta naming it. Anything else —
+             * a self-pointer, a forward pointer, a pointer that only forms
+             * a cycle several hops later — is corruption or forgery, and
+             * this is what actually rules all of those out: not a bound on
+             * how many records could exist, which a forward pointer to a
+             * genuine record satisfies trivially and a bound would then let
+             * straight through. */
+            if (back_off >= cur) {
+                free(payload);
+                *msg = "delta back-pointer does not point earlier in the log";
                 rc = -1;
                 break;
             }

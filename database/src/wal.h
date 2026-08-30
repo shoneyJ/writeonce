@@ -294,9 +294,12 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
  * against EVERY record touched — a chain that disagrees about whose row it
  * is is corruption, not a new row.
  *
- * A cycle in the back-pointers is corruption, possibly malicious: the walk
- * refuses to look at more records than the log at [off] could possibly
- * hold, and fails loudly instead of spinning.
+ * A back-pointer must name something STRICTLY EARLIER in the log than the
+ * record holding it — the row's PREVIOUS record, by construction, always
+ * is. Anything else (a self-pointer, a forward pointer, corruption or
+ * forgery of any shape) is refused on the very hop that violates it, which
+ * also rules out a cycle: a walk that only ever moves to a lower offset
+ * cannot revisit one.
  *
  * 0 ok, -1 no intact/malformed/corrupt record anywhere in the chain (or a
  * REMOVE tombstone reached mid-chain), -2 out of memory (*msg set). */
