@@ -175,9 +175,16 @@ int wo_wal_pend_drop(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off);
 /* Task 4 (keys-resident delta updates): note a keys-resident row's id-map
  * entry that must move to [off] once the delta staged there is durable —
  * the update-arm counterpart of wo_wal_pend_drop, on its own list (see the
- * `repoint` field). 0 ok, -1 out of memory (the map simply stays where it
- * was; a durable delta with a stale map is exactly what replay reconciles,
- * so this is safe, just deferred further than intended). */
+ * `repoint` field). 0 ok, -1 out of memory.
+ *
+ * IMPORTANT 1 (review finding): unlike wo_wal_pend_drop, a failure here is
+ * NOT safe to ignore. Replay does NOT reconcile a lost re-point: if a
+ * second update to this row lands in the same drain, it finds no pending
+ * entry, falls back to the stale durable offset, and its delta chains PAST
+ * the one this call was meant to record — every reader, replay and
+ * compaction included, then agrees on the wrong value, permanently.
+ * Callers must treat a nonzero return as fatal (wo_wal_repoint_fatal),
+ * exactly like a failed wo_wal_stage_fatal. */
 int wo_wal_pend_repoint(wo_wal *w, uint32_t cid, uint64_t id, uint64_t off);
 
 /* Task 4: the most recent PENDING re-point recorded for (cid, id), not yet
@@ -247,6 +254,11 @@ int wo_wal_compact(wo_wal *w, wo_db *db);
  * RAM, so this is the same unrecoverable position as a failed barrier — see
  * wo_wal_commit_fatal). Never returns. */
 void wo_wal_stage_fatal(const wo_wal *w);
+
+/* IMPORTANT 1 (review finding): a pending re-point could not even be
+ * RECORDED — same unrecoverable position as wo_wal_stage_fatal, see
+ * wo_wal_pend_repoint's own doc. Never returns. */
+void wo_wal_repoint_fatal(const wo_wal *w);
 
 /* databasev2 4: commit, or END THE PROCESS.
  *

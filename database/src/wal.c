@@ -556,6 +556,13 @@ static void wal_die(const wo_wal *w, const char *op, uint32_t nrec) {
 
 void wo_wal_stage_fatal(const wo_wal *w) { wal_die(w, "staging a record", 1); }
 
+/* IMPORTANT 1 (review finding): unlike wo_wal_pend_drop's failure, a lost
+ * pend_repoint is not safe to shrug off — the delta it was meant to
+ * re-point to is already staged, RAM has already moved (table.c's own
+ * fatal-below-this-line rule), and a second same-drain update to the same
+ * row would otherwise chain its delta past the lost one, permanently. */
+void wo_wal_repoint_fatal(const wo_wal *w) { wal_die(w, "recording a pending re-point", 1); }
+
 void wo_wal_commit_fatal(wo_wal *w, uint32_t nrec) {
     int staged = w->len != 0;
     int rc = wo_wal_commit(w);
@@ -897,6 +904,10 @@ static int apply_delta(wo_db *db, uint32_t cid, uint64_t id, rbuf *r) {
     uint64_t back_off = rd_u64(r);
     const wo_classdesc *c = &db->classes[cid];
     if (r->bad || field_idx >= c->field_cnt) return -1;
+    /* IMPORTANT 2 (review finding): a DELTA can only be folded through
+     * db->rt->wal (wo_wal_replay_ex's lent view, at replay, or a live one
+     * otherwise) — refuse cleanly instead of dereferencing a NULL rt. */
+    if (!db->rt) return -1;
     uint64_t nv;
     if (dec_val(r, db, c->kinds[field_idx], &nv) != 0 || (size_t)(r->end - r->p) != 0)
         return -1;
@@ -1254,13 +1265,21 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
      *
      * Lend the runtime a read-only view over the fd already open here, for the
      * duration of the replay only, and restore whatever was there. Nothing in
-     * this window appends, so a view carrying just the descriptor is enough. */
+     * this window appends, so a view carrying just the descriptor is enough.
+     *
+     * IMPORTANT 2 (review finding): this used to lend the view only when
+     * db->rt->wal was NOT already set — leaving a rt whose wal WAS already
+     * live to fold deltas against that LIVE wal's (possibly non-empty)
+     * staging buffer instead, which the design never allows. Install the
+     * throwaway view unconditionally whenever there is an rt to hold it;
+     * apply_delta refuses outright when there is no rt at all to install
+     * one into. */
     wo_wal view;
     memset(&view, 0, sizeof view);
     view.fd = fd;
     const void *saved_wal = NULL;
     int lent = 0;
-    if (db->rt && !db->rt->wal) {
+    if (db->rt) {
         saved_wal = db->rt->wal;
         db->rt->wal = &view;
         lent = 1;

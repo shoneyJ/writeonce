@@ -315,8 +315,12 @@ void wo_db_exec_req(wo_vm *vm, wo_db_req *q) {
             if (keys_res) {
                 /* recorded, not performed: this batch's barrier runs in the
                  * drain (vm.c), and only then does the map move — mirrors
-                 * the insert arm's wo_wal_pend_drop exactly. */
-                (void)wo_wal_pend_repoint(w, q->cid, q->id, roff);
+                 * the insert arm's wo_wal_pend_drop in shape, but NOT in
+                 * failure safety: the delta is already staged and RAM has
+                 * already moved, so a lost re-point is unrecoverable (see
+                 * wo_wal_pend_repoint's own doc) and must die here, not
+                 * limp on with a permanently stale map. */
+                if (wo_wal_pend_repoint(w, q->cid, q->id, roff) != 0) wo_wal_repoint_fatal(w);
             } else {
                 if (wo_wal_append_update(w, db, q->cid, q->id) != 0) wo_wal_stage_fatal(w);
             }
