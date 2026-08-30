@@ -1,0 +1,152 @@
+-- residency-bench — databasev2 2 task 7.
+--
+-- Two tables identical except the `resident` annotation (see types.wo), the
+-- same fill, the same Weyl key order, the same read count. Run under a cgroup
+-- memory cap by scripts/db-bench.py's `residency` leg:
+--
+--   control : a cap that binds neither mode  -> what the mode COSTS
+--   over-cap: a cap between the two resident sets -> what the mode BUYS
+--
+-- Prints the same shape db-bench's own legs do, so the harness parses it with
+-- the same helpers: `<op> <n> <ops/sec> <p50> <p99>` plus an rss/hits line.
+use fs
+use time
+
+fn hist_add(mut h: map<Int, Int>, us: Int) {
+  let b = us;
+  if b < 0 {
+    b = 0;
+  }
+  if b > 20000 {
+    b = 20000;
+  }
+  if has(h, b) {
+    set(h, b, get(h, b) + 1);
+  } else {
+    set(h, b, 1);
+  }
+}
+
+fn hist_pct(h: map<Int, Int>, total: Int, pct: Int) -> Int {
+  let target = total * pct / 100;
+  if target < 1 {
+    target = 1;
+  }
+  let seen = 0;
+  let b = 0;
+  while b <= 20000 {
+    if has(h, b) {
+      seen = seen + get(h, b);
+      if seen >= target {
+        return b;
+      }
+    }
+    b = b + 1;
+  }
+  return 20000;
+}
+
+fn report(op: Text, n: Int, total_us: Int, h: map<Int, Int>) {
+  let us = total_us;
+  if us < 1 {
+    us = 1;
+  }
+  let rate = n * 1000000 / us;
+  print("${op} ${n} ${rate} ${hist_pct(h, n, 50)} ${hist_pct(h, n, 99)}");
+}
+
+fn self_rss_kb() -> Int {
+  let st = try fs.read_all("/proc/self/status", 16384) catch (e) "";
+  let i = index_of(st, "VmRSS:");
+  if i < 0 {
+    return 0;
+  }
+  let rest = substr(st, i + 6, 24);
+  let n = 0;
+  let j = 0;
+  while j < len(rest) {
+    let c = byte_at(rest, j);
+    if c >= 48 and c <= 57 {
+      n = n * 10 + (c - 48);
+    } else {
+      if n > 0 {
+        return n;
+      }
+    }
+    j = j + 1;
+  }
+  return n;
+}
+
+fn wide_pad() -> Text {
+  return "0123456789abcdef0123456789abcdef";
+}
+
+fn wread_all(n: Int, r: Int) -> Int {
+  let pad = wide_pad();
+  let i = 1;
+  while i <= n {
+    insert WideA { k: i, a: "a${i}${pad}", b: "b${i}${pad}", note: "n${i}${pad}${pad}" };
+    i = i + 1;
+  }
+  print("wreadfilled ${n} ${self_rss_kb()}");
+  let h: map<Int, Int> = {};
+  let hits = 0;
+  let t0 = time.ticks();
+  let j = 0;
+  while j < r {
+    let key = 1 + (j * 2654435761) % n;
+    let o0 = time.ticks();
+    for row in from x in WideA where x.k == key take 1 select x {
+      if len(row.a) > 0 { hits = hits + 1; }
+    }
+    hist_add(h, time.ticks() - o0);
+    j = j + 1;
+  }
+  report("wreadall", r, time.ticks() - t0, h);
+  print("wreadallrss ${self_rss_kb()} ${hits}");
+  return 0;
+}
+
+fn wread_keys(n: Int, r: Int) -> Int {
+  let pad = wide_pad();
+  let i = 1;
+  while i <= n {
+    insert WideK { k: i, a: "a${i}${pad}", b: "b${i}${pad}", note: "n${i}${pad}${pad}" };
+    i = i + 1;
+  }
+  print("wreadfilled ${n} ${self_rss_kb()}");
+  let h: map<Int, Int> = {};
+  let hits = 0;
+  let t0 = time.ticks();
+  let j = 0;
+  while j < r {
+    let key = 1 + (j * 2654435761) % n;
+    let o0 = time.ticks();
+    for row in from x in WideK where x.k == key take 1 select x {
+      if len(row.a) > 0 { hits = hits + 1; }
+    }
+    hist_add(h, time.ticks() - o0);
+    j = j + 1;
+  }
+  report("wreadkeys", r, time.ticks() - t0, h);
+  print("wreadkeysrss ${self_rss_kb()} ${hits}");
+  return 0;
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 3 {
+    print_err("usage: residency-bench wreadall|wreadkeys N R");
+    return 2;
+  }
+  let n = parse_int(args[1]);
+  let r = parse_int(args[2]);
+  if n == nil or r == nil {
+    print_err("residency-bench: N and R must be positive numbers");
+    return 2;
+  }
+  if args[0] == "wreadall" { return wread_all(n, r); }
+  if args[0] == "wreadkeys" { return wread_keys(n, r); }
+  print_err("residency-bench: unknown mode ${args[0]}");
+  return 2;
+}

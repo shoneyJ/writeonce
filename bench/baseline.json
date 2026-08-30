@@ -863,5 +863,29 @@
   "floor": 100,
   "tolerance_pct": 100,
   "value": 3
+ },
+ "residency.all_collapse_x": {
+  "dir": "higher",
+  "floor": 2.0,
+  "tolerance_pct": 100,
+  "value": 105.4
+ },
+ "residency.in_ram_cost_x": {
+  "dir": "lower",
+  "floor": 8.0,
+  "tolerance_pct": 50,
+  "value": 4.23
+ },
+ "residency.overcap_vs_swap_x": {
+  "dir": "higher",
+  "floor": 1.0,
+  "tolerance_pct": 100,
+  "value": 1.53
+ },
+ "residency.rss_ratio": {
+  "dir": "higher",
+  "floor": 2.0,
+  "tolerance_pct": 10,
+  "value": 2.55
  }
 }

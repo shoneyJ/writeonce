@@ -66,7 +66,7 @@ declared per-table policy. Durability is untouched and unconditional.
 | 5c | shared borrow/release accessor, then id→offset storage | ✅ `2e347de` (accessor, pure refactor, `db-bench --quick` 85/0), `18ce4d5` (offset storage), `f9c36ef` (insert + boot wiring) |
 | 5d | rewire the readers: remaining `wo_row_ptr` sites, slab scans, FK restrict, `@unique` across the boundary | ✅ `11a92df` (db.c), + this commit (table.c, wal.c, compaction). Updates **refused**, not rewired — see below |
 | 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
-| 7 | measure, gate, document, close out | 🔄 measured 2026-08-30 (below); gate + closeout outstanding |
+| 7 | measure, gate, document, close out | ✅ measured, gated and documented 2026-08-30 |
 
 **The `durable` half is complete and usable.** A volatile table is a full table
 in-process — same indexes, same `@unique`, same FK restrict, same query surface
@@ -274,9 +274,49 @@ over-capacity table fast — under a hard memory cap it is within 1.5× of simpl
 letting the kernel swap. The honest guidance is "use it to fit more, not to go
 faster", and the docs should say so.
 
-**Still outstanding for task 7:** wire these legs into `scripts/db-bench.py`
-with tolerances and a baseline entry, and re-measure the `resident: all` read
-baseline to confirm no cost for a feature not used.
+**Gated 2026-08-30.** `scripts/db-bench.py` grew a `residency` leg driving
+`docs/examples/residency-bench` — its own program, because declaring a
+`resident: keys` table is a WHOLE-PROGRAM constraint: the runtime refuses to
+start without `WO_DATA`, for every mode in the module. Putting those classes in
+db-bench's shared types made `growth`, `ceiling` and `randread` — which
+deliberately run without `WO_DATA` — refuse to start. That regression was caught
+by running the leg, not by reading it.
+
+What is gated, and what deliberately is not, follows `randread`'s existing
+split: the absolute ops/sec under a cap is swap and disk I/O and belongs to the
+box, so it is recorded and waived; the RATIOS are the engine's property.
+
+| metric | baseline | floor | tolerance |
+| --- | --- | --- | --- |
+| `residency.rss_ratio` | 2.55 | 2.0 | 10% |
+| `residency.overcap_vs_swap_x` | 1.53 | 1.0 | 100% |
+| `residency.in_ram_cost_x` | 4.23 | 8.0 (ceiling) | 50% |
+| `residency.all_collapse_x` | 105.4 | 2.0 | 100% |
+
+`rss_ratio` carries the tight tolerance because footprint is structural — the
+same class of number as `bytes_per_row`. The two throughput ratios are guarded
+by their FLOORS rather than their bands, which is this harness's established
+answer to a metric whose absolute value belongs to the disk. `all_collapse_x`
+exists only to assert the cap actually binds; a leg whose "over-cap" half is not
+over cap silently measures nothing, which is exactly what the first run of this
+leg did.
+
+Verified by feeding the gate a breaching run: `rss_ratio` 1.4,
+`overcap_vs_swap_x` 0.6 and `in_ram_cost_x` 12.0 are all rejected.
+- **Given** the `resident: all` read baseline, **when** re-measured, **then**
+  inside tolerance — no cost for a feature not used. ✅ Verified as a
+  by-product of the residency leg: `resident: all` is unchanged at 1 354 554
+  reads/sec uncapped, and every other db-bench leg still runs, which the
+  keys-resident classes had briefly broken by forcing `WO_DATA` module-wide.
+- **Given** a `resident: keys` table larger than RAM, **when** read randomly,
+  **then** its read cost is measured against the resident baseline on its own
+  read path. ✅ Measured 2026-08-30 and the answer is qualified: **1.53×**
+  faster than letting the kernel swap under a cap that binds one and not the
+  other — real, but nowhere near iteration 1's 273× swap figure would suggest,
+  because cgroup limits charge the page cache, so moving rows to a file does
+  not escape a container memory limit. The unambiguous win is footprint:
+  **2.55×** smaller resident set. Full method, numbers and the failed first
+  attempt above; gated by `residency.*`.
 
 Outstanding:
 
@@ -285,17 +325,6 @@ Outstanding:
   every write)*
 - **Given** the resident footprint crossing the budget, **when** it does,
   **then** a refusal naming the table and the annotation. *(task 6)*
-- **Given** the `resident: all` read baseline, **when** re-measured, **then**
-  inside tolerance — no cost for a feature not used. *(task 7)*
-- **Given** a `resident: keys` table larger than RAM, **when** read randomly,
-  **then** its read cost is **measured against the resident baseline on its own
-  read path**, not inherited from databasev2 1's swap figure. *(task 7)* — that
-  figure is **273×** for demand-paged anonymous memory
-  ([1](01-ram-ceiling-measurement.md)); `pread` through the page cache should do
-  better, and the whole value of `resident: keys` rests on how much better. If it
-  is not materially better than swapping, the design buys nothing that the
-  kernel was not already doing.
-
 ## Out Of Scope
 
 - **Checkpoint and compaction** — [3](03-wal-checkpoint.md). Boot rebuilds the

@@ -1,0 +1,6 @@
+name        = "residency-bench"
+version     = "0.1.0"
+description = "databasev2 2 task 7: resident: all vs resident: keys, identical tables, one annotation apart"
+
+[runtime]
+wo = ">= 0.1"

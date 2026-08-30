@@ -1,0 +1,34 @@
+-- databasev2 2 task 7: the residency A/B.
+--
+-- These two tables are IDENTICAL except for the `resident` annotation, so any
+-- difference between them is the storage mode's doing and nothing else's.
+--
+-- WHY THIS IS ITS OWN PROGRAM rather than a mode inside db-bench: declaring a
+-- `resident: keys` table is a WHOLE-PROGRAM constraint. Its rows live only in
+-- the write-ahead log, so the runtime refuses to start without WO_DATA — and
+-- that refusal fires for every mode in the module, including ones that never
+-- touch the table. Putting these classes in db-bench's shared module made its
+-- `growth`, `ceiling` and `randread` legs, which deliberately run WITHOUT
+-- WO_DATA, refuse to start.
+--
+-- The shape is WIDE on purpose. An Int-only pair shows the two modes as
+-- indistinguishable, and that is structural: dropping a payload frees each
+-- field's VALUE, and an Int's value IS its inline slot word, so nothing is
+-- freed and the slab stays allocated either way. Only rows with Text columns —
+-- separate allocations that dropping genuinely releases — can show what the
+-- mode is for.
+@table(name: "wideall", index: [k], durable: true, resident: all)
+class WideA {
+  k:    Int
+  a:    Text
+  b:    Text
+  note: Text
+}
+
+@table(name: "widekeys", index: [k], durable: true, resident: keys)
+class WideK {
+  k:    Int
+  a:    Text
+  b:    Text
+  note: Text
+}

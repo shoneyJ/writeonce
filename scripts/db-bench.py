@@ -13,10 +13,16 @@ Exit 0 = campaign green; 1 = gate breach or a durability leg failed.
 Plan deviation, disclosed: one python driver instead of bash+python —
 the live stdout sampling and JSON assembly are the whole job.
 """
-import json, os, re, subprocess, sys, time, random, shutil
+import json, os, re, subprocess, sys, tempfile, time, random, shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "docs/examples/db-bench/target/db-bench")
+# databasev2 2 task 7. Its own program, not a mode in db-bench: declaring a
+# `resident: keys` table is a WHOLE-PROGRAM constraint — the runtime refuses to
+# start without WO_DATA, for every mode in the module. Putting those classes in
+# db-bench's shared types made growth/ceiling/randread, which deliberately run
+# WITHOUT WO_DATA, refuse to start.
+RESID_BIN = os.path.join(ROOT, "docs/examples/residency-bench/target/residency-bench")
 WOC = os.path.join(ROOT, "compiler/_build/default/bin/woc")
 WOVM = os.path.join(ROOT, "runtime/wovm")
 BASELINE = os.path.join(ROOT, "bench/baseline.json")
@@ -60,6 +66,10 @@ def build():
                         "-o", BIN, "--runtime", WOVM], capture_output=True, text=True)
     if r.returncode != 0:
         bad("build", r.stderr.strip()[:200]); sys.exit(1)
+    r = subprocess.run([WOC, "build", os.path.join(ROOT, "docs/examples/residency-bench"),
+                        "-o", RESID_BIN, "--runtime", WOVM], capture_output=True, text=True)
+    if r.returncode != 0:
+        bad("build residency-bench", r.stderr.strip()[:200]); sys.exit(1)
     ok("builds")
 
 def run(args, env_extra, timeout, sample_after=None):
@@ -303,6 +313,26 @@ def tolerance_for(key):
     if key.startswith("growth."): return 100
     if key.startswith("ceiling."): return 100
     if key.startswith("randread."): return 100
+    # databasev2 2 task 7. Same split randread makes, for the same reason: the
+    # absolute ops/sec under a cap is swap and disk I/O and belongs to the box,
+    # so it is recorded and waived. The RATIOS are the engine's property.
+    #
+    # rss_ratio is the headline claim — keys must hold the same rows in a
+    # materially smaller resident set or the mode has no purpose — and it is
+    # STRUCTURAL: 87.5 MiB against 34.4 MiB, reproducible, the same class of
+    # number as bytes_per_row. It gets the same tight tolerance, and residency()
+    # additionally hard-fails below 2.0x regardless of drift.
+    if key == "residency.rss_ratio": return 10
+    # in_ram_cost is a throughput ratio between two cached runs: stable in
+    # shape (a pread and a fold against a pointer dereference) but it moves
+    # with page-cache weather, so it is gated loosely rather than waived.
+    if key == "residency.in_ram_cost_x": return 50
+    # overcap_vs_swap compares two I/O-bound runs, so BOTH halves are the box's.
+    # The ratio is still worth recording — it is the answer to the question the
+    # iteration was written to ask — but residency() guards the direction of it
+    # (keys must not be slower than swapping) rather than its magnitude.
+    if key == "residency.overcap_vs_swap_x": return 100
+    if key.startswith("residency."): return 100
     if key.startswith("replay."): return 100
     # databasev2 4: batch SHAPE follows arrival timing, so gating it tightly
     # would gate the scheduler — what must hold is that the mean exceeds one
@@ -556,6 +586,130 @@ def ceiling(metrics):
             (vr.stdout.strip().splitlines() or ["no output"])[-1][:160])
     shutil.rmtree(data, ignore_errors=True)
 
+
+
+# databasev2 2 task 7: does `resident: keys` beat letting the kernel swap?
+RESID_N = 40000 if QUICK else 200000
+RESID_R = 10000 if QUICK else 40000
+RESID_FIT_MB = 256   # control: neither mode is under pressure
+# Between the two resident sets, so `all` pages and `keys` does not. This MUST
+# scale with N: at QUICK's 40k rows `all` needs only ~17 MiB, so a 48 MiB cap
+# binds neither mode and the comparison silently becomes "keys is slower when
+# nothing is under pressure" — which is true, and not what this leg asks.
+RESID_CAP_MB = 10 if QUICK else 48
+
+
+def parse_resid(lines, op):
+    """`<op> <n> <ops/sec> <p50> <p99>`, plus the mode's own rss/hits line."""
+    ops = p50 = p99 = rss = hits = filled = None
+    for l in lines:
+        f = l.split()
+        if not f:
+            continue
+        if f[0] == op and len(f) == 5:
+            ops, p50, p99 = int(f[2]), int(f[3]), int(f[4])
+        elif f[0] == op + "rss" and len(f) == 3:
+            rss, hits = int(f[1]), int(f[2])
+        elif f[0] == "wreadfilled" and len(f) == 3:
+            filled = int(f[2])
+    return ops, p50, p99, rss, hits, filled
+
+
+def residency(metrics):
+    """`resident: keys` against `resident: all`, on tables IDENTICAL except the
+    annotation, so a difference is the storage mode's doing and nothing else's.
+
+    Measured 2026-08-30 on the WIDE shape deliberately. An Int-only pair shows
+    the two modes as indistinguishable, and that is structural rather than
+    surprising: dropping a payload frees each field's VALUE, and an Int's value
+    IS its inline slot word, so nothing is freed and the slab stays allocated
+    either way. A benchmark built on that shape would condemn the feature for a
+    reason that has nothing to do with the feature.
+
+    WHAT IS GATED, and what deliberately is not. The RATIOS are the engine's
+    property and get real tolerances; the absolute ops/sec under a cap is swap
+    and disk I/O, so it belongs to the box and is recorded but waived. This is
+    the same split randread() already makes for the same reason.
+
+    The headline claim is rss_ratio: keys must hold the same rows in a
+    materially smaller resident set, or the mode has no purpose. The measured
+    figure was 2.55x (34.4 MiB against 87.5 MiB)."""
+    if cap_wrapper(RESID_FIT_MB, 0) is None:
+        ok("residency: SKIPPED -- no rootless cgroup v2 memory cap on this host")
+        return
+    res = {}
+    for mode, op in (("all", "wreadall"), ("keys", "wreadkeys")):
+        for legname, cap_mb, swap_mb in (("fit", RESID_FIT_MB, 0),
+                                         ("cap", RESID_CAP_MB, 512)):
+            w = cap_wrapper(cap_mb, swap_mb)
+            data = tempfile.mkdtemp(prefix="resid-")
+            env = dict(os.environ)
+            env["WO_DATA"] = data      # a keys-resident table cannot run without one
+            env["WO_SHARDS"] = "1"
+            pr = subprocess.run(w + [RESID_BIN, op, str(RESID_N), str(RESID_R)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, env=env, timeout=1800)
+            shutil.rmtree(data, ignore_errors=True)
+            lines = pr.stdout.splitlines()
+            ops, p50, p99, rss, hits, filled = parse_resid(lines, op)
+            key = f"residency.{mode}.{legname}"
+            if pr.returncode != 0 or ops is None:
+                bad(f"{key}: run failed",
+                    f"rc={pr.returncode} {(lines[-1:] or ['no output'])[0][:120]}")
+                return
+            if hits != RESID_R:
+                # a comparison over reads that did not resolve measures nothing
+                bad(f"{key}: only {hits}/{RESID_R} reads resolved", "keys must all exist")
+                return
+            metrics[f"{key}.ops_sec"] = ops
+            metrics[f"{key}.read_p50us"] = p50
+            metrics[f"{key}.read_p99us"] = p99
+            metrics[f"{key}.filled_rss_kb"] = filled
+            res[f"{mode}.{legname}"] = (ops, filled)
+            ok(f"{key}: {ops} reads/sec, p50 {p50}us p99 {p99}us, {filled} KiB after fill")
+
+    all_rss = res["all.fit"][1]
+    keys_rss = res["keys.fit"][1]
+    rss_ratio = round(all_rss / max(keys_rss, 1), 2)
+    metrics["residency.rss_ratio"] = rss_ratio
+
+    # what the mode costs when memory is NOT tight: a pread and a fold per row
+    # against a pointer dereference
+    in_ram_cost = round(res["all.fit"][0] / max(res["keys.fit"][0], 1), 2)
+    metrics["residency.in_ram_cost_x"] = in_ram_cost
+
+    # the question the iteration was written to answer: under a cap that binds
+    # `all` and not `keys`, is keys actually better than swapping?
+    vs_swap = round(res["keys.cap"][0] / max(res["all.cap"][0], 1), 2)
+    metrics["residency.overcap_vs_swap_x"] = vs_swap
+
+    if rss_ratio < 2.0:
+        bad("residency: keys saves less than 2x RSS",
+            f"{all_rss} KiB vs {keys_rss} KiB = {rss_ratio}x -- the mode's whole purpose")
+    else:
+        ok(f"residency: keys holds the same rows in {rss_ratio}x less RSS "
+           f"({all_rss} -> {keys_rss} KiB)")
+
+    # The cap must actually BIND the resident half, or the comparison is
+    # meaningless. randread learned this the same way; assert it rather than
+    # trusting the constants to stay right as N changes.
+    all_collapse = res["all.fit"][0] / max(res["all.cap"][0], 1)
+    metrics["residency.all_collapse_x"] = round(all_collapse, 2)
+    if all_collapse < 2.0:
+        bad("residency: the cap did not bind `resident: all`",
+            f"{res['all.fit'][0]} -> {res['all.cap'][0]} reads/sec is only "
+            f"{all_collapse:.2f}x; {RESID_N} rows fit under {RESID_CAP_MB} MiB, resize the leg")
+        return
+
+    if vs_swap < 1.0:
+        bad("residency: keys is SLOWER than letting the kernel swap",
+            f"{res['keys.cap'][0]} vs {res['all.cap'][0]} reads/sec under a "
+            f"{RESID_CAP_MB} MiB cap -- the mode buys nothing here")
+    else:
+        ok(f"residency: under a {RESID_CAP_MB} MiB cap keys is {vs_swap}x swapping "
+           f"({res['keys.cap'][0]} vs {res['all.cap'][0]} reads/sec)")
+
+    ok(f"residency: costs {in_ram_cost}x read throughput when memory is not tight")
 
 
 def parse_randread(lines):
@@ -847,6 +1001,7 @@ def main():
     growth(metrics)
     ceiling(metrics)
     randread(metrics)
+    residency(metrics)
     replay(metrics)
     checkpoint_leg(metrics)
     os.makedirs(RESULTS_DIR, exist_ok=True)
