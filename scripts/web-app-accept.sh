@@ -17,6 +17,7 @@ pass=0
 fail=0
 ok() { echo "ok   $1"; pass=$((pass + 1)); }
 bad() { echo "FAIL $1 -- $2"; fail=$((fail + 1)); }
+note() { echo "note $1"; }
 
 if [[ ! -x "$WOC" || ! -x "$WOVM" ]]; then
   echo "web-app-accept: build woc and wovm first (just woc-build; just wovm-build)" >&2
@@ -1243,7 +1244,7 @@ if sp_out="$("$WOC" --emit "$SP" -o "$SP/saturation_check.wob" 2>&1)"; then
     kill -9 "$SRV" 2>/dev/null
     for _ in $(seq 1 20); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
   fi
-  ok "saturation: server torn down (graceful SIGTERM, or kill -9 on the known actor-pool hang)"
+  note "saturation: server torn down (graceful SIGTERM, or kill -9 on the known actor-pool hang)"
   SRV=""
 else
   bad "saturation-compile" "$(printf '%s' "$sp_out" | head -1)"
