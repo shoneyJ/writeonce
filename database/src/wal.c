@@ -873,6 +873,164 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
     return rc;
 }
 
+/* keys-resident delta updates, Task 2: THE fold. See wal.h. Reads, replay,
+ * and compaction all call this one function — never a second copy. */
+int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
+                       uint64_t *id_out, uint64_t *out_vals, const char **msg) {
+    /* Cycle guard: every legitimate back-pointer names a record already on
+     * disk before [off], so the chain cannot be longer than the number of
+     * minimal-sized records the bytes up to [off] could hold. 13 = the
+     * smallest an on-disk record can ever be (scan_record refuses len == 0,
+     * so 8-byte header + 1-byte payload + 4-byte mark). A malicious or
+     * corrupt back-pointer — even a record pointing at itself — still
+     * terminates here, loudly, instead of spinning forever. */
+    uint64_t max_steps = off / 13u + 1u;
+
+    uint32_t cid = 0;
+    uint64_t id = 0;
+    uint32_t field_cnt = 0;
+    uint8_t *resolved = NULL;      /* field idx -> a delta already claimed it */
+    uint64_t *resolved_val = NULL; /* field idx -> its remembered engine value */
+    uint64_t cur = off;
+    int rc = 0;
+
+    for (uint64_t step = 0;; step++) {
+        if (step >= max_steps) {
+            *msg = "delta chain exceeds what the log could hold (cycle?)";
+            rc = -1;
+            break;
+        }
+        uint32_t len;
+        uint8_t *payload;
+        if (scan_record(w->fd, cur, &len, &payload) != 0) {
+            *msg = "no intact record at that offset";
+            rc = -1;
+            break;
+        }
+        rbuf r = {payload, payload + len, 0};
+        uint8_t kind = rd_u8(&r);
+        uint32_t rec_cid = rd_u32(&r);
+        uint64_t rec_id = rd_u64(&r);
+        if (r.bad || rec_cid >= db->class_cnt) {
+            free(payload);
+            *msg = "record header is malformed";
+            rc = -1;
+            break;
+        }
+        if (step == 0) {
+            cid = rec_cid;
+            id = rec_id;
+            field_cnt = db->classes[cid].field_cnt;
+            resolved = field_cnt ? calloc(field_cnt, 1) : NULL;
+            resolved_val = field_cnt ? calloc(field_cnt, sizeof *resolved_val) : NULL;
+            if (field_cnt && (!resolved || !resolved_val)) {
+                free(payload);
+                *msg = "out of memory folding a row";
+                rc = -2;
+                break;
+            }
+        } else if (rec_cid != cid || rec_id != id) {
+            free(payload);
+            *msg = "delta chain does not agree on row identity";
+            rc = -1;
+            break;
+        }
+
+        if (kind == WO_WAL_DELTA) {
+            uint32_t field_idx = rd_u32(&r);
+            uint64_t back_off = rd_u64(&r);
+            if (r.bad || field_idx >= field_cnt) {
+                free(payload);
+                *msg = "delta record is malformed";
+                rc = -1;
+                break;
+            }
+            const wo_classdesc *c = &db->classes[cid];
+            uint64_t v;
+            if (dec_val(&r, db, c->kinds[field_idx], &v) != 0 ||
+                (size_t)(r.end - r.p) != 0) {
+                free(payload);
+                *msg = "delta record does not decode";
+                rc = -1;
+                break;
+            }
+            if (!resolved[field_idx]) {
+                resolved[field_idx] = 1;
+                resolved_val[field_idx] = v;
+            } else {
+                /* shadowed by a newer delta already seen: still validated
+                   above, but its value loses, exactly like the base row's */
+                wo_db_val_free(db, c->kinds[field_idx], v);
+            }
+            free(payload);
+            cur = back_off;
+            continue;
+        }
+
+        if (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE) {
+            free(payload);
+            *msg = "record in a delta chain is a tombstone, not a row";
+            rc = -1;
+            break;
+        }
+
+        /* base row: decode every field positionally (a delta-shadowed
+           field's bytes are still there — dec_val must still walk past
+           them to keep the fields after it aligned), then overlay whatever
+           the walk resolved. */
+        const wo_classdesc *c = &db->classes[cid];
+        uint64_t *slots = field_cnt ? calloc(field_cnt, sizeof *slots) : NULL;
+        if (field_cnt && !slots) {
+            free(payload);
+            *msg = "out of memory folding a row";
+            rc = -2;
+            break;
+        }
+        uint32_t done = 0;
+        for (; done < field_cnt; done++) {
+            if (dec_val(&r, db, c->kinds[done], &slots[done]) != 0) {
+                *msg = "record at that offset does not decode";
+                rc = -1;
+                break;
+            }
+        }
+        if (rc == 0 && done == field_cnt && (size_t)(r.end - r.p) != 0) {
+            *msg = "record at that offset has trailing bytes";
+            rc = -1;
+        }
+        if (rc == 0 && done == field_cnt) {
+            for (uint32_t i = 0; i < field_cnt; i++) {
+                if (resolved[i]) {
+                    wo_db_val_free(db, c->kinds[i], slots[i]);
+                    slots[i] = resolved_val[i];
+                }
+            }
+            memcpy(out_vals, slots, (size_t)field_cnt * sizeof *out_vals);
+        } else {
+            for (uint32_t i = 0; i < done; i++) wo_db_val_free(db, c->kinds[i], slots[i]);
+        }
+        free(slots);
+        free(payload);
+        break;
+    }
+
+    if (rc != 0 && resolved && resolved_val) {
+        /* the walk resolved some fields but never reached a base row to
+           install them into: free what it was holding */
+        const wo_classdesc *c = &db->classes[cid];
+        for (uint32_t i = 0; i < field_cnt; i++)
+            if (resolved[i]) wo_db_val_free(db, c->kinds[i], resolved_val[i]);
+    }
+    free(resolved);
+    free(resolved_val);
+
+    if (rc == 0) {
+        if (class_out) *class_out = cid;
+        if (id_out) *id_out = id;
+    }
+    return rc;
+}
+
 int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return errno == ENOENT ? 0 : -1; /* no WAL yet = fresh boot */

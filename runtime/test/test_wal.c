@@ -660,6 +660,107 @@ static void test_delta_record(void) {
     wo_rt_destroy(&rt);
 }
 
+/* keys-resident delta updates, Task 2: the fold. A row's current record may
+ * be a chain of deltas, not a base row — wo_row_borrow must walk back
+ * through them, remembering one value per touched field, and overlay them
+ * onto the base row it eventually reaches. Reuses DELTA_CLASSES (3 scalar
+ * fields) so field 1 can stay untouched by any delta and prove the fold
+ * does not clobber fields nobody changed. */
+static void test_delta_fold_two_fields(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/foldtwo.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt;
+    rt.wal = &w;
+    rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {10, 20, 30};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    /* field 0: 10 -> 111 */
+    uint64_t d1_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 111), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d1_off), 0);
+
+    /* field 2: 30 -> 333, chained off the first delta */
+    uint64_t d2_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 2, d1_off, 333), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d2_off), 0);
+
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_CHECK(r->slots[0] == 111); /* changed */
+    T_CHECK(r->slots[1] == 20);  /* untouched: original survives */
+    T_CHECK(r->slots[2] == 333); /* changed */
+    wo_row_release(&db, 0, r);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* The ordering rule: two deltas to the SAME field. A fold walking the chain
+ * in the wrong direction sees the OLDER delta first and stops there — a
+ * plausible-looking but stale value, invisible unless a test pins the
+ * direction explicitly. */
+static void test_delta_fold_same_field_newest_wins(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/foldsame.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt;
+    rt.wal = &w;
+    rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {1, 2, 3};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    /* field 1: 2 -> 20 (older) -> 200 (newer) */
+    uint64_t d1_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 1, base_off, 20), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d1_off), 0);
+
+    uint64_t d2_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 1, d1_off, 200), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d2_off), 0);
+
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_CHECK(r->slots[0] == 1);
+    T_CHECK(r->slots[1] == 200); /* the NEWER delta wins, not the older */
+    T_CHECK(r->slots[2] == 3);
+    wo_row_release(&db, 0, r);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* databasev2 2 (5c): boot. A keys-resident store must come back from replay
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
@@ -1304,6 +1405,8 @@ int main(void) {
     test_compact_shortens_and_replays_equal();
     test_keys_resident_round_trip();
     test_delta_record();
+    test_delta_fold_two_fields();
+    test_delta_fold_same_field_newest_wins();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

@@ -786,18 +786,41 @@ db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **ms
         t->scratch_cap = t->row_size;
     }
     db_row *r = (db_row *)t->scratch;
+    const wo_classdesc *c = &db->classes[class_id];
     uint32_t got_cid = 0;
     uint64_t got_id = 0;
-    if (wo_wal_read_row_at((wo_wal *)db->rt->wal, db, db->rt, o1 - 1, &got_cid, &got_id,
-                           r->slots, msg) != 0)
+    /* keys-resident delta updates, Task 2: the fold, not a single-record
+     * read — a row's current offset may point at a delta, not a base row. */
+    uint64_t *eng = c->field_cnt ? calloc(c->field_cnt, sizeof *eng) : NULL;
+    if (c->field_cnt && !eng) {
+        if (msg) *msg = "out of memory";
         return NULL;
+    }
+    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, o1 - 1, &got_cid, &got_id, eng, msg) !=
+        0) {
+        free(eng);
+        return NULL;
+    }
     if (got_cid != class_id || got_id != id) {
         /* the offset pointed at someone else's record — a compaction that
          * moved records without rebuilding this map would land here, which is
          * exactly the obligation recorded at wo_wal_compact */
+        for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], eng[i]);
+        free(eng);
         if (msg) *msg = "log offset does not hold the expected row";
         return NULL;
     }
+    /* two decode stages, same reason as wo_wal_read_row_at: the fold hands
+       back ENGINE-owned values, and the VM never sees those, so each one is
+       copied into a fresh VM value here before the engine originals free. */
+    int ok = 1;
+    for (uint32_t i = 0; i < c->field_cnt; i++) {
+        r->slots[i] = wo_val_decode_vm(db, db->rt, c->kinds[i], eng[i], &ok, msg);
+        if (!ok) break;
+    }
+    for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], eng[i]);
+    free(eng);
+    if (!ok) return NULL;
     r->id = id;
     r->class_id = class_id;
     r->flags = 0;

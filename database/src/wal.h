@@ -268,6 +268,41 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
                        uint32_t *class_out, uint64_t *id_out, uint64_t *out_vals,
                        const char **msg);
 
+/* keys-resident delta updates, Task 2: fold a delta chain into a row's
+ * CURRENT field values, walking BACKWARD from [off] until a full row
+ * (INSERT/UPDATE) is reached.
+ *
+ * [off] is the row's most recent record, exactly what wo_wal_read_row_at
+ * takes. Each delta names its predecessor's offset (the append-time
+ * back-pointer); the walk keeps hopping backward, remembering the FIRST
+ * value seen for each field index — the newest delta touching it, since
+ * newest is seen first — and skipping a delta whose field is already
+ * resolved. Reaching the base row decodes every field, then overlays
+ * whatever the walk resolved.
+ *
+ * out_vals[0..field_cnt) receive ENGINE-owned values (dec_val's
+ * representation, exactly what a slab row's own slots hold) — NOT VM
+ * values — so this one function serves every caller: a read decodes the
+ * result onward through wo_val_decode_vm, replay installs it straight into
+ * a freshly created row's slots, and compaction re-encodes it with enc_val
+ * into a fresh full-row record. The caller frees every slot with
+ * wo_db_val_free once done, on every path. This is the fold: written once,
+ * called by all three — a fold that disagreed between them would be a
+ * database that changes its mind at boot.
+ *
+ * [class_out] / [id_out] (optional) receive the row's identity, checked
+ * against EVERY record touched — a chain that disagrees about whose row it
+ * is is corruption, not a new row.
+ *
+ * A cycle in the back-pointers is corruption, possibly malicious: the walk
+ * refuses to look at more records than the log at [off] could possibly
+ * hold, and fails loudly instead of spinning.
+ *
+ * 0 ok, -1 no intact/malformed/corrupt record anywhere in the chain (or a
+ * REMOVE tombstone reached mid-chain), -2 out of memory (*msg set). */
+int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
+                       uint64_t *id_out, uint64_t *out_vals, const char **msg);
+
 /* Offline verification (no engine): scan [path], count intact records.
  * *intact_bytes (optional) = where the intact prefix ends. -1 = open
  * failure. */
