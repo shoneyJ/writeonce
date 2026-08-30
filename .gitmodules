@@ -4,3 +4,6 @@
 [submodule "reference/writeonce-api"]
 	path = reference/writeonce-api
 	url = https://github.com/shoneyJ/writeonce-api
+[submodule "docs/examples/site"]
+	path = docs/examples/site
+	url = git@github.com:shoneyJ/writeonce-site.git

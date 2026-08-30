@@ -18,6 +18,16 @@ if [[ ! -x "$WOC" || ! -x "$WOVM" ]]; then
   exit 1
 fi
 
+# docs/examples/site is a SUBMODULE (github.com/shoneyJ/writeonce-site). A clone
+# without --recurse-submodules leaves it an empty directory, and the copy below
+# would then "succeed" into an empty app and fail much later as a build error
+# that says nothing about the real cause. Say the real cause here.
+if [[ ! -f "$ROOT/docs/examples/site/main.wo" ]]; then
+  echo "site-accept: docs/examples/site is empty — it is a submodule." >&2
+  echo "             run: git submodule update --init docs/examples/site" >&2
+  exit 1
+fi
+
 W="$(mktemp -d "${TMPDIR:-/tmp}/site-accept.XXXXXX")"
 SRV=""
 cleanup() {

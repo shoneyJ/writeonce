@@ -72,6 +72,12 @@ ignored by this workflow.
     Publishing binaries whose floor differs from the page is the one
     failure a user cannot debug.
 
+    docs/examples/site is a SUBMODULE (github.com/shoneyJ/writeonce-site),
+    so this edit is a commit in THAT repo, pushed there, and then a
+    second commit here moving the submodule pointer. Editing the files
+    and committing only in this repo records nothing — the change lives
+    in a directory this repo tracks by revision, not by content.
+
 10  Ship for real:
       git tag -a v0.1.0 -m "writeonce 0.1.0"
       git push origin v0.1.0
@@ -404,7 +410,9 @@ archive.
   updating every place the site names the current release:
   `docs/examples/site/install/view.wo` (the download links, the tar
   command, and the `.sha256` link). The version appears there as literal
-  text, so grep for the old number before you publish.
+  text, so grep for the old number before you publish. That file is in
+  the `writeonce-site` submodule — commit and push it there, then bump
+  the pointer here.
 - **One target today.** `mkdist.sh` builds `linux-amd64` only; a cross
   matrix is future work. Do not add architectures to the release notes
   that no build produces.
