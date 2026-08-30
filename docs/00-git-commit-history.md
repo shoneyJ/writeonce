@@ -49,6 +49,7 @@ produced.
 
 | Date | Prefix | Feature | `dev` → `master` |
 | --- | --- | --- | --- |
+| 2026-08-30 | `site-submodule` | **`docs/examples/site` becomes a submodule** — extracted to github.com/shoneyJ/writeonce-site with `git subtree split` (its own 9 commits of history, not a snapshot) | `4b56348` → `a5497a3`, `4eead89` → `565b894` |
 | 2026-08-30 | `db2-keys` + `db2-delta` + `db2-chains` + `site` | **databasev2 `resident: keys`, end to end** — storage, readers, deletes, updates as delta records, bounded delta chains, and the tutorial chapter documenting them | 37 commits, mapped one-to-one below |
 
 ### 2026-08-30 — the databasev2 residency stack
