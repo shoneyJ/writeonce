@@ -251,3 +251,76 @@ compaction count, the stop-the-world pause (max and total) and the last
 compaction's size. `WO_CHECKPOINT_BYTES` and `WO_CHECKPOINT_RATIO` move the
 policy; setting a tiny floor forces compaction in a few writes, which is how the
 gate tests it at all.
+
+## Keys-resident updates: read-modify-append, stage-here/commit-in-caller (databasev2 2/3, 2026-08-30)
+
+**The shape.** A keys-resident row has no slab slot to mutate — its payload
+lives in the log — so `row_apply_field_keys` (table.c) does read-modify-
+**append** instead of a slot swap: borrow (folds the row's current value),
+append a WAL delta record (id, field, new value) chained off the row's
+current offset via a back-pointer, RAM-apply the index swap. `wo_wal_fold_row_at`
+is THE fold — written once, called by every reader (`wo_row_borrow`), by
+replay, and by compaction — so a read, a boot, and a checkpoint can never
+disagree about a chain's current value.
+
+**Stage-here, commit-in-caller — mirrors insert exactly.** `row_apply_field_keys`
+stages the delta but does **not** commit and does **not** move the id map:
+table.c applies RAM and appends; `db.c` owns the barrier and the post-barrier
+map move, the same split insert already used (`wo_wal_pend_drop` /
+`wo_db_flush_drops` for insert; `wo_wal_pend_repoint` / `wo_db_flush_drops`
+for update). The caller captures the delta's own offset via
+`wo_wal_next_offset()` **before** calling in — insert's own `koff` pattern —
+since nothing between that capture and `wo_wal_append_delta` stages any other
+bytes on the WAL. `back_off` — the back-pointer a new delta chains from —
+checks a PENDING re-point (`wo_wal_repoint_offset1`) before falling back to
+the durable `wo_row_offset1`: two updates to the same row staged behind one
+drain's barrier must chain to each other, not both to the row's pre-drain
+offset, or the first update would be orphaned from the chain.
+
+**The unique shadow-check runs against a THROWAWAY buffer, never `t->scratch`.**
+The row under update already occupies the table's one scratch buffer
+(`wo_row_borrow` refuses a nested borrow on the same table), so a candidate
+probe needs a buffer of its own — `keys_fold_into`, the fold-into-a-caller-
+supplied-buffer half of `wo_row_borrow`, bypasses the scratch gate for exactly
+this. A candidate updated earlier in the SAME uncommitted drain has its
+re-point only pending, so the candidate probe also consults
+`wo_wal_repoint_offset1` — and `wo_wal_fold_row_at` itself reads the WAL's
+staging buffer (not yet durable) for an offset that falls inside it, so a
+same-drain candidate's NEW value is what a real `@unique` clash sees.
+
+**A keys-resident borrow holds ENGINE values, exactly `wo_row_ptr`'s contract
+— restored 2026-08-30.** `table.h`'s opening doctrine: "the engine and the VM
+heap are two memory worlds crossed only by copy... a row stores NO VM
+pointer." `keys_fold_into` used to decode the fold's engine output to a VM
+value before handing the row back, which every OTHER reader of a borrowed row
+(`db.c`'s GET_FIELD/PROBE, `wo_row_read`, and `idx_hash`/`idx_cols_equal`/
+`wo_idx_probe`) was NOT written to expect — they all decode engine→VM
+themselves, on the assumption a borrow is engine-encoded like a slab row.
+Invisible for SCALAR/FLOAT (decode is identity either way), and un-exercised
+for TEXT/BYTES because the loader refused `resident: keys` outright until
+this task lifted it — nothing had ever read a keys-resident Text field
+through `db.c` at all. Fixed by making `keys_fold_into` stop decoding: the
+fold's engine output lands straight in the borrowed row's slots,
+`wo_row_release` frees them with `db_val_free` (not `wo_drop_kind`) exactly
+like `table_destroy` frees a slab row's fields, and `row_apply_field_keys`
+uses its already-engine-encoded `nv` directly instead of decoding a throwaway
+VM copy. No index function needed to change, and neither did `db.c`.
+Reproduced as a genuine ASan heap-buffer-overflow (a `wo_str*` read through
+the `db_text*` layout) before the fix, pinned by
+`test_keys_resident_update_indexed_text` (`runtime/test/test_wal.c`) after it.
+
+**Three limitations, shipped and documented rather than fixed:**
+
+1. *Mid-drain stale reads.* A request reading a row inside the same uncommitted
+   drain as an earlier request's in-flight update to it may see the last
+   durable value. Read-your-writes holds within a request, not across requests
+   sharing a drain; closing it needs the fold to consult the staging buffer
+   generally, not only for the same-drain unique shadow-check above.
+2. *Replay is O(N²) in a row's delta-chain length* — `apply_delta` folds the
+   pre-delta row, and `wo_row_remove` (called internally) folds the SAME
+   offset again, so each replayed delta re-walks its whole chain.
+3. *Compaction triggers on byte ratio only* — `wo_wal_should_compact` has no
+   per-row delta-count signal, so one hot row (a single popular SKU) can grow
+   a long personal chain without moving the aggregate ratio enough to fire a
+   checkpoint. The no-chain-cap design decision rests on compaction bounding
+   length; for this shape it does not.

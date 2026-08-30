@@ -53,47 +53,57 @@ field change does.
 | `durable: true` (default) | WAL-logged, replayed at boot | ✅ works |
 | `durable: false` | never written to the log; costs no disk and no fsync; empty after a restart | ✅ works |
 | `resident: all` (default) | every row's payload lives in RAM | ✅ works |
-| `resident: keys` | the id map stays resident, the payload lives in the WAL and is read back by offset | ⛔ **refused at load** |
+| `resident: keys` | the id map stays resident, the payload lives in the WAL and is read back by offset | ✅ works, including update |
 
-## Why `resident: keys` is refused — and why this example is the argument
+## `resident: keys`, and what it costs
 
-It is the mode the track exists for: a catalogue is the table that outgrows RAM
-first, so `Product` is exactly what you would want to declare keys-resident.
-Storage, the read paths, scans, `@unique`, deletes and checkpoint survival all
-work. **Updating such a row does not**, and `place_order` is precisely why that
-matters — the row has no slab slot to mutate, so the write would land in a
-materialised scratch buffer and be discarded *silently*.
+`Product` above is declared `resident: keys` — the mode the track exists for. A
+catalogue is the table that outgrows RAM first: only the `sku -> row` id map
+stays in memory, and each row's payload is read back from the log. Storage, the
+read paths, scans (including through the `sku` index, a Text column), `@unique`,
+deletes, checkpoint survival, and update all work.
 
-The shape of the fix follows from the same example. When an order is placed
-only `stock` changes; `sku`, `name` and `price` do not. Appending the whole row
-per sale would rewrite every field to move one integer, on the hottest write
-path a shop has — which is the argument for appending a **delta** (id, field,
-new value) and folding it on read, with the existing checkpoint doing the fold
-that keeps delta chains short. That design is being settled now; the loader
-refusal stands until it lands.
+**A read costs one `pread` plus every delta since the row's last checkpoint.**
+Updating a keys-resident row has no slab slot to mutate, so it is
+read-modify-**append**: `place_order` moving `stock` appends a small delta
+record (id, field, new value) chained off the row's previous record, rather
+than rewriting `sku`, `name` and `price` to change one integer — the argument
+for a delta at all, on the hottest write path a shop has. Reading the row back
+folds that chain: the base row plus every delta not yet superseded or
+checkpointed away. A row updated once costs a `pread` and one small decode on
+top of the base read; a row updated many times between checkpoints costs one
+decode per delta still in the chain.
 
-So the loader refuses the annotation rather than honouring it in name only.
-Uncomment the `AuditEntry` block in `main.wo` and you get:
+Three limitations ship with this, on purpose documented rather than fixed:
 
-```
-wovm: class 0 declares `resident: keys`, which is INCOMPLETE: rows are stored
-and read keys-only, but UPDATING one is not implemented (it needs
-read-modify-append). Remove it until databasev2 2 lands updates;
-`resident: all` is what runs
-```
+1. **Mid-drain stale reads.** A request reading a row inside the same
+   uncommitted drain, while an earlier request in that drain has an in-flight
+   update to it, may see the last durable value, not that request's write.
+   Read-your-writes holds within a request, not across requests sharing a
+   drain. Closing it needs the fold to consult the WAL's staging buffer
+   generally, which is materially bigger than this feature.
+2. **Replay is O(N²) in a row's delta-chain length.** Each replayed delta
+   re-folds the whole chain back to its base record, so boot cost for one long
+   chain is quadratic in that chain's length.
+3. **Compaction cannot see chain length.** The checkpoint that flattens delta
+   chains triggers on the log's overall byte ratio, not on any one row's delta
+   count — so a single hot row taking many small updates (a popular SKU,
+   exactly this example's workload) can grow a long personal chain without
+   moving the aggregate ratio enough to fire a checkpoint. This mode's design
+   deliberately does not cap chain length, trusting compaction to bound it
+   instead; for a hot-row workload, it may not.
 
-Note **where** that comes from: `woc` compiles it happily and emits a `.wob`.
-The annotation is a load-time property, so the compiler is green and `wovm`
-exits 2.
-
-Refusing at load rather than at the first update is deliberate. A developer who
-declared a 120 GB table keys-resident, saw it compile, and shipped would find
-the gap in production. That judgement earned its keep in a way nobody had
-written down: an audit before relaxing the refusal found that `delete` on such
-a table was reading a WAL byte offset as a slab index and freeing whatever it
-landed on — memory corruption, not a missing feature. It is fixed and pinned by
-a test that SEGVs against the old code, but the refusal is what stood in front
-of it.
+The refusal that used to stand here was earned, not reflexive: an audit before
+lifting it found that `delete` on a keys-resident table was reading a WAL byte
+offset as a slab index and freeing whatever it landed on — memory corruption,
+not a missing feature — fixed and pinned by a test that SEGVs against the old
+code. The same audit, repeated before lifting the update refusal, found a
+second bug of the same shape: three index functions (and `db.c`'s field-read
+and probe paths) were reading a keys-resident row's Text column through the
+wrong struct layout, reproduced as a genuine ASan heap-buffer-overflow. Fixed
+at the root — a keys-resident row now holds the same engine-encoded values a
+`resident: all` row always has — and pinned by a test that reproduces the
+overflow against the pre-fix code.
 
 ## What this example does NOT show
 

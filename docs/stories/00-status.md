@@ -67,6 +67,68 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-08-30 — keys-resident delta updates DONE, loader refusal lifted
+
+**Implemented last time (2026-08-30):** the six-task
+[keys-resident delta updates](../superpowers/plans/2026-08-30-keys-resident-delta-updates.md)
+plan's final task — lifting the `runtime/src/loader.c` refusal of
+`resident: keys` and proving update end to end. The refusal (databasev2 2's
+Outstanding criterion) is now Met: a keys-resident row updates through a WAL
+delta record, read-modify-**append**, folded back to a value by
+`wo_wal_fold_row_at` on every read, replay and compaction. Proven four ways —
+the fold itself (earlier tasks), group-commit staging with the id-map re-point
+deferred to the post-barrier flush, replay/compaction folding delta chains the
+same way reads do, and this task's oracle test
+(`test_oracle_all_vs_keys_same_update_sequence`, `runtime/test/test_wal.c`)
+driving the SAME update sequence against a `resident: all` table and a
+`resident: keys` table and asserting byte-identical rows at every step.
+`docs/examples/residency`'s `Product` table is genuinely `resident: keys` now;
+`scripts/residency-accept.sh`'s gate leg inverted from "the annotation is
+refused" to "the program runs and `place_order`'s stock decrement survives a
+restart" (11 checks, 0 failures).
+
+**A second bug surfaced auditing the request path before lifting the
+refusal** — the same audit class that caught `delete`'s memory corruption
+in the prior session. `idx_hash`, `idx_cols_equal` and `wo_idx_probe`
+(`database/src/table.c`) read a TEXT column's slot as an engine `db_text*`,
+but a keys-resident borrow was handing back VM-decoded `wo_str*` — a
+different struct layout, reproduced as a genuine ASan heap-buffer-overflow,
+not merely wrong values. The same bug was independently present in `db.c`'s
+`GET_FIELD` and `PROBE` arms (inline and request-path), unaudited until now
+because nothing could reach a keys-resident row through them while the
+annotation was refused. Fixed at the root: a keys-resident borrow now hands
+back engine values, exactly `wo_row_ptr`'s contract for `resident: all`
+(`table.h`'s own "a row stores NO VM pointer" doctrine) — no index function
+needed to change, and `db.c` needed none either. Pinned by
+`test_keys_resident_update_indexed_text`, which reproduces the overflow
+against the pre-fix code; all five pre-existing tests that read a
+keys-resident Text field directly were auditing the OLD (wrong) contract and
+are corrected alongside it. `test_wal` 4746/0 throughout.
+
+**What did NOT land, by design — three limitations documented, not fixed:**
+(1) mid-drain stale reads — a request reading a row in the same uncommitted
+drain as an earlier request's in-flight update to it may see the last durable
+value, not that write; (2) replay is O(N²) in a row's delta-chain length,
+since each replayed delta re-folds the whole chain; (3) compaction triggers on
+byte ratio only, with no per-row delta-count signal, so one hot row (a single
+popular SKU — this feature's own motivating workload) can grow a long chain
+without moving the aggregate ratio enough to checkpoint. Item 3 is the
+sharper finding: the design's decision not to cap chain length rests on
+compaction bounding it, and for a hot-row workload it does not. Recorded in
+[the story](databasev2/02-table-storage-modes.md) and the example's README.
+
+**.dev / reference projects used:** none — internal-only, `table.c`/`wal.c`/
+`db.c` read directly to audit the request path and trace the representation
+mismatch.
+
+**Dependencies unblocked:** none newly technical — databasev2 2's own tasks 6
+(the two runtime refusals: no-`WO_DATA`, the byte budget) and 7 (measure, gate,
+close out) were already the next items and do not depend on this.
+
+**Next steps:** databasev2 2 tasks 6/7, as before. `database/src/CODE-LOGIC.md`
+is current with the stage-here/commit-in-caller update contract and the
+engine-representation fix.
+
 ### Landed 2026-08-29 — databasev2 2 tasks 5c/5d, and a branch consolidation
 
 **Implemented last time (2026-08-29):** `resident: keys` storage and every read

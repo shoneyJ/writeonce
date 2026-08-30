@@ -152,13 +152,55 @@ Outstanding:
   Found by asking whether the read-modify-append plan was ready, not by a gate —
   it is unreachable today only because the loader refuses the annotation.
 - **Given** an `update` to a row on a `resident: keys` table, **when** it runs,
-  **then** it is applied. ❌ **refused explicitly** by
-  `wo_row_update_field{,_slot}`. A keys row lives in the log with no slab slot
-  to mutate; writing into the borrow's scratch would discard the write
-  *silently*, which is the one failure this iteration must not ship. Doing it
-  properly is read-modify-**append** — a new record, then re-point the offset —
-  and that is its own piece of work. **The loader's refusal of `resident: keys`
-  stays until it lands**, so no program can reach the half-feature.
+  **then** it is applied. ✅ **lifted 2026-08-30.** Read-modify-**append**: a
+  WAL delta record chains off the row's previous offset, and `wo_wal_fold_row_at`
+  — the ONE fold every reader, replay and compaction call — walks the chain
+  back to a value. Verified four ways: the fold itself, on a chain built by
+  hand (databasev2 2 tasks); the request path stages the delta under group
+  commit and defers the id-map re-point to the post-barrier flush, so a hot
+  row costs one fsync per DRAIN, not per update; replay and compaction fold
+  delta chains the same way an ordinary read does; and the oracle test
+  (`test_oracle_all_vs_keys_same_update_sequence`, `test_wal.c`) drives the
+  SAME sequence of updates against a `resident: all` table and a
+  `resident: keys` table and asserts the rows read byte-identical at every
+  step — the strongest available check that the fold agrees with ordinary
+  storage, since the resident table IS the oracle. `docs/examples/residency`'s
+  `Product` table is genuinely `resident: keys` now; `place_order`'s stock
+  decrement survives a restart, gated end-to-end by
+  `scripts/residency-accept.sh`.
+
+  **A second gap surfaced auditing the request path before lifting the
+  refusal — the same audit class that caught the `delete` memory corruption
+  below.** `idx_hash`, `idx_cols_equal` and `wo_idx_probe` (`table.c`) read a
+  TEXT column's slot as an engine `db_text*`, but the keys-resident fold was
+  handing back VM-decoded `wo_str*` — a different struct layout. Reproduced
+  as a genuine ASan heap-buffer-overflow, not merely wrong values, and present
+  too in `db.c`'s `GET_FIELD` and `PROBE` arms (inline and request-path
+  alike) — nobody had audited those against a keys-resident row because
+  nothing could reach one while the annotation was refused. Fixed at the
+  root rather than patched at each reader: a keys-resident borrow now hands
+  back engine values, exactly `wo_row_ptr`'s contract for `resident: all`
+  (`table.h`'s own "a row stores NO VM pointer" doctrine) — no index function
+  needed to change. Pinned by `test_keys_resident_update_indexed_text`, which
+  reproduces the heap-buffer-overflow against the pre-fix code.
+
+  **Three limitations shipped, not fixed — documented, not papered over:**
+  1. *Mid-drain stale reads.* A request reading a row inside the same
+     uncommitted drain, while an earlier request in that drain has an
+     in-flight update to it, may see the last durable value — read-your-writes
+     holds within a request, not across requests in one drain. Closing it
+     needs the fold to consult the WAL staging buffer generally, which is
+     materially bigger.
+  2. *Replay is O(N²) in a row's delta-chain length.* Each replayed delta
+     re-folds the whole chain back to its base record, so boot cost for one
+     long chain is quadratic.
+  3. *Compaction cannot see chain length.* `wo_wal_should_compact` triggers on
+     a byte ratio only, with no per-row delta-count trigger, so one hot row
+     taking many small updates — a single popular SKU, this feature's own
+     motivating workload — can grow a long chain without moving the aggregate
+     ratio enough to fire a checkpoint. The delta-updates design's decision
+     not to cap chain length rests on compaction bounding it instead; for
+     this shape it does not.
 - **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
   **then** it refuses. *(task 6 — today this combination silently discards
   every write)*

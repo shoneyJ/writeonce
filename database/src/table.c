@@ -751,16 +751,28 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
     return slot_row(t, (uint32_t)(s1 - 1));
 }
 
-/* keys-resident fold+decode: reads the row at [off] (the row's current
- * record) and decodes it into VM values inside [buf] (t->row_size bytes,
- * caller-owned) — the piece wo_row_borrow and a unique shadow-check's
- * candidate probe both need, factored out because they cannot share a
- * buffer: wo_row_borrow writes into t->scratch and holds it busy for the
- * whole life of the borrow, so a shadow-check that needs to look at OTHER
- * rows of the SAME table while the row under test is still borrowed must
- * use a buffer of its own, never t->scratch. [id] is checked against what
- * the fold actually names, same as wo_row_borrow always did. NULL on any
- * failure, *msg set. */
+/* keys-resident fold: reads the row at [off] (the row's current record) and
+ * folds it into [buf] (t->row_size bytes, caller-owned) — the piece
+ * wo_row_borrow and a unique shadow-check's candidate probe both need,
+ * factored out because they cannot share a buffer: wo_row_borrow writes into
+ * t->scratch and holds it busy for the whole life of the borrow, so a
+ * shadow-check that needs to look at OTHER rows of the SAME table while the
+ * row under test is still borrowed must use a buffer of its own, never
+ * t->scratch. [id] is checked against what the fold actually names, same as
+ * wo_row_borrow always did. NULL on any failure, *msg set.
+ *
+ * table.h's opening doctrine: "the engine and the VM heap are two memory
+ * worlds crossed only by copy... a row stores NO VM pointer." wo_wal_fold_row_at
+ * hands back ENGINE-owned values (dec_val's representation, exactly what a
+ * slab row's own slots hold, per wal.h) — those land straight in r->slots,
+ * with no VM decode stage, so a keys-resident borrow matches wo_row_ptr's
+ * contract exactly instead of a second, divergent one. Every existing
+ * out-gate (wo_row_read, db.c's GET_FIELD/PROBE, idx_hash/idx_cols_equal/
+ * wo_idx_probe) already decodes engine->VM itself on the assumption that a
+ * borrowed row is engine-encoded; a decode done AGAIN here used to hand them
+ * a VM wo_str* reinterpreted as an engine db_text* — same bug either
+ * direction, invisible for scalars (decode is identity there) and silent
+ * wrong-bytes for Text/Bytes, which is exactly what stayed unexercised. */
 static db_row *keys_fold_into(wo_db *db, uint32_t class_id, uint64_t id,
                               uint64_t off, uint8_t *buf, const char **msg) {
     const wo_classdesc *c = &db->classes[class_id];
@@ -768,36 +780,19 @@ static db_row *keys_fold_into(wo_db *db, uint32_t class_id, uint64_t id,
     uint32_t got_cid = 0;
     uint64_t got_id = 0;
     /* keys-resident delta updates, Task 2: the fold, not a single-record
-     * read — a row's current offset may point at a delta, not a base row. */
-    uint64_t *eng = c->field_cnt ? calloc(c->field_cnt, sizeof *eng) : NULL;
-    if (c->field_cnt && !eng) {
-        if (msg) *msg = "out of memory";
+     * read — a row's current offset may point at a delta, not a base row.
+     * Folds straight into r->slots: field_cnt uint64_t slots is exactly
+     * what out_vals expects, and what a db_row already provides. */
+    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, off, &got_cid, &got_id, r->slots, msg) != 0)
         return NULL;
-    }
-    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, off, &got_cid, &got_id, eng, msg) != 0) {
-        free(eng);
-        return NULL;
-    }
     if (got_cid != class_id || got_id != id) {
         /* the offset pointed at someone else's record — a compaction that
          * moved records without rebuilding this map would land here, which is
          * exactly the obligation recorded at wo_wal_compact */
-        for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], eng[i]);
-        free(eng);
+        for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], r->slots[i]);
         if (msg) *msg = "log offset does not hold the expected row";
         return NULL;
     }
-    /* two decode stages, same reason as wo_wal_read_row_at: the fold hands
-       back ENGINE-owned values, and the VM never sees those, so each one is
-       copied into a fresh VM value here before the engine originals free. */
-    int ok = 1;
-    for (uint32_t i = 0; i < c->field_cnt; i++) {
-        r->slots[i] = wo_val_decode_vm(db, db->rt, c->kinds[i], eng[i], &ok, msg);
-        if (!ok) break;
-    }
-    for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], eng[i]);
-    free(eng);
-    if (!ok) return NULL;
     r->id = id;
     r->class_id = class_id;
     r->flags = 0;
@@ -850,13 +845,10 @@ void wo_row_release(wo_db *db, uint32_t class_id, db_row *r) {
     db_table *t = &db->tables[class_id];
     if (!t->scratch_busy || (uint8_t *)r != t->scratch) return; /* slab-backed */
     const wo_classdesc *c = &db->classes[class_id];
-    /* These are VM values, not engine values. wo_wal_read_row_at is the
-     * out-gate — it always COPIES, producing fresh runtime allocations — so
-     * they must be dropped through the runtime. Freeing them with the engine's
-     * allocator (as this did while the materialising path was still a stub)
-     * is a bad-free the moment a keys-resident row is actually read back. */
-    if (db->rt)
-        for (uint32_t i = 0; i < c->field_cnt; i++) wo_drop_kind(db->rt, c->kinds[i], r->slots[i]);
+    /* These are ENGINE values, exactly what a slab row holds (keys_fold_into's
+     * contract) — freed the same way table_destroy frees a slab row's fields,
+     * not through the runtime. */
+    for (uint32_t i = 0; i < c->field_cnt; i++) db_val_free(c->kinds[i], r->slots[i]);
     t->scratch_busy = 0;
 }
 
@@ -1137,10 +1129,10 @@ static int row_apply_field_slot(wo_db *db, db_table *t, const wo_classdesc *c,
  * back-pointer. [nv] is already engine-encoded (same convention as
  * row_apply_field_slot); consumed on every path.
  *
- * The borrow's materialised row holds VM values (wo_row_release drops every
- * slot through the runtime), so [nv] is decoded to a VM value up front and
- * that is what ever lands in r->slots[field] — the engine encoding is used
- * only for the WAL record and freed once staged.
+ * The borrow's materialised row holds ENGINE values now (keys_fold_into's
+ * contract matches wo_row_ptr's), so [nv] lands in r->slots[field] directly —
+ * no VM decode stage, same representation the WAL record and the index
+ * functions already expect.
  *
  * Task 4 (keys-resident delta updates) ruling: this function stages the
  * delta but does NOT commit and does NOT move the id map — mirroring
@@ -1182,15 +1174,6 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
     uint64_t pending1 = wo_wal_repoint_offset1(w, class_id, id);
     uint64_t back_off = (pending1 ? pending1 : wo_row_offset1(db, class_id, id)) - 1;
 
-    int ok = 1;
-    uint64_t nv_vm = wo_val_decode_vm(db, db->rt, c->kinds[field], nv, &ok, msg);
-    if (!ok) {
-        wo_row_release(db, class_id, r);
-        db_val_free(c->kinds[field], nv);
-        if (err_kind) *err_kind = DB_ERR_OOM;
-        return -1;
-    }
-
     /* unique shadow-check: run with the NEW value before anything durable or
        indexed moves, exactly row_apply_field_slot's promise.
        CRITICAL: candidates are probed into a THROWAWAY buffer, never
@@ -1201,8 +1184,8 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
        would accept duplicates). Candidates are always in this same,
        keys-resident table, so keys_fold_into (bypassing wo_row_borrow and
        its scratch_busy gate) is safe to call directly. */
-    uint64_t old_vm = r->slots[field];
-    r->slots[field] = nv_vm;
+    uint64_t old_eng = r->slots[field];
+    r->slots[field] = nv;
     uint8_t *cand_buf = NULL;
     for (uint32_t x = 0; x < t->index_cnt; x++) {
         db_index *ix = &t->indexes[x];
@@ -1216,9 +1199,8 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         if (!cand_buf) {
             cand_buf = malloc(t->row_size);
             if (!cand_buf) {
-                r->slots[field] = old_vm;
+                r->slots[field] = old_eng;
                 wo_row_release(db, class_id, r);
-                wo_drop_kind(db->rt, c->kinds[field], nv_vm);
                 db_val_free(c->kinds[field], nv);
                 if (err_kind) *err_kind = DB_ERR_OOM;
                 *msg = "out of memory";
@@ -1244,16 +1226,16 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
             db_row *other =
                 keys_fold_into(db, class_id, b->ids[i], cand_off1 - 1, cand_buf, &obmsg);
             int clash = other && idx_cols_equal(c, ix, r, other);
-            /* keys_fold_into decoded fresh VM values for EVERY field, same
-               as a real borrow — nobody else owns them, so drop them here */
+            /* keys_fold_into decoded fresh ENGINE values for EVERY field,
+               same as a real borrow — nobody else owns them, so drop them
+               here the same way wo_row_release would */
             if (other)
                 for (uint32_t k = 0; k < c->field_cnt; k++)
-                    wo_drop_kind(db->rt, c->kinds[k], other->slots[k]);
+                    db_val_free(c->kinds[k], other->slots[k]);
             if (clash) {
-                r->slots[field] = old_vm; /* untouched, promised */
+                r->slots[field] = old_eng; /* untouched, promised */
                 free(cand_buf);
                 wo_row_release(db, class_id, r);
-                wo_drop_kind(db->rt, c->kinds[field], nv_vm);
                 db_val_free(c->kinds[field], nv);
                 if (err_kind) *err_kind = DB_ERR_UNIQUE;
                 *msg = "unique index violation";
@@ -1262,23 +1244,21 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         }
     }
     free(cand_buf);
-    r->slots[field] = old_vm; /* restored: still the OLD row until applied */
+    r->slots[field] = old_eng; /* restored: still the OLD row until applied */
 
     /* RAM apply (Task 4 ruling): the borrowed row is the OLD row — out of
        every index under the OLD value, then in again under the NEW one.
        Unconditional from here: a failure below is fatal, not a trap. */
     idx_remove_row(db, t, r);
-    r->slots[field] = nv_vm;
+    r->slots[field] = nv;
     (void)idx_add_row(db, t, r); /* cannot violate uniqueness: the shadow
                                     check above already cleared it */
 
     if (wo_wal_append_delta(w, db, class_id, id, field, back_off, nv) != 0)
         wo_wal_stage_fatal(w); /* RAM already moved; see the insert arm */
-    db_val_free(c->kinds[field], nv); /* staged now; the engine copy served
-                                          the log record */
 
-    wo_drop_kind(db->rt, c->kinds[field], old_vm);
-    wo_row_release(db, class_id, r);
+    db_val_free(c->kinds[field], old_eng); /* old value done: r now holds nv */
+    wo_row_release(db, class_id, r); /* frees r's slots, including nv, as engine values */
     if (err_kind) *err_kind = DB_ERR_NONE;
     return 0;
 }

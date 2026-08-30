@@ -183,23 +183,14 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
          * nowhere to live. woc refuses this at compile time; the loader
          * refuses it again because what the loader accepts, the interpreter
          * trusts — this combination must never reach the engine. */
-        /* databasev2 2: `resident: keys` PARSES and sets this bit, but the
-         * storage half (tasks 5c/5d) is not implemented — rows are still fully
-         * resident. Accepting it would be an annotation the compiler honours
-         * in name only.
-         *
-         * Narrowed 2026-08-29 (databasev2 2, 5c/5d): storage, boot, the read
-         * paths and checkpoint survival all landed. What has NOT landed is
-         * UPDATE — a keys-resident row lives in the log with no slab slot to
-         * mutate, so an update needs read-modify-append. Until that exists the
-         * annotation is still refused, because a table you can insert into and
-         * read but not update is a worse promise than one that never compiled. */
-        if (flags & WO_CLASSF_RESIDENT_KEYS)
-            BAIL("class %u declares `resident: keys`, which is INCOMPLETE: rows "
-                 "are stored and read keys-only, but UPDATING one is not "
-                 "implemented (it needs read-modify-append). Remove it until "
-                 "databasev2 2 lands updates; `resident: all` is what runs",
-                 (unsigned)i);
+        /* databasev2 2 (5c/5d) + databasev2 3 (keys-resident delta updates):
+         * `resident: keys` landed in full — storage, boot, the read paths,
+         * checkpoint survival, and now UPDATE (read-modify-APPEND: a delta
+         * record chains off the row's current offset; wo_row_borrow folds the
+         * chain back to a value on every read). The annotation used to be
+         * refused here because a table you could insert into and read but not
+         * update was a worse promise than one that never compiled — that gap
+         * is closed, so this class is accepted like any other. */
         if ((flags & WO_CLASSF_VOLATILE) && (flags & WO_CLASSF_RESIDENT_KEYS))
             BAIL("class %u: durable:false with resident:keys — rows would have "
                  "nowhere to be read from", (unsigned)i);

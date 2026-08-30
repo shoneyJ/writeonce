@@ -18,9 +18,22 @@
 -- The second run places an order. Stock comes back decremented after a
 -- restart; the cart does not come back at all.
 
--- Precious: WAL-logged, replayed at boot. `durable: true` is the default and
--- is written out here only because this example is about the annotation.
-@table(name: "products", index: [sku], durable: true, resident: all)
+-- Precious AND read-selectively resident: WAL-logged, replayed at boot, but
+-- only the id -> log-offset map lives in RAM — each row's payload is read
+-- back from the log. A real catalogue is the table that outgrows RAM first,
+-- so this is the mode you would actually reach for one. Storage, reads,
+-- scans through the `sku` index below (a Text column — exercised here, not
+-- just the scalar columns other tests stuck to), `@unique`, deletes and
+-- checkpoint survival all work, and so does UPDATE: `place_order` below moves
+-- `stock` through a WAL delta record — read-modify-APPEND, not a slab
+-- mutation, since a keys-resident row has no slab slot to mutate. See the
+-- README for what a delta update costs a reader.
+--
+-- Only `stock` changes when an order is placed; `sku`, `name` and `price` do
+-- not. Appending the whole row on every sale would rewrite every field to
+-- change one integer, on the hottest write path a shop has — which is why
+-- the delta is one field, not a full-row rewrite.
+@table(name: "products", index: [sku], durable: true, resident: keys)
 class Product {
   sku:   Text
   name:  Text
@@ -35,42 +48,6 @@ class Cart {
   token: Text
   sku:   Text
 }
-
--- WHAT DOES NOT COMPILE YET, and why it is written here rather than omitted.
---
--- A real catalogue is the table that outgrows RAM first, so `Product` above is
--- exactly what you would want to declare keys-resident:
---
---   @table(name: "products", index: [sku], durable: true, resident: keys)
---   class Product {
---     sku:   Text
---     name:  Text
---     price: Int
---     stock: Int
---   }
---
--- `resident: keys` keeps the id map in RAM and leaves each row's payload in the
--- WAL, read back by offset. Storage, reads, scans, `@unique`, deletes and
--- checkpoint survival all work today. **Updating such a row does not**, and
--- `place_order` below is precisely why that matters: the row has no slab slot
--- to mutate, so the write would land in a materialised scratch buffer and be
--- discarded SILENTLY.
---
--- The loader therefore refuses the annotation rather than honouring it in name
--- only:
---
---   wovm: class 0 declares `resident: keys`, which is INCOMPLETE: rows are
---   stored and read keys-only, but UPDATING one is not implemented (it needs
---   read-modify-append). Remove it until databasev2 2 lands updates;
---   `resident: all` is what runs
---
--- Note WHERE it is refused: the compiler accepts it and emits a .wob — the
--- annotation is a load-time property, so `woc` is green and `wovm` exits 2.
---
--- This example is also the argument for HOW updates should land. Only `stock`
--- changes when an order is placed; `sku`, `name` and `price` do not. Appending
--- the whole row on every sale would rewrite every field to change one integer,
--- on the hottest write path a shop has.
 
 fn count_products() -> Int {
   let n = 0;

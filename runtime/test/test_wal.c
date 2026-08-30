@@ -559,8 +559,10 @@ static void test_keys_resident_round_trip(void) {
     T_CHECK(r != NULL);
     T_CHECK(r->id == id);
     T_CHECK(r->slots[0] == 4242);
-    wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
-    T_CHECK(back != NULL && back->len == 5 && memcmp(back->data, "hello", 5) == 0);
+    /* engine-encoded, matching wo_row_ptr's contract (table.h's "a row
+       stores NO VM pointer" doctrine) — db_text, not wo_str */
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 5 && memcmp(back->bytes, "hello", 5) == 0);
     wo_row_release(&db, 0, r);
 
     /* the scratch is reusable: a second borrow must succeed, which it cannot
@@ -897,8 +899,8 @@ static void test_keys_resident_update_field(void) {
     db_row *r = wo_row_borrow(&db, 0, id, &msg);
     T_CHECK(r != NULL);
     T_CHECK(r->slots[0] == 999);
-    wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
-    T_CHECK(back != NULL && back->len == 5 && memcmp(back->data, "hello", 5) == 0);
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 5 && memcmp(back->bytes, "hello", 5) == 0);
     wo_row_release(&db, 0, r);
 
     /* the scratch must be free again — a release that skipped clearing
@@ -991,6 +993,104 @@ static void test_keys_resident_update_indexed(void) {
 
     db_row *r = wo_row_borrow(&db, 0, a, &msg);
     T_CHECK(r != NULL && r->slots[0] == 150);
+    wo_row_release(&db, 0, r);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
+/* class 0: Row { n: scalar, sku: Text @unique } — the Text-representation
+ * gap flagged across Tasks 3, 4 and 5 and fixed in Task 6: every existing
+ * keys-resident index test above indexes the SCALAR column, never
+ * exercising idx_hash/idx_cols_equal/wo_idx_probe's WO_K_TEXT arm (nor
+ * db.c's GET_FIELD/PROBE arms) against a keys-resident row. The root cause
+ * was keys_fold_into handing back VM wo_str* where a borrowed row's slots
+ * are supposed to hold engine db_text* — table.h's own "a row stores NO VM
+ * pointer" doctrine, true for `resident: all` and silently false for
+ * `resident: keys` until this task. This is the test that proves the fix:
+ * index the TEXT column, update it, and probe by both the OLD and NEW
+ * value — the same shape as test_keys_resident_update_indexed, on the
+ * column that used to misread. */
+static const uint8_t keys_text_idx_kinds[] = {WO_K_SCALAR, WO_K_TEXT};
+static const uint32_t keys_text_idx_meta[] = {1 /*unique*/, 1, 1 /*col: sku (field 1)*/};
+static const wo_classdesc KEYS_TEXT_IDX_CLASSES[] = {
+    {.name = 0, .flags = WO_CLASSF_RESIDENT_KEYS, .field_cnt = 2, .kinds = keys_text_idx_kinds,
+     .idx_cnt = 1, .idx_meta = keys_text_idx_meta},
+};
+
+static void test_keys_resident_update_indexed_text(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keystextidx.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_TEXT_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_TEXT_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sa = wo_str_new(&rt, "SKU-AAA", 7);
+    wo_str *sb = wo_str_new(&rt, "SKU-BBB", 7);
+    uint64_t va[2] = {1, (uint64_t)(uintptr_t)sa};
+    uint64_t vb[2] = {2, (uint64_t)(uintptr_t)sb};
+    uint64_t a = wo_row_insert(&db, 0, va, &msg, NULL);
+    uint64_t b = wo_row_insert(&db, 0, vb, &msg, NULL);
+    T_CHECK(a != 0 && b != 0);
+    uint64_t off_a = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, a), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, a, off_a), 0);
+    uint64_t off_b = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, b), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, b, off_b), 0);
+
+    /* before the update: probing "SKU-AAA" finds a — through wo_idx_probe's
+       verify step, which borrows the row and reads its Text slot, exactly
+       the path the representation bug corrupted */
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, "SKU-AAA", 7, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == a);
+    free(ids);
+
+    /* update a's Text column: "SKU-AAA" -> "SKU-CCC" */
+    wo_str *sc = wo_str_new(&rt, "SKU-CCC", 7);
+    int ek = 0;
+    uint64_t roff = wo_wal_next_offset(&w);
+    T_EQ(wo_row_update_field(&db, 0, a, 1, (uint64_t)(uintptr_t)sc, &msg, &ek), 0);
+    T_EQ(ek, DB_ERR_NONE);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, a, roff), 0);
+
+    /* found by the NEW value */
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, "SKU-CCC", 7, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == a);
+    free(ids);
+
+    /* gone from the OLD one */
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, "SKU-AAA", 7, &ids, &cnt), 1);
+    T_CHECK(cnt == 0 && ids == NULL);
+
+    /* b, untouched, still finds by its own value */
+    T_EQ(wo_idx_probe(&db, 0, 0, 0, "SKU-BBB", 7, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == b);
+    free(ids);
+
+    /* a genuine duplicate is still refused: updating b's sku to a's NEW
+       value must trip @unique — proving idx_cols_equal reads the correct
+       engine bytes on BOTH sides, not a coincidental symmetric misread */
+    wo_str *sdupe = wo_str_new(&rt, "SKU-CCC", 7);
+    T_EQ(wo_row_update_field(&db, 0, b, 1, (uint64_t)(uintptr_t)sdupe, &msg, &ek), -1);
+    T_EQ(ek, DB_ERR_UNIQUE);
+
+    /* the row itself reads back correctly through wo_row_borrow */
+    db_row *r = wo_row_borrow(&db, 0, a, &msg);
+    T_CHECK(r != NULL);
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 7 && memcmp(back->bytes, "SKU-CCC", 7) == 0);
     wo_row_release(&db, 0, r);
 
     wo_wal_close(&w);
@@ -1128,8 +1228,8 @@ static void test_keys_resident_two_updates_one_drain(void) {
     /* both updates visible, in order */
     db_row *r = wo_row_borrow(&db, 0, id, &msg);
     T_CHECK(r != NULL && r->slots[0] == 333);
-    wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
-    T_CHECK(back != NULL && back->len == 3 && memcmp(back->data, "sku", 3) == 0);
+    db_text *back = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(back != NULL && back->len == 3 && memcmp(back->bytes, "sku", 3) == 0);
     wo_row_release(&db, 0, r);
 
     /* the chain itself: delta 2's back-pointer names delta 1's OWN offset,
@@ -1371,9 +1471,9 @@ static void test_keys_resident_survives_compaction(void) {
         db_row *r = wo_row_borrow(&db, 0, ids[i], &msg);
         T_CHECK(r != NULL);
         T_CHECK(r->slots[0] == (uint64_t)(i * 101 + 7));
-        wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
+        db_text *back = (db_text *)(uintptr_t)r->slots[1];
         T_CHECK(back != NULL && back->len == (size_t)(1 + i));
-        T_CHECK(memcmp(back->data, texts[i], (size_t)(1 + i)) == 0);
+        T_CHECK(memcmp(back->bytes, texts[i], (size_t)(1 + i)) == 0);
         wo_row_release(&db, 0, r);
     }
     wo_wal_close(&w);
@@ -1436,8 +1536,8 @@ static void test_keys_resident_replay(void) {
         db_row *r = wo_row_borrow(&db2, 0, ids[i], &msg);
         T_CHECK(r != NULL);
         T_CHECK(r->slots[0] == (uint64_t)(i * 11 + 1));
-        wo_str *back = (wo_str *)(uintptr_t)r->slots[1];
-        T_CHECK(back != NULL && back->len == 3 && memcmp(back->data, "abc", 3) == 0);
+        db_text *back = (db_text *)(uintptr_t)r->slots[1];
+        T_CHECK(back != NULL && back->len == 3 && memcmp(back->bytes, "abc", 3) == 0);
         wo_row_release(&db2, 0, r);
     }
     wo_wal_close(&w2);
@@ -2105,6 +2205,104 @@ static void test_read_row_at(void) {
     wo_rt_destroy(&rt);
 }
 
+/* Task 6, Step 5: the oracle test. `resident: all` never goes near a delta —
+ * every update is a direct slab mutation — so running the SAME sequence of
+ * updates against a `resident: all` table and a `resident: keys` table and
+ * asserting the rows read identically at every step is the strongest
+ * available proof that the fold agrees with ordinary storage: the resident
+ * table is the oracle, exactly what an independent implementation would be,
+ * without needing to write one. CLASSES (flags=0) and KEYS_CLASSES
+ * (WO_CLASSF_RESIDENT_KEYS) share the same shape — {n: scalar, label: Text}
+ * — already declared above for other tests. */
+static void assert_rows_equal(wo_db *db_all, uint64_t id_all, wo_db *db_keys,
+                              uint64_t id_keys, wo_rt *rt, const char *step) {
+    uint64_t out_all[2], out_keys[2];
+    const char *msg = "";
+    T_EQ(wo_row_read(db_all, rt, 0, id_all, out_all, &msg), 0);
+    T_EQ(wo_row_read(db_keys, rt, 0, id_keys, out_keys, &msg), 0);
+    T_CHECK(out_all[0] == out_keys[0]);
+    wo_str *sa = (wo_str *)(uintptr_t)out_all[1];
+    wo_str *sk = (wo_str *)(uintptr_t)out_keys[1];
+    int text_eq = (!sa && !sk) ||
+                  (sa && sk && sa->len == sk->len && memcmp(sa->data, sk->data, sa->len) == 0);
+    if (!text_eq) fprintf(stderr, "oracle mismatch at %s\n", step);
+    T_CHECK(text_eq);
+    if (sa) wo_str_free(rt, sa);
+    if (sk) wo_str_free(rt, sk);
+}
+
+static void test_oracle_all_vs_keys_same_update_sequence(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/oracle.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    /* the oracle needs no WAL at all: row_apply_field_slot never touches one */
+    wo_db db_all;
+    T_EQ(wo_db_init(&db_all, CLASSES, 1, 0, 1), 0);
+    wo_db db_keys;
+    T_EQ(wo_db_init(&db_keys, KEYS_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db_keys.rt = &rt; rt.wal = &w; rt.db = &db_keys;
+    const char *msg = "";
+
+    wo_str *s0a = wo_str_new(&rt, "start", 5);
+    wo_str *s0k = wo_str_new(&rt, "start", 5);
+    uint64_t va[2] = {10, (uint64_t)(uintptr_t)s0a};
+    uint64_t vk[2] = {10, (uint64_t)(uintptr_t)s0k};
+    uint64_t id_all = wo_row_insert(&db_all, 0, va, &msg, NULL);
+    uint64_t id_keys = wo_row_insert(&db_keys, 0, vk, &msg, NULL);
+    T_CHECK(id_all != 0 && id_keys != 0);
+    /* drop the keys row's payload to the log now, exactly as a post-barrier
+       flush would — every update below folds it back out of the WAL */
+    uint64_t koff = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db_keys, 0, id_keys), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db_keys, 0, id_keys, koff), 0);
+    assert_rows_equal(&db_all, id_all, &db_keys, id_keys, &rt, "insert");
+
+    /* the sequence: scalar and Text fields both move, more than once each,
+       so the fold is exercised on a multi-hop chain the same shape a real
+       catalogue would build one small update at a time */
+    struct { int field; uint64_t scalar; const char *text; } steps[] = {
+        {0, 20, NULL},   {1, 0, "mid1"},  {0, 30, NULL},
+        {1, 0, "mid2"},  {0, 40, NULL},   {1, 0, "end"},
+    };
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        int ek = 0;
+        uint64_t val_all, val_keys;
+        if (steps[i].field == 0) {
+            val_all = steps[i].scalar;
+            val_keys = steps[i].scalar;
+        } else {
+            uint32_t tl = (uint32_t)strlen(steps[i].text);
+            val_all = (uint64_t)(uintptr_t)wo_str_new(&rt, steps[i].text, tl);
+            val_keys = (uint64_t)(uintptr_t)wo_str_new(&rt, steps[i].text, tl);
+        }
+        T_EQ(wo_row_update_field(&db_all, 0, id_all, (uint32_t)steps[i].field, val_all,
+                                 &msg, &ek),
+             0);
+        T_EQ(ek, DB_ERR_NONE);
+
+        uint64_t roff = wo_wal_next_offset(&w);
+        T_EQ(wo_row_update_field(&db_keys, 0, id_keys, (uint32_t)steps[i].field, val_keys,
+                                 &msg, &ek),
+             0);
+        T_EQ(ek, DB_ERR_NONE);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_set_offset(&db_keys, 0, id_keys, roff), 0);
+
+        char label[32];
+        snprintf(label, sizeof label, "step %zu", i);
+        assert_rows_equal(&db_all, id_all, &db_keys, id_keys, &rt, label);
+    }
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db_all);
+    wo_db_destroy(&db_keys);
+    wo_rt_destroy(&rt);
+}
+
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/wo-wal-test-XXXXXX");
     if (!mkdtemp(g_dir)) return 1;
@@ -2119,6 +2317,7 @@ int main(void) {
     test_fold_refuses_forward_pointing_delta();
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
+    test_keys_resident_update_indexed_text();
     test_keys_resident_update_unique_violation_refused();
     test_keys_resident_two_updates_one_drain();
     test_keys_resident_unique_clash_pending_repoint();
@@ -2139,6 +2338,7 @@ int main(void) {
     test_read_row_at();
     test_crash_battery();
     test_compact_crash_battery();
+    test_oracle_all_vs_keys_same_update_sequence();
     /* leave the dir for a failed run's forensics only */
     if (!t_fail) {
         char cmd[128];

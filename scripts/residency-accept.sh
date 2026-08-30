@@ -133,10 +133,13 @@ grep -q 'WO-E224' <<<"$dref_out" \
   && ok "durable ref into a volatile table is WO-E224" \
   || bad "dangling ref refused" "got: $dref_out"
 
-# ---- 5. the doc example actually runs, and its README's claim holds --------
-# The example is the readable half of this gate. An example no gate runs rots,
-# and its README quotes the loader's refusal verbatim — so that message is
-# checked here too, not merely trusted.
+# ---- 5. the doc example actually runs, and Product really is resident: keys
+# The example is the readable half of this gate. An example no gate runs
+# rots. `Product` is declared `resident: keys` in main.wo — checks 2 and 3
+# below are this leg's whole point: the program runs, and `place_order`'s
+# stock decrement on a keys-resident row survives a restart, replayed out of
+# the log rather than out of a slab. That is the property a load-time refusal
+# used to stand in for; now the example proves it directly instead.
 LOG=/tmp/residency.log
 : > "$LOG"
 echo "residency-accept: example output -> $LOG (tail -F it)"
@@ -165,18 +168,6 @@ if "$WOC" --emit "$EX/main.wo" -o "$WORK/residency.wob" >>"$LOG" 2>&1; then
     || bad "example update replay" "got: $ex3"
 else
   bad "the doc example compiles" "see $LOG"
-fi
-
-# the README quotes this message; drift between them is a doc bug
-printf '@table(name: "audit", durable: true, resident: keys)\nclass A {\n  at: Int\n}\nfn main() -> Int { return 0; }\n' > "$WORK/keys.wo"
-if "$WOC" --emit "$WORK/keys.wo" -o "$WORK/keys.wob" >>"$LOG" 2>&1; then
-  keys_out="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/keys.wob" 2>&1)"
-  printf '%s\n' "$keys_out" >> "$LOG"
-  grep -q 'resident: keys.*INCOMPLETE' <<<"$keys_out" \
-    && ok "resident: keys is refused at LOAD with the documented message" \
-    || bad "keys refusal message" "got: $keys_out"
-else
-  bad "resident: keys compiles (the refusal is load-time, not compile-time)" "woc rejected it"
 fi
 
 echo
