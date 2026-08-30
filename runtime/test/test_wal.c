@@ -981,6 +981,76 @@ static void test_keys_resident_update_indexed(void) {
     wo_rt_destroy(&rt);
 }
 
+/* class 0: Row { n: scalar @unique, label: Text } — same shape as
+ * KEYS_IDX_CLASSES, but the index is genuinely unique this time. */
+static const uint8_t keys_uniq_kinds[] = {WO_K_SCALAR, WO_K_TEXT};
+static const uint32_t keys_uniq_meta[] = {1 /*unique*/, 1, 0 /*col: n*/};
+static const wo_classdesc KEYS_UNIQUE_CLASSES[] = {
+    {.name = 0, .flags = WO_CLASSF_RESIDENT_KEYS, .field_cnt = 2, .kinds = keys_uniq_kinds,
+     .idx_cnt = 1, .idx_meta = keys_uniq_meta},
+};
+
+/* Review finding (Task 3 follow-up): the unique shadow-check borrowed its
+ * candidate through wo_row_borrow, which shares ONE scratch buffer per
+ * table with the row already borrowed for the update itself — so the
+ * candidate borrow always failed (NULL), clash was always false, and a
+ * `resident: keys` table with a `@unique` index silently accepted
+ * duplicates on update. This is the test that would have caught it: two
+ * rows, update one's unique column to collide with the other's value, the
+ * update must be REFUSED and the row left exactly as it was. */
+static void test_keys_resident_update_unique_violation_refused(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysuniq.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_UNIQUE_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_UNIQUE_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *sa = wo_str_new(&rt, "a", 1);
+    wo_str *sb = wo_str_new(&rt, "b", 1);
+    uint64_t va[2] = {100, (uint64_t)(uintptr_t)sa};
+    uint64_t vb[2] = {200, (uint64_t)(uintptr_t)sb};
+    uint64_t a = wo_row_insert(&db, 0, va, &msg, NULL);
+    uint64_t b = wo_row_insert(&db, 0, vb, &msg, NULL);
+    T_CHECK(a != 0 && b != 0);
+    uint64_t off_a = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, a), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, a, off_a), 0);
+    uint64_t off_b = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, b), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, b, off_b), 0);
+
+    /* a's n: 100 -> 200 collides with b's live value — must be refused */
+    int ek = 0;
+    T_EQ(wo_row_update_field(&db, 0, a, 0, 200, &msg, &ek), -1);
+    T_EQ(ek, DB_ERR_UNIQUE);
+
+    /* a untouched: still 100, still the only hit for 100 */
+    db_row *r = wo_row_borrow(&db, 0, a, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 100);
+    wo_row_release(&db, 0, r);
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db, 0, 0, 100, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == a);
+    free(ids);
+
+    /* b untouched: still the only hit for 200 */
+    T_EQ(wo_idx_probe(&db, 0, 0, 200, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == b);
+    free(ids);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* databasev2 2 (5c): boot. A keys-resident store must come back from replay
  * with its rows readable FROM THE LOG — the map rebuilt to offsets, not slabs.
  * This is the half the round-trip test cannot cover: it runs in a fresh db,
@@ -1631,6 +1701,7 @@ int main(void) {
     test_fold_refuses_forward_pointing_delta();
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
+    test_keys_resident_update_unique_violation_refused();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
     test_keys_resident_delete();

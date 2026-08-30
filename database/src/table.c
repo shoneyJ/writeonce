@@ -751,42 +751,20 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
     return slot_row(t, (uint32_t)(s1 - 1));
 }
 
-db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **msg) {
-    /* Fully-resident tables: exactly today's lookup, and releasing is a no-op.
-     * The hot path pays one predicate. */
-    if (!wo_table_is_keys_resident(db, class_id)) return wo_row_ptr(db, class_id, id);
-
-    /* Keys-resident: the id map holds the record's LOG OFFSET (off + 1), not a
-     * slot, so the row is materialised into the table's scratch. */
-    db_table *t = &db->tables[class_id];
-    if (!t->row_size) return NULL;
-    uint64_t o1 = hget(t, id);
-    if (!o1) return NULL;
-    if (!db->rt || !db->rt->wal) {
-        /* a keys-resident table cannot exist without a log to read from; the
-         * loader refuses the annotation outright, so this is a defensive arm */
-        if (msg) *msg = "resident: keys table without a write-ahead log";
-        return NULL;
-    }
-    if (t->scratch_busy) {
-        /* One scratch per TABLE, so two live borrows on the same table would
-         * hand back the same buffer. The unique shadow borrows one candidate
-         * at a time, which is why per-table is enough — but say so rather than
-         * corrupting the first borrow silently. */
-        if (msg) *msg = "nested borrow on one table";
-        return NULL;
-    }
-    if (t->scratch_cap < t->row_size) {
-        uint8_t *nb = realloc(t->scratch, t->row_size);
-        if (!nb) {
-            if (msg) *msg = "out of memory";
-            return NULL;
-        }
-        t->scratch = nb;
-        t->scratch_cap = t->row_size;
-    }
-    db_row *r = (db_row *)t->scratch;
+/* keys-resident fold+decode: reads the row at [off] (the row's current
+ * record) and decodes it into VM values inside [buf] (t->row_size bytes,
+ * caller-owned) — the piece wo_row_borrow and a unique shadow-check's
+ * candidate probe both need, factored out because they cannot share a
+ * buffer: wo_row_borrow writes into t->scratch and holds it busy for the
+ * whole life of the borrow, so a shadow-check that needs to look at OTHER
+ * rows of the SAME table while the row under test is still borrowed must
+ * use a buffer of its own, never t->scratch. [id] is checked against what
+ * the fold actually names, same as wo_row_borrow always did. NULL on any
+ * failure, *msg set. */
+static db_row *keys_fold_into(wo_db *db, uint32_t class_id, uint64_t id,
+                              uint64_t off, uint8_t *buf, const char **msg) {
     const wo_classdesc *c = &db->classes[class_id];
+    db_row *r = (db_row *)buf;
     uint32_t got_cid = 0;
     uint64_t got_id = 0;
     /* keys-resident delta updates, Task 2: the fold, not a single-record
@@ -796,8 +774,7 @@ db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **ms
         if (msg) *msg = "out of memory";
         return NULL;
     }
-    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, o1 - 1, &got_cid, &got_id, eng, msg) !=
-        0) {
+    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, off, &got_cid, &got_id, eng, msg) != 0) {
         free(eng);
         return NULL;
     }
@@ -824,6 +801,46 @@ db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **ms
     r->id = id;
     r->class_id = class_id;
     r->flags = 0;
+    return r;
+}
+
+db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **msg) {
+    /* Fully-resident tables: exactly today's lookup, and releasing is a no-op.
+     * The hot path pays one predicate. */
+    if (!wo_table_is_keys_resident(db, class_id)) return wo_row_ptr(db, class_id, id);
+
+    /* Keys-resident: the id map holds the record's LOG OFFSET (off + 1), not a
+     * slot, so the row is materialised into the table's scratch. */
+    db_table *t = &db->tables[class_id];
+    if (!t->row_size) return NULL;
+    uint64_t o1 = hget(t, id);
+    if (!o1) return NULL;
+    if (!db->rt || !db->rt->wal) {
+        /* a keys-resident table cannot exist without a log to read from; the
+         * loader refuses the annotation outright, so this is a defensive arm */
+        if (msg) *msg = "resident: keys table without a write-ahead log";
+        return NULL;
+    }
+    if (t->scratch_busy) {
+        /* One scratch per TABLE, so two live borrows on the same table would
+         * hand back the same buffer. A unique shadow-check that needs OTHER
+         * rows of this table while one is already borrowed uses its OWN
+         * throwaway buffer (row_apply_field_keys), never this one — say so
+         * rather than corrupting the first borrow silently. */
+        if (msg) *msg = "nested borrow on one table";
+        return NULL;
+    }
+    if (t->scratch_cap < t->row_size) {
+        uint8_t *nb = realloc(t->scratch, t->row_size);
+        if (!nb) {
+            if (msg) *msg = "out of memory";
+            return NULL;
+        }
+        t->scratch = nb;
+        t->scratch_cap = t->row_size;
+    }
+    db_row *r = keys_fold_into(db, class_id, id, o1 - 1, t->scratch, msg);
+    if (!r) return NULL;
     t->scratch_busy = 1;
     return r;
 }
@@ -1159,9 +1176,18 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
     }
 
     /* unique shadow-check: run with the NEW value before anything durable or
-       indexed moves, exactly row_apply_field_slot's promise */
+       indexed moves, exactly row_apply_field_slot's promise.
+       CRITICAL: candidates are probed into a THROWAWAY buffer, never
+       t->scratch. r (the row under update) already lives in t->scratch and
+       wo_row_borrow refuses ANY nested borrow on the same table's scratch —
+       reusing it here would make every candidate probe return NULL, so a
+       clash could never be detected (a silent hole: keys-resident @unique
+       would accept duplicates). Candidates are always in this same,
+       keys-resident table, so keys_fold_into (bypassing wo_row_borrow and
+       its scratch_busy gate) is safe to call directly. */
     uint64_t old_vm = r->slots[field];
     r->slots[field] = nv_vm;
+    uint8_t *cand_buf = NULL;
     for (uint32_t x = 0; x < t->index_cnt; x++) {
         db_index *ix = &t->indexes[x];
         if (!(ix->flags & 1u)) continue;
@@ -1171,14 +1197,34 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
         if (!touches) continue;
         db_ibucket *b = idx_bucket(ix, idx_hash(c, ix, r), 0);
         if (!b) continue;
+        if (!cand_buf) {
+            cand_buf = malloc(t->row_size);
+            if (!cand_buf) {
+                r->slots[field] = old_vm;
+                wo_row_release(db, class_id, r);
+                wo_drop_kind(db->rt, c->kinds[field], nv_vm);
+                db_val_free(c->kinds[field], nv);
+                if (err_kind) *err_kind = DB_ERR_OOM;
+                *msg = "out of memory";
+                return -1;
+            }
+        }
         for (uint32_t i = 0; i < b->len; i++) {
             if (b->ids[i] == id) continue;
+            uint64_t cand_off1 = wo_row_offset1(db, class_id, b->ids[i]);
+            if (!cand_off1) continue; /* stale bucket entry: no row, no clash */
             const char *obmsg = "";
-            db_row *other = wo_row_borrow(db, class_id, b->ids[i], &obmsg);
+            db_row *other =
+                keys_fold_into(db, class_id, b->ids[i], cand_off1 - 1, cand_buf, &obmsg);
             int clash = other && idx_cols_equal(c, ix, r, other);
-            wo_row_release(db, class_id, other);
+            /* keys_fold_into decoded fresh VM values for EVERY field, same
+               as a real borrow — nobody else owns them, so drop them here */
+            if (other)
+                for (uint32_t k = 0; k < c->field_cnt; k++)
+                    wo_drop_kind(db->rt, c->kinds[k], other->slots[k]);
             if (clash) {
                 r->slots[field] = old_vm; /* untouched, promised */
+                free(cand_buf);
                 wo_row_release(db, class_id, r);
                 wo_drop_kind(db->rt, c->kinds[field], nv_vm);
                 db_val_free(c->kinds[field], nv);
@@ -1188,6 +1234,7 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
             }
         }
     }
+    free(cand_buf);
     r->slots[field] = old_vm; /* restored: still the OLD row until committed */
 
     wo_wal *w = (wo_wal *)db->rt->wal;
