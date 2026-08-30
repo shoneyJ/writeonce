@@ -152,11 +152,17 @@ class KeyActor {
       -- low digits (the same slot pool_pack's remaining_ms uses for
       -- kind 1) so idempotent.wo can reconstruct the exact same key and
       -- read only ever what THIS call produced -- immune to any other
-      -- message touching this bare key, ever. (Trade-off, disclosed:
-      -- unlike the bare-key row, this one is never revisited by a bare-
-      -- key lookup, so it is never lazily pruned by TTL either -- it is
-      -- a permanent row per failed attempt. There is no sweeper in this
-      -- codebase by design; this is that same trade-off, not a new one.)
+      -- message touching this bare key, ever. That same unguessability
+      -- (the nonce is never handed to anyone but this one call() reply)
+      -- is also why idempotent.wo deletes this row right after reading
+      -- it: nothing else can ever construct this exact key, so nothing
+      -- else is deleted out from under. Without that delete, the row
+      -- would linger forever (no sweeper exists) AND time.ticks() % 1e9
+      -- wraps every ~1000s, so a later failed attempt for the SAME
+      -- bare key landing on the same nonce would collide with it --
+      -- reintroducing a stale-replay risk on wraparound, or poisoning
+      -- this actor's own unguarded insert above. Deleting it removes
+      -- both, not just the storage growth.
       let nonce = now % 1_000_000_000;
       insert IdempotencyKey {
         key: "${msg.key}#eph:${nonce}", response: stored_json, created_at: now, digest: msg.digest

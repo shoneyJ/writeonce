@@ -60,18 +60,20 @@ pub class Idempotent {
       return r;
     }
 
-    -- Outcome 1: the bare key names a durable (2xx/3xx) replay target.
+    -- Outcome 1: the bare key names a durable (2xx/3xx) replay target --
+    -- this file never deletes it; it is the whole point of a durable row.
     -- Outcome 3: this call's own 4xx/5xx answer lives under a row keyed
     -- by a nonce (the reply's low digits) that nobody else's message
     -- for this same bare key ever writes to -- rebuild that exact key
     -- rather than reading the bare one, so a race with a LATER message
     -- for this key (which never touches this row) can't hand back the
-    -- wrong response. This file never deletes either kind of row.
+    -- wrong response.
     let lookup_key = key;
     if outcome == 3 { lookup_key = "${key}#eph:${raw % 1_000_000_000}"; }
     let hits = from k in IdempotencyKey where k.key == lookup_key take 1 select k;
     if len(hits) == 0 { return server_error(); }
-    let stored = json.decode(hits[0].response) as IdempotentStoredResp;
+    let row = hits[0];
+    let stored = json.decode(row.response) as IdempotentStoredResp;
     if stored == nil { return server_error(); }
     -- `.. ""` forces a fresh, independently-owned Text for every key/value
     -- copied out of the decoded record: json.decode's Text values do not
@@ -80,7 +82,21 @@ pub class Idempotent {
     -- otherwise) — concat is documented to always allocate new owned text.
     let hdrs: map<Text, Text> = {};
     for k, v in stored.headers { hdrs[k .. ""] = v .. ""; }
-    return Resp { status: stored.status, headers: hdrs, body: stored.body .. "" };
+    let result = Resp { status: stored.status, headers: hdrs, body: stored.body .. "" };
+    if outcome == 3 {
+      -- Safe to delete here, unlike the shared bare-key row rounds 1/2
+      -- removed: the nonce that names this row was never handed to
+      -- anyone but this one call() reply, so no other request -- a
+      -- duplicate, a retry, anything -- can ever construct this exact
+      -- key to read it. Deleting it removes the leak AND the
+      -- nonce-wraparound collision (time.ticks() % 1_000_000_000 repeats
+      -- every ~1000s; a lingering row from an earlier failed attempt
+      -- landing on the same nonce would otherwise be there to collide
+      -- with, or worse, poison the actor's OWN unguarded insert on the
+      -- next failure for this key).
+      delete row;
+    }
+    return result;
   }
 }
 

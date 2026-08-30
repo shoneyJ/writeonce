@@ -820,14 +820,32 @@ class FlakyCount2 {
   }
 }
 
+-- coordinator follow-up: ephemeral (4xx/5xx) rows must not accumulate.
+-- Always fails, so every attempt against the SAME idempotency key is
+-- its own ephemeral miss -- never durable, never a hit for the next one.
+class AlwaysFailHandler {
+  fn handle(req: Req) -> Resp {
+    return server_error();
+  }
+}
+
+class IdemKeyCount {
+  fn handle(req: Req) -> Resp {
+    let n = len(from k in IdempotencyKey select k);
+    return ok_json("{\"count\":${n}}");
+  }
+}
+
 fn build_app(slot: actor PoolMsg) -> App {
   let app = App { middleware: [], routes: [] };
   let p = Pool { actors: [PoolSlot { a: slot }] };
   app.post("/create", Idempotent { key_header: "idempotency-key", pool: p, inner: SlowHandler {} });
   app.post("/flaky", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler {} });
   app.post("/flaky2", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler2 {} });
+  app.post("/alwaysfail", Idempotent { key_header: "idempotency-key", pool: p, inner: AlwaysFailHandler {} });
   app.get("/execs", ExecCount {});
   app.get("/flaky2count", FlakyCount2 {});
+  app.get("/idemkeycount", IdemKeyCount {});
   return app;
 }
 
@@ -998,6 +1016,31 @@ if ip_out="$("$WOC" --emit "$IP" -o "$IP/idempotent_check.wob" 2>&1)"; then
   [[ "$fc2" == "2" ]] \
     && ok "idempotent: both concurrent attempts genuinely executed (FlakyMark2 count = 2)" \
     || bad "idempotent-5xx-concurrent-execs" "FlakyMark2 count=$fc2 want 2"
+
+  # ---- 18f. gate leg: ephemeral rows do not accumulate (coordinator follow-up) --
+  # AlwaysFailHandler fails every time, so N attempts against the SAME
+  # idempotency key are N separate ephemeral misses -- never a durable
+  # row, never a hit for the next one. Before the fix each attempt left
+  # its own permanent, nonce-keyed row behind; after it, idempotent.wo
+  # deletes that row the instant it reads it back (safe: the nonce is
+  # never handed to anyone else, so nothing else could ever address that
+  # row anyway). The IdempotencyKey row count must return to its
+  # baseline after all N attempts, not grow by N.
+  idemkeycount() {
+    curl -s --max-time 5 -H "Host: a" "http://127.0.0.1:$IPORT/idemkeycount" \
+      | grep -o '"count":[0-9]*' | cut -d: -f2
+  }
+  ik_baseline="$(idemkeycount)"
+  IK_N=3
+  for i in $(seq 1 $IK_N); do
+    curl -s -o /dev/null --max-time 5 -X POST -H "Host: a" \
+      -H "Idempotency-Key: leg13-key" -H "Content-Type: text/plain" \
+      --data-binary "x" "http://127.0.0.1:$IPORT/alwaysfail"
+  done
+  ik_after="$(idemkeycount)"
+  [[ "$ik_after" == "$ik_baseline" ]] \
+    && ok "idempotent: $IK_N ephemeral attempts leave no rows behind (IdempotencyKey count stays $ik_baseline)" \
+    || bad "idempotent-ephemeral-leak" "baseline=$ik_baseline after $IK_N attempts=$ik_after"
 
   kill -TERM "$SRV" 2>/dev/null
   istopped=1
