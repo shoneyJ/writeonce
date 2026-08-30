@@ -837,6 +837,45 @@ class IdemKeyCount {
   }
 }
 
+-- reviewer finding 1: the README's own documented registration
+-- (`key_header: "Idempotency-Key"`, capitalised) against a wire header a
+-- real client also sends capitalised. Its own table/handler so the exec
+-- count is never confused with SlowHandler's.
+@table(name: "casecheck_marks")
+class CaseCheckMark {
+  n: Int
+}
+
+class CaseCheckHandler {
+  fn handle(req: Req) -> Resp {
+    insert CaseCheckMark { n: 1 };
+    let n = len(from c in CaseCheckMark select c);
+    return ok_json("{\"exec\":${n}}");
+  }
+}
+
+class CaseCheckCount {
+  fn handle(req: Req) -> Resp {
+    let n = len(from c in CaseCheckMark select c);
+    return ok_json("{\"count\":${n}}");
+  }
+}
+
+-- reviewer finding 3: include_body:false must still scope the digest by
+-- method+path -- two distinct routes sharing one Idempotency-Key must
+-- never let the second replay the first's response.
+class PathAHandler {
+  fn handle(req: Req) -> Resp {
+    return ok_json("{\"route\":\"a\"}");
+  }
+}
+
+class PathBHandler {
+  fn handle(req: Req) -> Resp {
+    return ok_json("{\"route\":\"b\"}");
+  }
+}
+
 fn build_app(slot: actor PoolMsg) -> App {
   let app = App { middleware: [], routes: [] };
   let p = Pool { actors: [PoolSlot { a: slot }] };
@@ -844,9 +883,13 @@ fn build_app(slot: actor PoolMsg) -> App {
   app.post("/flaky", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler {} });
   app.post("/flaky2", Idempotent { key_header: "idempotency-key", pool: p, inner: FlakyHandler2 {} });
   app.post("/alwaysfail", Idempotent { key_header: "idempotency-key", pool: p, inner: AlwaysFailHandler {} });
+  app.post("/casecheck", Idempotent { key_header: "Idempotency-Key", pool: p, inner: CaseCheckHandler {} });
+  app.post("/patha", Idempotent { key_header: "idempotency-key", pool: p, inner: PathAHandler {}, include_body: false });
+  app.post("/pathb", Idempotent { key_header: "idempotency-key", pool: p, inner: PathBHandler {}, include_body: false });
   app.get("/execs", ExecCount {});
   app.get("/flaky2count", FlakyCount2 {});
   app.get("/idemkeycount", IdemKeyCount {});
+  app.get("/casecheckcount", CaseCheckCount {});
   return app;
 }
 
@@ -1055,6 +1098,88 @@ if ip_out="$("$WOC" --emit "$IP" -o "$IP/idempotent_check.wob" 2>&1)"; then
     # this whole script. Force it dead right here instead of trusting the
     # trap -- the bad-verdict line above already told the reader SIGTERM
     # alone did not work.
+    kill -9 "$SRV" 2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
+  fi
+  SRV=""
+
+  # ---- 18g/18h: reviewer findings 1 and 3, on a FRESH restart -------------
+  # Same compiled binary, fresh WO_DATA, a new port -- not piled onto 18a-18f's
+  # already-loaded server. 18a-18f alone already spawn a dozen-plus per-
+  # connection actors on that one process; adding these two legs there measurably
+  # raised how often this run hit the pre-existing, out-of-scope C-runtime
+  # arena-allocator race (a SIGSEGV inside wo_str_new, confirmed by gdb
+  # backtrace -- unrelated to this file's own .wo logic; see the story's
+  # Outstanding notes). A fresh process for these two legs keeps them just as
+  # rigorous while giving that race far less to chew on.
+  IPORT2=$((IPORT + 50))
+  IDATA2="$W/idempotent-data-2"; mkdir -p "$IDATA2"
+  printf '\n===== idempotent check — reviewer findings 1/3, port %s =====\n' "$IPORT2" >>"$SRVLOG"
+  LEGFROM=$(( $(wc -l < "$SRVLOG") + 1 ))
+  WO_DATA="$IDATA2" "$WOVM" "$IP/idempotent_check.wob" "$IPORT2" >>"$SRVLOG" 2>&1 &
+  SRV=$!
+  iwait_listen2() {
+    for _ in $(seq 1 40); do
+      tail -n "+$LEGFROM" "$SRVLOG" 2>/dev/null | grep -q listening && return
+      sleep 0.1
+    done
+  }
+  iwait_listen2
+
+  # ---- 18g. gate leg: README's own documented registration, over the wire
+  # a real client actually sends (reviewer finding 1) ----------------------
+  # key_header: "Idempotency-Key" (capitalised, exactly as the README told
+  # app authors to write it) against a wire header ALSO sent capitalised.
+  # parse.wo lowercases every header name on read, so a lookup on the
+  # unnormalised self.key_header always misses -- pre-fix this falls
+  # through to self.inner.handle(req) on EVERY call, so the second
+  # request is never deduplicated: the exec count is the load-bearing
+  # assertion, not the status (both calls answer 200 either way).
+  cc1="$(curl -s -o "$W/i14a.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg14-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT2/casecheck")"
+  cc2="$(curl -s -o "$W/i14b.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg14-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT2/casecheck")"
+  [[ "$cc1" == "200" && "$cc2" == "200" ]] \
+    && ok "idempotent: capitalised key_header + capitalised wire header both answer 200" \
+    || bad "idempotent-header-case-status" "cc1=$cc1 cc2=$cc2"
+  casecheckcount="$(curl -s --max-time 5 -H "Host: a" "http://127.0.0.1:$IPORT2/casecheckcount" \
+    | grep -o '"count":[0-9]*' | cut -d: -f2)"
+  [[ "$casecheckcount" == "1" ]] \
+    && ok "idempotent: README's documented capitalised key_header still dedupes (CaseCheckMark count = 1)" \
+    || bad "idempotent-header-case-execs" "CaseCheckMark count=$casecheckcount want 1"
+
+  # ---- 18h. gate leg: include_body:false must still scope by method+path
+  # (reviewer finding 3) ----------------------------------------------------
+  # Same Idempotency-Key against two DIFFERENT routes, include_body:false on
+  # both. Pre-fix the digest is "" unconditionally when include_body is
+  # false, so the second route's request matches the first route's stored
+  # bare-key row on digest alone and replays route a's body under route b.
+  # Post-fix, method+path are always part of the digest, so this is the
+  # SAME "different request, same key" case leg 18b already pins for a body
+  # mismatch -- route a succeeds (200), route b is refused (422), and
+  # route b's body must be the refusal, never route a's replayed body.
+  d1="$(curl -s -o "$W/i15a.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg15-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT2/patha")"
+  d2="$(curl -s -o "$W/i15b.body" -w '%{http_code}' --max-time 5 -X POST \
+    -H "Host: a" -H "Idempotency-Key: leg15-key" -H "Content-Type: text/plain" \
+    --data-binary "x" "http://127.0.0.1:$IPORT2/pathb")"
+  [[ "$d1" == "200" && "$d2" == "422" ]] \
+    && ok "idempotent: include_body:false, same key on two different routes: first 200, second refused (422)" \
+    || bad "idempotent-diffpath-status" "d1=$d1 d2=$d2 want 200 then 422"
+  if grep -q '"route":"a"' "$W/i15b.body"; then
+    bad "idempotent-diffpath-replay" "pathb's response replayed patha's body: $(cat "$W/i15b.body")"
+  else
+    ok "idempotent: include_body:false does not replay a different route's response across paths"
+  fi
+
+  kill -TERM "$SRV" 2>/dev/null
+  istopped2=1
+  for _ in $(seq 1 30); do kill -0 "$SRV" 2>/dev/null || { istopped2=0; break; }; sleep 0.1; done
+  [[ $istopped2 -eq 0 ]] && ok "idempotent (findings 1/3): SIGTERM stops the server" || bad "idempotent-stop-2" "still running"
+  if [[ $istopped2 -eq 1 ]]; then
     kill -9 "$SRV" 2>/dev/null
     for _ in $(seq 1 20); do kill -0 "$SRV" 2>/dev/null || break; sleep 0.1; done
   fi
