@@ -1249,6 +1249,81 @@ static void test_keys_resident_two_updates_one_drain(void) {
     wo_rt_destroy(&rt);
 }
 
+/* CRITICAL 2 (review finding): wo_row_borrow itself must prefer a pending
+ * re-point over the durable map, the same reason back_off and the unique
+ * shadow-check's candidate lookup already do. Without it, the SECOND (and
+ * every later) update to one row in one drain borrows the row via `hget` —
+ * the still-DURABLE, pre-drain offset — so row_apply_field_keys's
+ * idx_remove_row hashes the row's ORIGINAL column value. That value was
+ * already removed from the index by the FIRST update in this drain, so the
+ * remove finds nothing, and idx_add_row adds a SECOND entry. N updates to
+ * one row in one drain used to leave N entries for it; this asserts
+ * exactly one, however many updates ran. */
+static void test_keys_resident_repeat_updates_one_drain_index(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysrepeatidx.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    wo_str *s = wo_str_new(&rt, "x", 1);
+    uint64_t vals[2] = {100, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
+
+    /* 5 updates to the SAME row, ALL staged behind the SAME barrier —
+       db.c's request-path shape: stage each, remember its pending
+       re-point, only commit + flush once at the end of the drain. */
+    int ek = 0;
+    uint64_t next_v = 200;
+    for (int i = 0; i < 5; i++) {
+        uint64_t roff = wo_wal_next_offset(&w);
+        T_EQ(wo_row_update_field_slot(&db, 0, id, 0, next_v, &msg, &ek), 0);
+        T_EQ(ek, DB_ERR_NONE);
+        T_EQ(wo_wal_pend_repoint(&w, 0, id, roff), 0);
+        next_v += 100;
+    }
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_db_flush_drops(&db, &w);
+
+    /* exactly one entry for this row, across EVERY bucket — a leaked entry
+       would sit in a STALE bucket (the pre-first-update value's), not the
+       current one, so this must scan the whole index, not just probe. */
+    db_table *t = &db.tables[0];
+    db_index *ix = &t->indexes[0];
+    uint32_t hits = 0;
+    for (size_t bi = 0; bi < ix->bcap; bi++) {
+        db_ibucket *b = &ix->buckets[bi];
+        for (uint32_t k = 0; k < b->len; k++)
+            if (b->ids[k] == id) hits++;
+    }
+    T_EQ(hits, 1u);
+
+    /* and it is reachable by its final value, 600 */
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db, 0, 0, 600, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == id);
+    free(ids);
+
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 600);
+    wo_row_release(&db, 0, r);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+}
+
 /* Task 4 follow-up (review finding): the unique shadow-check's candidate
  * lookup must ALSO prefer a pending re-point over the durable map, for the
  * same reason back_off does. Before this task, two keys-resident updates
@@ -2320,6 +2395,7 @@ int main(void) {
     test_keys_resident_update_indexed_text();
     test_keys_resident_update_unique_violation_refused();
     test_keys_resident_two_updates_one_drain();
+    test_keys_resident_repeat_updates_one_drain_index();
     test_keys_resident_unique_clash_pending_repoint();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();

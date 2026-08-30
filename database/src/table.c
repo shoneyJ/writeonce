@@ -808,14 +808,24 @@ db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **ms
      * slot, so the row is materialised into the table's scratch. */
     db_table *t = &db->tables[class_id];
     if (!t->row_size) return NULL;
-    uint64_t o1 = hget(t, id);
-    if (!o1) return NULL;
+    uint64_t durable1 = hget(t, id);
+    if (!durable1) return NULL;
     if (!db->rt || !db->rt->wal) {
         /* a keys-resident table cannot exist without a log to read from; the
          * loader refuses the annotation outright, so this is a defensive arm */
         if (msg) *msg = "resident: keys table without a write-ahead log";
         return NULL;
     }
+    /* CRITICAL 2 (review finding): a row already updated once behind this
+     * not-yet-committed barrier has its re-point only PENDING — hget still
+     * names the pre-drain durable offset. Folding there hands back the
+     * row's value from BEFORE the earlier update, which made every caller
+     * (row_apply_field_keys's idx_remove_row included) hash stale column
+     * values and leak an index entry per repeat update in one drain.
+     * Preferring the pending re-point, same as back_off already does below,
+     * closes it for every borrow, not just the update path. */
+    uint64_t pending1 = wo_wal_repoint_offset1((wo_wal *)db->rt->wal, class_id, id);
+    uint64_t o1 = pending1 ? pending1 : durable1;
     if (t->scratch_busy) {
         /* One scratch per TABLE, so two live borrows on the same table would
          * hand back the same buffer. A unique shadow-check that needs OTHER
