@@ -37,6 +37,10 @@ features cannot collide.
 | `db2-delta` | databasev2 2 — keys-resident updates as WAL delta records | ✅ on `master` 2026-08-30 |
 | `db2-chains` / `db2-chain` | databasev2 11 — bounding a keys-resident row's delta chain | ✅ on `master` 2026-08-30 |
 | `site` | the writeonce.de tutorial site | ✅ on `master` 2026-08-30 |
+| `site-submodule` | `docs/examples/site` extracted to github.com/shoneyJ/writeonce-site and consumed as a submodule | ✅ on `master` 2026-08-30. Both branches now track the site by revision; an edit to it is a commit in that repo plus a pointer bump here |
+| `lang41` | runtime: unadopted shard must not impersonate shard 0 | on `dev` (`9dca0b4`); independent of the residency stack, not picked |
+| `porch-store` | porch store tables, Limiter and Idempotent middleware (Phases A, B, C) | on `dev` (`519d411`, `5b1e82a`, `aee7926`). **In progress**: Phase C was uncommitted work from a parallel session, committed as-is, and calls `json.decode`/`json.encode` with no `use json` import |
+| `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
 
 ## Cherry-picks onto master
 
