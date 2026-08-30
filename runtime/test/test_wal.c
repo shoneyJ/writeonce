@@ -1445,6 +1445,253 @@ static void test_keys_resident_replay(void) {
     wo_rt_destroy(&rt);
 }
 
+/* Task 5 (replay and compaction fold the same way): DELTA_CLASSES with a
+ * non-unique index on field 0 — the chain-of-deltas tests below need THREE
+ * touched fields (one delta each) but also an indexed column among them,
+ * which DELTA_CLASSES (no index) and KEYS_IDX_CLASSES (only two fields)
+ * don't together provide. */
+static const uint8_t delta_idx_kinds[] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+static const uint32_t delta_idx_meta[] = {0 /*non-unique*/, 1, 0 /*col: field 0*/};
+static const wo_classdesc DELTA_IDX_CLASSES[] = {
+    {.name = 0, .flags = WO_CLASSF_RESIDENT_KEYS, .field_cnt = 3, .kinds = delta_idx_kinds,
+     .idx_cnt = 1, .idx_meta = delta_idx_meta},
+};
+
+/* Task 5, step 1: a row with a chain of three deltas, replayed into a fresh
+ * database, must read exactly as it did before the restart — including
+ * through the secondary index on the column one of the deltas changed.
+ * Before this task apply_record had no DELTA arm: a DELTA record in the log
+ * made replay refuse the whole file as corruption. */
+static void test_delta_chain_replay(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/deltareplay.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {10, 20, 30};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    /* field 0 (indexed): 10 -> 111 */
+    uint64_t d1_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 111), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d1_off), 0);
+
+    /* field 1: 20 -> 222, chained off the first delta */
+    uint64_t d2_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 1, d1_off, 222), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d2_off), 0);
+
+    /* field 2: 30 -> 333, chained off the second delta — three deltas total */
+    uint64_t d3_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 2, d2_off, 333), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d3_off), 0);
+
+    /* what the row reads as BEFORE the restart */
+    db_row *before = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(before != NULL);
+    uint64_t want0 = before->slots[0], want1 = before->slots[1], want2 = before->slots[2];
+    T_EQ(want0, 111);
+    T_EQ(want1, 222);
+    T_EQ(want2, 333);
+    wo_row_release(&db, 0, before);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* a fresh process would do exactly this: rt.wal is NULL (main.c wires
+       the real log in only AFTER replay) so a DELTA's fold, mid-replay, runs
+       through the lent view wo_wal_replay_ex sets up on its own — db.rt
+       itself must already be set, exactly as main.c sets DB.rt before
+       calling wo_wal_replay_ex. */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, DELTA_IDX_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt;
+    rt.wal = NULL;
+    T_EQ(wo_wal_replay(path, &db2), 4); /* 1 insert + 3 deltas */
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2; rt.db = &db2;
+
+    db_row *after = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(after != NULL);
+    T_EQ(after->slots[0], want0);
+    T_EQ(after->slots[1], want1);
+    T_EQ(after->slots[2], want2);
+    wo_row_release(&db2, 0, after);
+
+    /* the index a delta changed: rebuilt at boot from the INSERT's value,
+       then folded forward by the delta that touched field 0 — a fold that
+       disagreed between reading and replaying would leave this probing the
+       stale value */
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db2, 0, 0, 111, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == id);
+    free(ids);
+    T_EQ(wo_idx_probe(&db2, 0, 0, 10, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 0 && ids == NULL); /* the superseded value: no hits */
+
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
+/* Task 5, step 2: the same chain, then compacted. The row must read
+ * identically AND its chain must be length zero afterwards — the record its
+ * offset points at must be a full row, not a delta. That second assertion
+ * is the one the brief calls out as easy to skip: without it this test
+ * would still pass if compaction merely copied the chain byte-for-byte
+ * instead of flattening it, since a byte-for-byte copy still reads back
+ * correctly — it just never shortens the chain, which is the entire point
+ * of a checkpoint. */
+static void test_delta_chain_compact_flattens(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/deltacompact.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {10, 20, 30};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    uint64_t d1_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 111), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d1_off), 0);
+
+    uint64_t d2_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 1, d1_off, 222), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d2_off), 0);
+
+    uint64_t d3_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 2, d2_off, 333), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_set_offset(&db, 0, id, d3_off), 0);
+
+    T_EQ(wo_wal_compact(&w, &db), 0);
+
+    /* reads identically, through the compacted log */
+    db_row *r = wo_row_borrow(&db, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_EQ(r->slots[0], 111);
+    T_EQ(r->slots[1], 222);
+    T_EQ(r->slots[2], 333);
+    wo_row_release(&db, 0, r);
+
+    /* THE assertion the brief calls out: the offset now names a FULL ROW,
+       not a delta — chain length zero, not merely "still readable" */
+    uint64_t o1 = wo_row_offset1(&db, 0, id);
+    T_CHECK(o1 != 0);
+    uint8_t kind_byte = 0xFF;
+    T_EQ((int)pread(w.fd, &kind_byte, 1, (off_t)(o1 - 1 + 8)), 1);
+    T_EQ(kind_byte, WO_WAL_INSERT);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* the compacted log replays to the same, flattened, state */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, DELTA_IDX_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt;
+    rt.wal = NULL; /* see the replay comment above: set before replaying */
+    T_EQ(wo_wal_replay(path, &db2), 1); /* one row, one INSERT — chain gone */
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2; rt.db = &db2;
+    db_row *r2 = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(r2 != NULL);
+    T_EQ(r2->slots[0], 111);
+    T_EQ(r2->slots[1], 222);
+    T_EQ(r2->slots[2], 333);
+    wo_row_release(&db2, 0, r2);
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
+/* Task 5, step 3: the crash window commit-before-re-point ordering exists
+ * for. Append a delta, commit it (durable), and deliberately do NOT
+ * re-point the map — exactly the state a crash between the barrier and the
+ * flush leaves behind (wo_db_flush_drops never got to run). Replaying the
+ * log into a FRESH database, which never sees this process's map at all,
+ * must still surface the update: the commit alone is what makes a delta
+ * recoverable, not the in-RAM re-point, and this is the test that would
+ * fail if that ordering were ever reversed. */
+static void test_delta_crash_window(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/deltacrash.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, DELTA_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, DELTA_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    uint64_t vals[3] = {1, 2, 3};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t base_off = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_row_drop_payload(&db, 0, id, base_off), 0);
+
+    /* field 0: 1 -> 999. Committed (durable) but NEVER re-pointed: nothing
+       after wo_wal_commit below runs — this IS the crash. */
+    T_EQ(wo_wal_append_delta(&w, &db, 0, id, 0, base_off, 999), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+
+    /* a fresh process, with no memory of this one's (never re-pointed) map */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, DELTA_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt;
+    rt.wal = NULL; /* see the replay comment in test_delta_chain_replay */
+    T_EQ(wo_wal_replay(path, &db2), 2); /* insert + delta */
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2; rt.db = &db2;
+
+    db_row *r = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(r != NULL);
+    T_EQ(r->slots[0], 999); /* the update IS present */
+    T_EQ(r->slots[1], 2);
+    T_EQ(r->slots[2], 3);
+    wo_row_release(&db2, 0, r);
+
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 static void test_torn_tail(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/torn.wal", g_dir);
@@ -1877,6 +2124,9 @@ int main(void) {
     test_keys_resident_unique_clash_pending_repoint();
     test_keys_resident_replay();
     test_keys_resident_survives_compaction();
+    test_delta_chain_replay();
+    test_delta_chain_compact_flattens();
+    test_delta_crash_window();
     test_keys_resident_delete();
     test_keys_resident_delete_then_replay();
     test_stale_compact_temp_is_removed();

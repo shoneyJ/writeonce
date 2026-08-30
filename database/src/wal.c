@@ -705,6 +705,45 @@ static int copy_record(wo_wal *nw, wo_wal *ow, uint64_t off, uint32_t want_cid,
     return rc;
 }
 
+/* Task 5 (replay and compaction fold the same way): copy_record's
+ * counterpart for a row whose chain is NOT empty — a delta cannot be moved
+ * byte-for-byte the way copy_record moves a base row, because the whole
+ * point of compaction is to reset every chain to length zero. Fold the row
+ * (THE fold, same one reads and replay use) and re-encode it as a fresh
+ * INSERT via enc_val, exactly the representation the fold's own contract
+ * promises (ENGINE values, not the VM's) — so this, unlike copy_record,
+ * never touches wo_row_ptr/a slab at all. */
+static int stage_flattened_row(wo_wal *nw, wo_wal *ow, wo_db *db, uint64_t off,
+                               uint32_t class_id, uint64_t id, const char **why) {
+    const wo_classdesc *c = &db->classes[class_id];
+    uint64_t *vals = c->field_cnt ? calloc(c->field_cnt, sizeof *vals) : NULL;
+    if (c->field_cnt && !vals) {
+        *why = "out of memory flattening a delta chain";
+        return -1;
+    }
+    uint32_t got_cid = 0;
+    uint64_t got_id = 0;
+    const char *fmsg = "";
+    if (wo_wal_fold_row_at(ow, db, off, &got_cid, &got_id, vals, &fmsg) != 0 ||
+        got_cid != class_id || got_id != id) {
+        for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
+        free(vals);
+        *why = "a live row's delta chain does not fold cleanly";
+        return -1;
+    }
+    wbuf p = {0};
+    wput_u8(&p, WO_WAL_INSERT);
+    wput_u32(&p, class_id);
+    wput_u64(&p, id);
+    for (uint32_t i = 0; i < c->field_cnt; i++) enc_val(&p, db->classes, c->kinds[i], vals[i]);
+    int rc = stage(nw, &p);
+    free(p.b);
+    for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
+    free(vals);
+    if (rc != 0) *why = "staging a flattened row failed";
+    return rc;
+}
+
 int wo_wal_compact(wo_wal *w, wo_db *db) {
     /* staged records would be written into a file about to be replaced */
     if (!w->path || w->len != 0) return -1;
@@ -757,7 +796,25 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
                     goto fail;
                 }
                 uint64_t at = nw.off + (uint64_t)nw.len;
-                if (copy_record(&nw, w, o1 - 1, cid, id, &why) != 0) goto fail;
+                /* Task 5: a chain flattens to ONE full row on every
+                 * checkpoint — the bound the whole design relies on
+                 * (without it, chains grow without limit). Peek the kind
+                 * byte at the row's current record (position fixed by the
+                 * frame header, valid whatever the record turns out to be)
+                 * to choose: an empty chain keeps the existing byte-for-byte
+                 * copy, faster and unchanged; a delta chain folds instead of
+                 * being copied — copying it would just move the chain, not
+                 * flatten it. */
+                uint8_t kind_byte = 0;
+                if (pread(w->fd, &kind_byte, 1, (off_t)(o1 - 1 + 8)) != 1) {
+                    why = "cannot read a row's recorded offset";
+                    goto fail;
+                }
+                if (kind_byte == WO_WAL_DELTA) {
+                    if (stage_flattened_row(&nw, w, db, o1 - 1, cid, id, &why) != 0) goto fail;
+                } else if (copy_record(&nw, w, o1 - 1, cid, id, &why) != 0) {
+                    goto fail;
+                }
                 /* value-only update: cannot rehash, so `cur` stays valid */
                 if (wo_row_set_offset(db, cid, id, at) != 0) {
                     why = "row vanished from the id map mid-compaction";
@@ -822,6 +879,72 @@ fail:
     return -1; /* the live log is untouched and still usable */
 }
 
+/* Task 5 (replay and compaction fold the same way): the DELTA replay arm.
+ *
+ * A delta cannot be applied like an insert/update — its body is one field,
+ * not the row — so it borrows WO_WAL_UPDATE's remove-then-recreate SHAPE
+ * instead: fold the row's PRE-delta state (THE fold, the same one reads and
+ * compaction use) via [back_off], overlay this delta's field onto it, then
+ * remove-and-recreate through the ordinary choke points. Recreating, rather
+ * than patching an index in place, is what re-indexes a changed INDEXED
+ * column for free — wo_row_remove takes the OLD value's entries out,
+ * wo_row_raw_commit puts the NEW value's entries in, exactly as a live
+ * update would have. The caller (wo_wal_replay_ex) still owns dropping the
+ * recreated row's payload back to the log, the same way it does for
+ * INSERT/UPDATE. */
+static int apply_delta(wo_db *db, uint32_t cid, uint64_t id, rbuf *r) {
+    uint32_t field_idx = rd_u32(r);
+    uint64_t back_off = rd_u64(r);
+    const wo_classdesc *c = &db->classes[cid];
+    if (r->bad || field_idx >= c->field_cnt) return -1;
+    uint64_t nv;
+    if (dec_val(r, db, c->kinds[field_idx], &nv) != 0 || (size_t)(r->end - r->p) != 0)
+        return -1;
+
+    uint32_t field_cnt = c->field_cnt;
+    uint64_t *vals = field_cnt ? calloc(field_cnt, sizeof *vals) : NULL;
+    if (field_cnt && !vals) {
+        wo_db_val_free(db, c->kinds[field_idx], nv);
+        return -1;
+    }
+    uint32_t got_cid = 0;
+    uint64_t got_id = 0;
+    const char *fmsg = "";
+    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, back_off, &got_cid, &got_id, vals,
+                           &fmsg) != 0 ||
+        got_cid != cid || got_id != id) {
+        for (uint32_t i = 0; i < field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
+        free(vals);
+        wo_db_val_free(db, c->kinds[field_idx], nv);
+        return -1;
+    }
+    wo_db_val_free(db, c->kinds[field_idx], vals[field_idx]);
+    vals[field_idx] = nv;
+
+    /* the row must exist (its base record precedes its deltas in a correct
+       log); anything else is corruption */
+    if (wo_row_remove(db, cid, id) != 0) {
+        for (uint32_t i = 0; i < field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
+        free(vals);
+        return -1;
+    }
+    db_row *row = wo_row_create_raw(db, cid, id);
+    if (!row) {
+        for (uint32_t i = 0; i < field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
+        free(vals);
+        return -1;
+    }
+    memcpy(row->slots, vals, (size_t)field_cnt * sizeof *vals);
+    free(vals);
+    /* a unique violation here is corruption, same reasoning as INSERT/UPDATE
+       below: the live update that produced this delta would have refused it */
+    if (wo_row_raw_commit(db, cid, row) != 0) {
+        wo_row_remove(db, cid, id);
+        return -1;
+    }
+    return 0;
+}
+
 static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     rbuf r = {payload, payload + len, 0};
     uint8_t kind = rd_u8(&r);
@@ -835,6 +958,7 @@ static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
      * any. -2 so the caller can say which of the two it is. */
     if (db->classes[cid].flags & WO_CLASSF_VOLATILE) return -2;
     if (kind == WO_WAL_REMOVE) return wo_row_remove(db, cid, id);
+    if (kind == WO_WAL_DELTA) return apply_delta(db, cid, id, &r);
     if (kind != WO_WAL_INSERT && kind != WO_WAL_UPDATE) return -1;
     if (kind == WO_WAL_UPDATE) {
         /* replace: the row must exist (its insert precedes its update in a
@@ -1120,9 +1244,10 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
     int64_t applied = 0;
 
     /* databasev2 2: replay must be able to READ rows back, not only write them.
-     * A REMOVE (or an UPDATE, which replays as remove-then-recreate) on a
-     * keys-resident table reaches wo_row_remove, whose keys arm borrows the row
-     * out of the log to find its index entries — and a borrow reads through
+     * A REMOVE (or an UPDATE or a DELTA, both of which replay as
+     * remove-then-recreate — see apply_delta, Task 5) on a keys-resident
+     * table reaches wo_row_remove, whose keys arm borrows the row out of the
+     * log to find its index entries — and a borrow reads through
      * db->rt->wal. At boot that pointer is not wired yet: main.c replays first
      * and assigns rt.wal afterwards, so the borrow found no log, the remove
      * failed, and replay reported a perfectly good tombstone as CORRUPTION.
@@ -1171,8 +1296,9 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
             if (rc == -2 && volatile_cid) *volatile_cid = rec_cid;
             REPLAY_RETURN(rc == -2 ? -2 : -1);
         }
-        if ((rec_kind == WO_WAL_INSERT || rec_kind == WO_WAL_UPDATE) && rec_id &&
-            wo_table_is_keys_resident(db, rec_cid))
+        if ((rec_kind == WO_WAL_INSERT || rec_kind == WO_WAL_UPDATE ||
+             rec_kind == WO_WAL_DELTA) &&
+            rec_id && wo_table_is_keys_resident(db, rec_cid))
             (void)wo_row_drop_payload(db, rec_cid, rec_id, off);
         off += 8u + len + 4u;
         applied++;
