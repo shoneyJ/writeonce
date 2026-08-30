@@ -1,7 +1,7 @@
 ---
 track: databasev2
 iteration: "11"
-status: pending
+status: in-progress
 readiness: ready
 ---
 
@@ -59,9 +59,41 @@ Read from PostgreSQL's source at `.dev/reference/postgresql`, not recalled:
   operational constraint, not an economic comparison. That ruled out the
   byte-ratio shape here too.
 
+## Progress
+
+| Part | State |
+| --- | --- |
+| Tier 1 — the fold reports hop count | ✅ `wo_wal_fold_row_at` takes `hops_out`; the walk already visited each hop, so it costs nothing |
+| Tier 1 — the update branches on depth | ✅ `row_apply_field_keys` writes a full-row image past `WO_DELTA_MAX_HOPS` (16) instead of a delta |
+| Tier 1 — the chain-terminating write | ✅ `wo_wal_append_row_image`, encoded as `WO_WAL_INSERT` so replay, compaction and the fold need no change |
+| Tier 2 — absolute garbage term | ✅ `WO_CKPT_ABS_BYTES` (64 MiB) triggers regardless of proportion |
+| Tier 2 — proportional ceiling | ✅ `WO_CKPT_MAX_GARBAGE` (256 MiB) caps the ratio term |
+| **Tests** | ⏸ **DELIBERATELY HELD** — see below |
+
+**Verified by construction, not by test.** Both update entry points converge on
+`row_apply_field_keys` (`table.c:1039` and `:1319`), so one branch covers both.
+The re-point is transparent to flattening because `db.c` captures
+`wo_wal_next_offset(w)` *before* calling into `table.c` — it targets wherever
+the next record lands, delta or full row alike. And a fold that reaches a
+flattened record terminates there, so the next update sees depth 0.
+
+**What holding the tests costs, stated plainly.** The existing suite passes
+(36 suites, 0 failures) but that proves only that threading `hops_out` through
+the fold, `keys_fold_into` and their callers broke nothing — which is the change
+most likely to break something silently, so it is worth having. It does **not**
+exercise either new behaviour:
+
+- No existing test builds a chain 16 deep, so the flatten branch is almost
+  certainly never executed by the suite.
+- Existing checkpoint tests use logs far below 64 MiB, so the two new
+  compaction terms never fire either.
+
+A green run here means "did not break what existed", not "works".
+
 ## Acceptance Criteria
 
-Outstanding — none met; this iteration has not started.
+Outstanding — none verified, because the tests are held. The logic for every
+one of them is implemented; nothing is proven.
 
 - **Given** a row updated K times, **when** updated once more, **then** the
   record its offset names is a full row and its chain length is zero.

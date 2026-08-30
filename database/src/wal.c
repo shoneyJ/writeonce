@@ -498,6 +498,25 @@ int wo_wal_append_update(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id) {
     return rc;
 }
 
+/* databasev2 11: the chain-terminating write. Same encode as append_insert,
+ * but from a row the caller already holds — a keys-resident row whose payload
+ * has been dropped has no slab image for wo_row_ptr to find, and the update
+ * path is the one caller that legitimately has the full, post-update values in
+ * hand because it folded them to maintain indexes. */
+int wo_wal_append_row_image(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
+                            const db_row *r) {
+    if (!r) return -1;
+    wbuf p = {0};
+    wput_u8(&p, WO_WAL_INSERT);
+    wput_u32(&p, class_id);
+    wput_u64(&p, id);
+    const wo_classdesc *c = &db->classes[class_id];
+    for (uint32_t i = 0; i < c->field_cnt; i++) enc_val(&p, db->classes, c->kinds[i], r->slots[i]);
+    int rc = stage(w, &p);
+    free(p.b);
+    return rc;
+}
+
 int wo_wal_append_delta(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
                          uint32_t field_idx, uint64_t back_off, uint64_t value) {
     wbuf p = {0};
@@ -586,7 +605,28 @@ int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t
                                    * to establish the denominator */
     if (ratio == 0) return 0;     /* a zero ratio disables the policy rather than
                                    * dividing by nothing */
-    return used > last * (uint64_t)ratio;
+
+    /* databasev2 11: an ABSOLUTE garbage term, and a ceiling on the
+     * proportional one.
+     *
+     * NOTE THE VOCABULARY TRAP this fixes. `floor` above SUPPRESSES compaction
+     * on a small log — the opposite of what the same word means in PostgreSQL,
+     * where autovacuum's `vac_base_thresh` (default 50) TRIGGERS cleanup on a
+     * small absolute problem that the proportional term would hide. We had the
+     * proportion and the suppressor and neither of the two guards that keep a
+     * size-based policy honest:
+     *
+     *   - without a triggering term, garbage that is large in bytes but small
+     *     relative to a big live set is never reclaimed;
+     *   - without a ceiling, a very large live set defers compaction forever,
+     *     which is what autovacuum_vacuum_max_threshold exists to stop. */
+    uint64_t garbage = used > last ? used - last : 0;
+    if (garbage >= WO_CKPT_ABS_BYTES) return 1;
+
+    uint64_t trigger = last * (uint64_t)ratio;
+    uint64_t ceiling = last + WO_CKPT_MAX_GARBAGE;
+    if (trigger > ceiling) trigger = ceiling;
+    return used > trigger;
 }
 
 /* databasev2 3: how many records the dump stages before flushing.
@@ -731,7 +771,7 @@ static int stage_flattened_row(wo_wal *nw, wo_wal *ow, wo_db *db, uint64_t off,
     uint32_t got_cid = 0;
     uint64_t got_id = 0;
     const char *fmsg = "";
-    if (wo_wal_fold_row_at(ow, db, off, &got_cid, &got_id, vals, &fmsg) != 0 ||
+    if (wo_wal_fold_row_at(ow, db, off, &got_cid, &got_id, vals, NULL, &fmsg) != 0 ||
         got_cid != class_id || got_id != id) {
         for (uint32_t i = 0; i < c->field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
         free(vals);
@@ -922,7 +962,7 @@ static int apply_delta(wo_db *db, uint32_t cid, uint64_t id, rbuf *r) {
     uint64_t got_id = 0;
     const char *fmsg = "";
     if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, back_off, &got_cid, &got_id, vals,
-                           &fmsg) != 0 ||
+                           NULL, &fmsg) != 0 ||
         got_cid != cid || got_id != id) {
         for (uint32_t i = 0; i < field_cnt; i++) wo_db_val_free(db, c->kinds[i], vals[i]);
         free(vals);
@@ -1083,7 +1123,10 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
 /* keys-resident delta updates, Task 2: THE fold. See wal.h. Reads, replay,
  * and compaction all call this one function — never a second copy. */
 int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
-                       uint64_t *id_out, uint64_t *out_vals, const char **msg) {
+                       uint64_t *id_out, uint64_t *out_vals, uint32_t *hops_out,
+                       const char **msg) {
+    uint32_t hops = 0;             /* databasev2 11: DELTA records crossed */
+    if (hops_out) *hops_out = 0;
     uint32_t cid = 0;
     uint64_t id = 0;
     uint32_t field_cnt = 0;
@@ -1180,6 +1223,8 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
                 wo_db_val_free(db, c->kinds[field_idx], v);
             }
             free(payload);
+            hops++;
+            if (hops_out) *hops_out = hops;
             cur = back_off;
             continue;
         }

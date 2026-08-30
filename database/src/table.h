@@ -130,6 +130,11 @@ typedef struct db_table {
     uint8_t *scratch;
     size_t scratch_cap;
     int scratch_busy;
+    /* databasev2 11: how many DELTA records the last borrow's fold crossed.
+     * The fold reports it for free, and the update path uses it to decide when
+     * a chain is long enough to be worth terminating with a full-row record.
+     * Meaningful only while scratch_busy is set. */
+    uint32_t scratch_hops;
 } db_table;
 
 typedef struct wo_db {
@@ -194,6 +199,22 @@ int wo_row_remove(wo_db *db, uint32_t class_id, uint64_t id);
  * 0 ok, -1 unknown class/row. */
 int wo_row_drop_payload(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off);
 int wo_row_set_offset(wo_db *db, uint32_t class_id, uint64_t id, uint64_t wal_off);
+
+/* databasev2 11: how many DELTA records a keys-resident row's chain may carry
+ * before an update terminates it with a full-row image instead of lengthening
+ * it. A BOUND, not a tuning knob — PostgreSQL ships `fillfactor` and
+ * autovacuum's base threshold as documented constants that are rarely touched,
+ * and this is the same kind of number. Anything in the low tens caps the
+ * pathology; being wrong by a factor of two costs one row-sized write per K
+ * updates, which is not a correctness failure in either direction.
+ *
+ * It deliberately does NOT scale with table size. PostgreSQL scales autovacuum
+ * by reltuples because it thresholds a table-level aggregate whose harm is
+ * proportional; a chain is a per-ROW property with additive cost — reading one
+ * row costs 1 + depth reads whether the table holds a hundred rows or ten
+ * million, and replay is the sum over every row's chain. Scaling this up with
+ * table size would make the largest databases boot worst. */
+#define WO_DELTA_MAX_HOPS 16u
 uint64_t wo_row_offset1(const wo_db *db, uint32_t class_id, uint64_t id);
 
 /* databasev2 2 (5d): iterate the live row IDS of a table, whichever backing it

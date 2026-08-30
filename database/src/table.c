@@ -774,7 +774,8 @@ db_row *wo_row_ptr(wo_db *db, uint32_t class_id, uint64_t id) {
  * direction, invisible for scalars (decode is identity there) and silent
  * wrong-bytes for Text/Bytes, which is exactly what stayed unexercised. */
 static db_row *keys_fold_into(wo_db *db, uint32_t class_id, uint64_t id,
-                              uint64_t off, uint8_t *buf, const char **msg) {
+                              uint64_t off, uint8_t *buf, uint32_t *hops_out,
+                              const char **msg) {
     const wo_classdesc *c = &db->classes[class_id];
     db_row *r = (db_row *)buf;
     uint32_t got_cid = 0;
@@ -783,7 +784,8 @@ static db_row *keys_fold_into(wo_db *db, uint32_t class_id, uint64_t id,
      * read — a row's current offset may point at a delta, not a base row.
      * Folds straight into r->slots: field_cnt uint64_t slots is exactly
      * what out_vals expects, and what a db_row already provides. */
-    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, off, &got_cid, &got_id, r->slots, msg) != 0)
+    if (wo_wal_fold_row_at((wo_wal *)db->rt->wal, db, off, &got_cid, &got_id, r->slots,
+                           hops_out, msg) != 0)
         return NULL;
     if (got_cid != class_id || got_id != id) {
         /* the offset pointed at someone else's record — a compaction that
@@ -844,7 +846,7 @@ db_row *wo_row_borrow(wo_db *db, uint32_t class_id, uint64_t id, const char **ms
         t->scratch = nb;
         t->scratch_cap = t->row_size;
     }
-    db_row *r = keys_fold_into(db, class_id, id, o1 - 1, t->scratch, msg);
+    db_row *r = keys_fold_into(db, class_id, id, o1 - 1, t->scratch, &t->scratch_hops, msg);
     if (!r) return NULL;
     t->scratch_busy = 1;
     return r;
@@ -1234,7 +1236,7 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
             if (!cand_off1) continue; /* stale bucket entry: no row, no clash */
             const char *obmsg = "";
             db_row *other =
-                keys_fold_into(db, class_id, b->ids[i], cand_off1 - 1, cand_buf, &obmsg);
+                keys_fold_into(db, class_id, b->ids[i], cand_off1 - 1, cand_buf, NULL, &obmsg);
             int clash = other && idx_cols_equal(c, ix, r, other);
             /* keys_fold_into decoded fresh ENGINE values for EVERY field,
                same as a real borrow — nobody else owns them, so drop them
@@ -1264,7 +1266,30 @@ static int row_apply_field_keys(wo_db *db, uint32_t class_id, uint64_t id,
     (void)idx_add_row(db, t, r); /* cannot violate uniqueness: the shadow
                                     check above already cleared it */
 
-    if (wo_wal_append_delta(w, db, class_id, id, field, back_off, nv) != 0)
+    /* databasev2 11: FLATTEN ON UPDATE.
+     *
+     * `r` now holds the complete post-update row, because maintaining the
+     * indexes above required folding it — so writing a full-row image costs no
+     * extra read, only the bytes. Past WO_DELTA_MAX_HOPS we spend those bytes
+     * and terminate the chain instead of lengthening it.
+     *
+     * Why this lives here rather than in the checkpoint: compaction bounds
+     * chain length in principle, but its trigger is a byte ratio over the whole
+     * log and cannot see that ONE row has a long chain. A single hot row —
+     * this feature's own motivating workload, a popular SKU whose stock moves
+     * on every order — grows without ever moving that ratio. PostgreSQL solves
+     * the same shape the same way: heap_page_prune_opt collapses a HOT chain
+     * opportunistically, on a page the process already holds, rather than
+     * waiting for the background sweep.
+     *
+     * A full-row record is written as WO_WAL_INSERT because that is what a
+     * chain's base must be — it has to replay into a database where nothing
+     * precedes it. Replay, compaction and the fold all already handle that
+     * shape; none of them needs to know this happened. */
+    int flattened = (t->scratch_hops >= WO_DELTA_MAX_HOPS);
+    int arc = flattened ? wo_wal_append_row_image(w, db, class_id, id, r)
+                        : wo_wal_append_delta(w, db, class_id, id, field, back_off, nv);
+    if (arc != 0)
         wo_wal_stage_fatal(w); /* RAM already moved; see the insert arm */
 
     db_val_free(c->kinds[field], old_eng); /* old value done: r now holds nv */

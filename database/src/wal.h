@@ -217,6 +217,20 @@ void wo_db_flush_drops(wo_db *db, wo_wal *w);
  * grow, so a timer would fire with nothing to do.
  *
  * 1 = compact now, 0 = leave it. */
+/* databasev2 11: the two terms a size-based policy needs beside its ratio.
+ *
+ * WO_CKPT_ABS_BYTES is the TRIGGERING threshold — PostgreSQL's
+ * `autovacuum_vacuum_threshold`, not our `floor`, which suppresses instead.
+ * Past this much reclaimable garbage, compact regardless of proportion, so
+ * garbage that is large absolutely but small against a big live set still gets
+ * reclaimed.
+ *
+ * WO_CKPT_MAX_GARBAGE caps the proportional term, mirroring
+ * `autovacuum_vacuum_max_threshold`, so a very large live set cannot defer
+ * compaction indefinitely. */
+#define WO_CKPT_ABS_BYTES    (64u * 1024u * 1024u)
+#define WO_CKPT_MAX_GARBAGE  (256u * 1024u * 1024u)
+
 int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t ratio);
 
 /* Defaults, overridable at boot by WO_CHECKPOINT_BYTES / WO_CHECKPOINT_RATIO.
@@ -342,8 +356,25 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
  *
  * 0 ok, -1 no intact/malformed/corrupt record anywhere in the chain (or a
  * REMOVE tombstone reached mid-chain), -2 out of memory (*msg set). */
+/* databasev2 11: `hops_out` (may be NULL) reports how many DELTA records the
+ * walk crossed before reaching the full-row record that terminates the chain —
+ * 0 for a row that has never been updated. The walk already visits each hop, so
+ * this costs nothing, and it is the signal the update path uses to decide when
+ * to flatten. It is this design's equivalent of PostgreSQL's `pd_prune_xid`: a
+ * cheap "is work worth doing" hint obtained from something already being done. */
 int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
-                       uint64_t *id_out, uint64_t *out_vals, const char **msg);
+                       uint64_t *id_out, uint64_t *out_vals, uint32_t *hops_out,
+                       const char **msg);
+
+/* databasev2 11: append a FULL-ROW image taken from a caller-supplied row,
+ * rather than one looked up by id. wo_wal_append_insert sources its values via
+ * wo_row_ptr, which is NULL for a keys-resident row whose payload has been
+ * dropped; the update path holds a materialised row and needs to log it as a
+ * chain-terminating record. Written as WO_WAL_INSERT because that is what a
+ * chain's base must be: it has to replay into a database where nothing
+ * precedes it. */
+int wo_wal_append_row_image(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
+                            const db_row *r);
 
 /* Offline verification (no engine): scan [path], count intact records.
  * *intact_bytes (optional) = where the intact prefix ends. -1 = open
