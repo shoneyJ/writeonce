@@ -72,6 +72,11 @@ ignored by this workflow.
     Publishing binaries whose floor differs from the page is the one
     failure a user cannot debug.
 
+    Shipping that change to writeonce.de is its own runbook:
+    docs/guides/deploying-site.md. Note especially that a new or
+    renumbered CHAPTER does not appear on a host that already has a
+    WO_DATA directory — the seed only fills an empty table.
+
     docs/examples/site is a SUBMODULE (github.com/shoneyJ/writeonce-site),
     so this edit is a commit in THAT repo, pushed there, and then a
     second commit here moving the submodule pointer. Editing the files
