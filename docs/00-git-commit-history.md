@@ -37,7 +37,8 @@ features cannot collide.
 | `db2-delta` | databasev2 2 — keys-resident updates as WAL delta records | ✅ on `master` 2026-08-30 |
 | `db2-chains` / `db2-chain` | databasev2 11 — bounding a keys-resident row's delta chain | ✅ on `master` 2026-08-30 |
 | `site` | the writeonce.de tutorial site | ✅ on `master` 2026-08-30 |
-| `db2-migrate` | databasev2 12 — schema migrations (add/delete, declarative, auto on boot) | claimed 2026-08-31, work on `dev` |
+| `db2-migrate` | databasev2 12 — schema migrations (add/delete, declarative, auto on boot) | ✅ on `master` 2026-08-31 |
+| `site-deploy` | the writeonce.de redeploy runbook (`docs/guides/deploying-site.md`) | ✅ on `master` 2026-08-31, picked as iteration 12's docs dependency |
 | `site-submodule` | `docs/examples/site` extracted to github.com/shoneyJ/writeonce-site and consumed as a submodule | ✅ on `master` 2026-08-30. Both branches now track the site by revision; an edit to it is a commit in that repo plus a pointer bump here |
 | `lang41` | runtime: unadopted shard must not impersonate shard 0 | on `dev` (`9dca0b4`); independent of the residency stack, not picked |
 | `porch-store` | porch store tables, Limiter and Idempotent middleware (Phases A, B, C) | on `dev` (`519d411`, `5b1e82a`, `aee7926`). **In progress**: Phase C was uncommitted work from a parallel session, committed as-is, and calls `json.decode`/`json.encode` with no `use json` import |
@@ -50,6 +51,7 @@ produced.
 
 | Date | Prefix | Feature | `dev` → `master` |
 | --- | --- | --- | --- |
+| 2026-08-31 | `db2-migrate` + `site-deploy` | **databasev2 12 — schema migrations v1**: WO_WAL_SCHEMA head record, name-keyed boot diff, record-level transcode for add/delete, poisons that bite only with records; plus the redeploy runbook the close-out edits (dev-only until now). Zero conflicts. Verified on `master`: 36 suites 0 fail (`test_wal` 5966/0), woc-test clean, residency-accept 14/0, site-accept 23/0 | `930a715` → `b594717`, `072e007` → `8d9207d`, `ba8519f` → `570e0d6`, `63a063b` → `b1b7984`, `b69092a` → `4a70fc7`, `b21943a` → `ace5699`, `4bb6ece` → `4f1fda1` |
 | 2026-08-30 | `site-submodule` | **`docs/examples/site` becomes a submodule** — extracted to github.com/shoneyJ/writeonce-site with `git subtree split` (its own 9 commits of history, not a snapshot) | `4b56348` → `a5497a3`, `4eead89` → `565b894` |
 | 2026-08-30 | `db2-keys` + `db2-delta` + `db2-chains` + `site` | **databasev2 `resident: keys`, end to end** — storage, readers, deletes, updates as delta records, bounded delta chains, and the tutorial chapter documenting them | 37 commits, mapped one-to-one below |
 
