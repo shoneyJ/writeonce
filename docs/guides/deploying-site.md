@@ -205,9 +205,14 @@ rm -rf /srv/writeonce-site/data && mv /srv/writeonce-site/data.bak-<date> /srv/w
 systemctl start writeonce-site
 ```
 
-An older binary against a newer WAL is fine here only because the `Chapter`
-schema has not changed. Once it does, that assumption dies and this section
-needs a real answer.
+Schema changes are handled since databasev2 12: a binary whose `@table`
+classes gained or lost fields migrates the WAL at startup (the log's head
+record carries the shape that wrote it), and an incompatible change — a
+retyped field, a vanished class — refuses to start by name instead of
+reporting corruption. Rolling BACK across a migration is itself a schema
+change in the other direction: the old binary predates the head record's
+shape, so expect the same refusal — restore the `.bak` data directory
+alongside the old binary rather than pointing it at migrated data.
 
 ## Known gaps
 

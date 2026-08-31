@@ -319,8 +319,44 @@ the `db_text*` layout) before the fix, pinned by
 2. *Replay is O(N²) in a row's delta-chain length* — `apply_delta` folds the
    pre-delta row, and `wo_row_remove` (called internally) folds the SAME
    offset again, so each replayed delta re-walks its whole chain.
-3. *Compaction triggers on byte ratio only* — `wo_wal_should_compact` has no
-   per-row delta-count signal, so one hot row (a single popular SKU) can grow
-   a long personal chain without moving the aggregate ratio enough to fire a
-   checkpoint. The no-chain-cap design decision rests on compaction bounding
-   length; for this shape it does not.
+3. *Compaction triggers on byte ratio only* — **closed by databasev2 11**:
+   the fold reports hop count and `row_apply_field_keys` writes a full-row
+   image (`WO_WAL_UPDATE`) past `WO_DELTA_MAX_HOPS` (16), so a hot row's
+   chain is bounded in the update path itself; the checkpoint no longer
+   carries that burden. `wo_wal_should_compact` also gained an absolute
+   garbage term (`WO_CKPT_ABS_BYTES`).
+
+## Schema migrations (databasev2 12)
+
+A `@table` class is the schema; the log is the database; boot compares them.
+
+- **The log describes itself.** `WO_WAL_SCHEMA` (kind 5) is the head record
+  of every fresh and every compacted log: per class its NAME, storage flags,
+  and per field name + kind + the two encoding-relevant metadata words.
+  Written lazily by `stage()` ahead of the FIRST real record — never for a
+  log that stays empty, because `durable: false` programs have a documented
+  zero-bytes contract. `apply_record` skips it before reading cid/id (its
+  class count would be misread as a cid); replay does not count it.
+- **The diff is name-keyed** (`wo_schema_diff`). Classes match by name,
+  fields by name + kind, owned references (`fclass`) by the NAME the number
+  resolves to — so pure declaration reordering costs only a cid remap, which
+  closes the old silent hole where reordering decoded rows into the wrong
+  class. Verdicts are per-class POISONS carried in the plan: retype,
+  same-shape delete+add (a disguised rename), vanished class, storage-flag
+  change, and the embed closure (any class whose stored values carry a
+  CHANGED class's old sub-shape, to a fixpoint). A poison forces the
+  transcode and bites only when a record of the class is actually met — no
+  rows, no verdict.
+- **The migration is a record-level transcode** (`wo_wal_migrate`), not a
+  replay: no id maps, no indexes, no keys-resident logic. Old shapes decode
+  through a classdesc shim built from the stored schema; embedded cids are
+  renumbered by `mig_fixup_cids` (owned values carry a cid on the wire);
+  surviving fields move slots, deleted values are freed, added fields take
+  `enc_val(0)` — the kind's zero. Delta back-pointers rewrite through an
+  offset map, and a delta on a deleted field is SPLICED: it maps to its own
+  target, so later deltas step over it. Temp + fsync + rename, compaction's
+  own crash discipline — a kill anywhere leaves the old log authoritative,
+  including a kill after the temp is complete (`test_migrate_crash_before_rename`).
+- **Legacy logs** (no head record) replay exactly as before and adopt the
+  head at their next compaction. v1 verbs are add and delete only; rename
+  wants `@renamed_from` (v2), data/seed migrations are v2.

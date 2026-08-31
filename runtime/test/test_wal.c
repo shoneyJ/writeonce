@@ -1305,6 +1305,65 @@ static void test_migrate_delete_field(void) {
     wo_db_destroy(&db2);
 }
 
+/* CRASH BETWEEN WRITE AND RENAME: the sharpest point on the timeline — a
+ * COMPLETE, VALID migrated log sits beside the original as the temp, the
+ * rename never happened. The next boot must treat the temp as the nothing it
+ * is (its records were never authoritative) and re-migrate from the intact
+ * original. A garbage temp tests the unlink; a valid one tests the doctrine. */
+static void test_migrate_crash_before_rename(void) {
+    char pa[128], pb[160], tmp[160];
+    snprintf(pa, sizeof pa, "%s/migcrash.wal", g_dir);
+    snprintf(pb, sizeof pb, "%s/migcrash-copy.wal", g_dir);
+    snprintf(tmp, sizeof tmp, "%s.compact", pa);
+    wo_schema_class oc[] = {SC("row", 0, mig_sf_nt)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("row", 0, mig_sf_nte)};
+    wo_schema newsc = {1, nc, NULL};
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, MIG_NT, 1, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, pa, 0), 0);
+        db_row *r = wo_row_create_raw(&db, 0, 1);
+        r->slots[0] = 5;
+        r->slots[1] = (uint64_t)(uintptr_t)mig_text("keep");
+        T_EQ(wo_row_raw_commit(&db, 0, r), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, 1), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    /* produce the "crashed" state: migrate a COPY, then plant its result as
+       the original's temp — exactly what a kill after fsync, before rename,
+       leaves on disk */
+    {
+        FILE *a = fopen(pa, "rb"), *b = fopen(pb, "wb");
+        T_CHECK(a && b);
+        int ch;
+        while ((ch = fgetc(a)) != EOF) fputc(ch, b);
+        fclose(a);
+        fclose(b);
+        wo_db dbn;
+        T_EQ(wo_db_init(&dbn, MIG_NTE, 1, 0, 1), 0);
+        T_EQ(wo_wal_migrate(pb, &dbn, &oldsc, &pl, &newsc, 0, NULL), 0);
+        wo_db_destroy(&dbn);
+        T_EQ(rename(pb, tmp), 0);
+    }
+    /* the next boot: re-migrates from the intact original, result correct */
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, MIG_NTE, 1, 0, 1), 0);
+    T_EQ(wo_wal_migrate(pa, &db2, &oldsc, &pl, &newsc, 0, NULL), 0);
+    wo_mig_plan_free(&pl);
+    T_EQ(wo_wal_replay(pa, &db2), 1);
+    db_row *r = wo_row_ptr(&db2, 0, 1);
+    T_CHECK(r != NULL && r->slots[0] == 5 && r->slots[2] == 0);
+    db_text *t = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(t != NULL && t->len == 4 && memcmp(t->bytes, "keep", 4) == 0);
+    wo_db_destroy(&db2);
+}
+
 /* POISON BITES ONLY WITH RECORDS: a retyped class with no stored rows never
  * blocks the boot; the same retype WITH a row refuses and names the field */
 static void test_migrate_poison_needs_records(void) {
@@ -3362,6 +3421,7 @@ int main(void) {
     test_migrate_delta_splice();
     test_migrate_add_field();
     test_migrate_delete_field();
+    test_migrate_crash_before_rename();
     test_migrate_poison_needs_records();
     test_migrate_corrupt_input();
     test_schema_diff_verdicts();
