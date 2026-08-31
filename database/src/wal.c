@@ -420,6 +420,9 @@ void wo_db_flush_drops(wo_db *db, wo_wal *w) {
 }
 
 void wo_wal_close(wo_wal *w) {
+    free(w->schema);
+    w->schema = NULL;
+    w->schema_len = 0;
     free(w->pend);
     free(w->repoint);
     if (w->fd >= 0) close(w->fd);
@@ -455,6 +458,131 @@ static int stage(wo_wal *w, const wbuf *payload) {
     memcpy(w->buf + w->len, rec.b, rec.len);
     w->len += rec.len;
     free(rec.b);
+    return 0;
+}
+
+/* ---- databasev2 12: the schema record -------------------------------- */
+
+int wo_schema_encode(const wo_schema *sc, uint8_t **payload_out, uint32_t *len_out) {
+    wbuf p = {0};
+    wput_u8(&p, WO_WAL_SCHEMA);
+    wput_u32(&p, sc->class_cnt);
+    for (uint32_t c = 0; c < sc->class_cnt; c++) {
+        const wo_schema_class *k = &sc->classes[c];
+        wput_u32(&p, k->name_len);
+        wput(&p, k->name, k->name_len);
+        wput_u32(&p, k->flags);
+        wput_u32(&p, k->field_cnt);
+        for (uint32_t f = 0; f < k->field_cnt; f++) {
+            const wo_schema_field *fl = &k->fields[f];
+            wput_u32(&p, fl->name_len);
+            wput(&p, fl->name, fl->name_len);
+            wput_u8(&p, fl->kind);
+            wput_u32(&p, fl->fclass);
+            wput_u32(&p, fl->felem);
+        }
+    }
+    if (p.oom) {
+        free(p.b);
+        return -1;
+    }
+    *payload_out = p.b;
+    *len_out = (uint32_t)p.len;
+    return 0;
+}
+
+wo_schema *wo_schema_decode(const uint8_t *payload, uint32_t len) {
+    if (len < 5 || payload[0] != WO_WAL_SCHEMA) return NULL;
+    /* names point into one private copy of the bytes, so the schema outlives
+     * whatever buffer the caller hands in */
+    wo_schema *sc = calloc(1, sizeof *sc);
+    if (!sc) return NULL;
+    sc->owned = malloc(len);
+    if (!sc->owned) {
+        free(sc);
+        return NULL;
+    }
+    memcpy(sc->owned, payload, len);
+    rbuf r = {sc->owned + 1, sc->owned + len, 0};
+    sc->class_cnt = rd_u32(&r);
+    if (r.bad || sc->class_cnt > 65536) goto bad;
+    sc->classes = calloc(sc->class_cnt ? sc->class_cnt : 1, sizeof *sc->classes);
+    if (!sc->classes) goto bad;
+    for (uint32_t c = 0; c < sc->class_cnt; c++) {
+        wo_schema_class *k = &sc->classes[c];
+        k->name_len = rd_u32(&r);
+        if (r.bad || (size_t)(r.end - r.p) < k->name_len) goto bad;
+        k->name = r.p;
+        r.p += k->name_len;
+        k->flags = rd_u32(&r);
+        k->field_cnt = rd_u32(&r);
+        if (r.bad || k->field_cnt > 65536) goto bad;
+        k->fields = calloc(k->field_cnt ? k->field_cnt : 1, sizeof *k->fields);
+        if (!k->fields) goto bad;
+        for (uint32_t f = 0; f < k->field_cnt; f++) {
+            wo_schema_field *fl = &k->fields[f];
+            fl->name_len = rd_u32(&r);
+            if (r.bad || (size_t)(r.end - r.p) < fl->name_len) goto bad;
+            fl->name = r.p;
+            r.p += fl->name_len;
+            fl->kind = rd_u8(&r);
+            fl->fclass = rd_u32(&r);
+            fl->felem = rd_u32(&r);
+            if (r.bad) goto bad;
+        }
+    }
+    if (r.p != r.end) goto bad; /* trailing bytes = malformed */
+    return sc;
+bad:
+    wo_schema_free(sc);
+    return NULL;
+}
+
+void wo_schema_free(wo_schema *sc) {
+    if (!sc) return;
+    if (sc->classes)
+        for (uint32_t c = 0; c < sc->class_cnt; c++) free(sc->classes[c].fields);
+    free(sc->classes);
+    free(sc->owned);
+    free(sc);
+}
+
+int wo_wal_set_schema(wo_wal *w, const wo_schema *sc) {
+    uint8_t *p;
+    uint32_t len;
+    if (wo_schema_encode(sc, &p, &len) != 0) return -1;
+    free(w->schema);
+    w->schema = p;
+    w->schema_len = len;
+    return 0;
+}
+
+int wo_wal_ensure_schema(wo_wal *w) {
+    if (!w->schema) return 0;             /* never set: legacy behaviour */
+    if (w->off != 0 || w->len != 0) return 0; /* records exist or staged */
+    wbuf p = {0};
+    wput(&p, w->schema, w->schema_len);
+    int rc = stage(w, &p);
+    free(p.b);
+    if (rc != 0) return -1;
+    return wo_wal_commit(w);
+}
+
+int wo_wal_read_schema(const char *path, uint8_t **payload_out, uint32_t *len_out) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return errno == ENOENT ? 1 : -1;
+    uint32_t len;
+    uint8_t *payload;
+    int rc = scan_record(fd, 0, &len, &payload);
+    close(fd);
+    if (rc != 0) return 1; /* empty or torn head: a legacy log */
+    if (len < 1 || payload[0] != WO_WAL_SCHEMA) {
+        free(payload);
+        return 1;
+    }
+    if (payload_out) *payload_out = payload;
+    else free(payload);
+    if (len_out) *len_out = len;
     return 0;
 }
 
@@ -830,6 +958,18 @@ int wo_wal_compact(wo_wal *w, wo_db *db) {
      * missing, with the log otherwise intact and self-consistent. */
     if (wo_wal_open(&nw, tmp, w->prealloc) != 0) return -1;
 
+    /* databasev2 12: the replacement log's first record is the schema, so a
+     * compacted log is always self-describing — including the first
+     * compaction of a legacy log, which is how existing WO_DATA dirs become
+     * diffable without any migration step of their own. */
+    if (w->schema) {
+        wbuf sp = {0};
+        wput(&sp, w->schema, w->schema_len);
+        int src = stage(&nw, &sp);
+        free(sp.b);
+        if (src != 0) goto fail;
+    }
+
     /* one INSERT per live row, in the existing grammar, through the existing
      * append path — so replay needs no second decoder and ids are preserved
      * exactly (wo_wal_append_insert takes the id and reads the row) */
@@ -1016,6 +1156,10 @@ static int apply_delta(wo_db *db, uint32_t cid, uint64_t id, rbuf *r) {
 static int apply_record(wo_db *db, const uint8_t *payload, uint32_t len) {
     rbuf r = {payload, payload + len, 0};
     uint8_t kind = rd_u8(&r);
+    /* databasev2 12: a schema record is descriptive, not a row — and it has
+     * no cid/id fields, so it must be skipped BEFORE those are read (its
+     * class count would be misread as a cid and bounds-refused). */
+    if (kind == WO_WAL_SCHEMA) return 0;
     uint32_t cid = rd_u32(&r);
     uint64_t id = rd_u64(&r);
     if (r.bad || cid >= db->class_cnt) return -1;
@@ -1382,7 +1526,7 @@ int64_t wo_wal_replay_ex(const char *path, wo_db *db, uint32_t *volatile_cid) {
             rec_id && wo_table_is_keys_resident(db, rec_cid))
             (void)wo_row_drop_payload(db, rec_cid, rec_id, off);
         off += 8u + len + 4u;
-        applied++;
+        if (rec_kind != WO_WAL_SCHEMA) applied++;
     }
     close(fd);
     REPLAY_RETURN(applied);

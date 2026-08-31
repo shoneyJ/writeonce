@@ -46,7 +46,19 @@
 
 #define WO_WAL_MARK 0x574F4C31u /* "WOL1" LE */
 
-enum { WO_WAL_INSERT = 1, WO_WAL_REMOVE = 2, WO_WAL_UPDATE = 3, WO_WAL_DELTA = 4 };
+enum {
+    WO_WAL_INSERT = 1,
+    WO_WAL_REMOVE = 2,
+    WO_WAL_UPDATE = 3,
+    WO_WAL_DELTA = 4,
+    /* databasev2 12: the log's own statement of the shape that wrote it —
+     * class and field NAMES, kinds and encoding-relevant metadata. Written as
+     * the FIRST record of a fresh log and of every compacted log, so the head
+     * of a log always describes everything after it. Replay skips it; boot
+     * diffs it against the compiled classes to migrate or refuse. A log
+     * without one is a legacy log: nothing recorded, nothing diffable. */
+    WO_WAL_SCHEMA = 5,
+};
 
 typedef struct wo_wal {
     int fd;
@@ -101,7 +113,65 @@ typedef struct wo_wal {
     uint64_t stat_compactions;
     uint64_t stat_compact_us_max;
     uint64_t stat_compact_us_total;
+    /* databasev2 12: the encoded WO_WAL_SCHEMA payload for the COMPILED
+     * classes, set once at boot by wo_wal_set_schema. Owned here, freed by
+     * wo_wal_close. When set, a fresh log gets it as its first record
+     * (wo_wal_ensure_schema) and compaction writes it at the head of every
+     * replacement log. When unset (every existing test, and legacy boots)
+     * nothing changes anywhere. */
+    uint8_t *schema;
+    uint32_t schema_len;
 } wo_wal;
+
+/* databasev2 12: the schema a log carries, and the diff against the compiled
+ * one. Names are byte pointers, NOT constant-table indices — the database
+ * layer never sees the module's constant pool, so the runtime resolves names
+ * once when it builds the compiled-side schema, and a decoded schema's names
+ * point into the record's own bytes. `fclass`/`felem` mirror the classdesc's
+ * field_class/field_elem because they change how a value is ENCODED; index
+ * layout is deliberately absent — indexes are rebuilt from rows at boot and
+ * never touch record bytes. */
+typedef struct wo_schema_field {
+    const uint8_t *name;
+    uint32_t name_len;
+    uint8_t kind;
+    uint32_t fclass; /* referenced class id, or WO_SCHEMA_NONE */
+    uint32_t felem;  /* container element kinds, or WO_SCHEMA_NONE */
+} wo_schema_field;
+typedef struct wo_schema_class {
+    const uint8_t *name;
+    uint32_t name_len;
+    uint32_t flags;
+    uint32_t field_cnt;
+    wo_schema_field *fields;
+} wo_schema_class;
+typedef struct wo_schema {
+    uint32_t class_cnt;
+    wo_schema_class *classes;
+    uint8_t *owned; /* decode backing buffer; NULL on a caller-built schema */
+} wo_schema;
+#define WO_SCHEMA_NONE 0xFFFFFFFFu
+
+/* Encode a schema as a WO_WAL_SCHEMA record payload (kind byte included).
+ * Returns 0 and a malloc'd buffer the caller frees. */
+int wo_schema_encode(const wo_schema *sc, uint8_t **payload_out, uint32_t *len_out);
+/* Decode a WO_WAL_SCHEMA payload. NULL = malformed. Free the result with
+ * wo_schema_free; its name pointers live in the returned struct's own copy
+ * of the bytes, not in the caller's buffer. */
+wo_schema *wo_schema_decode(const uint8_t *payload, uint32_t len);
+void wo_schema_free(wo_schema *sc);
+
+/* Adopt `sc` as this log's compiled schema (encoded and owned by the wal). */
+int wo_wal_set_schema(wo_wal *w, const wo_schema *sc);
+/* A fresh, empty log gets the schema as its first record — durable before
+ * any row record can be staged behind it. No-op when a schema was never set
+ * or when records already exist (a legacy log stays legacy until its next
+ * compaction writes the record at the head of the replacement). */
+int wo_wal_ensure_schema(wo_wal *w);
+/* Peek the log's head record. 0 = schema record found (*payload_out is
+ * malloc'd, caller frees); 1 = no log, empty log, or a legacy head record;
+ * -1 = I/O error. */
+int wo_wal_read_schema(const char *path, uint8_t **payload_out, uint32_t *len_out);
 
 /* databasev2 2: the file offset the NEXT staged record will occupy.
  *

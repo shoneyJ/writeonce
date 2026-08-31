@@ -1008,6 +1008,143 @@ static void test_should_compact_absolute_and_ceiling(void) {
     T_EQ(wo_wal_should_compact(2048, 1024, floor_b, 2), 0);   /* not yet */
 }
 
+/* ---- databasev2 12: the schema record ---------------------------------- */
+
+/* a hand-built two-class schema exercising every payload field */
+static wo_schema mig_schema_sample(void) {
+    static wo_schema_field f0[] = {
+        {(const uint8_t *)"n", 1, WO_K_SCALAR, WO_SCHEMA_NONE, WO_SCHEMA_NONE},
+        {(const uint8_t *)"label", 5, WO_K_TEXT, WO_SCHEMA_NONE, WO_SCHEMA_NONE},
+    };
+    static wo_schema_field f1[] = {
+        {(const uint8_t *)"part", 4, WO_K_OWNED, 0, WO_SCHEMA_NONE},
+        {(const uint8_t *)"tags", 4, WO_K_MULTI, WO_SCHEMA_NONE, WO_K_TEXT},
+    };
+    static wo_schema_class cls[] = {
+        {(const uint8_t *)"row", 3, 0, 2, f0},
+        {(const uint8_t *)"box", 3, WO_CLASSF_RESIDENT_KEYS, 2, f1},
+    };
+    wo_schema sc = {2, cls, NULL};
+    return sc;
+}
+
+static void test_schema_roundtrip(void) {
+    wo_schema sc = mig_schema_sample();
+    uint8_t *p;
+    uint32_t len;
+    T_EQ(wo_schema_encode(&sc, &p, &len), 0);
+    T_CHECK(len > 5 && p[0] == WO_WAL_SCHEMA);
+    wo_schema *back = wo_schema_decode(p, len);
+    T_CHECK(back != NULL);
+    T_EQ(back->class_cnt, 2u);
+    T_CHECK(back->classes[0].name_len == 3 && memcmp(back->classes[0].name, "row", 3) == 0);
+    T_EQ(back->classes[0].field_cnt, 2u);
+    T_CHECK(back->classes[0].fields[1].kind == WO_K_TEXT &&
+            back->classes[0].fields[1].name_len == 5 &&
+            memcmp(back->classes[0].fields[1].name, "label", 5) == 0);
+    T_EQ(back->classes[1].flags, (uint32_t)WO_CLASSF_RESIDENT_KEYS);
+    T_CHECK(back->classes[1].fields[0].fclass == 0 &&
+            back->classes[1].fields[1].felem == WO_K_TEXT);
+    /* the decode owns its bytes: the encode buffer can die first */
+    free(p);
+    T_CHECK(memcmp(back->classes[1].name, "box", 3) == 0);
+    /* a truncated payload is malformed, not a crash */
+    uint8_t *p2;
+    uint32_t len2;
+    T_EQ(wo_schema_encode(&sc, &p2, &len2), 0);
+    T_CHECK(wo_schema_decode(p2, len2 - 3) == NULL);
+    free(p2);
+    wo_schema_free(back);
+}
+
+/* a fresh log opened with a schema carries it as its FIRST record; replay
+ * skips it without counting it, and rows behind it land intact */
+static void test_schema_fresh_log(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/schemafresh.wal", g_dir);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    wo_schema sc = mig_schema_sample();
+    T_EQ(wo_wal_set_schema(&w, &sc), 0);
+    T_EQ(wo_wal_ensure_schema(&w), 0);
+    /* head record is the schema */
+    uint8_t *p;
+    uint32_t len;
+    T_EQ(wo_wal_read_schema(path, &p, &len), 0);
+    wo_schema *back = wo_schema_decode(p, len);
+    T_CHECK(back != NULL && back->class_cnt == 2);
+    wo_schema_free(back);
+    free(p);
+    /* a second ensure is a no-op: records exist now */
+    uint64_t before = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_ensure_schema(&w), 0);
+    T_EQ(wo_wal_next_offset(&w), before);
+    /* a row behind it replays; the schema record is not counted */
+    const char *msg = "";
+    uint64_t vals[2] = {7, 0};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 1); /* one row, not two records */
+    db_row *r = wo_row_ptr(&db2, 0, id);
+    T_CHECK(r != NULL && r->slots[0] == 7);
+    wo_db_destroy(&db2);
+}
+
+/* a LEGACY log (rows, no schema record) reports 1 from read_schema, and its
+ * first compaction with a schema set writes the record at the head */
+static void test_schema_compaction_adopts_legacy(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/schemalegacy.wal", g_dir);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+    uint64_t vals[2] = {1, 0};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 1); /* legacy: head is a row */
+    wo_schema sc = mig_schema_sample();
+    T_EQ(wo_wal_set_schema(&w, &sc), 0);
+    T_EQ(wo_wal_ensure_schema(&w), 0); /* no-op: not empty */
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 1);
+    T_EQ(wo_wal_compact(&w, &db), 0);
+    uint8_t *p;
+    uint32_t len;
+    T_EQ(wo_wal_read_schema(path, &p, &len), 0); /* adopted at the head */
+    free(p);
+    /* and the compacted log still replays its row */
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, CLASSES, 1, 0, 1), 0);
+    T_EQ(wo_wal_replay(path, &db2), 1);
+    db_row *r = wo_row_ptr(&db2, 0, id);
+    T_CHECK(r != NULL && r->slots[0] == 1);
+    wo_db_destroy(&db2);
+}
+
+/* missing and empty files are legacy, not errors */
+static void test_schema_read_absent(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/schemanone.wal", g_dir);
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 1); /* no file */
+    FILE *f = fopen(path, "w");
+    T_CHECK(f != NULL);
+    fclose(f);
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 1); /* empty file */
+}
+
 static void test_delta_chain_flattens_at_k(void) {
     char path[128];
     snprintf(path, sizeof path, "%s/chainflat.wal", g_dir);
@@ -2673,6 +2810,10 @@ int main(void) {
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
     test_keys_resident_indexed_across_flatten();
+    test_schema_roundtrip();
+    test_schema_fresh_log();
+    test_schema_compaction_adopts_legacy();
+    test_schema_read_absent();
     test_should_compact_absolute_and_ceiling();
     test_delta_chain_flattens_at_k();
     test_delta_chain_flatten_replays();
