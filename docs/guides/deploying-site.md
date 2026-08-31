@@ -5,7 +5,8 @@
 > this covers shipping the *site* that advertises it. Layout, nginx and the
 > environment variables are documented once, in the site's own
 > [README](../examples/site/README.md) — this is the update runbook, and the
-> three things that go wrong.
+> three things that go wrong. Changing the application itself (code,
+> content, schema) is [`updating-site.md`](updating-site.md).
 
 ## Read this first — three traps, in the order they bite
 
