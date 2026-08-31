@@ -7,6 +7,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -545,6 +546,202 @@ void wo_schema_free(wo_schema *sc) {
     free(sc->classes);
     free(sc->owned);
     free(sc);
+}
+
+/* ---- databasev2 12: the boot diff ------------------------------------- */
+
+static int sc_name_eq(const uint8_t *a, uint32_t al, const uint8_t *b, uint32_t bl) {
+    return al == bl && (al == 0 || memcmp(a, b, al) == 0);
+}
+static uint32_t sc_find_class(const wo_schema *sc, const uint8_t *name, uint32_t len) {
+    for (uint32_t c = 0; c < sc->class_cnt; c++)
+        if (sc_name_eq(sc->classes[c].name, sc->classes[c].name_len, name, len)) return c;
+    return WO_SCHEMA_NONE;
+}
+static uint32_t sc_find_field(const wo_schema_class *k, const uint8_t *name, uint32_t len) {
+    for (uint32_t f = 0; f < k->field_cnt; f++)
+        if (sc_name_eq(k->fields[f].name, k->fields[f].name_len, name, len)) return f;
+    return WO_SCHEMA_NONE;
+}
+/* fclass words number classes in their OWN schema, so under reordering the
+ * same referenced class carries different numbers — equality is by the NAME
+ * the number resolves to, never the number itself */
+static int sc_ref_eq(const wo_schema *osc, uint32_t ofc, const wo_schema *nsc, uint32_t nfc) {
+    if (ofc == WO_SCHEMA_NONE || nfc == WO_SCHEMA_NONE) return ofc == nfc;
+    if (ofc >= osc->class_cnt || nfc >= nsc->class_cnt) return 0;
+    return sc_name_eq(osc->classes[ofc].name, osc->classes[ofc].name_len,
+                      nsc->classes[nfc].name, nsc->classes[nfc].name_len);
+}
+static int sc_field_shape_eq(const wo_schema *osc, const wo_schema_field *of,
+                             const wo_schema *nsc, const wo_schema_field *nf) {
+    return of->kind == nf->kind && of->felem == nf->felem &&
+           sc_ref_eq(osc, of->fclass, nsc, nf->fclass);
+}
+#if defined(__GNUC__)
+__attribute__((format(printf, 1, 2)))
+#endif
+static char *sc_poisonf(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    return strdup(buf);
+}
+
+void wo_mig_plan_free(wo_mig_plan *plan) {
+    if (!plan->classes) return;
+    for (uint32_t c = 0; c < plan->old_class_cnt; c++) {
+        free(plan->classes[c].poison);
+        free(plan->classes[c].fmap);
+    }
+    free(plan->classes);
+    plan->classes = NULL;
+}
+
+int wo_schema_diff(const wo_schema *osc, const wo_schema *nsc, wo_mig_plan *plan) {
+    memset(plan, 0, sizeof *plan);
+    plan->old_class_cnt = osc->class_cnt;
+    plan->classes = calloc(osc->class_cnt ? osc->class_cnt : 1, sizeof *plan->classes);
+    if (!plan->classes) return -1;
+
+    for (uint32_t c = 0; c < osc->class_cnt; c++) {
+        const wo_schema_class *ok = &osc->classes[c];
+        wo_mig_class *mc = &plan->classes[c];
+        mc->old_field_cnt = ok->field_cnt;
+        mc->new_cid = sc_find_class(nsc, ok->name, ok->name_len);
+        if (mc->new_cid == WO_SCHEMA_NONE) {
+            mc->poison = sc_poisonf("class `%.*s` has stored rows this binary no "
+                                    "longer declares — restore the class, or delete "
+                                    "WO_DATA if the rows are expendable",
+                                    (int)ok->name_len, (const char *)ok->name);
+            continue;
+        }
+        const wo_schema_class *nk = &nsc->classes[mc->new_cid];
+        if (ok->flags != nk->flags) {
+            mc->new_cid = WO_SCHEMA_NONE;
+            mc->poison = sc_poisonf("class `%.*s` changed its storage declaration "
+                                    "(durable/resident) with rows in the log — v1 "
+                                    "migrates fields, not storage modes",
+                                    (int)ok->name_len, (const char *)ok->name);
+            continue;
+        }
+        mc->fmap = malloc((ok->field_cnt ? ok->field_cnt : 1) * sizeof *mc->fmap);
+        if (!mc->fmap) return -1;
+        uint32_t deleted = 0;
+        for (uint32_t f = 0; f < ok->field_cnt; f++) {
+            const wo_schema_field *of = &ok->fields[f];
+            uint32_t nf = sc_find_field(nk, of->name, of->name_len);
+            if (nf == WO_SCHEMA_NONE) {
+                mc->fmap[f] = -1;
+                deleted++;
+                continue;
+            }
+            if (!sc_field_shape_eq(osc, of, nsc, &nk->fields[nf])) {
+                free(mc->fmap);
+                mc->fmap = NULL;
+                mc->new_cid = WO_SCHEMA_NONE;
+                mc->poison = sc_poisonf("class `%.*s`: field `%.*s` changed its type "
+                                        "— v1 has no conversions; add a new field "
+                                        "and backfill instead",
+                                        (int)ok->name_len, (const char *)ok->name,
+                                        (int)of->name_len, (const char *)of->name);
+                break;
+            }
+            mc->fmap[f] = (int32_t)nf;
+        }
+        if (!mc->fmap) continue; /* poisoned above */
+        uint32_t added = 0;
+        for (uint32_t f = 0; f < nk->field_cnt; f++)
+            if (sc_find_field(ok, nk->fields[f].name, nk->fields[f].name_len) ==
+                WO_SCHEMA_NONE)
+                added++;
+        mc->changed = (deleted > 0 || added > 0);
+        /* a deleted and an added field of the SAME shape in one step is
+         * byte-for-byte indistinguishable from a rename, and the two
+         * readings differ by exactly one column of destroyed data */
+        if (deleted && added) {
+            for (uint32_t f = 0; f < ok->field_cnt && mc->fmap; f++) {
+                if (mc->fmap[f] != -1) continue;
+                for (uint32_t g = 0; g < nk->field_cnt; g++) {
+                    if (sc_find_field(ok, nk->fields[g].name, nk->fields[g].name_len) !=
+                        WO_SCHEMA_NONE)
+                        continue;
+                    if (sc_field_shape_eq(osc, &ok->fields[f], nsc, &nk->fields[g])) {
+                        free(mc->fmap);
+                        mc->fmap = NULL;
+                        mc->new_cid = WO_SCHEMA_NONE;
+                        mc->poison = sc_poisonf(
+                            "class `%.*s`: `%.*s` was deleted and a field of the "
+                            "same type added — a rename and a delete+add are "
+                            "indistinguishable here and one of them destroys data. "
+                            "Deploy the delete and the add as two separate steps",
+                            (int)ok->name_len, (const char *)ok->name,
+                            (int)ok->fields[f].name_len,
+                            (const char *)ok->fields[f].name);
+                        break;
+                    }
+                }
+                if (!mc->fmap) break;
+            }
+        }
+    }
+
+    /* the embed closure: a class whose old records EMBED (owned or container
+     * values of) a class whose shape changed cannot be transcoded — the
+     * nested bytes are in the OLD sub-shape and v1 does not rewrite value
+     * trees recursively. Iterate to a fixpoint so chains of embedding
+     * poison through. */
+    for (int again = 1; again;) {
+        again = 0;
+        for (uint32_t c = 0; c < osc->class_cnt; c++) {
+            wo_mig_class *mc = &plan->classes[c];
+            if (mc->poison) continue;
+            for (uint32_t f = 0; f < osc->classes[c].field_cnt; f++) {
+                const wo_schema_field *of = &osc->classes[c].fields[f];
+                if (of->kind != WO_K_OWNED && of->kind != WO_K_MULTI &&
+                    of->kind != WO_K_MAP)
+                    continue;
+                int tainted = 0;
+                if (of->fclass != WO_SCHEMA_NONE && of->fclass < osc->class_cnt) {
+                    const wo_mig_class *ref = &plan->classes[of->fclass];
+                    tainted = ref->poison != NULL || ref->changed;
+                } else if (of->kind == WO_K_OWNED) {
+                    /* an owned field with no recorded target class: assume the
+                     * worst whenever anything at all changed */
+                    for (uint32_t x = 0; x < osc->class_cnt && !tainted; x++)
+                        tainted = plan->classes[x].poison != NULL ||
+                                  plan->classes[x].changed;
+                }
+                if (tainted) {
+                    free(mc->fmap);
+                    mc->fmap = NULL;
+                    mc->new_cid = WO_SCHEMA_NONE;
+                    mc->poison = sc_poisonf(
+                        "class `%.*s`: field `%.*s` embeds a class whose shape "
+                        "changed — its stored values carry the old sub-shape, "
+                        "which v1 does not rewrite. Migrate the embedded class "
+                        "on its own first",
+                        (int)osc->classes[c].name_len,
+                        (const char *)osc->classes[c].name, (int)of->name_len,
+                        (const char *)of->name);
+                    again = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    plan->identity = 1;
+    for (uint32_t c = 0; c < osc->class_cnt; c++) {
+        const wo_mig_class *mc = &plan->classes[c];
+        if (mc->poison) continue; /* a poison alone never forces a rewrite */
+        if (mc->new_cid != c || mc->changed) {
+            plan->identity = 0;
+            break;
+        }
+    }
+    return 0;
 }
 
 int wo_wal_set_schema(wo_wal *w, const wo_schema *sc) {

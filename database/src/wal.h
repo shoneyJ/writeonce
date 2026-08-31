@@ -161,6 +161,37 @@ int wo_schema_encode(const wo_schema *sc, uint8_t **payload_out, uint32_t *len_o
 wo_schema *wo_schema_decode(const uint8_t *payload, uint32_t len);
 void wo_schema_free(wo_schema *sc);
 
+/* databasev2 12: what boot decided about one stored class. `new_cid` is where
+ * its records go; WO_SCHEMA_NONE means POISONED — the class cannot be
+ * migrated, and `poison` says why. A poison only bites when a record of the
+ * class is actually met: no rows, no verdict. */
+typedef struct wo_mig_class {
+    uint32_t new_cid; /* WO_SCHEMA_NONE = poisoned */
+    char *poison;     /* malloc'd reason; NULL unless poisoned */
+    uint32_t old_field_cnt;
+    int32_t *fmap; /* old field index -> new slot, -1 = deleted */
+    int changed;   /* own field set differs (add and/or delete) */
+} wo_mig_class;
+typedef struct wo_mig_plan {
+    uint32_t old_class_cnt;
+    wo_mig_class *classes;
+    /* 1 = every stored class keeps its cid and its shape: replay as-is, no
+     * transcode. New classes in the binary do not break identity — they have
+     * no records, and the head record refreshes at the next compaction. */
+    int identity;
+} wo_mig_plan;
+
+/* Diff the log's stored schema against the compiled one, classes matched by
+ * NAME, fields by NAME — so pure declaration reordering is identity apart
+ * from the cid map. Returns 0 with *plan filled (free with
+ * wo_mig_plan_free), -1 on OOM. Refusals are expressed as per-class poisons,
+ * not errors: retype, same-kind delete+add (a disguised rename), a vanished
+ * class, changed flags, and any class that EMBEDS (owned/container fields)
+ * a class whose shape changed — its old records encode the old sub-shape,
+ * which v1 does not rewrite recursively. */
+int wo_schema_diff(const wo_schema *oldsc, const wo_schema *newsc, wo_mig_plan *plan);
+void wo_mig_plan_free(wo_mig_plan *plan);
+
 /* Adopt `sc` as this log's compiled schema (encoded and owned by the wal). */
 int wo_wal_set_schema(wo_wal *w, const wo_schema *sc);
 /* A fresh, empty log gets the schema as its first record — durable before

@@ -1008,6 +1008,141 @@ static void test_should_compact_absolute_and_ceiling(void) {
     T_EQ(wo_wal_should_compact(2048, 1024, floor_b, 2), 0);   /* not yet */
 }
 
+/* ---- databasev2 12: the boot diff --------------------------------------- */
+
+#define SF(nm, k) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), k, WO_SCHEMA_NONE, WO_SCHEMA_NONE}
+#define SFC(nm, k, fc) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), k, fc, WO_SCHEMA_NONE}
+#define SC(nm, fl, arr) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), fl, \
+                         (uint32_t)(sizeof arr / sizeof arr[0]), arr}
+
+static void test_schema_diff_verdicts(void) {
+    /* base: A { n: scalar, t: text }, B { part: owned->A } */
+    wo_schema_field a_f[] = {SF("n", WO_K_SCALAR), SF("t", WO_K_TEXT)};
+    wo_schema_field b_f[] = {SFC("part", WO_K_OWNED, 0)};
+    wo_schema_class base_c[] = {SC("A", 0, a_f), SC("B", 0, b_f)};
+    wo_schema base = {2, base_c, NULL};
+    wo_mig_plan pl;
+
+    /* 1. identical -> identity */
+    T_EQ(wo_schema_diff(&base, &base, &pl), 0);
+    T_EQ(pl.identity, 1);
+    T_CHECK(pl.classes[0].poison == NULL && pl.classes[1].poison == NULL);
+    wo_mig_plan_free(&pl);
+
+    /* 2. classes reordered -> not identity, cids remapped BY NAME, and the
+       owned reference (a different NUMBER now) is recognised by name too */
+    {
+        wo_schema_field b2_f[] = {SFC("part", WO_K_OWNED, 1)}; /* A is cid 1 now */
+        wo_schema_class swap_c[] = {SC("B", 0, b2_f), SC("A", 0, a_f)};
+        wo_schema swp = {2, swap_c, NULL};
+        T_EQ(wo_schema_diff(&base, &swp, &pl), 0);
+        T_EQ(pl.identity, 0);
+        T_EQ(pl.classes[0].new_cid, 1u); /* old A -> new cid 1 */
+        T_EQ(pl.classes[1].new_cid, 0u); /* old B -> new cid 0 */
+        T_CHECK(pl.classes[0].poison == NULL && pl.classes[1].poison == NULL);
+        T_CHECK(pl.classes[0].changed == 0 && pl.classes[1].changed == 0);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 3. added field -> changed, surviving map intact, B poisoned (embeds A) */
+    {
+        wo_schema_field a3_f[] = {SF("n", WO_K_SCALAR), SF("t", WO_K_TEXT),
+                                  SF("extra", WO_K_SCALAR)};
+        wo_schema_class c3[] = {SC("A", 0, a3_f), SC("B", 0, b_f)};
+        wo_schema n3 = {2, c3, NULL};
+        T_EQ(wo_schema_diff(&base, &n3, &pl), 0);
+        T_EQ(pl.identity, 0);
+        T_CHECK(pl.classes[0].poison == NULL && pl.classes[0].changed == 1);
+        T_EQ(pl.classes[0].fmap[0], 0);
+        T_EQ(pl.classes[0].fmap[1], 1);
+        T_CHECK(pl.classes[1].poison != NULL); /* embeds a changed class */
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 4. deleted field -> fmap -1; different-shape delete+add migrates */
+    {
+        wo_schema_field a4_f[] = {SF("n", WO_K_SCALAR), SF("blob", WO_K_BYTES)};
+        wo_schema_class c4[] = {SC("A", 0, a4_f), SC("B", 0, b_f)};
+        wo_schema n4 = {2, c4, NULL}; /* t: Text deleted, blob: Bytes added */
+        T_EQ(wo_schema_diff(&base, &n4, &pl), 0);
+        T_CHECK(pl.classes[0].poison == NULL && pl.classes[0].changed == 1);
+        T_EQ(pl.classes[0].fmap[0], 0);
+        T_EQ(pl.classes[0].fmap[1], -1);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 5. SAME-shape delete+add -> the rename ambiguity poison */
+    {
+        wo_schema_field a5_f[] = {SF("n", WO_K_SCALAR), SF("headline", WO_K_TEXT)};
+        wo_schema_class c5[] = {SC("A", 0, a5_f), SC("B", 0, b_f)};
+        wo_schema n5 = {2, c5, NULL};
+        T_EQ(wo_schema_diff(&base, &n5, &pl), 0);
+        T_CHECK(pl.classes[0].poison != NULL);
+        T_CHECK(strstr(pl.classes[0].poison, "two separate steps") != NULL);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 6. retype -> poison naming the field */
+    {
+        wo_schema_field a6_f[] = {SF("n", WO_K_FLOAT), SF("t", WO_K_TEXT)};
+        wo_schema_class c6[] = {SC("A", 0, a6_f), SC("B", 0, b_f)};
+        wo_schema n6 = {2, c6, NULL};
+        T_EQ(wo_schema_diff(&base, &n6, &pl), 0);
+        T_CHECK(pl.classes[0].poison != NULL &&
+                strstr(pl.classes[0].poison, "`n`") != NULL);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 7. vanished class -> poison; the other class (embedding nothing that
+       changed shape) is untouched */
+    {
+        wo_schema_class c7[] = {SC("A", 0, a_f)};
+        wo_schema n7 = {1, c7, NULL};
+        T_EQ(wo_schema_diff(&base, &n7, &pl), 0);
+        T_CHECK(pl.classes[1].new_cid == WO_SCHEMA_NONE &&
+                pl.classes[1].poison != NULL);
+        T_CHECK(pl.classes[0].poison == NULL);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 8. flags change -> poison (v1 migrates fields, not storage modes) */
+    {
+        wo_schema_class c8[] = {SC("A", WO_CLASSF_RESIDENT_KEYS, a_f), SC("B", 0, b_f)};
+        wo_schema n8 = {2, c8, NULL};
+        T_EQ(wo_schema_diff(&base, &n8, &pl), 0);
+        T_CHECK(pl.classes[0].poison != NULL &&
+                strstr(pl.classes[0].poison, "storage") != NULL);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 9. a NEW class in the binary does not break identity: it has no records */
+    {
+        wo_schema_field n_f[] = {SF("x", WO_K_SCALAR)};
+        wo_schema_class c9[] = {SC("A", 0, a_f), SC("B", 0, b_f), SC("C", 0, n_f)};
+        wo_schema n9 = {3, c9, NULL};
+        T_EQ(wo_schema_diff(&base, &n9, &pl), 0);
+        T_EQ(pl.identity, 1);
+        wo_mig_plan_free(&pl);
+    }
+
+    /* 10. the embed closure is transitive: C owns B, B owns A, A changed ->
+       both B and C poisoned */
+    {
+        wo_schema_field cB[] = {SFC("a", WO_K_OWNED, 0)};
+        wo_schema_field cC[] = {SFC("b", WO_K_OWNED, 1)};
+        wo_schema_class oc[] = {SC("A", 0, a_f), SC("B", 0, cB), SC("C", 0, cC)};
+        wo_schema oldsc = {3, oc, NULL};
+        wo_schema_field a10[] = {SF("n", WO_K_SCALAR)}; /* t deleted */
+        wo_schema_class nc[] = {SC("A", 0, a10), SC("B", 0, cB), SC("C", 0, cC)};
+        wo_schema newsc = {3, nc, NULL};
+        T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+        T_CHECK(pl.classes[0].poison == NULL && pl.classes[0].changed == 1);
+        T_CHECK(pl.classes[1].poison != NULL);
+        T_CHECK(pl.classes[2].poison != NULL);
+        wo_mig_plan_free(&pl);
+    }
+}
+
 /* ---- databasev2 12: the schema record ---------------------------------- */
 
 /* a hand-built two-class schema exercising every payload field */
@@ -2810,6 +2945,7 @@ int main(void) {
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
     test_keys_resident_indexed_across_flatten();
+    test_schema_diff_verdicts();
     test_schema_roundtrip();
     test_schema_fresh_log();
     test_schema_compaction_adopts_legacy();
