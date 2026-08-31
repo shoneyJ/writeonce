@@ -436,6 +436,22 @@ void wo_wal_close(wo_wal *w) {
 /* frame one payload into the staged batch */
 static int stage(wo_wal *w, const wbuf *payload) {
     if (payload->oom) return -1;
+    /* databasev2 12: the schema head is written LAZILY, ahead of the first
+     * real record — never for a log that stays empty. A program whose only
+     * tables are `durable: false` opens a WAL and appends nothing, and the
+     * documented contract is that such a run writes ZERO bytes; an eager
+     * head record broke that by 75 bytes and the residency gate caught it.
+     * The flag, not the emptiness check, breaks the recursion. */
+    if (w->schema && !w->schema_written) {
+        w->schema_written = 1;
+        if (w->off == 0 && w->len == 0) {
+            wbuf sp = {0};
+            wput(&sp, w->schema, w->schema_len);
+            int rc = stage(w, &sp);
+            free(sp.b);
+            if (rc != 0) return -1;
+        }
+    }
     wbuf rec = {0};
     wput_u32(&rec, (uint32_t)payload->len);
     wput_u32(&rec, crc32(payload->b, payload->len));
@@ -735,8 +751,15 @@ int wo_schema_diff(const wo_schema *osc, const wo_schema *nsc, wo_mig_plan *plan
     plan->identity = 1;
     for (uint32_t c = 0; c < osc->class_cnt; c++) {
         const wo_mig_class *mc = &plan->classes[c];
-        if (mc->poison) continue; /* a poison alone never forces a rewrite */
-        if (mc->new_cid != c || mc->changed) {
+        /* a poison FORCES the transcode rather than being skipped: only the
+         * transcode can tell whether records of the class exist. With none,
+         * the pass runs clean and rewrites the head to the compiled shape —
+         * one time, since the next boot diffs equal. With records, it stops
+         * at the first one and hands back the poison text. Skipping instead
+         * would fall through to replay, which greets the shape mismatch
+         * with a generic "corruption" — the exact message this iteration
+         * exists to replace. Caught by the end-to-end retype smoke test. */
+        if (mc->poison || mc->new_cid != c || mc->changed) {
             plan->identity = 0;
             break;
         }
@@ -757,6 +780,10 @@ int wo_wal_set_schema(wo_wal *w, const wo_schema *sc) {
 int wo_wal_ensure_schema(wo_wal *w) {
     if (!w->schema) return 0;             /* never set: legacy behaviour */
     if (w->off != 0 || w->len != 0) return 0; /* records exist or staged */
+    if (w->schema_written) return 0;
+    /* go through stage() so the lazy-head flag and this path can never
+     * double-write; stage() itself emits the head when it sees the flag */
+    w->schema_written = 1;
     wbuf p = {0};
     wput(&p, w->schema, w->schema_len);
     int rc = stage(w, &p);

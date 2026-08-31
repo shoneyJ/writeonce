@@ -121,6 +121,7 @@ typedef struct wo_wal {
      * nothing changes anywhere. */
     uint8_t *schema;
     uint32_t schema_len;
+    int schema_written; /* lazy head: staged before the FIRST record only */
 } wo_wal;
 
 /* databasev2 12: the schema a log carries, and the diff against the compiled

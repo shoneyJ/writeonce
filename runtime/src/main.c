@@ -112,6 +112,49 @@ static int load_self_embedded(wo_module *mod, char *err, size_t errlen) {
  * "the leak is gone". A mid-program cycle interrupted by exit is finished
  * here the same way. The zero-progress guard turns a would-be hang (a bug)
  * into a leak the ASan gate reports instead. */
+/* databasev2 12: the COMPILED schema, names resolved out of the constant
+ * pool — the database layer never sees consts, so this is where byte-pointer
+ * names come from. Field metadata may be absent on hand-built images; the
+ * compiler always emits it, and a name that is genuinely missing becomes the
+ * empty string, which still round-trips (an unchanged schema compares equal
+ * byte for byte). */
+static int mig_build_schema(const wo_module *mod, wo_schema *sc) {
+    memset(sc, 0, sizeof *sc);
+    sc->class_cnt = mod->class_cnt;
+    sc->classes = calloc(mod->class_cnt ? mod->class_cnt : 1, sizeof *sc->classes);
+    if (!sc->classes) return -1;
+    for (uint32_t c = 0; c < mod->class_cnt; c++) {
+        const wo_classdesc *k = &mod->classes[c];
+        wo_schema_class *o = &sc->classes[c];
+        if (k->name < mod->const_cnt && mod->consts[k->name].s) {
+            o->name = (const uint8_t *)mod->consts[k->name].s->data;
+            o->name_len = mod->consts[k->name].s->len;
+        }
+        o->flags = k->flags & (WO_CLASSF_VOLATILE | WO_CLASSF_RESIDENT_KEYS);
+        o->field_cnt = k->field_cnt;
+        o->fields = calloc(k->field_cnt ? k->field_cnt : 1, sizeof *o->fields);
+        if (!o->fields) return -1;
+        for (uint32_t f = 0; f < k->field_cnt; f++) {
+            wo_schema_field *fl = &o->fields[f];
+            if (k->field_names && k->field_names[f] < mod->const_cnt &&
+                mod->consts[k->field_names[f]].s) {
+                fl->name = (const uint8_t *)mod->consts[k->field_names[f]].s->data;
+                fl->name_len = mod->consts[k->field_names[f]].s->len;
+            }
+            fl->kind = k->kinds[f];
+            fl->fclass = k->field_class ? k->field_class[f] : WO_SCHEMA_NONE;
+            fl->felem = k->field_elem ? k->field_elem[f] : WO_SCHEMA_NONE;
+        }
+    }
+    return 0;
+}
+static void mig_free_schema(wo_schema *sc) {
+    if (!sc->classes) return;
+    for (uint32_t c = 0; c < sc->class_cnt; c++) free(sc->classes[c].fields);
+    free(sc->classes);
+    sc->classes = NULL;
+}
+
 static void gc_pump(wo_vm *vm) {
     wo_rt *rt = &vm->rt;
     size_t at_begin = rt->gc_traced_cnt;
@@ -244,9 +287,106 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    wo_schema compiled_schema;
+    int have_schema = 0;
     if (data_dir && data_dir[0]) {
         char wal_path[512];
         snprintf(wal_path, sizeof wal_path, "%s/shard-0.wal", data_dir);
+        /* databasev2 12: the log's head record states the shape that wrote
+         * it. Diff it against the compiled classes BEFORE replay: a matching
+         * shape replays as-is, add/delete migrates the log in place through
+         * a compaction-style rewrite, anything else refuses by name. A log
+         * with no head record is a legacy log — nothing recorded, nothing
+         * diffable; replay's own decode remains its only check, exactly as
+         * before this iteration. */
+        if (mig_build_schema(&mod, &compiled_schema) != 0) {
+            fprintf(stderr, "wovm: out of memory building the schema\n");
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        have_schema = 1;
+        uint8_t *head = NULL;
+        uint32_t head_len = 0;
+        int hrc = wo_wal_read_schema(wal_path, &head, &head_len);
+        if (hrc == 0) {
+            wo_schema *stored = wo_schema_decode(head, head_len);
+            free(head);
+            if (!stored) {
+                fprintf(stderr, "wovm: %s: the schema record is malformed\n", wal_path);
+                mig_free_schema(&compiled_schema);
+                wo_db_destroy(&DB);
+                wo_vm_destroy(&VM);
+                wo_module_free(&mod);
+                return 2;
+            }
+            wo_mig_plan plan;
+            if (wo_schema_diff(stored, &compiled_schema, &plan) != 0) {
+                fprintf(stderr, "wovm: out of memory diffing schemas\n");
+                wo_schema_free(stored);
+                mig_free_schema(&compiled_schema);
+                wo_db_destroy(&DB);
+                wo_vm_destroy(&VM);
+                wo_module_free(&mod);
+                return 2;
+            }
+            if (!plan.identity) {
+                /* say what is about to change, per class, before doing it */
+                for (uint32_t c = 0; c < plan.old_class_cnt; c++) {
+                    if (!plan.classes[c].changed) continue;
+                    const wo_schema_class *ok = &stored->classes[c];
+                    fprintf(stderr, "wovm: %s: migrating `%.*s`:", wal_path,
+                            (int)ok->name_len, (const char *)ok->name);
+                    for (uint32_t f = 0; f < ok->field_cnt; f++)
+                        if (plan.classes[c].fmap[f] == -1)
+                            fprintf(stderr, " -%.*s", (int)ok->fields[f].name_len,
+                                    (const char *)ok->fields[f].name);
+                    const wo_schema_class *nk =
+                        &compiled_schema.classes[plan.classes[c].new_cid];
+                    for (uint32_t f = 0; f < nk->field_cnt; f++) {
+                        int found = 0;
+                        for (uint32_t g = 0; g < ok->field_cnt && !found; g++)
+                            found = plan.classes[c].fmap[g] == (int32_t)f;
+                        if (!found)
+                            fprintf(stderr, " +%.*s", (int)nk->fields[f].name_len,
+                                    (const char *)nk->fields[f].name);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                char *merr = NULL;
+                int mrc = wo_wal_migrate(wal_path, &DB, stored, &plan,
+                                         &compiled_schema, 1u << 20, &merr);
+                if (mrc != 0) {
+                    if (mrc == -2 && merr)
+                        fprintf(stderr, "wovm: %s: refusing to start — %s\n",
+                                wal_path, merr);
+                    else
+                        fprintf(stderr,
+                                "wovm: %s: migration found corruption beyond a "
+                                "torn tail\n",
+                                wal_path);
+                    free(merr);
+                    wo_mig_plan_free(&plan);
+                    wo_schema_free(stored);
+                    mig_free_schema(&compiled_schema);
+                    wo_db_destroy(&DB);
+                    wo_vm_destroy(&VM);
+                    wo_module_free(&mod);
+                    return 2;
+                }
+                fprintf(stderr, "wovm: %s: schema migrated\n", wal_path);
+            }
+            wo_mig_plan_free(&plan);
+            wo_schema_free(stored);
+        } else if (hrc < 0) {
+            fprintf(stderr, "wovm: cannot read %s\n", wal_path);
+            mig_free_schema(&compiled_schema);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
         uint32_t vol_cid = 0;
         int64_t replayed = wo_wal_replay_ex(wal_path, &DB, &vol_cid);
         if (replayed == -2) {
@@ -285,13 +425,21 @@ int main(int argc, char **argv) {
         }
         if (wo_wal_open(&WAL, wal_path, 1u << 20) != 0) {
             fprintf(stderr, "wovm: cannot open %s\n", wal_path);
+            if (have_schema) mig_free_schema(&compiled_schema);
             wo_db_destroy(&DB);
             wo_vm_destroy(&VM);
             wo_module_free(&mod);
             return 2;
         }
+        /* databasev2 12: the live log carries the compiled shape from here
+         * on — a fresh log gets it as its first record now, a legacy one at
+         * its next compaction. */
+        /* lazily written ahead of the first record (stage()), so a program
+         * whose tables are all volatile keeps its documented zero WAL bytes */
+        (void)wo_wal_set_schema(&WAL, &compiled_schema);
         VM.rt.wal = &WAL;
     }
+    if (have_schema) mig_free_schema(&compiled_schema);
     /* iteration 24: the one mailbox cap; WO_MAILBOX shrinks it in soak
      * tests to force the fail-fast policy (0/garbage keeps the default) */
     {
