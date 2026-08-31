@@ -1008,12 +1008,425 @@ static void test_should_compact_absolute_and_ceiling(void) {
     T_EQ(wo_wal_should_compact(2048, 1024, floor_b, 2), 0);   /* not yet */
 }
 
-/* ---- databasev2 12: the boot diff --------------------------------------- */
+/* ---- databasev2 12: the migration transcode ----------------------------- */
 
 #define SF(nm, k) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), k, WO_SCHEMA_NONE, WO_SCHEMA_NONE}
 #define SFC(nm, k, fc) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), k, fc, WO_SCHEMA_NONE}
 #define SC(nm, fl, arr) {(const uint8_t *)nm, (uint32_t)(sizeof nm - 1), fl, \
                          (uint32_t)(sizeof arr / sizeof arr[0]), arr}
+
+
+/* every migrate test speaks both sides: a classdesc array for the engine and
+ * a wo_schema for the diff, built from the same literals */
+static const uint8_t mig_nt_kinds[] = {WO_K_SCALAR, WO_K_TEXT};
+static const wo_classdesc MIG_NT[] = {
+    {.name = 0, .flags = 0, .field_cnt = 2, .kinds = mig_nt_kinds},
+};
+static const uint8_t mig_nte_kinds[] = {WO_K_SCALAR, WO_K_TEXT, WO_K_SCALAR};
+static const wo_classdesc MIG_NTE[] = {
+    {.name = 0, .flags = 0, .field_cnt = 3, .kinds = mig_nte_kinds},
+};
+static const uint8_t mig_n_kinds[] = {WO_K_SCALAR};
+static const wo_classdesc MIG_N[] = {
+    {.name = 0, .flags = 0, .field_cnt = 1, .kinds = mig_n_kinds},
+};
+
+static wo_schema_field mig_sf_n[] = {SF("n", WO_K_SCALAR)};
+static wo_schema_field mig_sf_nt[] = {SF("n", WO_K_SCALAR), SF("t", WO_K_TEXT)};
+static wo_schema_field mig_sf_nte[] = {SF("n", WO_K_SCALAR), SF("t", WO_K_TEXT),
+                                       SF("extra", WO_K_SCALAR)};
+
+static db_text *mig_text(const char *sz) {
+    size_t n = strlen(sz);
+    db_text *t = malloc(sizeof(db_text) + n);
+    t->len = (uint32_t)n;
+    memcpy(t->bytes, sz, n);
+    return t;
+}
+
+/* REORDER + OWNED FIXUP: the classes swap declaration order and one of them
+ * embeds the other by value. The record's outer cid AND the cid inside the
+ * stored owned value must both be renumbered — the outer one alone would
+ * decode the embedded value against the wrong class. */
+static void test_migrate_reorder_owned(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migreorder.wal", g_dir);
+    static const uint8_t x_kinds[] = {WO_K_SCALAR};
+    static const uint8_t c_kinds[] = {WO_K_OWNED, WO_K_SCALAR};
+    static const wo_classdesc OLD_XC[] = {
+        {.name = 0, .flags = 0, .field_cnt = 1, .kinds = x_kinds},
+        {.name = 0, .flags = 0, .field_cnt = 2, .kinds = c_kinds},
+    };
+    static const wo_classdesc NEW_CX[] = {
+        {.name = 0, .flags = 0, .field_cnt = 2, .kinds = c_kinds},
+        {.name = 0, .flags = 0, .field_cnt = 1, .kinds = x_kinds},
+    };
+    static wo_schema_field sx[] = {SF("v", WO_K_SCALAR)};
+    static wo_schema_field sc_old[] = {SFC("part", WO_K_OWNED, 0), SF("m", WO_K_SCALAR)};
+    static wo_schema_field sc_new[] = {SFC("part", WO_K_OWNED, 1), SF("m", WO_K_SCALAR)};
+    wo_schema_class oc[] = {SC("X", 0, sx), SC("C", 0, sc_old)};
+    wo_schema oldsc = {2, oc, NULL};
+    wo_schema_class nc[] = {SC("C", 0, sc_new), SC("X", 0, sx)};
+    wo_schema newsc = {2, nc, NULL};
+
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, OLD_XC, 2, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+        db_row *rx = wo_row_create_raw(&db, 0, 3); /* an X row, old cid 0 */
+        rx->slots[0] = 7;
+        T_EQ(wo_row_raw_commit(&db, 0, rx), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, 3), 0);
+        db_rec *part = malloc(sizeof(db_rec) + 8); /* embedded X, old cid 0 */
+        part->class_id = 0;
+        part->_pad = 0;
+        part->slots[0] = 42;
+        db_row *rc = wo_row_create_raw(&db, 1, 5); /* a C row, old cid 1 */
+        rc->slots[0] = (uint64_t)(uintptr_t)part;
+        rc->slots[1] = 9;
+        T_EQ(wo_row_raw_commit(&db, 1, rc), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 1, 5), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, NEW_CX, 2, 0, 1), 0);
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_EQ(pl.identity, 0);
+    T_EQ(pl.classes[0].new_cid, 1u);
+    T_EQ(pl.classes[1].new_cid, 0u);
+    T_CHECK(pl.classes[0].poison == NULL && pl.classes[1].poison == NULL);
+    T_EQ(wo_wal_migrate(path, &db2, &oldsc, &pl, &newsc, 1 << 16, NULL), 0);
+    wo_mig_plan_free(&pl);
+    T_EQ(wo_wal_replay(path, &db2), 2);
+    db_row *rx = wo_row_ptr(&db2, 1, 3); /* X lives at cid 1 now */
+    T_CHECK(rx != NULL && rx->slots[0] == 7);
+    db_row *rc = wo_row_ptr(&db2, 0, 5); /* C lives at cid 0 now */
+    T_CHECK(rc != NULL && rc->slots[1] == 9);
+    db_rec *part = (db_rec *)(uintptr_t)rc->slots[0];
+    T_CHECK(part != NULL && part->class_id == 1 && part->slots[0] == 42);
+    wo_db_destroy(&db2);
+}
+
+/* DELTA SPLICE: a keys-resident row's chain carries deltas on a field that is
+ * being DELETED. The spliced chain must still fold — later deltas re-point
+ * around the dropped ones — and the surviving field's latest value wins. */
+static void test_migrate_delta_splice(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migsplice.wal", g_dir);
+    static wo_schema_field sk_old[] = {SF("n", WO_K_SCALAR), SF("label", WO_K_TEXT)};
+    static wo_schema_field sk_new[] = {SF("n", WO_K_SCALAR)};
+    wo_schema_class oc[] = {SC("K", WO_CLASSF_RESIDENT_KEYS, sk_old)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("K", WO_CLASSF_RESIDENT_KEYS, sk_new)};
+    wo_schema newsc = {1, nc, NULL};
+    static const uint8_t knew_kinds[] = {WO_K_SCALAR};
+    static const wo_classdesc KNEW[] = {
+        {.name = 0,
+         .flags = WO_CLASSF_RESIDENT_KEYS,
+         .field_cnt = 1,
+         .kinds = knew_kinds},
+    };
+
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_CLASSES, 1), 0);
+    uint64_t id;
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, KEYS_CLASSES, 1, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 18), 0);
+        db.rt = &rt;
+        rt.wal = &w;
+        rt.db = &db;
+        const char *msg = "";
+        wo_str *sa = wo_str_new(&rt, "a", 1);
+        uint64_t vals[2] = {1, (uint64_t)(uintptr_t)sa};
+        id = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_CHECK(id != 0);
+        uint64_t off = wo_wal_next_offset(&w);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_drop_payload(&db, 0, id, off), 0);
+        /* the chain: n=2, label="x" (doomed), n=3 — the last delta's back
+           pointer crosses the doomed one */
+        chain_update(&db, &w, 0, id, 0, 2);
+        wo_str *sx = wo_str_new(&rt, "x", 1);
+        chain_update(&db, &w, 0, id, 1, (uint64_t)(uintptr_t)sx);
+        chain_update(&db, &w, 0, id, 0, 3);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KNEW, 1, 0, 1), 0);
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_CHECK(pl.classes[0].poison == NULL && pl.classes[0].fmap[1] == -1);
+    T_EQ(wo_wal_migrate(path, &db2, &oldsc, &pl, &newsc, 1 << 18, NULL), 0);
+    wo_mig_plan_free(&pl);
+
+    /* replay the migrated log the way boot does for a keys table, then read
+       the row back through the fold: the chain must resolve to n=3 */
+    db2.rt = &rt;
+    rt.wal = NULL;
+    rt.db = &db2;
+    T_CHECK(wo_wal_replay(path, &db2) >= 0);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 18), 0);
+    rt.wal = &w2;
+    const char *msg = "";
+    db_row *r = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 3);
+    wo_row_release(&db2, 0, r);
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
+/* ADD: a two-field log boots a three-field binary — rows survive, the new
+ * field reads the kind's zero, the head record states the NEW shape, and a
+ * stale compaction temp lying beside the log is discarded, not appended to */
+static void test_migrate_add_field(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migadd.wal", g_dir);
+    wo_schema_class oc[] = {SC("row", 0, mig_sf_nt)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("row", 0, mig_sf_nte)};
+    wo_schema newsc = {1, nc, NULL};
+
+    /* the OLD program writes its log, schema record at the head */
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, MIG_NT, 1, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+        T_EQ(wo_wal_set_schema(&w, &oldsc), 0);
+        T_EQ(wo_wal_ensure_schema(&w), 0);
+        db_row *r1 = wo_row_create_raw(&db, 0, 1);
+        r1->slots[0] = 7;
+        r1->slots[1] = (uint64_t)(uintptr_t)mig_text("abc");
+        T_EQ(wo_row_raw_commit(&db, 0, r1), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, 1), 0);
+        db_row *r2 = wo_row_create_raw(&db, 0, 2);
+        r2->slots[0] = 9;
+        r2->slots[1] = 0;
+        T_EQ(wo_row_raw_commit(&db, 0, r2), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, 2), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        T_EQ(wo_row_remove(&db, 0, 2), 0);
+        T_EQ(wo_wal_append_remove(&w, 0, 2), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    /* a stale temp beside the log: never authoritative, must be discarded */
+    {
+        char tmp[160];
+        snprintf(tmp, sizeof tmp, "%s.compact", path);
+        FILE *f = fopen(tmp, "w");
+        T_CHECK(f != NULL);
+        fputs("stale-not-a-record", f);
+        fclose(f);
+    }
+
+    /* the NEW binary migrates it at boot */
+    wo_db db3;
+    T_EQ(wo_db_init(&db3, MIG_NTE, 1, 0, 1), 0);
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_EQ(pl.identity, 0);
+    T_CHECK(pl.classes[0].poison == NULL);
+    char *err = NULL;
+    T_EQ(wo_wal_migrate(path, &db3, &oldsc, &pl, &newsc, 1 << 16, &err), 0);
+    T_CHECK(err == NULL);
+    wo_mig_plan_free(&pl);
+
+    /* head record: the new three-field shape */
+    uint8_t *sp;
+    uint32_t slen;
+    T_EQ(wo_wal_read_schema(path, &sp, &slen), 0);
+    wo_schema *head = wo_schema_decode(sp, slen);
+    T_CHECK(head != NULL && head->classes[0].field_cnt == 3);
+    wo_schema_free(head);
+    free(sp);
+
+    /* replay: row 1 intact with a zero-valued third field, row 2 gone */
+    T_EQ(wo_wal_replay(path, &db3), 3); /* insert, insert, remove */
+    db_row *r = wo_row_ptr(&db3, 0, 1);
+    T_CHECK(r != NULL && r->slots[0] == 7);
+    db_text *t = (db_text *)(uintptr_t)r->slots[1];
+    T_CHECK(t != NULL && t->len == 3 && memcmp(t->bytes, "abc", 3) == 0);
+    T_EQ(r->slots[2], 0u);
+    T_CHECK(wo_row_ptr(&db3, 0, 2) == NULL);
+    wo_db_destroy(&db3);
+}
+
+/* DELETE: the Text column's stored values are freed (ASan holds the leash)
+ * and the surviving field lands in its new slot */
+static void test_migrate_delete_field(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migdel.wal", g_dir);
+    wo_schema_class oc[] = {SC("row", 0, mig_sf_nt)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("row", 0, mig_sf_n)};
+    wo_schema newsc = {1, nc, NULL};
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, MIG_NT, 1, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+        for (uint64_t id = 1; id <= 20; id++) {
+            db_row *r = wo_row_create_raw(&db, 0, id);
+            r->slots[0] = id * 10;
+            r->slots[1] = (uint64_t)(uintptr_t)mig_text("payload-to-drop");
+            T_EQ(wo_row_raw_commit(&db, 0, r), 0);
+            T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+        }
+        T_EQ(wo_wal_commit(&w), 0);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, MIG_N, 1, 0, 1), 0);
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_CHECK(pl.classes[0].poison == NULL && pl.classes[0].fmap[1] == -1);
+    T_EQ(wo_wal_migrate(path, &db2, &oldsc, &pl, &newsc, 1 << 16, NULL), 0);
+    wo_mig_plan_free(&pl);
+    T_EQ(wo_wal_replay(path, &db2), 20);
+    for (uint64_t id = 1; id <= 20; id++) {
+        db_row *r = wo_row_ptr(&db2, 0, id);
+        T_CHECK(r != NULL && r->slots[0] == id * 10);
+    }
+    wo_db_destroy(&db2);
+}
+
+/* POISON BITES ONLY WITH RECORDS: a retyped class with no stored rows never
+ * blocks the boot; the same retype WITH a row refuses and names the field */
+static void test_migrate_poison_needs_records(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migpoison.wal", g_dir);
+    static const uint8_t two_kinds0[] = {WO_K_SCALAR, WO_K_TEXT};
+    static const uint8_t two_kinds1[] = {WO_K_SCALAR};
+    static const wo_classdesc TWO[] = {
+        {.name = 0, .flags = 0, .field_cnt = 2, .kinds = two_kinds0},
+        {.name = 0, .flags = 0, .field_cnt = 1, .kinds = two_kinds1},
+    };
+    static const uint8_t two_kinds1f[] = {WO_K_FLOAT};
+    static const wo_classdesc TWO_NEW[] = {
+        {.name = 0, .flags = 0, .field_cnt = 2, .kinds = two_kinds0},
+        {.name = 0, .flags = 0, .field_cnt = 1, .kinds = two_kinds1f},
+    };
+    wo_schema_field b_old[] = {SF("x", WO_K_SCALAR)};
+    wo_schema_field b_new[] = {SF("x", WO_K_FLOAT)};
+    wo_schema_class oc[] = {SC("A", 0, mig_sf_nt), SC("B", 0, b_old)};
+    wo_schema oldsc = {2, oc, NULL};
+    /* the new side also ADDS a field to A, so the plan is not identity and
+       the transcode genuinely runs */
+    wo_schema_class nc[] = {SC("A", 0, mig_sf_nte), SC("B", 0, b_new)};
+    wo_schema newsc = {2, nc, NULL};
+
+    /* log 1: rows of A only */
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, TWO, 2, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+        db_row *r = wo_row_create_raw(&db, 0, 1);
+        r->slots[0] = 1;
+        r->slots[1] = 0;
+        T_EQ(wo_row_raw_commit(&db, 0, r), 0);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, 1), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_CHECK(pl.classes[1].poison != NULL); /* B is poisoned... */
+    {
+        wo_db dbn;
+        T_EQ(wo_db_init(&dbn, TWO_NEW, 2, 0, 1), 0);
+        char *err = NULL;
+        T_EQ(wo_wal_migrate(path, &dbn, &oldsc, &pl, &newsc, 1 << 16, &err), 0);
+        T_CHECK(err == NULL); /* ...but nothing of B is stored: boots fine */
+        wo_db_destroy(&dbn);
+    }
+    /* log 2: now with a B record — the poison bites and names the field */
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, TWO, 2, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 1 << 16), 0); /* migrated log: reopen fresh */
+        char p2[144];
+        snprintf(p2, sizeof p2, "%s2", path);
+        wo_wal w2;
+        T_EQ(wo_wal_open(&w2, p2, 1 << 16), 0);
+        db_row *rb = wo_row_create_raw(&db, 1, 4);
+        rb->slots[0] = 11;
+        T_EQ(wo_row_raw_commit(&db, 1, rb), 0);
+        T_EQ(wo_wal_append_insert(&w2, &db, 1, 4), 0);
+        T_EQ(wo_wal_commit(&w2), 0);
+        wo_wal_close(&w2);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+        wo_db dbn;
+        T_EQ(wo_db_init(&dbn, TWO_NEW, 2, 0, 1), 0);
+        char *err = NULL;
+        T_EQ(wo_wal_migrate(p2, &dbn, &oldsc, &pl, &newsc, 1 << 16, &err), -2);
+        T_CHECK(err != NULL && strstr(err, "`x`") != NULL);
+        free(err);
+        wo_db_destroy(&dbn);
+    }
+    wo_mig_plan_free(&pl);
+}
+
+/* CORRUPT INPUT: a torn tail ends the intact prefix — the transcode takes
+ * the prefix (same rule as replay), never the tear */
+static void test_migrate_corrupt_input(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/migcorrupt.wal", g_dir);
+    wo_schema_class oc[] = {SC("row", 0, mig_sf_nt)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("row", 0, mig_sf_nte)};
+    wo_schema newsc = {1, nc, NULL};
+    {
+        wo_db db;
+        T_EQ(wo_db_init(&db, MIG_NT, 1, 0, 1), 0);
+        wo_wal w;
+        T_EQ(wo_wal_open(&w, path, 0), 0);
+        for (uint64_t id = 1; id <= 3; id++) {
+            db_row *r = wo_row_create_raw(&db, 0, id);
+            r->slots[0] = id;
+            r->slots[1] = 0;
+            T_EQ(wo_row_raw_commit(&db, 0, r), 0);
+            T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+        }
+        T_EQ(wo_wal_commit(&w), 0);
+        /* tear the LAST record's tail byte */
+        off_t end = lseek(w.fd, 0, SEEK_END);
+        T_CHECK(end > 4);
+        uint8_t junk = 0xFF;
+        T_EQ((int)pwrite(w.fd, &junk, 1, end - 1), 1);
+        wo_wal_close(&w);
+        wo_db_destroy(&db);
+    }
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, MIG_NTE, 1, 0, 1), 0);
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    T_EQ(wo_wal_migrate(path, &db2, &oldsc, &pl, &newsc, 0, NULL), 0);
+    wo_mig_plan_free(&pl);
+    T_EQ(wo_wal_replay(path, &db2), 2); /* rows 1 and 2; the torn third is gone */
+    T_CHECK(wo_row_ptr(&db2, 0, 1) != NULL && wo_row_ptr(&db2, 0, 3) == NULL);
+    wo_db_destroy(&db2);
+}
+
+/* ---- databasev2 12: the boot diff --------------------------------------- */
 
 static void test_schema_diff_verdicts(void) {
     /* base: A { n: scalar, t: text }, B { part: owned->A } */
@@ -2945,6 +3358,12 @@ int main(void) {
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
     test_keys_resident_indexed_across_flatten();
+    test_migrate_reorder_owned();
+    test_migrate_delta_splice();
+    test_migrate_add_field();
+    test_migrate_delete_field();
+    test_migrate_poison_needs_records();
+    test_migrate_corrupt_input();
     test_schema_diff_verdicts();
     test_schema_roundtrip();
     test_schema_fresh_log();

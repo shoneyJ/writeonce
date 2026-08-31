@@ -1293,6 +1293,298 @@ fail:
  * update would have. The caller (wo_wal_replay_ex) still owns dropping the
  * recreated row's payload back to the log, the same way it does for
  * INSERT/UPDATE. */
+/* ---- databasev2 12: the migration transcode ---------------------------- */
+
+/* record-start offset -> record-start offset in the new log. Open-addressed;
+ * keys stored +1 so offset 0 (a legacy log's first record) is representable. */
+typedef struct migmap {
+    uint64_t *k, *v;
+    size_t cap, len;
+} migmap;
+static int migmap_put(migmap *m, uint64_t key, uint64_t val) {
+    if (m->len * 2 >= m->cap) {
+        size_t nc = m->cap ? m->cap * 2 : 1024;
+        uint64_t *nk = calloc(nc, sizeof *nk);
+        uint64_t *nv = malloc(nc * sizeof *nv);
+        if (!nk || !nv) {
+            free(nk);
+            free(nv);
+            return -1;
+        }
+        for (size_t i = 0; i < m->cap; i++) {
+            if (!m->k[i]) continue;
+            size_t j = (size_t)(m->k[i] * 0x9E3779B97F4A7C15ull) & (nc - 1);
+            while (nk[j]) j = (j + 1) & (nc - 1);
+            nk[j] = m->k[i];
+            nv[j] = m->v[i];
+        }
+        free(m->k);
+        free(m->v);
+        m->k = nk;
+        m->v = nv;
+        m->cap = nc;
+    }
+    size_t j = (size_t)((key + 1) * 0x9E3779B97F4A7C15ull) & (m->cap - 1);
+    while (m->k[j] && m->k[j] != key + 1) j = (j + 1) & (m->cap - 1);
+    if (!m->k[j]) m->len++;
+    m->k[j] = key + 1;
+    m->v[j] = val;
+    return 0;
+}
+static int migmap_get(const migmap *m, uint64_t key, uint64_t *val) {
+    if (!m->cap) return -1;
+    size_t j = (size_t)((key + 1) * 0x9E3779B97F4A7C15ull) & (m->cap - 1);
+    while (m->k[j]) {
+        if (m->k[j] == key + 1) {
+            *val = m->v[j];
+            return 0;
+        }
+        j = (j + 1) & (m->cap - 1);
+    }
+    return -1;
+}
+
+/* remap the class ids EMBEDDED in a decoded value tree (owned values carry a
+ * cid on the wire). The tree's classes are all UNCHANGED — the embed closure
+ * poisoned anything else before a record could reach here — so only the
+ * NUMBERS move; shapes and kinds are the same on both sides. */
+static int mig_fixup_cids(uint64_t v, uint8_t kind, const wo_schema *oldsc,
+                          const wo_mig_plan *plan) {
+    if (!v) return 0;
+    switch (kind) {
+    case WO_K_OWNED: {
+        db_rec *rec = (db_rec *)(uintptr_t)v;
+        uint32_t oc = rec->class_id;
+        if (oc >= plan->old_class_cnt || plan->classes[oc].new_cid == WO_SCHEMA_NONE)
+            return -1;
+        const wo_schema_class *k = &oldsc->classes[oc];
+        for (uint32_t i = 0; i < k->field_cnt; i++)
+            if (mig_fixup_cids(rec->slots[i], k->fields[i].kind, oldsc, plan) != 0)
+                return -1;
+        rec->class_id = plan->classes[oc].new_cid;
+        return 0;
+    }
+    case WO_K_MULTI: {
+        db_multi *m = (db_multi *)(uintptr_t)v;
+        if (m->elem_kind != WO_K_OWNED && m->elem_kind != WO_K_MULTI &&
+            m->elem_kind != WO_K_MAP)
+            return 0;
+        for (uint32_t i = 0; i < m->len; i++)
+            if (mig_fixup_cids(m->items[i], m->elem_kind, oldsc, plan) != 0) return -1;
+        return 0;
+    }
+    case WO_K_MAP: {
+        db_map *m = (db_map *)(uintptr_t)v;
+        for (uint32_t i = 0; i < m->len; i++) {
+            if (mig_fixup_cids(m->kv[2 * i], m->key_kind, oldsc, plan) != 0) return -1;
+            if (mig_fixup_cids(m->kv[2 * i + 1], m->val_kind, oldsc, plan) != 0)
+                return -1;
+        }
+        return 0;
+    }
+    default: return 0;
+    }
+}
+
+int wo_wal_migrate(const char *path, wo_db *db, const wo_schema *oldsc,
+                   const wo_mig_plan *plan, const wo_schema *newsc,
+                   uint64_t prealloc, char **err_out) {
+    if (err_out) *err_out = NULL;
+    int rc = -1;
+    int ofd = open(path, O_RDONLY);
+    if (ofd < 0) return -1;
+
+    /* decode with the OLD shapes: a classdesc shim per stored class, kinds
+     * lifted from the schema record. dec_val touches nothing in the db but
+     * classes/class_cnt, so a stack shim is the whole "old database". */
+    wo_db olddb;
+    memset(&olddb, 0, sizeof olddb);
+    wo_classdesc *oldcls = calloc(oldsc->class_cnt ? oldsc->class_cnt : 1,
+                                  sizeof *oldcls);
+    uint8_t **oldkinds = calloc(oldsc->class_cnt ? oldsc->class_cnt : 1,
+                                sizeof *oldkinds);
+    if (!oldcls || !oldkinds) goto out_nolog;
+    for (uint32_t c = 0; c < oldsc->class_cnt; c++) {
+        const wo_schema_class *k = &oldsc->classes[c];
+        oldkinds[c] = malloc(k->field_cnt ? k->field_cnt : 1);
+        if (!oldkinds[c]) goto out_nolog;
+        for (uint32_t f = 0; f < k->field_cnt; f++) oldkinds[c][f] = k->fields[f].kind;
+        oldcls[c].field_cnt = k->field_cnt;
+        oldcls[c].kinds = oldkinds[c];
+        oldcls[c].flags = k->flags;
+    }
+    olddb.classes = oldcls;
+    olddb.class_cnt = oldsc->class_cnt;
+
+    char tmp[4096];
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX) >= sizeof tmp)
+        goto out_nolog;
+    (void)unlink(tmp);
+    wo_wal nw;
+    if (wo_wal_open(&nw, tmp, prealloc) != 0) goto out_nolog;
+
+    migmap map = {0};
+    uint64_t *vals = NULL;
+
+    /* the new log's first record: the compiled shape */
+    {
+        uint8_t *sp;
+        uint32_t slen;
+        if (wo_schema_encode(newsc, &sp, &slen) != 0) goto out;
+        wbuf b = {0};
+        wput(&b, sp, slen);
+        free(sp);
+        int src = stage(&nw, &b);
+        free(b.b);
+        if (src != 0) goto out;
+    }
+
+    uint32_t pending = 0;
+    for (uint64_t off = 0;;) {
+        uint32_t len;
+        uint8_t *payload;
+        if (scan_record(ofd, off, &len, &payload) != 0) break; /* intact prefix ends */
+        rbuf r = {payload, payload + len, 0};
+        uint8_t kind = rd_u8(&r);
+        uint64_t new_start = nw.off + (uint64_t)nw.len;
+        /* declared before any `goto corrupt` can fire, so the handler never
+         * frees an object whose initializer was jumped over */
+        wbuf b = {0};
+        const wo_schema_class *ok = NULL;
+        const wo_classdesc *nk = NULL;
+        if (kind == WO_WAL_SCHEMA) {
+            free(payload);
+            off += 8u + len + 4u;
+            continue; /* replaced by the head record above */
+        }
+        uint32_t cid = rd_u32(&r);
+        uint64_t id = rd_u64(&r);
+        if (r.bad || cid >= plan->old_class_cnt) goto corrupt;
+        const wo_mig_class *mc = &plan->classes[cid];
+        if (mc->new_cid == WO_SCHEMA_NONE) {
+            /* the poison bites: a record of this class actually exists */
+            if (err_out && mc->poison) *err_out = strdup(mc->poison);
+            rc = -2;
+            free(payload);
+            goto out;
+        }
+        ok = &oldsc->classes[cid];
+        nk = &db->classes[mc->new_cid];
+        if (kind == WO_WAL_INSERT || kind == WO_WAL_UPDATE) {
+            vals = calloc(ok->field_cnt ? ok->field_cnt : 1, sizeof *vals);
+            if (!vals) goto corrupt;
+            for (uint32_t f = 0; f < ok->field_cnt; f++)
+                if (dec_val(&r, &olddb, ok->fields[f].kind, &vals[f]) != 0) goto corrupt;
+            if ((size_t)(r.end - r.p) != 0) goto corrupt;
+            for (uint32_t f = 0; f < ok->field_cnt; f++)
+                if (mig_fixup_cids(vals[f], ok->fields[f].kind, oldsc, plan) != 0)
+                    goto corrupt;
+            wput_u8(&b, kind);
+            wput_u32(&b, mc->new_cid);
+            wput_u64(&b, id);
+            for (uint32_t nf = 0; nf < nk->field_cnt; nf++) {
+                uint64_t v = 0; /* an added field: the kind's zero value */
+                for (uint32_t f = 0; f < ok->field_cnt; f++)
+                    if (mc->fmap[f] == (int32_t)nf) {
+                        v = vals[f];
+                        break;
+                    }
+                enc_val(&b, db->classes, nk->kinds[nf], v);
+            }
+            /* post-fixup the tree speaks NEW cids, so the compiled db frees it */
+            for (uint32_t f = 0; f < ok->field_cnt; f++)
+                wo_db_val_free(db, ok->fields[f].kind, vals[f]);
+            free(vals);
+            vals = NULL;
+        } else if (kind == WO_WAL_DELTA) {
+            uint32_t fidx = rd_u32(&r);
+            uint64_t back = rd_u64(&r);
+            if (r.bad || fidx >= ok->field_cnt) goto corrupt;
+            uint64_t nback;
+            if (migmap_get(&map, back, &nback) != 0) goto corrupt;
+            if (mc->fmap[fidx] < 0) {
+                /* a delta on a deleted field: splice the chain around it —
+                 * anything pointing at THIS record re-points to where this
+                 * record itself pointed */
+                free(payload);
+                if (migmap_put(&map, off, nback) != 0) goto out;
+                off += 8u + len + 4u;
+                continue;
+            }
+            uint64_t v = 0;
+            if (dec_val(&r, &olddb, ok->fields[fidx].kind, &v) != 0) goto corrupt;
+            if ((size_t)(r.end - r.p) != 0 ||
+                mig_fixup_cids(v, ok->fields[fidx].kind, oldsc, plan) != 0) {
+                wo_db_val_free(db, ok->fields[fidx].kind, v);
+                goto corrupt;
+            }
+            wput_u8(&b, WO_WAL_DELTA);
+            wput_u32(&b, mc->new_cid);
+            wput_u64(&b, id);
+            wput_u32(&b, (uint32_t)mc->fmap[fidx]);
+            wput_u64(&b, nback);
+            enc_val(&b, db->classes, nk->kinds[mc->fmap[fidx]], v);
+            wo_db_val_free(db, ok->fields[fidx].kind, v);
+        } else if (kind == WO_WAL_REMOVE) {
+            wput_u8(&b, WO_WAL_REMOVE);
+            wput_u32(&b, mc->new_cid);
+            wput_u64(&b, id);
+        } else {
+            goto corrupt;
+        }
+        free(payload);
+        payload = NULL;
+        {
+            int src = stage(&nw, &b);
+            free(b.b);
+            if (src != 0) goto out;
+        }
+        if (migmap_put(&map, off, new_start) != 0) goto out;
+        if (++pending >= WO_WAL_COMPACT_FLUSH) {
+            if (wal_write_nosync(&nw) != 0) goto out;
+            pending = 0;
+        }
+        off += 8u + len + 4u;
+        continue;
+    corrupt:
+        free(payload);
+        free(b.b);
+        if (vals && ok) {
+            for (uint32_t f = 0; f < ok->field_cnt; f++)
+                wo_db_val_free(db, ok->fields[f].kind, vals[f]);
+            free(vals);
+            vals = NULL;
+        }
+        rc = -1;
+        goto out;
+    }
+
+    if (wal_write_nosync(&nw) != 0) goto out;
+    if (fsync(nw.fd) != 0) goto out;
+    wo_wal_close(&nw);
+    if (rename(tmp, path) != 0) {
+        (void)unlink(tmp);
+        goto out_closed;
+    }
+    sync_parent_dir(path);
+    rc = 0;
+    goto out_closed;
+
+out:
+    wo_wal_close(&nw);
+    (void)unlink(tmp);
+out_closed:
+    free(map.k);
+    free(map.v);
+out_nolog:
+    if (oldkinds)
+        for (uint32_t c = 0; c < oldsc->class_cnt; c++) free(oldkinds[c]);
+    free(oldkinds);
+    free(oldcls);
+    close(ofd);
+    return rc;
+}
+
 static int apply_delta(wo_db *db, uint32_t cid, uint64_t id, rbuf *r) {
     uint32_t field_idx = rd_u32(r);
     uint64_t back_off = rd_u64(r);

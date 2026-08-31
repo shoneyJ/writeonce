@@ -192,6 +192,21 @@ typedef struct wo_mig_plan {
 int wo_schema_diff(const wo_schema *oldsc, const wo_schema *newsc, wo_mig_plan *plan);
 void wo_mig_plan_free(wo_mig_plan *plan);
 
+/* databasev2 12: rewrite the log at `path` from its stored shape to the
+ * compiled one — a record-level transcode, no db state touched: cids remap by
+ * name (embedded owned values included), surviving fields move to their new
+ * slot, deleted fields' values are freed, added fields take the kind's zero
+ * value, and a delta chain whose field vanished is spliced around. The new
+ * log is written the way compaction writes one (temp, fsync, rename), so a
+ * crash anywhere leaves the old log intact and the next boot re-migrates.
+ * `db` supplies the COMPILED classes for encoding; nothing is inserted.
+ * Returns 0 on success, -1 on I/O or corruption, -2 when a record of a
+ * poisoned class was met — *err_out (malloc'd, caller frees) then carries the
+ * poison text. */
+int wo_wal_migrate(const char *path, wo_db *db, const wo_schema *oldsc,
+                   const wo_mig_plan *plan, const wo_schema *newsc,
+                   uint64_t prealloc, char **err_out);
+
 /* Adopt `sc` as this log's compiled schema (encoded and owned by the wal). */
 int wo_wal_set_schema(wo_wal *w, const wo_schema *sc);
 /* A fresh, empty log gets the schema as its first record — durable before
