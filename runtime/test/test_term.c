@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -404,9 +405,97 @@ static void test_fd_passing(void) {
     unlink("/tmp/wo-rt2-fdpass.sock");
 }
 
+/* ---- runtime-v2 6: term.size + term.width -------------------------------
+ * methods: 0 size(fd) -> ?TermSize, 1 width(cp) -> Int */
+static uint8_t *size_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kts = wb_const_text(b, "TermSize");
+    uint32_t ksz = wb_const_text(b, "size");
+    uint32_t kw = wb_const_text(b, "width");
+    uint8_t kinds[2] = {WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kts, 0, kinds, 2);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    { /* size(fd) */
+        uint32_t code[6];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abc(WOP_MOVE, 1, 0, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kcls);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 3, 1, WO_B_TERM_SIZE);
+        code[n++] = wo_ins_abc(WOP_RET, 3, 0, 0);
+        wb_method(b, ksz, WOB_NONE, 1, 4, code, n, NULL, 0, NULL, 0);
+    }
+    { /* width(cp) */
+        uint32_t code[4];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 1, 0, WO_B_TERM_WIDTH);
+        code[n++] = wo_ins_abc(WOP_RET, 1, 0, 0);
+        wb_method(b, kw, WOB_NONE, 1, 2, code, n, NULL, 0, NULL, 0);
+    }
+    return wb_finish(b, len);
+}
+
+static void test_size_and_width(void) {
+    size_t len;
+    uint8_t *img = size_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+
+    /* a PTY sized 77x33 from the outside answers exactly that */
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    T_CHECK(master >= 0);
+    T_EQ(grantpt(master), 0);
+    T_EQ(unlockpt(master), 0);
+    struct winsize ws = {.ws_row = 33, .ws_col = 77};
+    T_EQ(ioctl(master, TIOCSWINSZ, &ws), 0);
+    uint64_t sargs[1] = {(uint64_t)master};
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, sargs, 1, &ret, &err), 0);
+    T_CHECK(ret != 0 && ret != WO_NIL_SCALAR);
+    if (ret != 0 && ret != WO_NIL_SCALAR) {
+        wo_hdr *o = (wo_hdr *)(uintptr_t)ret;
+        T_EQ(wo_fields(o)[0], 77u);
+        T_EQ(wo_fields(o)[1], 33u);
+        wo_drop_obj(&VM.rt, o);
+    }
+    close(master);
+
+    /* a pipe is not a tty: nil */
+    int p[2];
+    T_EQ(pipe(p), 0);
+    uint64_t pargs[1] = {(uint64_t)p[0]};
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, pargs, 1, &ret, &err), 0);
+    T_EQ(ret, 0u); /* ?TermSize nil is the zero word (heap-shaped) */
+    close(p[0]);
+    close(p[1]);
+
+    /* widths under C.UTF-8: ascii 1, CJK 2, combining 0, control -1 */
+    uint64_t wa[1] = {97};
+    T_EQ(wo_vm_call(&VM, 1, wa, 1, &ret, &err), 0);
+    T_EQ((int64_t)ret, 1);
+    uint64_t wc[1] = {0x4E2D};
+    T_EQ(wo_vm_call(&VM, 1, wc, 1, &ret, &err), 0);
+    T_EQ((int64_t)ret, 2);
+    uint64_t wm[1] = {0x0301};
+    T_EQ(wo_vm_call(&VM, 1, wm, 1, &ret, &err), 0);
+    T_EQ((int64_t)ret, 0);
+    uint64_t wb_[1] = {7};
+    T_EQ(wo_vm_call(&VM, 1, wb_, 1, &ret, &err), 0);
+    T_EQ((int64_t)ret, -1);
+
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
 int main(void) {
     test_signal_on_delivers_record();
     test_term_raw_restore();
     test_fd_passing();
+    test_size_and_width();
     return t_report("test_term");
 }

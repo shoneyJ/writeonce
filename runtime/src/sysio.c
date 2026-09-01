@@ -30,12 +30,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <locale.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <wchar.h>
 
 #include "builtin.h"
 #include "cont.h"
@@ -1641,6 +1643,30 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             return 0;
         }
         R[A] = WO_NIL_SCALAR; /* plain bytes (or EOF): no fd arrived */
+        return 0;
+    }
+    /* ---- runtime-v2 6: the size read-twin and cell width -------------- */
+    case WO_B_TERM_SIZE: { /* (fd, cls) -> ?TermSize {cols, rows} */
+        struct winsize ws;
+        if (ioctl((int)(int64_t)R[B], TIOCGWINSZ, &ws) != 0) {
+            R[A] = 0; /* not a tty: nil, an EXPECTED answer */
+            return 0;
+        }
+        wo_hdr *o = record_of(vm, R[B + 1], 2, msg);
+        if (!o) return R[B + 1] >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;
+        uint64_t *fp = wo_fields(o);
+        fp[0] = (uint64_t)ws.ws_col;
+        fp[1] = (uint64_t)ws.ws_row;
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_TERM_WIDTH: { /* (codepoint) -> cell width via wcwidth */
+        static int loc_inited = 0;
+        if (!loc_inited) {
+            loc_inited = 1;
+            if (!setlocale(LC_CTYPE, "C.UTF-8")) setlocale(LC_CTYPE, "");
+        }
+        R[A] = (uint64_t)(int64_t)wcwidth((wchar_t)(int64_t)R[B]);
         return 0;
     }
     case WO_B_TERM_RESTORE: { /* (fd) -> 0 from the saved entry */

@@ -1247,6 +1247,7 @@ starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 | 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ✅ **DONE 2026-09-02** — `signal.on(sig, addr)` delivering a fresh Signal record (scalar payloads crash by construction — spec amendment); handler-latch + wake eventfd instead of signalfd (amendment); TERM/INT refused by name |
 | 4 | [termios adoption](runtime-v2/04-termios.md) | ✅ **DONE 2026-09-02** — `term.raw/restore`; restore proven a runtime obligation twice (DIV0 while raw, and the double-raw refusal itself) |
 | 5 | [fd passing](runtime-v2/05-fd-passing.md) | ✅ **DONE 2026-09-02** — `net.send_fd`/`recv_fd`/`connect_unix`; a tty crossed the socket, was raw'd through the received copy and restored at destroy — the wmux handover in miniature |
+| 6 | [term.size + term.width](runtime-v2/06-term-size-width.md) | ✅ **DONE 2026-09-02** — TIOCGWINSZ read twin (nil = not a tty) and libc wcwidth under C.UTF-8; the only runtime work the whole wmux parity ladder needs |
 
 ### ▸ wmux — the terminal multiplexer track
 

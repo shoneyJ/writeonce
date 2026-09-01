@@ -272,11 +272,18 @@ let signal_record_name = "Signal"
 
 let signal_record_fields : (string * field_ty) list = [ ("sig", Scalar "Int") ]
 
+(* runtime-v2 6: term.size's answer; nil = the fd is not a tty *)
+let termsize_record_name = "TermSize"
+
+let termsize_record_fields : (string * field_ty) list =
+  [ ("cols", Scalar "Int"); ("rows", Scalar "Int") ]
+
 let predeclared_records : (string * (string * field_ty) list) list =
   [ (error_record_name, error_record_fields); (stat_record_name, stat_record_fields);
     (time_record_name, time_record_fields); (proc_record_name, proc_record_fields);
     (child_record_name, child_record_fields);
-    (signal_record_name, signal_record_fields) ]
+    (signal_record_name, signal_record_fields);
+    (termsize_record_name, termsize_record_fields) ]
 
 (* One member of a reserved stdlib module (`fs.stat`, `net.write`, ...).
    [sm_builtin] is its .wob builtin id (runtime/src/wob.h); [sm_record] names
@@ -357,6 +364,10 @@ let stdlib_members : stdlib_member list =
     m "net" "send_fd" 2 105 (Some (TScalar "Bool")) None;
     m "net" "recv_fd" 1 106 (Some (TNullable (TScalar "Int"))) None;
     m "net" "connect_unix" 1 107 (Some (TScalar "Int")) None;
+    (* runtime-v2 6: resize's read twin (nil = not a tty), and a
+       codepoint's terminal cell width (libc wcwidth under C.UTF-8) *)
+    m "term" "size" 1 108 (Some (TNullable (TScalar termsize_record_name))) (Some termsize_record_name);
+    m "term" "width" 1 109 (Some (TScalar "Int")) None;
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here

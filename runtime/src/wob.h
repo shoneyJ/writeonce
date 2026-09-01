@@ -541,9 +541,15 @@ enum {
                                * the peer sent plain bytes */
     WO_B_NET_CONNECT_UNIX = 107, /* (path) -> Int: AF_UNIX client fd,
                                * nonblocking */
+    /* ---- runtime-v2 6: the size read-twin and cell width (wmux 2/6) */
+    WO_B_TERM_SIZE = 108,     /* (fd, cls) -> ?TermSize {cols, rows}:
+                               * TIOCGWINSZ; nil = not a tty */
+    WO_B_TERM_WIDTH = 109,    /* (codepoint) -> Int cell width via libc
+                               * wcwidth under C.UTF-8: -1 control,
+                               * 0 combining, 1, or 2 */
 };
 
-#define WO_B_MAX 107u
+#define WO_B_MAX 109u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

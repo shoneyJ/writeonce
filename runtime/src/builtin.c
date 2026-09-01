@@ -172,7 +172,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     if (C == WO_B_JSON_ENCODE || C == WO_B_JSON_DECODE)
         return wo_builtin_json(vm, R, ins, msg);
     if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS
-        || (C >= WO_B_NET_READ_DL && C <= WO_B_NET_CONNECT_UNIX))
+        || (C >= WO_B_NET_READ_DL && C <= WO_B_TERM_WIDTH))
         return wo_builtin_sys(vm, R, ins, msg);
     if (C >= WO_B_SHA1 && C <= WO_B_HMAC_SHA256)
         return wo_builtin_crypto(vm, R, ins, msg);
