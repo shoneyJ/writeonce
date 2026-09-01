@@ -2,7 +2,7 @@
 track: runtime-v2
 iteration: "2"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # runtime-v2 2 — PTY: a child that believes it owns a terminal
@@ -19,19 +19,19 @@ readiness: refine
 > `compat/fdforkpty.c` (~450 lines of C covering five platforms; Linux
 > alone is far smaller).
 
-## Info — the forks (open)
+## Info — the forks, settled (brainstorm 2026-09-01; spec:
+[`2026-09-01-runtime-v2-design.md`](../../superpowers/specs/2026-09-01-runtime-v2-design.md))
 
-1. **Surface.** A `pty: true` option on iteration 1's spawn verb (the
-   lean — one spawn shape, two transports) versus a separate
-   `proc.spawn_pty`.
-2. **Resize.** A verb on the handle (`resize(cols, rows)` → TIOCSWINSZ)
-   — needed the moment [3](03-signals-as-events.md) delivers SIGWINCH.
-   The fork is only whether it ships here or with 3.
-3. **The master fd's transport** is settled by iteration 1's fork 2 —
-   whatever won there carries the PTY master identically.
-4. **Encoding edge.** A PTY master delivers the child's output with tty
-   post-processing (ONLCR and friends): raw the master by default versus
-   expose termios knobs. Lean: raw, no knobs, until a consumer asks.
+1. **Separate verb**: `proc.spawn_pty(cmd, args, cols, rows) -> ?Child`
+   — its own builtin id (static arity table stays static), same Child
+   record with `in` and `out` both the master fd, `err` nil.
+2. **Resize ships HERE**: `proc.resize(id, cols, rows)` → TIOCSWINSZ on
+   the slot; refusal by name on a pipe child.
+3. **Transport settled by iteration 1's pull decision** — the master fd
+   is driven by the existing net verbs, nothing new.
+4. **Master raw by default, no knobs** — until a consumer asks by name.
+   (`openpty` may need `-lutil` — the plan verifies the link line
+   before assuming.)
 
 ## Acceptance sketch
 

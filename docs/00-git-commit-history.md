@@ -46,7 +46,7 @@ features cannot collide.
 | `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
 | `lang42` | iteration 42 — bounded subprocess: `proc.run` bounded + parked (pidfd, caps, ceiling, owner-bound reaping), `proc.run_dl`; carries the alacritty/tmux/zen parity studies and the porch dependency-graph section from the same sweep | ✅ on `master` 2026-09-01 |
 | `wmux` | the wmux track (`docs/stories/wmux/`, iteration 1 was language 43) — the terminal multiplexer, first of the softwares built with writeonce; story + gap-chain remap first, code follows gap by gap | on `dev` 2026-09-01 |
-| `rt2` | the runtime-v2 track (`docs/stories/runtime-v2/`) — the runtime beyond sockets: streaming subprocess, PTY, signals-as-events, termios, fd passing; five refine stories, wmux is the driving workload | on `dev` 2026-09-01 |
+| `rt2` | the runtime-v2 track (`docs/stories/runtime-v2/`) — the runtime beyond sockets: streaming subprocess, PTY, signals-as-events, termios, fd passing; all five `readiness: ready` (track-wide spec 2026-09-01), wmux is the driving workload | on `dev` 2026-09-01 |
 
 ## Cherry-picks onto master
 

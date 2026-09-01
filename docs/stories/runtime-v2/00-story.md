@@ -34,9 +34,14 @@ cross a unix socket. Five seams, each builtin-sized, each in
 | 4 | [termios adoption](04-termios.md) | the process's OWN tty into raw mode and back — adopting a terminal it was given |
 | 5 | [fd passing](05-fd-passing.md) | SCM_RIGHTS over unix sockets — detach/attach's foundation, and the Wayland stage's later |
 
-Build order is 1 → 2 → 3 (each leans on the last); 4 and 5 have no
-incoming edges and are startable alone. Edges live in
-[dependency graph section 6](../../00-dependency-graph.md).
+All five are `readiness: ready` since the track-wide brainstorm
+([spec](../../superpowers/specs/2026-09-01-runtime-v2-design.md),
+2026-09-01), which also settled the build order: only 1 → 2 is chained
+(spawn_pty extends spawn's plumbing); **3, 4 and 5 are startable alone,
+today** — the pull-transport decision (a child is fds; the net verbs
+drive them) broke the old 1→2→3 chain. Edges live in
+[dependency graph section 6](../../00-dependency-graph.md); each
+iteration writes its own implementation plan when it starts.
 
 ## The driving workload
 

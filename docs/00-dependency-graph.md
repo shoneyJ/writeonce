@@ -322,7 +322,8 @@ exists to make visible. Streaming responses' runtime prerequisites
 The tmux study's gaps, remapped as buildable edges now that iteration 42
 landed. Every yellow node is an iteration of the
 [runtime-v2 track](stories/runtime-v2/00-story.md) ("the runtime beyond
-sockets", its own folder since 2026-09-01), brainstormed on demand —
+sockets"), ALL `readiness: ready` since the track-wide brainstorm
+([spec](superpowers/specs/2026-09-01-runtime-v2-design.md), 2026-09-01) —
 [1 streaming subprocess](stories/runtime-v2/01-streaming-subprocess.md) ·
 [2 PTY](stories/runtime-v2/02-pty.md) ·
 [3 signals as events](stories/runtime-v2/03-signals-as-events.md) ·
@@ -351,21 +352,22 @@ flowchart TD
 
     I42w --> GSTREAM
     GSTREAM --> GPTY
-    GPTY --> GSIG
-    GSTREAM --> GVTE
     GPTY --> WMUX
     GSIG --> WMUX
     GTERMIOS --> WMUX
     GFDPASS --> WMUX
     GVTE --> WMUX
-    TINFO -.settled at brainstorm.-> WMUX
+    TINFO -.settled at wmux's brainstorm.-> WMUX
     TMONO -.v2.-> WMUX
 ```
 
-Sibling reuse, for the record: the alacritty study's Wayland stage D
-reuses GFDPASS + GVTE; the zen CDP driver shares GSTREAM only; skillhost
-(28) consumes GSTREAM's stdin transport. GTERMIOS and GFDPASS have no
-incoming edges — startable any time, alone.
+**Remapped by the 2026-09-01 track brainstorm** (pull transport: a child
+is fds, the net verbs drive them): the old 1→2→3 chain broke — signals
+never needed PTY, only the resize pairing, and the VTE grid needs no
+subprocess (a replay corpus feeds it). Only 1 → 2 remains chained;
+**3, 4, 5 and the grid are all startable alone, today.** Sibling reuse:
+the alacritty Wayland stage reuses GFDPASS + GVTE; the zen CDP driver
+shares GSTREAM only; skillhost (28) consumes GSTREAM's stdin transport.
 
 ## Maintenance rule
 

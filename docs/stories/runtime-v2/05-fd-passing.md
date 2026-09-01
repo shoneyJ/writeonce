@@ -2,7 +2,7 @@
 track: runtime-v2
 iteration: "5"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # runtime-v2 5 — fd passing: SCM_RIGHTS over the unix socket
@@ -22,21 +22,19 @@ readiness: refine
 > SCM_RIGHTS ancillary data is the only mechanism, and it is runtime
 > work by nature.
 
-## Info — the forks (open)
+## Info — the forks, settled (brainstorm 2026-09-01; spec:
+[`2026-09-01-runtime-v2-design.md`](../../superpowers/specs/2026-09-01-runtime-v2-design.md))
 
-1. **Surface.** `net.send_fd(conn, fd)` / `net.recv_fd(conn)` — two
-   verbs, fd travels alone (the lean; tmux sends its imsg header as
-   ordinary bytes beside it) — versus fd-attached-to-a-message framing
-   in the runtime.
-2. **What arrives.** The received fd as an opaque scalar the existing
-   `net.read`/`net.write`/termios verbs accept (lean — every fd verb
-   already takes an Int-shaped conn) versus a new wrapped type.
-3. **The unix-socket client side.** Iteration 38's `net.connect` covers
-   outbound TCP; the CLIENT half of a unix-socket connection may or may
-   not exist by then — this iteration carries `net.connect_unix` if 38
-   has not landed it first. Verify at brainstorm, not assumed.
-4. **Bounds.** One fd per message, refusal by name past it (lean),
-   versus SCM_RIGHTS' multi-fd arrays. YAGNI: no consumer sends two.
+1. **Two verbs, fd travels alone**: `net.send_fd(conn, fd) -> Bool` /
+   `net.recv_fd(conn) -> ?Int` — `sendmsg` + SCM_RIGHTS, fixed
+   ancillary buffer; framing stays the caller's ordinary bytes (the
+   tmux imsg shape, composed in `.wo`).
+2. **A received fd is a plain Int** every existing fd verb accepts —
+   net reads/writes, termios adoption included.
+3. **This iteration CARRIES `net.connect_unix(path) -> Int`** —
+   iteration 38 verified pending at brainstorm time, not assumed.
+4. **One fd per message**, refusal by name past it; non-unix sockets
+   refuse by name; multi-fd arrays wait for a consumer.
 
 ## Acceptance sketch
 

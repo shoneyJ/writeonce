@@ -1181,17 +1181,22 @@ this track adds the missing third — **processes, terminals, signals** —
 five builtin-sized seams, each `runtime/src/` work with a `types.ml` row
 as its whole compiler cost (the iteration 42 precedent). Iteration 42
 (bounded subprocess, ✅ on `master` 2026-09-01) opened the arc from the
-language track before it had a name. Build order 1 → 2 → 3; 4 and 5
-startable alone. All ⬜ `refine`; edges in
-[dependency graph section 6](../00-dependency-graph.md).
+language track before it had a name. **All five `readiness: ready`** —
+one track-wide brainstorm settled every fork
+([spec](../superpowers/specs/2026-09-01-runtime-v2-design.md),
+2026-09-01). The keystone decision: PULL transport — a child is fds and
+the existing net verbs drive them, so no new transport machinery exists
+anywhere in the track, and the old 1→2→3 chain broke. Only 1 → 2
+chained; 3, 4, 5 startable alone. Plan per iteration, written when it
+starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [streaming subprocess](runtime-v2/01-streaming-subprocess.md) | ⬜ `refine` — 42's named follow-up: long-lived child, output as events, stdin, exit notice. Five forks (verb shape, push-vs-pull transport, the mailbox-cap collision, stdin backpressure, idle-deadline semantics). First up |
-| 2 | [PTY](runtime-v2/02-pty.md) | ⬜ `refine` — openpty + controlling terminal + resize; `.dev/reference/tmux` `spawn.c`/`fdforkpty.c` is the reading |
-| 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ⬜ `refine` — SIGWINCH/SIGCHLD as mailbox messages; signalfd lean; the seam 42 deferred to its real consumer |
-| 4 | [termios adoption](runtime-v2/04-termios.md) | ⬜ `refine`, **startable alone** — raw mode + guaranteed restore on the process's own tty |
-| 5 | [fd passing](runtime-v2/05-fd-passing.md) | ⬜ `refine`, **startable alone** — SCM_RIGHTS over unix sockets; detach/attach's foundation |
+| 1 | [streaming subprocess](runtime-v2/01-streaming-subprocess.md) | ⬜ ready — `proc.spawn -> Child{id,in,out,err}` (fds driven by the net verbs; kernel pipe = backpressure), `proc.wait_dl`, `proc.signal`; actor-owned lifecycle, 42's sweeps. First up |
+| 2 | [PTY](runtime-v2/02-pty.md) | ⬜ ready, after 1 — `proc.spawn_pty(cmd, args, cols, rows)` (master raw, in==out), `proc.resize`; `-lutil` link check flagged |
+| 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ⬜ ready, **startable alone** — `signal.on(sig, addr)` delivering the sig number as a scalar; signalfd on shard 0's plane; TERM/INT refused by name |
+| 4 | [termios adoption](runtime-v2/04-termios.md) | ⬜ ready, **startable alone** — `term.raw(fd)`/`term.restore(fd)`; restore is a runtime obligation (unwind/stop), no wrecked tty ever |
+| 5 | [fd passing](runtime-v2/05-fd-passing.md) | ⬜ ready, **startable alone** — `net.send_fd`/`net.recv_fd` (one fd, SCM_RIGHTS) + `net.connect_unix` (38 pending, verified) |
 
 ### ▸ wmux — the terminal multiplexer track
 

@@ -2,7 +2,7 @@
 track: runtime-v2
 iteration: "3"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # runtime-v2 3 — signals as events: SIGWINCH into a mailbox
@@ -21,25 +21,23 @@ readiness: refine
 > once: the stop flag is a signal made safe by latching. This iteration
 > generalizes that shape without handing user code a signal handler.
 
-## Info — the forks (open)
+## Info — the forks, settled (brainstorm 2026-09-01; spec:
+[`2026-09-01-runtime-v2-design.md`](../../superpowers/specs/2026-09-01-runtime-v2-design.md))
 
-1. **Registration surface.** `signal.on(SIGWINCH, addr, msg)` in the
-   `time.after` mould (the msg MOVES to the runtime, delivered on
-   arrival) versus a process-level subscription table in `wo.toml`.
-   Lean: the builtin — dynamic, one consumer today.
-2. **Delivery mechanics.** `signalfd` on shard 0's plane (a signal
-   becomes an fd event — no async-signal-safety questions at all, the
-   kernel-primitive taste) versus a latch array swept like deadlines.
-   Lean: signalfd; the runtime is Linux-first and the plane already
-   multiplexes fds.
-3. **Which signals are offerable.** SIGWINCH and SIGCHLD certainly;
-   SIGTERM/SIGINT stay the ENGINE's (the stop latch is load-bearing —
-   iteration 40's drain). The fork is whether user registration for the
-   stop signals is refused by name or layered before the latch.
-4. **Coalescing.** Signals coalesce in the kernel; a mailbox message per
-   delivery can't promise one-per-resize. Disclose coalescing (lean —
-   it is what SIGWINCH consumers expect anyway) versus sequence-number
-   them.
+1. **`signal.on(sig, addr)`** — a standing subscription delivering the
+   SIGNAL NUMBER as a scalar message. No moved-message ownership rules:
+   scalars copy, so a repeating SIGWINCH needs no per-delivery payload.
+2. **signalfd on shard 0's plane** — one more registered fd with a
+   sentinel `user_data` (the wake-eventfd precedent); reads drain
+   `signalfd_siginfo` records and fan out ordinary sends.
+3. **Offerable set: SIGWINCH, SIGCHLD, SIGHUP, SIGUSR1, SIGUSR2.**
+   SIGTERM/SIGINT registration is refused by name — the stop latch
+   stays the engine's, iteration 40 is load-bearing.
+4. **Coalescing disclosed, not sequenced** — what SIGWINCH consumers
+   expect anyway.
+
+Also settled: this iteration is STANDALONE — the old edge from PTY was
+only the resize pairing; signalfd needs nothing from iteration 2.
 
 ## Acceptance sketch
 

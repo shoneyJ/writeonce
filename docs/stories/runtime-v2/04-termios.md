@@ -2,7 +2,7 @@
 track: runtime-v2
 iteration: "4"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # runtime-v2 4 — termios adoption: raw mode on a terminal we were given
@@ -17,20 +17,18 @@ readiness: refine
 > including a trap. A terminal left raw is the classic way a program
 > makes a user's shell unusable.
 
-## Info — the forks (open)
+## Info — the forks, settled (brainstorm 2026-09-01; spec:
+[`2026-09-01-runtime-v2-design.md`](../../superpowers/specs/2026-09-01-runtime-v2-design.md))
 
-1. **Surface size.** Exactly two verbs — `term.raw()` returning a
-   restore token and `term.restore(token)` (the lean: wmux needs
-   nothing else; tmux itself uses little more than `cfmakeraw`) —
-   versus exposing termios flag knobs. YAGNI says two verbs and a
-   refusal for the rest.
-2. **Restore guarantee.** Tie restoration to the unwind machinery (the
-   42 ownership pattern: fiber dies, terminal restored — a runtime
-   obligation) versus caller's-problem-with-a-doc-note. Lean: runtime
-   obligation; "no orphan" has a terminal-state sibling: no wrecked tty.
-3. **Scope.** stdin only, versus any tty fd (a client adopting a tty it
-   received via [5](05-fd-passing.md) — the wmux SERVER's need). This
-   fork decides whether the verb takes an fd argument now or grows one
+1. **Exactly two verbs**: `term.raw(fd)` and `term.restore(fd)`. Saved
+   termios live in a per-shard table keyed by fd (one thread — no
+   locks); double-raw on one fd refuses by name; no flag knobs.
+2. **Restore is a RUNTIME OBLIGATION.** Fiber unwind, engine stop and
+   `wo_vm_destroy` restore every saved tty, newest first — "no orphan"
+   has its terminal-state sibling: no wrecked tty, ever, trap paths
+   included.
+3. **fd-taking from day one** — a tty received via
+   [5](05-fd-passing.md) works without the verb growing an argument
    later.
 
 ## Acceptance sketch

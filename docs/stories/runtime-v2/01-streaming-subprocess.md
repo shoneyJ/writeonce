@@ -2,12 +2,14 @@
 track: runtime-v2
 iteration: "1"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # runtime-v2 1 — streaming subprocess: a long-lived child as a peer
 
 > Part of [Story — runtime-v2: the runtime beyond sockets](00-story.md).
+> Spec: [`2026-09-01-runtime-v2-design.md`](../../superpowers/specs/2026-09-01-runtime-v2-design.md)
+> (track-wide brainstorm, approved 2026-09-01 — the forks below are settled).
 > Iteration [42](../language-runtime-database/42-bounded-subprocess.md)'s
 > named follow-up, promoted to this track's opening slice. 42 built the
 > machinery a streaming form reuses whole: the `wo_child` registry, the
@@ -21,33 +23,31 @@ readiness: refine
 > actor as it happens, stdin must reach the child, and exit must arrive
 > as an event — all without violating a single 42 guarantee.
 
-## Info — the forks (open; why this is `refine`)
+## Info — the forks, settled (brainstorm 2026-09-01)
 
-1. **Verb shape.** A new `proc.spawn(cmd, args, …)` returning a child
-   HANDLE, versus spawn-options on `proc.run_dl`. Sub-fork: the handle
-   as an actor address (the child looks like an actor — `send` to feed
-   stdin, `monitor` for exit, iteration 24 machinery free) versus an
-   opaque scalar with its own verb family.
-2. **Output transport.** PUSH — stdout/stderr chunks delivered as
-   `Bytes` messages into the owner's mailbox (the fd-event pattern) —
-   versus PULL — a `read`-style verb the fiber parks on, the
-   `net.read_dl` mould. Push composes with actors; pull composes with
-   backpressure.
-3. **The mailbox-cap collision** — the fork that decides whether push is
-   viable at all: a chatty child versus `wo_mailbox_cap`'s fail-fast
-   1024. Drop chunks? Kill the child by name? Or stop reading the pipe
-   and let the KERNEL buffer be the backpressure (the lean — the child
-   blocks on a full pipe exactly as it would under a slow tmux).
-4. **stdin and its mirror.** Child not reading, pipe full: park the
-   writing fiber with a deadline (the `net.write_dl` mould) versus
-   refuse at a byte cap.
-5. **Bounds semantics shift.** Total-output cap and total deadline stop
-   meaning anything for a shell that runs for days — per-chunk caps and
-   an IDLE deadline replace them; exit notification as a monitor-style
-   death notice carrying the code, versus a blocking `wait` verb.
+1. **Verb shape: `proc.spawn(cmd, args) -> ?Child`** — a new verb, and
+   the handle is a RECORD, not an actor: `Child {id, in, out, err}`,
+   all Int-shaped, joining the predeclared records.
+2. **Transport: PULL, and it already exists.** The child's fds are
+   ordinary conn-like values; `net.read_dl`/`net.write_dl`/`net.close`
+   drive them unchanged through the park plane. This iteration adds NO
+   transport code at all — only acquisition, ownership and exit.
+3. **The mailbox-cap collision never starts** — nothing is pushed. The
+   kernel pipe is the backpressure: an owner that stops reading makes
+   the child block on write, exactly tmux under a slow client.
+4. **stdin mirror settled by the same move**: `net.write_dl` on
+   `child.in` parks with a deadline; torn-write semantics as on sockets.
+5. **Bounds:** the idle deadline is `read_dl`'s per-call ms; output caps
+   are the caller's read sizes (no runtime buffer exists); exit is
+   `proc.wait_dl(id, ms) -> ?Int` parking on the slot's pidfd — one
+   waiter per id, a second refuses by name. `proc.signal(id, sig)`
+   completes the surface. A death-notice verb is refused: a two-line
+   fiber composes `wait_dl` into an event.
 
-Ownership does not fork: 42's rule stands — the owner unwinding kills
-the child; engine stop kills them all; a zombie or an orphan is a bug.
+Ownership (stated, not forked): the spawning ACTOR owns the child (the
+program, when spawned outside one). Actor death, engine stop and
+`wo_vm_destroy` kill, reap and close — 42's doctrine, streaming edition.
+Ceiling stays 32 per shard, failing closed by name.
 
 ## Acceptance sketch (firmed at brainstorm)
 
