@@ -113,6 +113,39 @@ orphan is a bug by definition; `test_proc` pins all of it (deadline,
 caps, ceiling, thousand-spawn fd flatness, stop/unwind), and
 `scripts/subprocess-accept.sh` proves the language-level half.
 
+## runtime-v2 (ids 97–107): processes, terminals, signals
+
+The track's one principle: **a child or received fd is an ORDINARY fd
+the existing net verbs drive** — these are acquisition verbs, never
+transport. `proc.spawn` returns `Child {id, stdin, stdout, stderr}`; the
+CALLER owns those fds (`net.close`), the slot owns pid + pidfd only
+(recycled fd numbers make a sweeping close a stranger-killer). The id is
+`(gen << 6) | slot` so stale handles refuse by name. `wait_dl` parks on
+the pidfd (one waiter per id); `spawn_pty` (posix_openpt, child setsid +
+opens the slave as controlling tty) returns the master as both stdin and
+stdout, with a private `dup` in the slot so `resize` (TIOCSWINSZ)
+survives the caller closing its copy. Streaming children are owned by
+the spawning ACTOR — `actor_die` calls `wo_proc_abandon_actor`.
+
+`signal.on(sig, addr)`: the stop-latch pattern generalized — an
+async-signal-safe handler latches the number, bumps a sequence, pokes
+shard 0's wake eventfd; `wo_io_wait`'s loop head drains latches into
+fresh `Signal {sig}` records via `wo_actor_notify` (payloads MUST be
+heap objects: vm.c drops them unconditionally — a scalar payload is a
+crash). Coalescing disclosed. SIGTERM/SIGINT refused: the stop latch is
+load-bearing.
+
+`term.raw/restore`: saved termios in the shard's 8-entry table; restore
+is a RUNTIME obligation — `vm_unwind` at depth 0 (uncaught trap, fiber
+reap) restores the dying fiber's entries newest-first, `wo_vm_destroy`
+sweeps the rest. Even the double-raw REFUSAL (itself a trap) restores.
+
+`net.send_fd/recv_fd`: sendmsg/recvmsg, one SCM_RIGHTS fd + a sentinel
+byte, `SO_DOMAIN` gates to unix sockets; the received fd arrives
+nonblocking as a plain Int. `net.connect_unix` rides here until
+iteration 38. `test_term` pins signals/termios/fd-passing; `test_proc`
+the spawn family.
+
 ## Class metadata and json (`.wob` v2)
 
 The class table carries, per field, its name constant, the class it refers to

@@ -70,6 +70,56 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-02 — runtime-v2 COMPLETE: all five iterations in one run
+
+**Implemented last time (2026-09-02):** the whole
+[runtime-v2 track](runtime-v2/00-story.md) — streaming subprocess
+(`proc.spawn`/`wait_dl`/`signal`, Child record, kernel-pipe
+backpressure), PTY (`spawn_pty` via posix_openpt + `resize`), signals as
+events (`signal.on` delivering Signal records), termios
+(`term.raw/restore` with runtime-guaranteed restore), and fd passing
+(`send_fd`/`recv_fd`/`connect_unix`). Ids 97–107, five commits, one
+[plan](../superpowers/plans/2026-09-01-runtime-v2.md) against the
+[track spec](../superpowers/specs/2026-09-01-runtime-v2-design.md).
+
+**Key findings (measured, not asserted):** the PULL design paid off
+exactly as argued — the five iterations added ZERO transport code; the
+existing net verbs drove pipes, PTY masters and received fds unchanged
+(`cat` echo, `stty size`, cross-socket pipe reads all through
+`read_dl`/`write_dl`). A real child's SIGUSR1 landed in an actor's multi
+as one coalesced Signal record. The tty that crossed the unix socket was
+raw'd through the RECEIVED copy and restored at vm destroy — wmux's
+detach/attach handover, proven in miniature. `test_proc` 193/0,
+`test_term` 60/0, both dispatch flavors ASan clean; woc 557/0;
+subprocess-accept 12/0; site-accept 23/0.
+
+**Learned (three spec amendments, recorded in its History):** message
+payloads are unconditionally dropped as heap objects, so scalar messages
+crash by construction — anything delivered to an actor must be a record;
+a streaming slot must NOT own the caller-visible fds (recycled numbers —
+the sweep would close a stranger); and signalfd was the wrong mechanics —
+the stop-latch pattern generalized (handler latch + wake eventfd + drain
+at `wo_io_wait`'s loop head) needs no mask plumbing at all. Bonus: the
+double-raw refusal is itself a trap, so the termios obligation restores
+the terminal even THERE — the test caught it as a "bug" that was the
+design working.
+
+**Dependencies unblocked:** every runtime edge into
+[wmux 1](wmux/01-wmux.md) is green — what remains for wmux is its own
+`.wo` work (VTE grid + unicode width tables, server/client, the gate)
+plus its brainstorm's terminfo fork. The alacritty stage A (headless PTY
+runner) is fully unblocked; the zen CDP driver now lacks only the
+WebSocket client; skillhost's stdin transport exists.
+
+**Next steps:** cherry-pick `rt2` to master when declared ready; then
+wmux 1's brainstorm (terminfo fork, v1 surface) — the first product
+slice of the goal recorded 2026-09-01: acceptance by Linux-based
+developers.
+
+**`.dev/reference` used:** tmux (`spawn.c`, `imsg-buffer.c` — the
+fd-passing and PTY shapes), the kernel's pidfd/termios/SCM_RIGHTS
+interfaces.
+
 ### Landed 2026-09-01 — iteration 42, bounded subprocess (brainstorm to gate in one day)
 
 **Implemented last time (2026-09-01):** iteration
@@ -1192,11 +1242,11 @@ starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [streaming subprocess](runtime-v2/01-streaming-subprocess.md) | ⬜ ready — `proc.spawn -> Child{id,in,out,err}` (fds driven by the net verbs; kernel pipe = backpressure), `proc.wait_dl`, `proc.signal`; actor-owned lifecycle, 42's sweeps. First up |
-| 2 | [PTY](runtime-v2/02-pty.md) | ⬜ ready, after 1 — `proc.spawn_pty(cmd, args, cols, rows)` (master raw, in==out), `proc.resize`; `-lutil` link check flagged |
-| 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ⬜ ready, **startable alone** — `signal.on(sig, addr)` delivering the sig number as a scalar; signalfd on shard 0's plane; TERM/INT refused by name |
-| 4 | [termios adoption](runtime-v2/04-termios.md) | ⬜ ready, **startable alone** — `term.raw(fd)`/`term.restore(fd)`; restore is a runtime obligation (unwind/stop), no wrecked tty ever |
-| 5 | [fd passing](runtime-v2/05-fd-passing.md) | ⬜ ready, **startable alone** — `net.send_fd`/`net.recv_fd` (one fd, SCM_RIGHTS) + `net.connect_unix` (38 pending, verified) |
+| 1 | [streaming subprocess](runtime-v2/01-streaming-subprocess.md) | ✅ **DONE 2026-09-02** — `proc.spawn -> Child{id,stdin,stdout,stderr}` (fds driven by the net verbs; kernel pipe = backpressure), `proc.wait_dl` (nil at deadline, one waiter), `proc.signal`; actor-owned lifecycle |
+| 2 | [PTY](runtime-v2/02-pty.md) | ✅ **DONE 2026-09-02** — `proc.spawn_pty` via posix_openpt (no -lutil), `proc.resize`; `test -t` and live `stty size` legs |
+| 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ✅ **DONE 2026-09-02** — `signal.on(sig, addr)` delivering a fresh Signal record (scalar payloads crash by construction — spec amendment); handler-latch + wake eventfd instead of signalfd (amendment); TERM/INT refused by name |
+| 4 | [termios adoption](runtime-v2/04-termios.md) | ✅ **DONE 2026-09-02** — `term.raw/restore`; restore proven a runtime obligation twice (DIV0 while raw, and the double-raw refusal itself) |
+| 5 | [fd passing](runtime-v2/05-fd-passing.md) | ✅ **DONE 2026-09-02** — `net.send_fd`/`recv_fd`/`connect_unix`; a tty crossed the socket, was raw'd through the received copy and restored at destroy — the wmux handover in miniature |
 
 ### ▸ wmux — the terminal multiplexer track
 

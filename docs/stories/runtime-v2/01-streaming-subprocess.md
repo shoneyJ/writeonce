@@ -1,7 +1,7 @@
 ---
 track: runtime-v2
 iteration: "1"
-status: pending
+status: done
 readiness: ready
 ---
 

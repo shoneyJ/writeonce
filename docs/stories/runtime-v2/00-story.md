@@ -34,7 +34,14 @@ cross a unix socket. Five seams, each builtin-sized, each in
 | 4 | [termios adoption](04-termios.md) | the process's OWN tty into raw mode and back — adopting a terminal it was given |
 | 5 | [fd passing](05-fd-passing.md) | SCM_RIGHTS over unix sockets — detach/attach's foundation, and the Wayland stage's later |
 
-All five are `readiness: ready` since the track-wide brainstorm
+**ALL FIVE LANDED 2026-09-02, one execution run** (plan:
+[`2026-09-01-runtime-v2.md`](../../superpowers/plans/2026-09-01-runtime-v2.md);
+three implementation amendments in the spec's History). Gates:
+`test_proc` 193/0 + `test_term` 60/0 inside a fully green ASan suite on
+both dispatch flavors, woc-test 557/0, subprocess-accept 12/0,
+site-accept 23/0. The board's NEXT PLAN entry carries the findings.
+
+All five were `readiness: ready` since the track-wide brainstorm
 ([spec](../../superpowers/specs/2026-09-01-runtime-v2-design.md),
 2026-09-01), which also settled the build order: only 1 → 2 is chained
 (spawn_pty extends spawn's plumbing); **3, 4 and 5 are startable alone,

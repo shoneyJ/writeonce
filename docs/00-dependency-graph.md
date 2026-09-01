@@ -340,11 +340,11 @@ flowchart TD
     classDef later fill:#6e7781,color:#fff,stroke:none
 
     I42w["42 bounded subprocess ✅ 2026-09-01"]:::done
-    GSTREAM["runtime-v2 1 streaming subprocess: long-lived child, output as mailbox messages, stdin (42's named follow-up)"]:::gap
-    GPTY["runtime-v2 2 PTY: openpty, controlling terminal, resize ioctls"]:::gap
-    GSIG["runtime-v2 3 signals as events: SIGWINCH (and SIGCHLD beyond pidfd) as mailbox messages"]:::gap
-    GTERMIOS["runtime-v2 4 termios adoption: the CLIENT's own tty raw + restored"]:::gap
-    GFDPASS["runtime-v2 5 SCM_RIGHTS fd passing over the unix socket (detach/attach's foundation)"]:::gap
+    GSTREAM["runtime-v2 1 ✅ 2026-09-02 streaming subprocess: Child fds driven by the net verbs, wait_dl, signal"]:::done
+    GPTY["runtime-v2 2 ✅ 2026-09-02 PTY: spawn_pty + resize"]:::done
+    GSIG["runtime-v2 3 ✅ 2026-09-02 signals as events: signal.on delivers Signal records"]:::done
+    GTERMIOS["runtime-v2 4 ✅ 2026-09-02 termios: raw/restore, restore a runtime obligation"]:::done
+    GFDPASS["runtime-v2 5 ✅ 2026-09-02 fd passing: send_fd/recv_fd/connect_unix"]:::done
     GVTE["VTE grid in pure .wo + unicode width tables (pinned against recorded sessions)"]:::gap
     WMUX["wmux 1 (was language 43): server owns sessions/PTYs in durable tables, thin client hands over its tty — reattach after server RESTART replays from the WAL"]:::product
     TINFO["terminfo fork: parse the db in .wo vs fixed xterm-256color + refusal by name (decide at 43's brainstorm)"]:::later
@@ -361,13 +361,12 @@ flowchart TD
     TMONO -.v2.-> WMUX
 ```
 
-**Remapped by the 2026-09-01 track brainstorm** (pull transport: a child
-is fds, the net verbs drive them): the old 1→2→3 chain broke — signals
-never needed PTY, only the resize pairing, and the VTE grid needs no
-subprocess (a replay corpus feeds it). Only 1 → 2 remains chained;
-**3, 4, 5 and the grid are all startable alone, today.** Sibling reuse:
+**The track landed whole on 2026-09-02** — every runtime edge into wmux
+is green; what remains for wmux 1 is its own `.wo` work (the VTE grid +
+unicode width node) and its brainstorm's terminfo fork. Sibling reuse:
 the alacritty Wayland stage reuses GFDPASS + GVTE; the zen CDP driver
-shares GSTREAM only; skillhost (28) consumes GSTREAM's stdin transport.
+now lacks only a WebSocket client; skillhost (28) has its stdin
+transport.
 
 ## Maintenance rule
 

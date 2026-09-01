@@ -88,6 +88,25 @@ plumbing); **3, 4, 5 startable alone, today**; the VTE grid is wmux's
 own `.wo` work, also standalone (a replay corpus needs no subprocess).
 wmux 1 consumes all five plus the grid.
 
+## History — three amendments found at implementation (2026-09-02)
+
+1. **Signal delivery is a record, not a scalar.** Message payloads are
+   unconditionally `wo_drop_obj`'d (`vm.c` — delivery, actor death,
+   fiber reap), so a scalar payload is a crash by construction.
+   `signal.on(sig, addr)` delivers a fresh predeclared `Signal {sig}`
+   record per arrival; the class id rides the call as the appended
+   record operand.
+2. **A streaming slot does not own the caller's stdio fds** — fd numbers
+   get recycled, so a sweep closing them could close a stranger. The
+   caller owns `Child.stdin/stdout/stderr` (released with `net.close`);
+   the slot owns pid + pidfd and, for a PTY child, a private `dup` of
+   the master so resize survives the caller closing its copy.
+3. **No signalfd.** The stop-latch pattern generalized instead: an
+   async-signal-safe handler latches the number, bumps a sequence and
+   pokes shard 0's wake eventfd; `wo_io_wait`'s loop head drains latches
+   into deliveries. Same observable contract, no mask plumbing, no
+   fork-child mask restoration, EINTR itself is the wake.
+
 ## Out of scope, by name
 
 - PUSH delivery of child output — rejected above, revisit only with a
