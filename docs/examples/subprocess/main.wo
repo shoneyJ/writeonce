@@ -1,0 +1,111 @@
+-- subprocess — iteration 42's acceptance workload. A line-oriented TCP
+-- service whose every command exercises the bounded subprocess surface:
+--
+--   ping      answered without touching proc — the concurrency probe
+--   run       proc.run with the defaults (echo hello)
+--   slow      proc.run of `sleep 2` — the fiber parks, the shard serves
+--   deadline  proc.run_dl of `sleep 10` against 200 ms — caught in .wo
+--   cap       proc.run_dl past a 1000-byte stdout cap — caught in .wo
+--   long      replies, closes, THEN runs `sleep 30`: the SIGTERM drain
+--             leg's live child (no child survives the stop)
+--
+-- One request per connection: read a line, answer a line, close. Every
+-- request is its own Handler actor, so a parked run blocks nobody — the
+-- gate proves that by timing `ping` while `slow` is in flight.
+--
+--   woc --emit main.wo -o subprocess.wob && wovm subprocess.wob 18971
+--
+-- The gate (scripts/subprocess-accept.sh, `just subprocess`) logs the
+-- service to /tmp/subprocess.log.
+use env
+use net
+use proc
+
+class ConnMsg {
+  fd: net.Conn
+}
+
+fn do_run() -> Text {
+  let r = try proc.run("echo", ["hello"]) catch (e) nil;
+  if r == nil { return "run-error"; }
+  return "code=${r.code} out=${trim(r.out)}";
+}
+
+fn do_slow() -> Text {
+  let r = try proc.run("sleep", ["2"]) catch (e) nil;
+  if r == nil { return "slow-error"; }
+  return "slow-done code=${r.code}";
+}
+
+-- Traps on purpose: 200 ms deadline against a 10 s sleep. The caller
+-- catches and reports — catchability from the language is the point.
+fn deadline_run() -> Text {
+  let r = proc.run_dl("sleep", ["10"], 200, 0, 0);
+  if r == nil { return "nil"; }
+  return "no-trap code=${r.code}";
+}
+
+-- Traps on purpose: a chatty child against a 1000-byte stdout cap.
+fn cap_run() -> Text {
+  let r = proc.run_dl("sh", ["-c", "head -c 99999 /dev/zero"], 5000, 1000, 0);
+  if r == nil { return "nil"; }
+  return "no-trap code=${r.code}";
+}
+
+class Handler {
+  pad: Int
+  fn receive(msg: ConnMsg) {
+    let got = try net.read_dl(msg.fd, 256, 5000) catch (e) nil;
+    if got == nil {
+      net.close(msg.fd);
+      return;
+    }
+    let cmd = trim("${got}");
+    print("cmd: ${cmd}");
+    if cmd == "long" {
+      -- answer first: the child must be ALIVE when SIGTERM arrives
+      try net.write(msg.fd, "long-started\n") catch (e) {}
+      net.close(msg.fd);
+      let r = try proc.run("sleep", ["30"]) catch (e) nil;
+      if r == nil { print("long: interrupted"); }
+      else { print("long: code=${r.code}"); }
+      return;
+    }
+    let resp = "unknown";
+    if cmd == "ping" { resp = "pong"; }
+    if cmd == "run" { resp = do_run(); }
+    if cmd == "slow" { resp = do_slow(); }
+    if cmd == "deadline" { resp = try deadline_run() catch (e) "caught: ${e.msg}"; }
+    if cmd == "cap" { resp = try cap_run() catch (e) "caught: ${e.msg}"; }
+    print("resp: ${resp}");
+    try net.write(msg.fd, resp .. "\n") catch (e) {}
+    net.close(msg.fd);
+  }
+}
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 1 {
+    print_err("usage: subprocess <port>");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil {
+    print_err("subprocess: <port> must be a number");
+    return 2;
+  }
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() {
+      -- main's return reaps every parked handler, and each handler's
+      -- live child dies with it (iteration 42's ownership rule)
+      net.close(srv);
+      return 0;
+    }
+    let c = net.accept_dl(srv, 250);
+    if c != nil {
+      let h: actor ConnMsg = spawn Handler { pad: 0 };
+      send(h, ConnMsg { fd: c });
+    }
+  }
+}

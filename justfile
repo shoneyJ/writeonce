@@ -82,6 +82,13 @@ db-actor:
 residency:
     ./scripts/residency-accept.sh
 
+# subprocess: iteration 42's gate (docs/examples/subprocess) — proc.run
+# from .wo end to end: defaults, deadline and cap traps caught with
+# try/catch in the language, a parked run blocking no other request, and
+# the SIGTERM drain leaving no child behind. Log: /tmp/subprocess.log.
+subprocess:
+    ./scripts/subprocess-accept.sh
+
 # db-bench: iteration 22's campaign (docs/examples/db-bench) — OFF the
 # fast path, minutes long: ram+durable x 1/N shards, durability legs,
 # gates vs bench/baseline.json. quick = seconds, floors only.

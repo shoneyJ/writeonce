@@ -1,0 +1,6 @@
+name        = "subprocess"
+version     = "0.1.0"
+description = "iteration 42: bounded subprocess — proc.run parked and capped, proc.run_dl per-call bounds, no child survives SIGTERM"
+
+[runtime]
+wo = ">= 0.1"
