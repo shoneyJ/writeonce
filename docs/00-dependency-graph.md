@@ -58,7 +58,8 @@ flowchart TD
     I38["38 content platform capabilities: fs mutation verbs + net.connect"]:::open
     I9g["27 query grammar corpus (⏸ hold; likely collapses)"]:::parked
     I30["30 observability, CI, fuzz — release-only CI exists; per-change gates + fuzz open (no story file)"]:::open
-    GAPS["28's gap fan-out: bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process"]:::open
+    GAPS["28's gap fan-out, what is LEFT of it: fs metadata, FFI-vs-out-of-process (bounded subprocess + stdio transport moved to 42)"]:::open
+    I42["42 bounded subprocess: bound proc.run (deadline, caps, fiber-parked), streaming form, owner-bound reaping"]:::open
     DRAIN["parked drain, what is LEFT of it: WO-E225 roster, ADT roster, group-by aggregates"]:::parked
 
     FOUND --> I7
@@ -98,6 +99,8 @@ flowchart TD
     I9g --> I28
     I7 --> I28
     I28 --> GAPS
+    I11 --> I42
+    I24 --> I42
     I16 --> I38
     I32 --> I38
     I36 -.reopens the pure-wo HMAC question.-> I34
@@ -268,6 +271,51 @@ Cache and flags are dependency-free warm-ups; `transaction { }` is the
 critical path (the only engine + language work); jobs compose on it; the
 demo and gate close it. Fiber-scheduled jobs and cancellation→rollback
 appear in graph 2 — they need iteration 11 as well as 18.
+
+## 5. porch — the web framework track
+
+States live on [the board's porch section](stories/00-status.md); every
+pending node is `readiness: refine` (no approved spec), so a brainstorm
+precedes any plan. Three independent roots: **2** (the auth chain),
+**6** (the streaming chain), **5** (anytime, no incoming edges). **9** is
+the track's only `readiness: ready` item and is held.
+
+```mermaid
+flowchart TD
+    classDef done fill:#1a7f37,color:#fff,stroke:none
+    classDef refine fill:#eac54f,color:#000,stroke:none
+    classDef held fill:#6e7781,color:#fff,stroke:none
+    classDef lang fill:#8250df,color:#fff,stroke:none
+
+    CSPRNG["language track: CSPRNG builtin (id 96+) — porch 2's Phase A"]:::lang
+    P1["porch 1 store-backed middleware ✅ 2026-08-30"]:::done
+    P2["porch 2 randomness + cookies (repeated Set-Cookie/Vary headers, Cookie: parsing, signed cookies)"]:::refine
+    P3["porch 3 sessions"]:::refine
+    P4["porch 4 CSRF"]:::refine
+    P5["porch 5 routing + response ergonomics"]:::refine
+    P6["porch 6 streaming core"]:::refine
+    P7["porch 7 SSE + compression"]:::refine
+    P8["porch 8 static files + lifecycle"]:::refine
+    P9["porch 9 idempotent replay (⏸ hold; readiness: ready)"]:::held
+
+    CSPRNG --> P2
+    P2 --> P3
+    P2 --> P4
+    P3 --> P4
+    P6 --> P7
+    P6 --> P8
+    P2 --> P7
+    P5 --> P7
+    P1 -.re-scope 79e6da4: replay-on-retry split out of 1.-> P9
+```
+
+The two non-obvious edges are stated in porch 7's own story: gzip's
+`Accept-Encoding` negotiation reuses the q-value ranking iteration 5 adds,
+and `Vary: Accept-Encoding` needs iteration 2's repeated-header work to
+accumulate with other `Vary` contributions. Porch 2's Phase A is
+language-track work (the CSPRNG builtin) — the cross-track edge this graph
+exists to make visible. Streaming responses' runtime prerequisites
+(fibers, iteration 11) are already green in graph 2.
 
 ## Maintenance rule
 

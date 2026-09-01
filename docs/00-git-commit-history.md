@@ -43,6 +43,7 @@ features cannot collide.
 | `lang41` | runtime: unadopted shard must not impersonate shard 0 | on `dev` (`9dca0b4`); independent of the residency stack, not picked |
 | `porch-store` | porch store tables, Limiter and Idempotent middleware (Phases A, B, C) | on `dev` (`519d411`, `5b1e82a`, `aee7926`). **In progress**: Phase C was uncommitted work from a parallel session, committed as-is, and calls `json.decode`/`json.encode` with no `use json` import |
 | `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
+| `lang42` | iteration 42 — bounded subprocess: `proc.run` bounded + parked (pidfd, caps, ceiling, owner-bound reaping), `proc.run_dl`; carries the alacritty/tmux/zen parity studies and the porch dependency-graph section from the same sweep | on `dev` 2026-09-01 |
 
 ## Cherry-picks onto master
 
