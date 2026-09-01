@@ -881,6 +881,166 @@ static void test_stream_churn(void) {
     free(img);
 }
 
+/* ---- runtime-v2 2: the PTY child ----------------------------------------
+ * pty module: spawn_pty `sh -c <script>` at cols x rows; optionally sleep
+ * then resize; read once from the master; close; return the text. */
+static uint8_t *pty_module(const char *script, int64_t cols, int64_t rows,
+                           int do_resize, int64_t rcols, int64_t rrows,
+                           size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "sh");
+    uint32_t kdc = wb_const_text(b, "-c");
+    uint32_t kscript = wb_const_text(b, script);
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kcols = wb_const_int(b, cols);
+    uint32_t krows = wb_const_int(b, rows);
+    uint32_t krc = wb_const_int(b, rcols);
+    uint32_t krr = wb_const_int(b, rrows);
+    uint32_t k100 = wb_const_int(b, 100);
+    uint32_t kms = wb_const_int(b, 4000);
+    uint32_t kmax = wb_const_int(b, 64);
+    uint32_t code[40];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdc);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_MULTI_PUSH);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kscript);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_MULTI_PUSH);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcols);
+    code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)krows);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kcls);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN_PTY);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_GETF, 9, 0, 1); /* the master */
+    code[n++] = wo_ins_abc(WOP_GETF, 4, 0, 0); /* the id */
+    if (do_resize) { /* let the child start, then resize */
+        code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)k100);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_TIME_SLEEP);
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)krc);
+        code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)krr);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 4, WO_B_PROC_RESIZE);
+    }
+    code[n++] = wo_ins_abc(WOP_MOVE, 4, 9, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kmax);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kms);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_NET_READ_DL);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 9, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abc(WOP_RET, 7, 0, 0);
+    wb_method(b, km, WOB_NONE, 0, 10, code, n, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+/* run a pty module, copy the returned text into out */
+static void run_pty(const char *script, int64_t cols, int64_t rows,
+                    int do_resize, int64_t rcols, int64_t rrows, char *out,
+                    size_t outcap) {
+    size_t len;
+    uint8_t *img = pty_module(script, cols, rows, do_resize, rcols, rrows, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), 0);
+    out[0] = '\0';
+    const wo_str *s = (const wo_str *)(uintptr_t)ret;
+    if (ret != 0 && ret != WO_NIL_SCALAR && s) {
+        size_t c = s->len < outcap - 1 ? s->len : outcap - 1;
+        memcpy(out, s->data, c);
+        out[c] = '\0';
+        wo_str_free(&VM.rt, (wo_str *)s);
+    }
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+static void test_pty_is_a_tty(void) {
+    char out[128];
+    run_pty("test -t 0 && test -t 1 && echo yes-tty", 24, 80, 0, 0, 0, out,
+            sizeof out);
+    T_CHECK(strncmp(out, "yes-tty", 7) == 0); /* discipline adds \r\n */
+}
+
+static void test_pty_size_and_resize(void) {
+    char out[128];
+    /* the initial size is what spawn_pty stated */
+    run_pty("stty size", 80, 24, 0, 0, 0, out, sizeof out);
+    T_CHECK(strncmp(out, "24 80", 5) == 0);
+    /* a resize during the child's sleep is what stty then reports */
+    run_pty("sleep 0.3; stty size", 80, 24, 1, 120, 40, out, sizeof out);
+    T_CHECK(strncmp(out, "40 120", 6) == 0);
+}
+
+/* resize on a pipe child refuses by name */
+static uint8_t *pipe_resize_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "sleep");
+    uint32_t karg = wb_const_text(b, "1");
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t k80 = wb_const_int(b, 80);
+    uint32_t k24 = wb_const_int(b, 24);
+    uint32_t code[24];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_MULTI_PUSH);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcls);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 1);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 2);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 3);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 4, 0, 0);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)k80);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)k24);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 4, WO_B_PROC_RESIZE);
+    code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+    wb_method(b, km, WOB_NONE, 0, 9, code, n, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+static void test_resize_refuses_on_pipe_child(void) {
+    size_t len;
+    uint8_t *img = pipe_resize_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), -1);
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "terminal") != NULL);
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
 static void on_alarm(int sig) { (void)sig; } /* interrupt, don't die */
 
 static int64_t mono_ms(void) {
@@ -931,6 +1091,9 @@ int main(void) {
     test_stream_wait();
     test_stream_one_waiter();
     test_stream_churn();
+    test_pty_is_a_tty();
+    test_pty_size_and_resize();
+    test_resize_refuses_on_pipe_child();
     test_stop_kills_child(); /* last: it latches the stop flag */
     return t_report("test_proc");
 }

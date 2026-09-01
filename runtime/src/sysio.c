@@ -21,7 +21,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <termios.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -1274,6 +1276,107 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         fb->park_deadline = fb->dl_at;
         fb->park_done = 0;
         return WO_SYS_PARKED;
+    }
+    /* ---- runtime-v2 2: the PTY child ---------------------------------- */
+    case WO_B_PROC_SPAWN_PTY: { /* Child: stdin==stdout=master (raw side —
+                                 * the line discipline lives on the slave),
+                                 * stderr -1. The slot keeps a private dup
+                                 * of the master so resize survives the
+                                 * caller closing its copy. */
+        char argbuf[62][512];
+        char *argv[64];
+        if (proc_argv(R[B], R[B + 1], path, sizeof path, argbuf, argv, msg))
+            return WO_T_BOUNDS;
+        int cols = (int)(int64_t)R[B + 2], rows = (int)(int64_t)R[B + 3];
+        if (cols <= 0) cols = 80;
+        if (rows <= 0) rows = 24;
+        wo_child *ch = proc_slot_claim(vm, msg);
+        if (!ch) return WO_T_IO;
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        char sname[128];
+        if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
+            ptsname_r(master, sname, sizeof sname) != 0) {
+            if (master >= 0) close(master);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(master);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        if (pid == 0) {
+            setsid(); /* the slave becomes the CONTROLLING terminal */
+            int slave = open(sname, O_RDWR);
+            if (slave < 0) _exit(127);
+            struct winsize ws;
+            memset(&ws, 0, sizeof ws);
+            ws.ws_col = (unsigned short)cols;
+            ws.ws_row = (unsigned short)rows;
+            ioctl(slave, TIOCSWINSZ, &ws);
+            dup2(slave, STDIN_FILENO);
+            dup2(slave, STDOUT_FILENO);
+            dup2(slave, STDERR_FILENO);
+            close(slave);
+            close(master);
+            execvp(path, argv);
+            _exit(127);
+        }
+        fcntl(master, F_SETFL, fcntl(master, F_GETFL, 0) | O_NONBLOCK);
+        int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+        if (pidfd < 0) {
+            int e = errno;
+            kill(pid, SIGKILL);
+            int st;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+            close(master);
+            *msg = strerror(e);
+            return WO_T_IO;
+        }
+        memset(ch, 0, sizeof *ch);
+        ch->used = 1;
+        ch->streaming = 1;
+        ch->pid = (int)pid;
+        ch->pidfd = pidfd;
+        ch->epfd = -1;
+        ch->ofd = ch->efd = -1;
+        ch->master_dup = dup(master);
+        ch->gen = ++vm->proc_gen;
+        ch->owner_actor = vm->cur->actor;
+        vm->nchildren++;
+        wo_hdr *o = record_of(vm, R[B + 4], 4, msg);
+        if (!o) {
+            close(master);
+            proc_slot_kill(vm, ch);
+            return R[B + 4] >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;
+        }
+        uint64_t *fp = wo_fields(o);
+        fp[0] = ((uint64_t)ch->gen << 6) | (uint64_t)(ch - vm->children);
+        fp[1] = (uint64_t)master;
+        fp[2] = (uint64_t)master;
+        fp[3] = (uint64_t)(int64_t)-1;
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_PROC_RESIZE: { /* (id, cols, rows) -> 0: TIOCSWINSZ through
+                              * the slot's own master dup */
+        wo_child *ch = proc_slot_by_id(vm, R[B], msg);
+        if (!ch) return WO_T_IO;
+        if (ch->master_dup < 0) {
+            *msg = "child has no terminal to resize";
+            return WO_T_IO;
+        }
+        struct winsize ws;
+        memset(&ws, 0, sizeof ws);
+        ws.ws_col = (unsigned short)(int64_t)R[B + 1];
+        ws.ws_row = (unsigned short)(int64_t)R[B + 2];
+        if (ioctl(ch->master_dup, TIOCSWINSZ, &ws) != 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        R[A] = 0;
+        return 0;
     }
     case WO_B_PROC_SIGNAL: { /* (id, sig) -> 0 through the pidfd */
         wo_child *ch = proc_slot_by_id(vm, R[B], msg);

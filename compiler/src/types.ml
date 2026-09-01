@@ -340,6 +340,10 @@ let stdlib_members : stdlib_member list =
     m "proc" "spawn" 2 97 (Some (TNullable (TScalar child_record_name))) (Some child_record_name);
     m "proc" "wait_dl" 2 98 (Some (TNullable (TScalar "Int"))) None;
     m "proc" "signal" 2 99 None None;
+    (* runtime-v2 2: the PTY child — stdin==stdout=master, stderr -1;
+       resize refuses by name on a pipe child *)
+    m "proc" "spawn_pty" 4 100 (Some (TNullable (TScalar child_record_name))) (Some child_record_name);
+    m "proc" "resize" 3 101 None None;
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
