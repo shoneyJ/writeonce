@@ -1317,6 +1317,13 @@ int wo_vm_timer_after(wo_vm *vm, int64_t ms, uint64_t addr, uint64_t msg_val,
     return 0;
 }
 
+/* runtime-v2 3: the signal drain's delivery path (sysio.c cannot see the
+ * static runtime_notify) */
+void wo_actor_notify(wo_vm *vm, wo_actor *target, uint64_t payload,
+                     const char *what) {
+    runtime_notify(vm, target, payload, what);
+}
+
 int wo_vm_timers_fire(wo_vm *vm, int64_t now) {
     int fired = 0;
     wo_timer **pp = &vm->timers;

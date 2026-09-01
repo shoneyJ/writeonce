@@ -325,6 +325,10 @@ static void efd_drain(wo_vm *vm) {
 
 int wo_io_wait(wo_vm *vm) {
     for (;;) {
+        /* runtime-v2 3: latched signals become Signal-record sends. The
+         * handler's EINTR (or its wake-eventfd write) lands the plane
+         * here, so a parked shard delivers promptly. */
+        wo_vm_signals_drain(vm);
         if (wo_sys_stop_pending()) {
             /* iteration 24 (the drain): a STOP does not kill parked fibers
              * from the outside — it WAKES them all, and each blocking

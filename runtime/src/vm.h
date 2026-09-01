@@ -201,6 +201,13 @@ void wo_proc_abandon(struct wo_vm *vm, wo_fiber *fb);
 void wo_proc_abandon_actor(struct wo_vm *vm, struct wo_actor *a);
 void wo_proc_reap_all(struct wo_vm *vm);
 
+/* runtime-v2 3 (sysio.c): turn latched signals into Signal-record sends.
+ * Cheap when nothing arrived; called from wo_io_wait and the inbox
+ * drain. wo_actor_notify is vm.c's runtime_notify, exported for it. */
+void wo_vm_signals_drain(struct wo_vm *vm);
+void wo_actor_notify(struct wo_vm *vm, struct wo_actor *target,
+                     uint64_t payload, const char *what);
+
 /* iteration 24: the one mailbox cap (default 1024, WO_MAILBOX overrides
  * at boot — soak tests shrink it to force the fail-fast policy). */
 extern uint32_t wo_mailbox_cap;
@@ -247,6 +254,17 @@ typedef struct wo_vm {
     wo_child children[WO_PROC_MAX];
     uint32_t nchildren;
     uint32_t proc_gen; /* runtime-v2 1: claim counter behind child ids */
+    /* runtime-v2 3: signal subscriptions (shard 0 only). The handler
+     * latches sig_pending and bumps a sequence; the drain (called each
+     * wo_io_wait pass and on inbox adoption) turns latches into fresh
+     * Signal records delivered as ordinary sends. Coalescing disclosed. */
+    struct {
+        int sig;
+        uint32_t cls; /* the Signal record's class id */
+        struct wo_actor *target;
+    } sigsubs[8];
+    uint32_t nsigsubs;
+    uint32_t sig_seen;
     /* iteration 35, uring backend: the shard's ONE deadline tick — a
      * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
      * deadline (fd parks keep exactly one POLL op each; expiry wakes them

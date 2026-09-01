@@ -262,6 +262,44 @@ static int proc_argv(uint64_t vcmd, uint64_t vargv, char *path, size_t pathcap,
     return 0;
 }
 
+/* ---- runtime-v2 3: signals as events ---------------------------------
+ * The stop-latch pattern generalized: an async-signal-safe handler
+ * latches the number and pokes shard 0's wake eventfd; the drain (every
+ * wo_io_wait pass) turns latches into fresh Signal{sig} records
+ * delivered as ordinary sends. Kernel-style coalescing is disclosed:
+ * N arrivals between drains deliver once. */
+static volatile sig_atomic_t sig_pending[32];
+static volatile sig_atomic_t sig_seq;
+static int sig_wake_efd = -1;
+
+static void on_subscribed_signal(int sig) {
+    if (sig > 0 && sig < 32) sig_pending[sig] = 1;
+    sig_seq = sig_seq + 1;
+    if (sig_wake_efd > 0) {
+        uint64_t one = 1;
+        ssize_t r = write(sig_wake_efd, &one, sizeof one);
+        (void)r;
+    }
+}
+
+void wo_vm_signals_drain(wo_vm *vm) {
+    if (vm->shard_id != 0 || vm->nsigsubs == 0) return;
+    if (vm->sig_seen == (uint32_t)sig_seq) return;
+    vm->sig_seen = (uint32_t)sig_seq;
+    for (int s = 1; s < 32; s++) {
+        if (!sig_pending[s]) continue;
+        sig_pending[s] = 0;
+        for (uint32_t i = 0; i < vm->nsigsubs; i++) {
+            if (vm->sigsubs[i].sig != s) continue;
+            wo_hdr *o = wo_obj_new(&vm->rt, vm->sigsubs[i].cls);
+            if (!o) continue; /* oom: this delivery is lost, latch cleared */
+            wo_fields(o)[0] = (uint64_t)s;
+            wo_actor_notify(vm, vm->sigsubs[i].target, (uint64_t)(uintptr_t)o,
+                            "signal message");
+        }
+    }
+}
+
 /* claim a slot or refuse by name (shared by run/run_dl/spawn forms) */
 static wo_child *proc_slot_claim(wo_vm *vm, const char **msg) {
     for (uint32_t i = 0; i < WO_PROC_MAX; i++)
@@ -1385,6 +1423,43 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = strerror(errno);
             return WO_T_IO;
         }
+        R[A] = 0;
+        return 0;
+    }
+    /* ---- runtime-v2 3: signal.on -------------------------------------- */
+    case WO_B_SIGNAL_ON: { /* (sig, addr, cls) -> 0: standing subscription */
+        int sig = (int)(int64_t)R[B];
+        if (sig == SIGTERM || sig == SIGINT) {
+            *msg = "SIGTERM/SIGINT belong to the stop latch, not signal.on";
+            return WO_T_IO;
+        }
+        if (sig != SIGWINCH && sig != SIGCHLD && sig != SIGHUP &&
+            sig != SIGUSR1 && sig != SIGUSR2) {
+            *msg = "signal.on offers SIGWINCH/SIGCHLD/SIGHUP/SIGUSR1/SIGUSR2";
+            return WO_T_IO;
+        }
+        if (vm->shard_id != 0) {
+            *msg = "signal.on registers on shard 0";
+            return WO_T_IO;
+        }
+        if (!R[B + 1]) {
+            *msg = "signal.on: nil actor address";
+            return WO_T_BOUNDS;
+        }
+        if (vm->nsigsubs >= 8) {
+            *msg = "signal.on: subscription table full (8)";
+            return WO_T_IO;
+        }
+        vm->sigsubs[vm->nsigsubs].sig = sig;
+        vm->sigsubs[vm->nsigsubs].cls = (uint32_t)R[B + 2];
+        vm->sigsubs[vm->nsigsubs].target = (struct wo_actor *)(uintptr_t)R[B + 1];
+        vm->nsigsubs++;
+        sig_wake_efd = vm->wake_efd;
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_subscribed_signal; /* no SA_RESTART: waits must
+                                               * EINTR so the drain runs */
+        sigaction(sig, &sa, NULL);
         R[A] = 0;
         return 0;
     }

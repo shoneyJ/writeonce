@@ -203,7 +203,7 @@ let numeric_world (t : string) : [ `Int | `Float | `Other ] =
    single-segment names (`check_use_edges` below treats any one-segment
    `use` path whose name is in this list as stdlib, unconditionally,
    never as a project directory search). *)
-let stdlib_modules = [ "fs"; "proc"; "net"; "time"; "json"; "env" ]
+let stdlib_modules = [ "fs"; "proc"; "net"; "time"; "json"; "env"; "signal"; "term" ]
 
 let is_stdlib_module (name : string) : bool = List.mem name stdlib_modules
 
@@ -344,6 +344,10 @@ let stdlib_members : stdlib_member list =
        resize refuses by name on a pipe child *)
     m "proc" "spawn_pty" 4 100 (Some (TNullable (TScalar child_record_name))) (Some child_record_name);
     m "proc" "resize" 3 101 None None;
+    (* runtime-v2 3: standing subscription; each arrival delivers a fresh
+       Signal {sig} record to the actor. SIGTERM/SIGINT refused (the stop
+       latch). Coalescing disclosed. *)
+    m "signal" "on" 2 102 None (Some signal_record_name);
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
