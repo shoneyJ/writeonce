@@ -1,7 +1,7 @@
 ---
 track: language-runtime-database
 iteration: "42"
-status: pending
+status: done
 readiness: ready
 ---
 
@@ -83,6 +83,20 @@ Bounds surface: bare `proc.run(cmd, args)` gets named defaults (30 s,
 1 MiB stdout, 64 KiB stderr); an extended form states them per call;
 exceeding any bound kills the child and raises a catchable error naming
 the bound — silent truncation is removed.
+
+## Progress
+
+**DONE 2026-09-01, same day as the brainstorm.** Everything the spec
+names landed: the parked rework (pidfd + epoll bundle + `wo_child`
+registry in `sysio.c`/`vm.h`/`vm.c`), `proc.run_dl` end to end (wob.h id
+96, loader arity row, builtin dispatch range, `types.ml` row — no
+`emit.ml` change, as the net `_dl` precedent predicted), and the
+suspected drain deadlock proven red against the old code (5.0 s hang to
+the alarm, stdout truncated at 8192) before the rework dissolved it
+(15 ms). Gates: `test_proc` 128/0 inside a fully green 19-suite ASan run,
+woc-test 557/0, `just subprocess` 12/0 first run (ping answered in 2 ms
+while a sleep-2 child was parked; SIGTERM left no child), `just site`
+23/0 untouched. Mechanics written up in `runtime/src/CODE-LOGIC.md`.
 
 ## Acceptance criteria — firmed in the spec, normative form there
 

@@ -59,7 +59,7 @@ flowchart TD
     I9g["27 query grammar corpus (⏸ hold; likely collapses)"]:::parked
     I30["30 observability, CI, fuzz — release-only CI exists; per-change gates + fuzz open (no story file)"]:::open
     GAPS["28's gap fan-out, what is LEFT of it: fs metadata, FFI-vs-out-of-process (bounded subprocess + stdio transport moved to 42)"]:::open
-    I42["42 bounded subprocess: bound proc.run (deadline, caps, fiber-parked), streaming form, owner-bound reaping"]:::open
+    I42["42 bounded subprocess ✅ 2026-09-01: proc.run bounded + parked (pidfd), proc.run_dl; streaming form deferred by name"]:::done
     DRAIN["parked drain, what is LEFT of it: WO-E225 roster, ADT roster, group-by aggregates"]:::parked
 
     FOUND --> I7

@@ -80,6 +80,39 @@ fills fields by index. The field order is therefore a contract, written beside
 each case in `sysio.c` and mirrored in `compiler/src/types.ml`'s predeclared
 records. Change one side and the other silently writes to the wrong slot.
 
+## Bounded subprocess (iteration 42)
+
+`proc.run` (id 56) and `proc.run_dl` (id 96) share one case in `sysio.c`:
+the first entry validates argv, forks with `execvp`, and claims a
+`wo_child` slot in the shard's `wo_vm` (32 per shard — the concurrency
+ceiling, failing closed by name). The two pipe read ends (parent side
+`O_NONBLOCK`) and a pidfd for the child sit behind ONE `epoll` fd the
+fiber parks on — the plane watches a single fd per fiber, and the bundle
+turns three waits into it. The slot is the cross-park state (the `_dl`
+retry protocol re-executes the builtin); `fb->proc_st` is how a re-entry
+finds it.
+
+Every entry drains whatever is ready into growable buffers bounded by
+the caps (defaults 1 MiB stdout / 64 KiB stderr; `run_dl` states them
+per call), then `waitpid(WNOHANG)`: reaped means final-drain-and-answer;
+alive means park with the deadline armed (`dl_active`/`dl_at`, default
+30 000 ms). Any bound violation KILLS the child
+(`pidfd_send_signal` — raw `syscall`, the glibc 2.35 build floor has no
+wrappers), reaps, releases and traps `WO_T_IO` naming the bound and its
+value. Silent truncation is gone — the pre-42 sequential drain also
+deadlocked against a child that filled stdout past the old fixed cap
+while holding stderr open (proven by `test_proc`'s chatty-child leg
+before the rework).
+
+Ownership: a child belongs to the fiber that spawned it. `fib_reap`
+calls `wo_proc_abandon` (a reaped fiber's child dies with it),
+`wo_vm_destroy` calls `wo_proc_reap_all` (no child outlives its shard),
+and a `stop_pending()` entry kills before returning `WO_SYS_STOPPED` —
+iteration 40's drain guarantee extends to subprocesses. A zombie or an
+orphan is a bug by definition; `test_proc` pins all of it (deadline,
+caps, ceiling, thousand-spawn fd flatness, stop/unwind), and
+`scripts/subprocess-accept.sh` proves the language-level half.
+
 ## Class metadata and json (`.wob` v2)
 
 The class table carries, per field, its name constant, the class it refers to

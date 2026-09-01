@@ -67,6 +67,51 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-01 — iteration 42, bounded subprocess (brainstorm to gate in one day)
+
+**Implemented last time (2026-09-01):** iteration
+[42](language-runtime-database/42-bounded-subprocess.md) end to end —
+`proc.run` reworked from shard-blocking to parked (pipe read ends +
+pidfd behind one epoll fd, the `_dl` retry mould), bounds everywhere
+(30 s / 1 MiB / 64 KiB defaults; per-shard ceiling 32; every violation
+kills the child and traps `WO_T_IO` naming the bound), owner-bound
+reaping (`fib_reap`/`wo_vm_destroy`/stop all sweep), and `proc.run_dl`
+(id 96) stating bounds per call. New suite `runtime/test/test_proc.c`
+(128 checks) and `docs/examples/subprocess` + `just subprocess`
+(12 checks). [Spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md)
+· [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md).
+
+**Key findings (measured, not asserted):** the suspected drain deadlock
+was REAL — a child writing 200 KB to stdout while holding stderr open
+hung the old `proc.run` until the test's 5 s alarm (stdout silently
+truncated at 8,192 bytes, exit code lost to SIGPIPE); the parked rework
+answers the same child in 15 ms. A `ping` request was answered in 2 ms
+while a `sleep 2` child was parked on the same shard. One thousand
+sequential spawns left the fd table byte-flat. SIGTERM with a `sleep 30`
+child live: clean exit 0, child pid verifiably gone from outside.
+
+**Learned:** a new sysio builtin id is THREE registrations, not one —
+the wob.h enum, the loader's arity table, and builtin.c's dispatch
+range; missing any of them surfaces as `unknown stdlib builtin` from a
+perfectly valid image. And glibc 2.35 (the release build floor) has no
+pidfd wrappers — raw `syscall(SYS_pidfd_open/…_send_signal)` or the
+release build breaks.
+
+**Dependencies unblocked:** the streaming form (long-lived children,
+output as mailbox messages) now has its registry/pidfd/cap machinery
+built; the tmux/alacritty studies' stage A and the zen study's CDP
+driver (stage C′) queue behind that plus their own named gaps
+(PTY/termios/fd-passing; ws-client). Iteration 28's "bounded subprocess
+first" ordering item is spent.
+
+**Next steps:** cherry-pick lang42 to master when declared ready; the
+startable set otherwise unchanged. The exploration studies' next
+builtin-sized item is the WebSocket client (zen C′).
+
+**`.dev/reference` used:** alacritty, tmux, zen-browser (the three
+parity studies that promoted this gap to an iteration); the kernel's own
+pidfd/epoll interfaces for the mechanics.
+
 ### Landed 2026-08-30 — keys-resident delta updates DONE, loader refusal lifted
 
 **Implemented last time (2026-08-30):** the six-task
@@ -1048,7 +1093,7 @@ check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 | 23  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 22                                               |
 | 27  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
-| 42  | [Bounded subprocess](language-runtime-database/42-bounded-subprocess.md) — `proc.run` exists (`sysio.c`) but shard-blocking, deadline-less, silently truncating; this bounds it in place (deadline, output caps, per-shard ceiling, owner-bound reaping via pidfd in the io_uring loop, fiber parked); streaming form deferred by name; 28's leading gap promoted with four consumers | ✅ spec approved 2026-09-01 — [spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md); `readiness: ready`, plan next |
+| 42  | [Bounded subprocess](language-runtime-database/42-bounded-subprocess.md) — `proc.run` bounded in place (deadline, output caps, per-shard ceiling, owner-bound reaping via pidfd, fiber parked) + `proc.run_dl`; streaming form deferred by name | ✅ **DONE 2026-09-01** — [spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md) · [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md); test_proc 128/0, `just subprocess` 12/0; see NEXT PLAN |
 | 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | ✅ **landed 2026-08-20** — [spec](../superpowers/specs/2026-08-20-library-kind-internal-design.md) · [plan](../superpowers/plans/2026-08-20-library-kind-internal.md) |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](../superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](../plan/exploration/blue-green-vm/00-vision.md)                   |
