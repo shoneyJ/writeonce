@@ -5,13 +5,16 @@
  * baseline that must not move. Later tasks add the bounds legs: deadline,
  * output caps, ceiling, fd hygiene, stop/unwind reaping. */
 #define _POSIX_C_SOURCE 200809L /* sigaction/clock_gettime under -std=c11 */
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "cont.h"
 #include "gc.h"
 #include "loader.h"
 #include "t.h"
@@ -152,6 +155,176 @@ static void test_missing(void) {
     T_EQ(code, 127);
 }
 
+static int64_t mono_ms(void);
+
+/* Module for the *_dl legs: method 0 = worker(m, tag) pushing tag five
+ * times (test_fiber's pattern — proof the shard schedules while the main
+ * fiber's child runs); method 1 = main running `cmd argv...` through
+ * WO_B_PROC_RUN_DL with explicit bounds, after an optional pre-sleep.
+ * Register layout in main: r1 cmd, r2 argv, r3 dl_ms, r4 out_cap,
+ * r5 err_cap, r6 Proc class id, result r0. */
+static uint8_t *run_dl_module(const char *cmd, const char **args,
+                              uint32_t nargs, int64_t dl_ms, int64_t out_cap,
+                              int64_t err_cap, int64_t presleep_ms,
+                              size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kproc = wb_const_text(b, "Proc");
+    uint32_t kw = wb_const_text(b, "worker");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, cmd);
+    uint32_t kargs[8];
+    T_CHECK(nargs <= 8);
+    for (uint32_t i = 0; i < nargs; i++) kargs[i] = wb_const_text(b, args[i]);
+    uint8_t kinds[3] = {WO_K_SCALAR, WO_K_TEXT, WO_K_TEXT};
+    uint32_t cls = wb_class(b, kproc, 0, kinds, 3);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kdl = wb_const_int(b, dl_ms);
+    uint32_t koc = wb_const_int(b, out_cap);
+    uint32_t kec = wb_const_int(b, err_cap);
+    uint32_t k0 = wb_const_int(b, 0);
+    uint32_t kK = wb_const_int(b, 5);
+    uint32_t k1 = wb_const_int(b, 1);
+    uint32_t kpre = wb_const_int(b, presleep_ms);
+
+    { /* worker(m, tag): push tag 5 times, backward JMP yields */
+        uint32_t code[9];
+        code[0] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)k0);
+        code[1] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kK);
+        code[2] = wo_ins_abc(WOP_LT, 4, 2, 3);
+        code[3] = wo_ins_asbx(WOP_JZ, 4, 4);
+        code[4] = wo_ins_abc(WOP_BUILTIN, 4, 0, WO_B_MULTI_PUSH);
+        code[5] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)k1);
+        code[6] = wo_ins_abc(WOP_ADD, 2, 2, 4);
+        code[7] = wo_ins_asbx(WOP_JMP, 0, -6);
+        code[8] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, kw, WOB_NONE, 2, 8, code, 9, NULL, 0, NULL, 0);
+    }
+    { /* main */
+        uint32_t code[24];
+        uint32_t n = 0;
+        if (presleep_ms > 0) {
+            code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kpre);
+            code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_TIME_SLEEP);
+        }
+        code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+        for (uint32_t i = 0; i < nargs; i++) {
+            code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kargs[i]);
+            code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+        }
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdl);
+        code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)koc);
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kec);
+        code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kcls);
+        uint32_t run_pc = n;
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_RUN_DL);
+        code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+        code[n++] = wo_ins_abc(WOP_RET, 0, 0, 0);
+        /* a trapping run must still free the argv multi in r2 */
+        wb_drop drops[] = {{.pc = run_pc, .owned = 1u << 2, .gc = 0}};
+        wb_method(b, km, WOB_NONE, 0, 7, code, n, NULL, 0, drops, 1);
+    }
+    return wb_finish(b, len);
+}
+
+static int fd_count(void) {
+    int n = 0;
+    char p[64];
+    for (int fd = 0; fd < 1024; fd++) {
+        snprintf(p, sizeof p, "/proc/self/fd/%d", fd);
+        if (access(p, F_OK) == 0) n++;
+    }
+    return n;
+}
+
+/* deadline: a sleeping child against a 100 ms deadline — the trap names
+ * the deadline, no child survives, no fd leaks. And the progress proof: a
+ * worker fiber runs to completion while the main fiber is parked. */
+static void test_deadline_kills_and_shard_schedules(void) {
+    size_t len;
+    uint8_t *img = run_dl_module("sleep", (const char *[]){"10"}, 1, 100,
+                                 0, 0, 0, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    int fds0 = fd_count();
+    wo_multi *m = wo_multi_new(&VM.rt, WO_K_SCALAR);
+    T_CHECK(m != NULL);
+    uint64_t wargs[2] = {(uint64_t)(uintptr_t)m, 7};
+    T_CHECK(wo_vm_spawn_fiber(&VM, 0, wargs, 2) != NULL);
+    int64_t t0 = mono_ms();
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, NULL, 0, &ret, &err), -1);
+    int64_t elapsed = mono_ms() - t0;
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "deadline") != NULL);
+    T_CHECK(elapsed < 3000); /* 100 ms deadline, not sleep's 10 s */
+    T_EQ(m->len, 5u); /* the worker ran while main was parked */
+    /* the child is gone: this test process has NO children left */
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    T_EQ(fd_count(), fds0); /* pipes, pidfd and epoll all closed */
+    wo_drop_obj(&VM.rt, (wo_hdr *)m);
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* output caps: a child writing past the stdout cap is killed and the trap
+ * names the cap and its value */
+static void test_cap_refuses_by_name(void) {
+    size_t len;
+    uint8_t *img = run_dl_module(
+        "sh", (const char *[]){"-c", "head -c 5000 /dev/zero"}, 2, 5000,
+        1000, 0, 0, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    int fds0 = fd_count();
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, NULL, 0, &ret, &err), -1);
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "stdout cap 1000") != NULL);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    T_EQ(fd_count(), fds0);
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* the stderr cap refuses by its own name */
+static void test_errcap_refuses_by_name(void) {
+    size_t len;
+    uint8_t *img = run_dl_module(
+        "sh", (const char *[]){"-c", "head -c 5000 /dev/zero >&2"}, 2, 5000,
+        0, 1000, 0, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, NULL, 0, &ret, &err), -1);
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "stderr cap 1000") != NULL);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
 static void on_alarm(int sig) { (void)sig; } /* interrupt, don't die */
 
 static int64_t mono_ms(void) {
@@ -192,5 +365,8 @@ int main(void) {
     test_false();
     test_missing();
     test_chatty_child_completes();
+    test_deadline_kills_and_shard_schedules();
+    test_cap_refuses_by_name();
+    test_errcap_refuses_by_name();
     return t_report("test_proc");
 }

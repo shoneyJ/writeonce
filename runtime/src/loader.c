@@ -72,6 +72,7 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_ENV_GET] = 1,      [WO_B_ENV_STOPPING] = 0, [WO_B_NET_LISTEN] = 2,
     [WO_B_NET_ACCEPT] = 1,   [WO_B_NET_READ] = 2,    [WO_B_NET_WRITE] = 2,
     [WO_B_NET_CLOSE] = 1,    [WO_B_PROC_RUN] = 3,
+    [WO_B_PROC_RUN_DL] = 6, /* iteration 42: cmd, argv, dl, ocap, ecap, cls */
     /* json (json.c): encode takes the value's static kind, decode the class
        id to build */
     [WO_B_JSON_ENCODE] = 2,  [WO_B_JSON_DECODE] = 2, [WO_B_MAP_GET_OPT] = 2,
