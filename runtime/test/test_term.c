@@ -235,8 +235,178 @@ static void test_term_raw_restore(void) {
     close(master);
 }
 
+/* ---- runtime-v2 5: fd passing --------------------------------------------
+ * Single-fiber trick: on a unix socket, connect_unix completes while the
+ * listener holds the handshake, so one method can be both ends.
+ * methods: 0 pair(pipe_r, pipe_w) — pass pipe_r across, write "ping"
+ * into pipe_w, read it from the RECEIVED fd; 1 tty(slave) — pass a tty
+ * fd across and term.raw the received copy; 2 refuse(fd) — send_fd on a
+ * non-unix fd; 3 nil(_) — plain bytes deliver nil. */
+static uint8_t *fdpass_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kpair = wb_const_text(b, "pair");
+    uint32_t ktty = wb_const_text(b, "tty");
+    uint32_t kref = wb_const_text(b, "refuse");
+    uint32_t knil = wb_const_text(b, "nil");
+    uint32_t kpath = wb_const_text(b, "/tmp/wo-rt2-fdpass.sock");
+    uint32_t kping = wb_const_text(b, "ping");
+    uint32_t kms = wb_const_int(b, 2000);
+    uint32_t kmax = wb_const_int(b, 8);
+    { /* pair(pipe_r, pipe_w) -> Text read from the received fd */
+        uint32_t code[40];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 3, 2, WO_B_NET_LISTEN_UNIX);
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_NET_CONNECT_UNIX);
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_MOVE, 2, 3, 0);
+        code[n++] = wo_ins_abc(WOP_MOVE, 3, 5, 0); /* r2 srv, r3 ms */
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_NET_ACCEPT_DL);
+        /* r4 client, r6 server side. send pipe_r over the client */
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 4, 0);
+        code[n++] = wo_ins_abc(WOP_MOVE, 8, 0, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 9, 7, WO_B_NET_SEND_FD);
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 6, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 10, 7, WO_B_NET_RECV_FD);
+        /* write "ping" into the pipe's write end */
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 1, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 8, (uint16_t)kping);
+        code[n++] = wo_ins_abx(WOP_LOADK, 9, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 7, WO_B_NET_WRITE_DL);
+        /* read it back through the RECEIVED fd */
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 10, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 8, (uint16_t)kmax);
+        code[n++] = wo_ins_abx(WOP_LOADK, 9, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 5, 7, WO_B_NET_READ_DL);
+        /* close everything this method opened */
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 10, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_MOVE, 10, 2, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 10, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 4, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 6, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_RET, 5, 0, 0);
+        wb_method(b, kpair, WOB_NONE, 2, 12, code, n, NULL, 0, NULL, 0);
+    }
+    { /* tty(slave): pass it across, term.raw the received copy */
+        uint32_t code[24];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 3, 2, WO_B_NET_LISTEN_UNIX);
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_NET_CONNECT_UNIX);
+        code[n++] = wo_ins_abc(WOP_MOVE, 2, 3, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_NET_ACCEPT_DL);
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 4, 0);
+        code[n++] = wo_ins_abc(WOP_MOVE, 8, 0, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 9, 7, WO_B_NET_SEND_FD);
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 6, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 10, 7, WO_B_NET_RECV_FD);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 10, WO_B_TERM_RAW);
+        code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, ktty, WOB_NONE, 1, 12, code, n, NULL, 0, NULL, 0);
+    }
+    { /* refuse(fd): send_fd on a non-unix fd refuses by name */
+        uint32_t code[6];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abc(WOP_MOVE, 1, 0, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 2, 0, WO_B_NET_SEND_FD);
+        code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, kref, WOB_NONE, 1, 3, code, n, NULL, 0, NULL, 0);
+    }
+    { /* nil(_): plain bytes on the socket deliver nil from recv_fd */
+        uint32_t code[24];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 3, 2, WO_B_NET_LISTEN_UNIX);
+        code[n++] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kpath);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_NET_CONNECT_UNIX);
+        code[n++] = wo_ins_abc(WOP_MOVE, 2, 3, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 6, 2, WO_B_NET_ACCEPT_DL);
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 4, 0);
+        code[n++] = wo_ins_abx(WOP_LOADK, 8, (uint16_t)kping);
+        code[n++] = wo_ins_abx(WOP_LOADK, 9, (uint16_t)kms);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 11, 7, WO_B_NET_WRITE_DL);
+        code[n++] = wo_ins_abc(WOP_MOVE, 7, 6, 0);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 10, 7, WO_B_NET_RECV_FD);
+        code[n++] = wo_ins_abc(WOP_RET, 10, 0, 0);
+        wb_method(b, knil, WOB_NONE, 1, 12, code, n, NULL, 0, NULL, 0);
+    }
+    return wb_finish(b, len);
+}
+
+static void test_fd_passing(void) {
+    size_t len;
+    uint8_t *img = fdpass_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+
+    /* a pipe's read end crosses the socket and still reads */
+    int p[2];
+    T_EQ(pipe(p), 0);
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL, 0) | O_NONBLOCK);
+    fcntl(p[1], F_SETFL, fcntl(p[1], F_GETFL, 0) | O_NONBLOCK);
+    uint64_t pargs[2] = {(uint64_t)p[0], (uint64_t)p[1]};
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, pargs, 2, &ret, &err), 0);
+    const wo_str *s = (const wo_str *)(uintptr_t)ret;
+    T_CHECK(ret != 0 && ret != WO_NIL_SCALAR && s && s->len == 4 &&
+            memcmp(s->data, "ping", 4) == 0);
+    if (ret != 0 && ret != WO_NIL_SCALAR) wo_str_free(&VM.rt, (wo_str *)s);
+    close(p[0]);
+    close(p[1]);
+
+    /* a tty crosses and term.raw works on the RECEIVED copy */
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    T_CHECK(master >= 0);
+    T_EQ(grantpt(master), 0);
+    T_EQ(unlockpt(master), 0);
+    char sname[128];
+    T_EQ(ptsname_r(master, sname, sizeof sname), 0);
+    int slave = open(sname, O_RDWR | O_NOCTTY);
+    T_CHECK(slave >= 0);
+    struct termios t0, t1;
+    T_EQ(tcgetattr(slave, &t0), 0);
+    uint64_t targs[1] = {(uint64_t)slave};
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, targs, 1, &ret, &err), 0);
+    T_EQ(tcgetattr(slave, &t1), 0);
+    T_CHECK((t1.c_lflag & (ECHO | ICANON)) == 0); /* raw through the copy */
+
+    /* send_fd on a non-unix fd refuses by name */
+    int q[2];
+    T_EQ(pipe(q), 0);
+    uint64_t rargs[1] = {(uint64_t)q[0]};
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 2, rargs, 1, &ret, &err), -1);
+    T_CHECK(strstr(err.msg, "unix socket") != NULL);
+    close(q[0]);
+    close(q[1]);
+
+    /* plain bytes deliver nil */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 3, rargs, 1, &ret, &err), 0);
+    T_EQ(ret, WO_NIL_SCALAR);
+
+    wo_vm_destroy(&VM); /* restores the tty raw'd through the copy */
+    T_EQ(tcgetattr(slave, &t1), 0);
+    T_EQ((long long)t1.c_lflag, (long long)t0.c_lflag);
+    close(slave);
+    close(master);
+    wo_module_free(&mod);
+    free(img);
+    unlink("/tmp/wo-rt2-fdpass.sock");
+}
+
 int main(void) {
     test_signal_on_delivers_record();
     test_term_raw_restore();
+    test_fd_passing();
     return t_report("test_term");
 }

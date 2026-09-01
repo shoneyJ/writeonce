@@ -1516,6 +1516,133 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = 0;
         return 0;
     }
+    /* ---- runtime-v2 5: fd passing over unix sockets -------------------- */
+    case WO_B_NET_CONNECT_UNIX: { /* (path) -> Int: client fd, nonblocking */
+        if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
+        struct sockaddr_un ua;
+        if (strlen(path) >= sizeof(ua.sun_path)) {
+            *msg = "unix socket path too long";
+            return WO_T_BOUNDS;
+        }
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        memset(&ua, 0, sizeof ua);
+        ua.sun_family = AF_UNIX;
+        strncpy(ua.sun_path, path, sizeof(ua.sun_path) - 1);
+        int rc;
+        for (;;) {
+            rc = connect(fd, (struct sockaddr *)&ua, sizeof ua);
+            if (rc == 0 || errno != EINTR) break;
+            if (stop_pending()) {
+                close(fd);
+                return WO_SYS_STOPPED;
+            }
+        }
+        if (rc != 0) {
+            close(fd);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_SEND_FD: { /* (conn, fd) -> Bool: SCM_RIGHTS, one fd */
+        int conn = (int)(int64_t)R[B];
+        int pass = (int)(int64_t)R[B + 1];
+        int dom = 0;
+        socklen_t dl = sizeof dom;
+        if (getsockopt(conn, SOL_SOCKET, SO_DOMAIN, &dom, &dl) != 0 ||
+            dom != AF_UNIX) {
+            *msg = "send_fd needs a unix socket";
+            return WO_T_IO;
+        }
+        char byte = 'F';
+        struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+        union {
+            struct cmsghdr h;
+            char buf[CMSG_SPACE(sizeof(int))];
+        } cm;
+        memset(&cm, 0, sizeof cm);
+        struct msghdr mh;
+        memset(&mh, 0, sizeof mh);
+        mh.msg_iov = &iov;
+        mh.msg_iovlen = 1;
+        mh.msg_control = cm.buf;
+        mh.msg_controllen = sizeof cm.buf;
+        struct cmsghdr *c = CMSG_FIRSTHDR(&mh);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(c), &pass, sizeof(int));
+        ssize_t n;
+        for (;;) {
+            n = sendmsg(conn, &mh, 0);
+            if (n >= 0 || errno != EINTR) break;
+            if (stop_pending()) return WO_SYS_STOPPED;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (stop_pending()) return WO_SYS_STOPPED;
+            vm->cur->park_fd = conn;
+            vm->cur->park_deadline = 0;
+            vm->cur->park_events = POLLOUT;
+            vm->cur->park_done = 0;
+            return WO_SYS_PARKED;
+        }
+        if (n < 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        R[A] = 1;
+        return 0;
+    }
+    case WO_B_NET_RECV_FD: { /* (conn) -> ?Int: nil = no fd in the message */
+        int conn = (int)(int64_t)R[B];
+        char byte = 0;
+        struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+        union {
+            struct cmsghdr h;
+            char buf[CMSG_SPACE(sizeof(int))];
+        } cm;
+        memset(&cm, 0, sizeof cm);
+        struct msghdr mh;
+        memset(&mh, 0, sizeof mh);
+        mh.msg_iov = &iov;
+        mh.msg_iovlen = 1;
+        mh.msg_control = cm.buf;
+        mh.msg_controllen = sizeof cm.buf;
+        ssize_t n;
+        for (;;) {
+            n = recvmsg(conn, &mh, 0);
+            if (n >= 0 || errno != EINTR) break;
+            if (stop_pending()) return WO_SYS_STOPPED;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (stop_pending()) return WO_SYS_STOPPED;
+            vm->cur->park_fd = conn;
+            vm->cur->park_deadline = 0;
+            vm->cur->park_events = POLLIN;
+            vm->cur->park_done = 0;
+            return WO_SYS_PARKED;
+        }
+        if (n < 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        struct cmsghdr *c = n > 0 ? CMSG_FIRSTHDR(&mh) : NULL;
+        if (c && c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+            int got;
+            memcpy(&got, CMSG_DATA(c), sizeof(int));
+            fcntl(got, F_SETFL, fcntl(got, F_GETFL, 0) | O_NONBLOCK);
+            R[A] = (uint64_t)got;
+            return 0;
+        }
+        R[A] = WO_NIL_SCALAR; /* plain bytes (or EOF): no fd arrived */
+        return 0;
+    }
     case WO_B_TERM_RESTORE: { /* (fd) -> 0 from the saved entry */
         int fd = (int)(int64_t)R[B];
         for (int i = 0; i < 8; i++)

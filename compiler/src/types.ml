@@ -352,6 +352,11 @@ let stdlib_members : stdlib_member list =
        a runtime obligation (unwind/stop), never only the caller's *)
     m "term" "raw" 1 103 None None;
     m "term" "restore" 1 104 None None;
+    (* runtime-v2 5: SCM_RIGHTS over unix sockets, one fd per message;
+       the received fd is a plain Int every fd verb accepts *)
+    m "net" "send_fd" 2 105 (Some (TScalar "Bool")) None;
+    m "net" "recv_fd" 1 106 (Some (TNullable (TScalar "Int"))) None;
+    m "net" "connect_unix" 1 107 (Some (TScalar "Int")) None;
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
