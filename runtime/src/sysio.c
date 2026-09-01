@@ -300,6 +300,26 @@ void wo_vm_signals_drain(wo_vm *vm) {
     }
 }
 
+/* ---- runtime-v2 4: termios adoption -----------------------------------
+ * term.raw saves into the shard table and cfmakeraw's the fd; restore is
+ * a RUNTIME obligation — vm_unwind (full), fib_reap and wo_vm_destroy
+ * all sweep, newest-first. */
+void wo_term_abandon(wo_vm *vm, wo_fiber *fb) {
+    for (int i = 7; i >= 0; i--)
+        if (vm->ttysave[i].used && vm->ttysave[i].owner == fb) {
+            tcsetattr(vm->ttysave[i].fd, TCSANOW, &vm->ttysave[i].saved);
+            vm->ttysave[i].used = 0;
+        }
+}
+
+void wo_term_restore_all(wo_vm *vm) {
+    for (int i = 7; i >= 0; i--)
+        if (vm->ttysave[i].used) {
+            tcsetattr(vm->ttysave[i].fd, TCSANOW, &vm->ttysave[i].saved);
+            vm->ttysave[i].used = 0;
+        }
+}
+
 /* claim a slot or refuse by name (shared by run/run_dl/spawn forms) */
 static wo_child *proc_slot_claim(wo_vm *vm, const char **msg) {
     for (uint32_t i = 0; i < WO_PROC_MAX; i++)
@@ -1462,6 +1482,54 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         sigaction(sig, &sa, NULL);
         R[A] = 0;
         return 0;
+    }
+    /* ---- runtime-v2 4: termios adoption ------------------------------- */
+    case WO_B_TERM_RAW: { /* (fd) -> 0: save, then cfmakeraw */
+        int fd = (int)(int64_t)R[B];
+        int slot = -1;
+        for (int i = 0; i < 8; i++) {
+            if (vm->ttysave[i].used && vm->ttysave[i].fd == fd) {
+                *msg = "term.raw: fd is already raw";
+                return WO_T_IO;
+            }
+            if (!vm->ttysave[i].used && slot < 0) slot = i;
+        }
+        if (slot < 0) {
+            *msg = "term.raw: saved-termios table full (8)";
+            return WO_T_IO;
+        }
+        struct termios t;
+        if (tcgetattr(fd, &t) != 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        vm->ttysave[slot].saved = t;
+        vm->ttysave[slot].fd = fd;
+        vm->ttysave[slot].owner = vm->cur;
+        vm->ttysave[slot].used = 1;
+        cfmakeraw(&t);
+        if (tcsetattr(fd, TCSANOW, &t) != 0) {
+            vm->ttysave[slot].used = 0;
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        R[A] = 0;
+        return 0;
+    }
+    case WO_B_TERM_RESTORE: { /* (fd) -> 0 from the saved entry */
+        int fd = (int)(int64_t)R[B];
+        for (int i = 0; i < 8; i++)
+            if (vm->ttysave[i].used && vm->ttysave[i].fd == fd) {
+                if (tcsetattr(fd, TCSANOW, &vm->ttysave[i].saved) != 0) {
+                    *msg = strerror(errno);
+                    return WO_T_IO;
+                }
+                vm->ttysave[i].used = 0;
+                R[A] = 0;
+                return 0;
+            }
+        *msg = "term.restore: fd was never made raw";
+        return WO_T_IO;
     }
     default:
         *msg = "unknown stdlib builtin";

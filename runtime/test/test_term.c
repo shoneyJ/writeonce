@@ -1,12 +1,15 @@
 /* test_term — runtime-v2 3/4/5: signals as events, termios adoption,
  * fd passing. Named for the terminal-facing half of the track. */
+#define _XOPEN_SOURCE 700 /* posix_openpt/grantpt/unlockpt + 200809L base */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "cont.h"
@@ -136,7 +139,104 @@ static void test_signal_on_delivers_record(void) {
     signal(SIGUSR1, SIG_DFL);
 }
 
+/* ---- runtime-v2 4: termios adoption --------------------------------------
+ * methods on an fd argument: 0 raw(fd), 1 restore(fd), 2 trap_while_raw
+ * (raw then DIV0 — the unwind must restore). */
+static uint8_t *term_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kraw = wb_const_text(b, "raw");
+    uint32_t kres = wb_const_text(b, "restore");
+    uint32_t ktrap = wb_const_text(b, "trap_while_raw");
+    uint32_t kone = wb_const_int(b, 1);
+    uint32_t kzero = wb_const_int(b, 0);
+    { /* raw(fd) */
+        uint32_t code[3];
+        code[0] = wo_ins_abc(WOP_BUILTIN, 1, 0, WO_B_TERM_RAW);
+        code[1] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, kraw, WOB_NONE, 1, 2, code, 2, NULL, 0, NULL, 0);
+    }
+    { /* restore(fd) */
+        uint32_t code[3];
+        code[0] = wo_ins_abc(WOP_BUILTIN, 1, 0, WO_B_TERM_RESTORE);
+        code[1] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, kres, WOB_NONE, 1, 2, code, 2, NULL, 0, NULL, 0);
+    }
+    { /* trap_while_raw(fd): raw, then DIV0 */
+        uint32_t code[6];
+        code[0] = wo_ins_abc(WOP_BUILTIN, 1, 0, WO_B_TERM_RAW);
+        code[1] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kone);
+        code[2] = wo_ins_abx(WOP_LOADK, 2, (uint16_t)kzero);
+        code[3] = wo_ins_abc(WOP_DIV, 3, 1, 2);
+        code[4] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, ktrap, WOB_NONE, 1, 4, code, 5, NULL, 0, NULL, 0);
+    }
+    return wb_finish(b, len);
+}
+
+static void test_term_raw_restore(void) {
+    /* a real tty pair, made by the TEST (no builtin involved) */
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    T_CHECK(master >= 0);
+    T_EQ(grantpt(master), 0);
+    T_EQ(unlockpt(master), 0);
+    char sname[128];
+    T_EQ(ptsname_r(master, sname, sizeof sname), 0);
+    int slave = open(sname, O_RDWR | O_NOCTTY);
+    T_CHECK(slave >= 0);
+    struct termios t0;
+    T_EQ(tcgetattr(slave, &t0), 0);
+    T_CHECK(t0.c_lflag & ECHO);
+
+    size_t len;
+    uint8_t *img = term_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t args[1] = {(uint64_t)slave};
+    uint64_t ret = 0;
+    wo_err err;
+
+    /* raw clears ECHO/ICANON */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, args, 1, &ret, &err), 0);
+    struct termios tr;
+    T_EQ(tcgetattr(slave, &tr), 0);
+    T_CHECK((tr.c_lflag & (ECHO | ICANON)) == 0);
+    /* restore brings the saved flags back */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, args, 1, &ret, &err), 0);
+    struct termios t1;
+    T_EQ(tcgetattr(slave, &t1), 0);
+    T_EQ((long long)t1.c_lflag, (long long)t0.c_lflag);
+    /* restore with nothing saved refuses by name */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, args, 1, &ret, &err), -1);
+    T_CHECK(strstr(err.msg, "never made raw") != NULL);
+    /* double raw refuses by name — and the refusal is a TRAP, so the
+     * full unwind restores the first raw (the obligation, observed) */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, args, 1, &ret, &err), 0);
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, args, 1, &ret, &err), -1);
+    T_CHECK(strstr(err.msg, "already raw") != NULL);
+    T_EQ(tcgetattr(slave, &t1), 0);
+    T_EQ((long long)t1.c_lflag, (long long)t0.c_lflag);
+    /* a trap while raw still restores — the obligation, second proof */
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 2, args, 1, &ret, &err), -1);
+    T_EQ(tcgetattr(slave, &t1), 0);
+    T_EQ((long long)t1.c_lflag, (long long)t0.c_lflag);
+
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+    close(slave);
+    close(master);
+}
+
 int main(void) {
     test_signal_on_delivers_record();
+    test_term_raw_restore();
     return t_report("test_term");
 }

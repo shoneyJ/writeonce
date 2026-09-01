@@ -4,6 +4,8 @@
 #ifndef WO_VM_H
 #define WO_VM_H
 
+#include <termios.h> /* runtime-v2 4: the saved-termios table */
+
 #include "loader.h"
 
 /* structured trap error (spec §6): one shape forever — the CLI prints it,
@@ -208,6 +210,11 @@ void wo_vm_signals_drain(struct wo_vm *vm);
 void wo_actor_notify(struct wo_vm *vm, struct wo_actor *target,
                      uint64_t payload, const char *what);
 
+/* runtime-v2 4 (sysio.c): restore the ttys a dying fiber raw'd (full
+ * unwind / fib_reap), or every saved tty (wo_vm_destroy). */
+void wo_term_abandon(struct wo_vm *vm, wo_fiber *fb);
+void wo_term_restore_all(struct wo_vm *vm);
+
 /* iteration 24: the one mailbox cap (default 1024, WO_MAILBOX overrides
  * at boot — soak tests shrink it to force the fail-fast policy). */
 extern uint32_t wo_mailbox_cap;
@@ -265,6 +272,15 @@ typedef struct wo_vm {
     } sigsubs[8];
     uint32_t nsigsubs;
     uint32_t sig_seen;
+    /* runtime-v2 4: ttys this shard put into raw mode. Restore is a
+     * RUNTIME obligation — full unwind, fiber reap and vm destroy all
+     * restore (newest-first) so no trap path leaves a wrecked tty. */
+    struct {
+        int used;
+        int fd;
+        struct termios saved;
+        wo_fiber *owner;
+    } ttysave[8];
     /* iteration 35, uring backend: the shard's ONE deadline tick — a
      * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
      * deadline (fd parks keep exactly one POLL op each; expiry wakes them

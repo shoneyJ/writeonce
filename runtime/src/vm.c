@@ -769,6 +769,7 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
 
 void wo_vm_destroy(wo_vm *vm) {
     wo_proc_reap_all(vm); /* iteration 42: no child outlives its shard */
+    wo_term_restore_all(vm); /* runtime-v2 4: no wrecked tty either */
     /* iteration 35: the fiber pool dies with the vm */
     while (vm->fib_pool) {
         wo_fiber *fb = vm->fib_pool;
@@ -1458,6 +1459,9 @@ static void vm_gc_safepoint(wo_vm *vm) {
  * slot sees 0 and skips. stop_depth is 0 for an uncaught trap (the whole
  * stack dies) and the catching frame's depth for a caught one. */
 static void vm_unwind(wo_vm *vm, uint32_t stop_depth) {
+    /* runtime-v2 4: a FULL unwind (uncaught trap, fiber reap) restores
+     * the ttys this fiber raw'd — no trap path leaves a wrecked tty */
+    if (stop_depth == 0) wo_term_abandon(vm, vm->cur);
     for (uint32_t d = vm->cur->depth; d > stop_depth; d--) {
         const wo_frame *f = &vm->cur->frames[d - 1];
         vm_release_frame(vm, d, (d == vm->cur->depth) ? f->pc : f->pc - 1, UINT32_MAX);

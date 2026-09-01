@@ -348,6 +348,10 @@ let stdlib_members : stdlib_member list =
        Signal {sig} record to the actor. SIGTERM/SIGINT refused (the stop
        latch). Coalescing disclosed. *)
     m "signal" "on" 2 102 None (Some signal_record_name);
+    (* runtime-v2 4: raw mode on a tty the process was GIVEN; restore is
+       a runtime obligation (unwind/stop), never only the caller's *)
+    m "term" "raw" 1 103 None None;
+    m "term" "restore" 1 104 None None;
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
