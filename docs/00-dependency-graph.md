@@ -317,6 +317,56 @@ language-track work (the CSPRNG builtin) — the cross-track edge this graph
 exists to make visible. Streaming responses' runtime prerequisites
 (fibers, iteration 11) are already green in graph 2.
 
+## 6. wmux — the multiplexer track (wmux 1) and its gap chain
+
+The tmux study's gaps, remapped as buildable edges now that iteration 42
+landed. Every yellow node is an iteration of the
+[runtime-v2 track](stories/runtime-v2/00-story.md) ("the runtime beyond
+sockets", its own folder since 2026-09-01), brainstormed on demand —
+[1 streaming subprocess](stories/runtime-v2/01-streaming-subprocess.md) ·
+[2 PTY](stories/runtime-v2/02-pty.md) ·
+[3 signals as events](stories/runtime-v2/03-signals-as-events.md) ·
+[4 termios](stories/runtime-v2/04-termios.md) ·
+[5 fd passing](stories/runtime-v2/05-fd-passing.md). wmux — its own
+track, first of the softwares built with writeonce — is the driving
+workload that consumes them all — [wmux 1](stories/wmux/01-wmux.md).
+
+```mermaid
+flowchart TD
+    classDef done fill:#1a7f37,color:#fff,stroke:none
+    classDef gap fill:#eac54f,color:#000,stroke:none
+    classDef product fill:#0969da,color:#fff,stroke:none
+    classDef later fill:#6e7781,color:#fff,stroke:none
+
+    I42w["42 bounded subprocess ✅ 2026-09-01"]:::done
+    GSTREAM["runtime-v2 1 streaming subprocess: long-lived child, output as mailbox messages, stdin (42's named follow-up)"]:::gap
+    GPTY["runtime-v2 2 PTY: openpty, controlling terminal, resize ioctls"]:::gap
+    GSIG["runtime-v2 3 signals as events: SIGWINCH (and SIGCHLD beyond pidfd) as mailbox messages"]:::gap
+    GTERMIOS["runtime-v2 4 termios adoption: the CLIENT's own tty raw + restored"]:::gap
+    GFDPASS["runtime-v2 5 SCM_RIGHTS fd passing over the unix socket (detach/attach's foundation)"]:::gap
+    GVTE["VTE grid in pure .wo + unicode width tables (pinned against recorded sessions)"]:::gap
+    WMUX["wmux 1 (was language 43): server owns sessions/PTYs in durable tables, thin client hands over its tty — reattach after server RESTART replays from the WAL"]:::product
+    TINFO["terminfo fork: parse the db in .wo vs fixed xterm-256color + refusal by name (decide at 43's brainstorm)"]:::later
+    TMONO["time.mono returns (status clock, repaint pacing) — v2"]:::later
+
+    I42w --> GSTREAM
+    GSTREAM --> GPTY
+    GPTY --> GSIG
+    GSTREAM --> GVTE
+    GPTY --> WMUX
+    GSIG --> WMUX
+    GTERMIOS --> WMUX
+    GFDPASS --> WMUX
+    GVTE --> WMUX
+    TINFO -.settled at brainstorm.-> WMUX
+    TMONO -.v2.-> WMUX
+```
+
+Sibling reuse, for the record: the alacritty study's Wayland stage D
+reuses GFDPASS + GVTE; the zen CDP driver shares GSTREAM only; skillhost
+(28) consumes GSTREAM's stdin transport. GTERMIOS and GFDPASS have no
+incoming edges — startable any time, alone.
+
 ## Maintenance rule
 
 When an iteration or slice lands, update its node's class here in the

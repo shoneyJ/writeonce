@@ -10,10 +10,13 @@ The single place to learn where this project stands. Organised in six buckets:
 folders** — a doc stays where it was authored, and only its frontmatter, its
 banner and this board change.
 
-**Three tracks** (2026-08-26):
+**Five tracks** (2026-08-26; wmux and runtime-v2 added 2026-09-01):
 [`language-runtime-database/`](language-runtime-database/00-story.md) — the
 language and runtime; [`porch/`](porch/00-story.md) — the web framework written
-in it; [`databasev2/`](databasev2/00-story.md) — the database beyond RAM. Each
+in it; [`databasev2/`](databasev2/00-story.md) — the database beyond RAM;
+[`runtime-v2/`](runtime-v2/00-story.md) — the runtime beyond sockets
+(processes, terminals, signals); [`wmux/`](wmux/00-story.md) — the terminal
+multiplexer, first of the *softwares built with writeonce*. Each
 numbers its iterations from 1, so a porch 3 is not a language 3; every non-language
 story carries `track:` in frontmatter, and moved ones keep
 `was_language_iteration:` so a search for the old number still finds them. Track
@@ -67,6 +70,113 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-01 — iteration 42, bounded subprocess (brainstorm to gate in one day)
+
+**Implemented last time (2026-09-01):** iteration
+[42](language-runtime-database/42-bounded-subprocess.md) end to end —
+`proc.run` reworked from shard-blocking to parked (pipe read ends +
+pidfd behind one epoll fd, the `_dl` retry mould), bounds everywhere
+(30 s / 1 MiB / 64 KiB defaults; per-shard ceiling 32; every violation
+kills the child and traps `WO_T_IO` naming the bound), owner-bound
+reaping (`fib_reap`/`wo_vm_destroy`/stop all sweep), and `proc.run_dl`
+(id 96) stating bounds per call. New suite `runtime/test/test_proc.c`
+(128 checks) and `docs/examples/subprocess` + `just subprocess`
+(12 checks). [Spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md)
+· [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md).
+
+**Key findings (measured, not asserted):** the suspected drain deadlock
+was REAL — a child writing 200 KB to stdout while holding stderr open
+hung the old `proc.run` until the test's 5 s alarm (stdout silently
+truncated at 8,192 bytes, exit code lost to SIGPIPE); the parked rework
+answers the same child in 15 ms. A `ping` request was answered in 2 ms
+while a `sleep 2` child was parked on the same shard. One thousand
+sequential spawns left the fd table byte-flat. SIGTERM with a `sleep 30`
+child live: clean exit 0, child pid verifiably gone from outside.
+
+**Learned:** a new sysio builtin id is THREE registrations, not one —
+the wob.h enum, the loader's arity table, and builtin.c's dispatch
+range; missing any of them surfaces as `unknown stdlib builtin` from a
+perfectly valid image. And glibc 2.35 (the release build floor) has no
+pidfd wrappers — raw `syscall(SYS_pidfd_open/…_send_signal)` or the
+release build breaks.
+
+**Dependencies unblocked:** the streaming form (long-lived children,
+output as mailbox messages) now has its registry/pidfd/cap machinery
+built; the tmux/alacritty studies' stage A and the zen study's CDP
+driver (stage C′) queue behind that plus their own named gaps
+(PTY/termios/fd-passing; ws-client). Iteration 28's "bounded subprocess
+first" ordering item is spent.
+
+**Next steps:** cherry-pick lang42 to master when declared ready; the
+startable set otherwise unchanged. The exploration studies' next
+builtin-sized item is the WebSocket client (zen C′).
+
+**`.dev/reference` used:** alacritty, tmux, zen-browser (the three
+parity studies that promoted this gap to an iteration); the kernel's own
+pidfd/epoll interfaces for the mechanics.
+
+### Landed 2026-08-30 — keys-resident delta updates DONE, loader refusal lifted
+
+**Implemented last time (2026-08-30):** the six-task
+[keys-resident delta updates](../superpowers/plans/2026-08-30-keys-resident-delta-updates.md)
+plan's final task — lifting the `runtime/src/loader.c` refusal of
+`resident: keys` and proving update end to end. The refusal (databasev2 2's
+Outstanding criterion) is now Met: a keys-resident row updates through a WAL
+delta record, read-modify-**append**, folded back to a value by
+`wo_wal_fold_row_at` on every read, replay and compaction. Proven four ways —
+the fold itself (earlier tasks), group-commit staging with the id-map re-point
+deferred to the post-barrier flush, replay/compaction folding delta chains the
+same way reads do, and this task's oracle test
+(`test_oracle_all_vs_keys_same_update_sequence`, `runtime/test/test_wal.c`)
+driving the SAME update sequence against a `resident: all` table and a
+`resident: keys` table and asserting byte-identical rows at every step.
+`docs/examples/residency`'s `Product` table is genuinely `resident: keys` now;
+`scripts/residency-accept.sh`'s gate leg inverted from "the annotation is
+refused" to "the program runs and `place_order`'s stock decrement survives a
+restart" (11 checks, 0 failures).
+
+**A second bug surfaced auditing the request path before lifting the
+refusal** — the same audit class that caught `delete`'s memory corruption
+in the prior session. `idx_hash`, `idx_cols_equal` and `wo_idx_probe`
+(`database/src/table.c`) read a TEXT column's slot as an engine `db_text*`,
+but a keys-resident borrow was handing back VM-decoded `wo_str*` — a
+different struct layout, reproduced as a genuine ASan heap-buffer-overflow,
+not merely wrong values. The same bug was independently present in `db.c`'s
+`GET_FIELD` and `PROBE` arms (inline and request-path), unaudited until now
+because nothing could reach a keys-resident row through them while the
+annotation was refused. Fixed at the root: a keys-resident borrow now hands
+back engine values, exactly `wo_row_ptr`'s contract for `resident: all`
+(`table.h`'s own "a row stores NO VM pointer" doctrine) — no index function
+needed to change, and `db.c` needed none either. Pinned by
+`test_keys_resident_update_indexed_text`, which reproduces the overflow
+against the pre-fix code; all five pre-existing tests that read a
+keys-resident Text field directly were auditing the OLD (wrong) contract and
+are corrected alongside it. `test_wal` 4746/0 throughout.
+
+**What did NOT land, by design — three limitations documented, not fixed:**
+(1) mid-drain stale reads — a request reading a row in the same uncommitted
+drain as an earlier request's in-flight update to it may see the last durable
+value, not that write; (2) replay is O(N²) in a row's delta-chain length,
+since each replayed delta re-folds the whole chain; (3) compaction triggers on
+byte ratio only, with no per-row delta-count signal, so one hot row (a single
+popular SKU — this feature's own motivating workload) can grow a long chain
+without moving the aggregate ratio enough to checkpoint. Item 3 is the
+sharper finding: the design's decision not to cap chain length rests on
+compaction bounding it, and for a hot-row workload it does not. Recorded in
+[the story](databasev2/02-table-storage-modes.md) and the example's README.
+
+**.dev / reference projects used:** none — internal-only, `table.c`/`wal.c`/
+`db.c` read directly to audit the request path and trace the representation
+mismatch.
+
+**Dependencies unblocked:** none newly technical — databasev2 2's own tasks 6
+(the two runtime refusals: no-`WO_DATA`, the byte budget) and 7 (measure, gate,
+close out) were already the next items and do not depend on this.
+
+**Next steps:** databasev2 2 tasks 6/7, as before. `database/src/CODE-LOGIC.md`
+is current with the stage-here/commit-in-caller update contract and the
+engine-representation fix.
+
 ### Landed 2026-08-30 — porch 1 DONE, store-backed middleware closed out
 
 **porch 1 (store-backed middleware) is `status: done`.** Task 5 added the
@@ -114,6 +224,52 @@ every claim with a gate leg scoped to exactly what it shows.
 critical path (unaffected by this session); on the porch track, porch 2's
 brainstorm (CSPRNG builtin id 96+, then repeated response headers) is next
 whenever that track resumes.
+
+### Landed 2026-08-30 — porch 1 (rate limiting), and a runtime crash found
+
+**Implemented last time (2026-08-30):** porch 1's rate limiter, and only that.
+Counting moved out of the request's own fiber into a sharded actor pool, so two
+concurrent requests can no longer lose an increment — proven by 30 genuinely
+parallel clients, not two sequential ones. Counters are WAL-durable across a
+SIGTERM restart, `trust_proxy` is off by default with a `net.peer` fallback, and
+saturation fails closed.
+
+**The iteration was re-scoped mid-flight.** Idempotency was built, reviewed and
+then reverted to [porch 9](porch/09-idempotent-replay.md), whole, in the tag
+`archive/porch-idempotency`. Not a design failure — it passed its gates. It
+provokes a C-runtime SIGSEGV in `wo_arena_alloc`/`wo_str_new` under concurrent
+`call()`-parked callers, and its legs flaked between 0 and 6 failures run to
+run. After the split: five consecutive runs at 56 checks, 0 failures. **A
+feature whose test passes some of the time is not shipped**, and the limiter was
+finished either way — it was being held hostage by a defect in code it does not
+call.
+
+**The most valuable output is arguably the bug, not the feature.**
+[Language 41](language-runtime-database/41-actor-arena-crash.md) records a
+SIGSEGV in the arena allocator under concurrent actors, with the evidence that
+localises it: every failure belonged to the path with 5x the allocation inside
+`receive`, none to the light path driving the same pool; and it scales with
+sequential insert+delete volume on one key (N=4/5 crashed, N=1-3 clean over 12+
+trials). Two smaller runtime defects came with it — `try/catch` cannot tell a
+literal `Int 0` reply from a trap, and a `json.decode` value is corrupted when
+embedded in a struct crossing a function-return boundary.
+
+**Corrections to our own record:** the earlier claim that `Pool` being traced
+forces a one-slot re-wrap was WRONG — WO-E222 fires on the class, not on
+`multi`, so an actor can hold `slots: multi PoolSlot`. It shipped in a README
+before being caught by the whole-branch review. All fifteen execution decisions
+are in
+[the rulings log](../superpowers/plans/2026-08-29-porch-store-backed-middleware-rulings.md).
+
+**.dev / reference projects used:** the Fiber parity study for porch 1's scope.
+
+**Dependencies unblocked:** porch 2-4 inherit the store convention — serialize
+through an actor, persist in a `@table`, never read-modify-write from a handler
+fiber.
+
+**Next steps:** language 41, the arena crash. It outranks the remaining porch
+work: anything built on actors is exposed until it is fixed, and porch 9 is
+written and waiting on it.
 
 ### Landed 2026-08-29 — databasev2 2 tasks 5c/5d, and a branch consolidation
 
@@ -981,6 +1137,8 @@ the language arc as v1 history.
 | 8 | [Query grammar from corpora](databasev2/08-query-grammar-corpus.md) *(was 27)* | ⬜ whole-query `count`, `exists`; independent |
 | 9 | [Cross-program tables](databasev2/09-cross-program-tables.md) *(was 20)* | ⏸ hold — attach to a running program's database over local IPC |
 | 10 | [Keypair attach auth](databasev2/10-keypair-attach-auth.md) *(was 21)* | ⏸ hold — program identity as a keypair; needs 9 |
+| 11 | [Bounded delta chains](databasev2/11-bounded-delta-chains.md) | ✅ **LANDED 2026-08-30.** A `resident: keys` row's delta chain is bounded in the UPDATE path, because the checkpoint is blind to per-row chain length — it thresholds on whole-log bytes, so one hot row can grow an unbounded chain inside a log that never trips compaction. The fold now reports hop count (free — the walk already visited every hop), and past `WO_DELTA_MAX_HOPS` (16) the update writes a full row image instead of a delta, resetting depth to 0. **Two things the tests corrected.** The flattened image is a `WO_WAL_UPDATE`, not an `INSERT`: the row's original INSERT is already in a live log, so a second one for the same id is a duplicate that replay correctly refuses as corruption — INSERT is right only for compaction, which builds a *fresh* log. And the **proportional ceiling was removed as dead code**: with the absolute term at 64 MiB, garbage large enough to reach a 256 MiB ceiling has already tripped it, so the branch was unreachable. Borrowing both constants from postgres was the wrong inference — PG needs two because it thresholds on *tuples* with its pair at opposite ends (base 50, max 1e8); this thresholds on *bytes*, where one constant does both jobs. Found by trying to write a test for the ceiling and finding no input could reach it. Four tests: depth stays bounded across 2K+2 updates, a flattened chain replays, a delta on an **indexed** column composes with flattening (checked at every step across the bound and after restart — found no product defect), and the policy's absolute term with its boundary. `test_wal` **5700 pass / 0 fail**; `wovm-test` and `woc-test` green. **One criterion is weaker than written:** the replay check asserts an expected value, not a `resident: all` oracle table. [spec](../superpowers/specs/2026-08-30-bounded-delta-chains-design.md) |
+| 12 | [Schema migrations](databasev2/12-schema-migrations.md) | ✅ **LANDED 2026-08-31.** A `@table` class is the schema, the log is the database, and boot now compares them — before this, an added or deleted field turned a healthy `WO_DATA` into "corruption" and reordering declarations silently decoded rows into the wrong class. Landed: `WO_WAL_SCHEMA` head record (written LAZILY ahead of the first real record — an eager head broke `durable: false`'s documented zero-bytes contract by 75 bytes and the gate caught it), a name-keyed diff whose refusals are per-class POISONS that bite only when a record of the class is met, and a record-level TRANSCODE: cids remap by name including inside stored owned values, deleted values freed, added fields zero-filled, delta back-pointers rewritten through an offset map with deltas on deleted fields SPLICED out; temp+fsync+rename, compaction's crash discipline. **Two bugs the tests forced out:** a poisoned class skipped plan identity so the retype refusal fell through to generic "corruption" (the message this iteration exists to replace), and early `goto corrupt` freed uninitialized memory. End-to-end: `migrating \`Note\`: +flag` then `flag=0`; retype refuses naming `val`, exit 2, old binary still boots the refused log. 21 new tests, `test_wal` **5966/0**; wovm/woc/site/residency gates green. v2 holds rename (`@renamed_from`), retypes, and data/seed migrations. [spec](../superpowers/specs/2026-08-31-schema-migrations-design.md) |
 
 ---
 
@@ -1016,6 +1174,38 @@ manifests.
 check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 ✅ **19** — landed 2026-08-20: Float + Bytes, `.wob` v5.
 
+### ▸ runtime-v2 — the runtime beyond sockets
+
+New 2026-09-01. The I/O plane learned sockets in 8/11/35 and files in 6;
+this track adds the missing third — **processes, terminals, signals** —
+five builtin-sized seams, each `runtime/src/` work with a `types.ml` row
+as its whole compiler cost (the iteration 42 precedent). Iteration 42
+(bounded subprocess, ✅ on `master` 2026-09-01) opened the arc from the
+language track before it had a name. Build order 1 → 2 → 3; 4 and 5
+startable alone. All ⬜ `refine`; edges in
+[dependency graph section 6](../00-dependency-graph.md).
+
+| # | Iteration | State |
+| --- | --- | --- |
+| 1 | [streaming subprocess](runtime-v2/01-streaming-subprocess.md) | ⬜ `refine` — 42's named follow-up: long-lived child, output as events, stdin, exit notice. Five forks (verb shape, push-vs-pull transport, the mailbox-cap collision, stdin backpressure, idle-deadline semantics). First up |
+| 2 | [PTY](runtime-v2/02-pty.md) | ⬜ `refine` — openpty + controlling terminal + resize; `.dev/reference/tmux` `spawn.c`/`fdforkpty.c` is the reading |
+| 3 | [signals as events](runtime-v2/03-signals-as-events.md) | ⬜ `refine` — SIGWINCH/SIGCHLD as mailbox messages; signalfd lean; the seam 42 deferred to its real consumer |
+| 4 | [termios adoption](runtime-v2/04-termios.md) | ⬜ `refine`, **startable alone** — raw mode + guaranteed restore on the process's own tty |
+| 5 | [fd passing](runtime-v2/05-fd-passing.md) | ⬜ `refine`, **startable alone** — SCM_RIGHTS over unix sockets; detach/attach's foundation |
+
+### ▸ wmux — the terminal multiplexer track
+
+New 2026-09-01, from [the tmux parity study](../plan/exploration/tmux/00-tmux-parity.md).
+First of the *softwares built with writeonce* tracks: the product is an
+end-user program, not a library. Its runtime prerequisites are the
+[runtime-v2 track](runtime-v2/00-story.md) above — iteration 42 was the
+first domino; runtime-v2 1–5 remain, streaming-subprocess first — plus
+the VTE grid + unicode width work wmux 1 itself owns.
+
+| # | Iteration | State |
+| --- | --- | --- |
+| 1 | [wmux](wmux/01-wmux.md) *(was language 43)* | ⬜ `refine` — five forks recorded (terminfo, v1 surface without split panes, scrollback residency, command surface, streaming verb shape). The beyond-tmux leg: durable sessions replay layout + scrollback after a server RESTART |
+
 ### Language track — sequenced, on the critical path
 
 | #   | Item                                                                                                                                                                           | Plan                                                                                               |
@@ -1032,6 +1222,7 @@ check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 | 23  | io_uring group-commit write path — batched durability overlapped on shard threads, fsync fallback                                                                             | **no spec yet** — brainstorm after iterations 8 + 22                                               |
 | 27  | Query grammar from real embedded-DB corpora — whole-query count + correlated exists, driven by the skillhost SQL catalogue; add only what a corpus uses | **no spec yet** — three forks; may collapse to "confirm len(query) + add exists" |
 | 14  | skillhost host workload — port skillhost (MCP host + confined script runner) to writeonce; drives the missing host capabilities into the open (bounded subprocess, stdin/stdout transport, fs metadata, FFI-vs-out-of-process) | **no spec yet** — gaps recorded in the iteration; each gap brainstormed on demand, bounded-subprocess first |
+| 42  | [Bounded subprocess](language-runtime-database/42-bounded-subprocess.md) — `proc.run` bounded in place (deadline, output caps, per-shard ceiling, owner-bound reaping via pidfd, fiber parked) + `proc.run_dl`; streaming form deferred by name | ✅ **DONE 2026-09-01, on `master`** — [spec](../superpowers/specs/2026-09-01-bounded-subprocess-design.md) · [plan](../superpowers/plans/2026-09-01-bounded-subprocess.md); test_proc 128/0, `just subprocess` 12/0; see NEXT PLAN |
 | 17  | library projects + dependency privacy — `wo.toml` kind = "library" (checkable without entry, dual lib+bin) + Go-style `internal/` at the [deps] boundary; framework reorg demonstrates both | ✅ **landed 2026-08-20** — [spec](../superpowers/specs/2026-08-20-library-kind-internal-design.md) · [plan](../superpowers/plans/2026-08-20-library-kind-internal.md) |
 | 10  | HTTP service layer                                                                                                                                                             | [plan 6](../superpowers/plans/2026-08-01-http-service-layer.md)                                       |
 | 11  | Fibers                                                                                                                                                                         | vision §3, [blue-green exploration](../plan/exploration/blue-green-vm/00-vision.md)                   |

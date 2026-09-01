@@ -44,6 +44,9 @@ features cannot collide.
 | `lang41` | runtime: unadopted shard must not impersonate shard 0 | on `dev` (`9dca0b4`); independent of the residency stack, not picked |
 | `porch-store` | porch store tables, Limiter and Idempotent middleware (Phases A, B, C) | on `dev` (`519d411`, `5b1e82a`, `aee7926`). **In progress**: Phase C was uncommitted work from a parallel session, committed as-is, and calls `json.decode`/`json.encode` with no `use json` import |
 | `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
+| `lang42` | iteration 42 — bounded subprocess: `proc.run` bounded + parked (pidfd, caps, ceiling, owner-bound reaping), `proc.run_dl`; carries the alacritty/tmux/zen parity studies and the porch dependency-graph section from the same sweep | ✅ on `master` 2026-09-01 |
+| `wmux` | the wmux track (`docs/stories/wmux/`, iteration 1 was language 43) — the terminal multiplexer, first of the softwares built with writeonce; story + gap-chain remap first, code follows gap by gap | on `dev` 2026-09-01 |
+| `rt2` | the runtime-v2 track (`docs/stories/runtime-v2/`) — the runtime beyond sockets: streaming subprocess, PTY, signals-as-events, termios, fd passing; five refine stories, wmux is the driving workload | on `dev` 2026-09-01 |
 
 ## Cherry-picks onto master
 
@@ -52,6 +55,7 @@ produced.
 
 | Date | Prefix | Feature | `dev` → `master` |
 | --- | --- | --- | --- |
+| 2026-09-01 | `lang42` | **iteration 42 — bounded subprocess**: `proc.run` parked (pidfd + epoll bundle, `_dl` retry mould) with deadline/output-cap/ceiling refusals by name and owner-bound reaping; `proc.run_dl` (id 96) states bounds per call; the pre-42 sequential-drain deadlock proven then dissolved. Includes the alacritty/tmux/zen-browser parity studies and the porch graph section. Zero conflicts. Verified on `master` after rebuild: 38 runtime suites 0 fail both dispatch flavors (`test_proc` 128/0, `test_wal` 5966/0), woc-test 557/0 (forced, not cached), subprocess-accept 12/0, site-accept 23/0 | `5b92e20` → `2f6d39d`, `75fbd30` → `b287bf7`, `821899b` → `afa16e5`, `c30507b` → `81c28d8`, `975959a` → `64542e5`, `a3b5dc3` → `ce98fa1`, `b147dd4` → `346f885`, `5dfbeda` → `49b0193` |
 | 2026-08-31 | `db2-migrate` + `site-deploy` | **databasev2 12 — schema migrations v1**: WO_WAL_SCHEMA head record, name-keyed boot diff, record-level transcode for add/delete, poisons that bite only with records; plus the redeploy runbook the close-out edits (dev-only until now). Zero conflicts. Verified on `master`: 36 suites 0 fail (`test_wal` 5966/0), woc-test clean, residency-accept 14/0, site-accept 23/0 | `930a715` → `b594717`, `072e007` → `8d9207d`, `ba8519f` → `570e0d6`, `63a063b` → `b1b7984`, `b69092a` → `4a70fc7`, `b21943a` → `ace5699`, `4bb6ece` → `4f1fda1` |
 | 2026-08-30 | `site-submodule` | **`docs/examples/site` becomes a submodule** — extracted to github.com/shoneyJ/writeonce-site with `git subtree split` (its own 9 commits of history, not a snapshot) | `4b56348` → `a5497a3`, `4eead89` → `565b894` |
 | 2026-08-30 | `db2-keys` + `db2-delta` + `db2-chains` + `site` | **databasev2 `resident: keys`, end to end** — storage, readers, deletes, updates as delta records, bounded delta chains, and the tutorial chapter documenting them | 37 commits, mapped one-to-one below |
