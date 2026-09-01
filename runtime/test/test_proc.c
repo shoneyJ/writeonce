@@ -325,6 +325,260 @@ static void test_errcap_refuses_by_name(void) {
     free(img);
 }
 
+/* Module for the ceiling/unwind legs: method 0 = runner (arity 0) that
+ * runs `sleep <secs>` through RUN_DL and drops the record; method 1 =
+ * main that pre-sleeps, then either does the same run (ceiling) or just
+ * returns (unwind). */
+static uint8_t *sleeper_module(const char *secs, int64_t presleep_ms,
+                               int main_runs_too, size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kproc = wb_const_text(b, "Proc");
+    uint32_t kw = wb_const_text(b, "runner");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "sleep");
+    uint32_t karg = wb_const_text(b, secs);
+    uint8_t kinds[3] = {WO_K_SCALAR, WO_K_TEXT, WO_K_TEXT};
+    uint32_t cls = wb_class(b, kproc, 0, kinds, 3);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kdl = wb_const_int(b, 30000);
+    uint32_t kz = wb_const_int(b, 0);
+    uint32_t kpre = wb_const_int(b, presleep_ms);
+
+    { /* runner: run `sleep secs`, drop record, return */
+        uint32_t code[16];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdl);
+        code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)kz);
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kz);
+        code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kcls);
+        uint32_t run_pc = n;
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_RUN_DL);
+        code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+        code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+        code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_drop drops[] = {{.pc = run_pc, .owned = 1u << 2, .gc = 0}};
+        wb_method(b, kw, WOB_NONE, 0, 7, code, n, NULL, 0, drops, 1);
+    }
+    { /* main: presleep, then optionally the same run */
+        uint32_t code[16];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kpre);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_TIME_SLEEP);
+        if (main_runs_too) {
+            code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+            code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+            code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+            code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+            code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdl);
+            code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)kz);
+            code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kz);
+            code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kcls);
+            uint32_t run_pc = n;
+            code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_RUN_DL);
+            code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+            code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+            code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+            wb_drop drops[] = {{.pc = run_pc, .owned = 1u << 2, .gc = 0}};
+            wb_method(b, km, WOB_NONE, 0, 7, code, n, NULL, 0, drops, 1);
+        } else {
+            code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+            wb_method(b, km, WOB_NONE, 0, 3, code, n, NULL, 0, NULL, 0);
+        }
+    }
+    return wb_finish(b, len);
+}
+
+/* the ceiling: 32 fibers each hold a live child; the 33rd spawn (main's)
+ * fails closed naming the ceiling, and the 32 are unharmed until reaped */
+static void test_ceiling_fails_closed(void) {
+    size_t len;
+    uint8_t *img = sleeper_module("2", 400, 1, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    for (int i = 0; i < 32; i++)
+        T_CHECK(wo_vm_spawn_fiber(&VM, 0, NULL, 0) != NULL);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, NULL, 0, &ret, &err), -1);
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "ceiling") != NULL);
+    wo_vm_destroy(&VM); /* sweeps the 32 sleepers */
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* a fiber parked on a live child is reaped when main returns — its child
+ * dies with it (fib_reap -> wo_proc_abandon) */
+static void test_unwind_reaps_child(void) {
+    size_t len;
+    uint8_t *img = sleeper_module("10", 300, 0, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    T_CHECK(wo_vm_spawn_fiber(&VM, 0, NULL, 0) != NULL);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 1, NULL, 0, &ret, &err), 0); /* main returns */
+    T_EQ(VM.nchildren, 0u); /* the reap already killed the sleeper */
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* one thousand sequential children leave the fd table flat and every
+ * slot released (the iteration 24 measurement style) */
+static uint8_t *churn_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kproc = wb_const_text(b, "Proc");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "true");
+    uint8_t kinds[3] = {WO_K_SCALAR, WO_K_TEXT, WO_K_TEXT};
+    uint32_t cls = wb_class(b, kproc, 0, kinds, 3);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kdl = wb_const_int(b, 30000);
+    uint32_t kz = wb_const_int(b, 0);
+    uint32_t klim = wb_const_int(b, 1000);
+    uint32_t k1 = wb_const_int(b, 1);
+    uint32_t code[20];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 7, (uint16_t)kz);   /* i = 0 */
+    code[n++] = wo_ins_abx(WOP_LOADK, 8, (uint16_t)klim); /* limit */
+    uint32_t loop_pc = n;
+    code[n++] = wo_ins_abc(WOP_LT, 9, 7, 8);
+    uint32_t jz_pc = n;
+    code[n++] = wo_ins_asbx(WOP_JZ, 9, 0); /* patched below */
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdl);
+    code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)kz);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kz);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kcls);
+    uint32_t run_pc = n;
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_RUN_DL);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 9, (uint16_t)k1);
+    code[n++] = wo_ins_abc(WOP_ADD, 7, 7, 9);
+    uint32_t jmp_pc = n;
+    code[n++] = wo_ins_asbx(WOP_JMP, 0, (int)loop_pc - ((int)jmp_pc + 1));
+    uint32_t exit_pc = n;
+    code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+    code[jz_pc] = wo_ins_asbx(WOP_JZ, 9, (int)exit_pc - ((int)jz_pc + 1));
+    wb_drop drops[] = {{.pc = run_pc, .owned = 1u << 2, .gc = 0}};
+    wb_method(b, km, WOB_NONE, 0, 10, code, n, NULL, 0, drops, 1);
+    return wb_finish(b, len);
+}
+
+static void test_thousand_spawns_fd_flat(void) {
+    size_t len;
+    uint8_t *img = churn_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    int fds0 = fd_count();
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), 0);
+    T_EQ(fd_count(), fds0);
+    T_EQ(VM.nchildren, 0u);
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* SIGTERM while a child lives: the run answers STOPPED (rc 1) and no
+ * child survives. A helper process delivers the signal 200 ms in; the
+ * handlers must be installed first (env.stopping does that in real
+ * programs — the test installs the same ones via a first stopping call
+ * from bytecode is overkill; raise() through a helper matches how the
+ * process is actually told to stop). */
+static uint8_t *stop_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kproc = wb_const_text(b, "Proc");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "sleep");
+    uint32_t karg = wb_const_text(b, "10");
+    uint8_t kinds[3] = {WO_K_SCALAR, WO_K_TEXT, WO_K_TEXT};
+    uint32_t cls = wb_class(b, kproc, 0, kinds, 3);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kdl = wb_const_int(b, 30000);
+    uint32_t kz = wb_const_int(b, 0);
+    uint32_t code[16];
+    uint32_t n = 0;
+    /* env.stopping first: installs the SIGTERM handler exactly as a real
+     * program's drain loop would have */
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 0, WO_B_ENV_STOPPING);
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kdl);
+    code[n++] = wo_ins_abx(WOP_LOADK, 4, (uint16_t)kz);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kz);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kcls);
+    uint32_t run_pc = n;
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_RUN_DL);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+    wb_drop drops[] = {{.pc = run_pc, .owned = 1u << 2, .gc = 0}};
+    wb_method(b, km, WOB_NONE, 0, 7, code, n, NULL, 0, drops, 1);
+    return wb_finish(b, len);
+}
+
+static void test_stop_kills_child(void) {
+    size_t len;
+    uint8_t *img = stop_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    pid_t helper = fork();
+    if (helper == 0) { /* deliver SIGTERM 200 ms in, then vanish */
+        struct timespec ts = {0, 200 * 1000000};
+        nanosleep(&ts, NULL);
+        kill(getppid(), SIGTERM);
+        _exit(0);
+    }
+    T_CHECK(helper > 0);
+    int64_t t0 = mono_ms();
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    int rc = wo_vm_call(&VM, 0, NULL, 0, &ret, &err);
+    int64_t elapsed = mono_ms() - t0;
+    T_EQ(rc, 1); /* STOPPED, not a trap */
+    T_CHECK(elapsed < 5000); /* nowhere near sleep 10 */
+    T_EQ(VM.nchildren, 0u);
+    int st;
+    T_EQ(waitpid(helper, &st, 0), helper); /* reap the helper itself */
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);   /* and NOTHING else is left */
+    T_EQ(errno, ECHILD);
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
 static void on_alarm(int sig) { (void)sig; } /* interrupt, don't die */
 
 static int64_t mono_ms(void) {
@@ -368,5 +622,9 @@ int main(void) {
     test_deadline_kills_and_shard_schedules();
     test_cap_refuses_by_name();
     test_errcap_refuses_by_name();
+    test_ceiling_fails_closed();
+    test_unwind_reaps_child();
+    test_thousand_spawns_fd_flat();
+    test_stop_kills_child();
     return t_report("test_proc");
 }
