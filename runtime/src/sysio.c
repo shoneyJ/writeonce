@@ -174,16 +174,20 @@ static wo_str *read_range(wo_rt *rt, int fd, off_t off, size_t want, const char 
  * per thread */
 static _Thread_local char proc_msg[96];
 
-/* release everything a slot holds; the child must already be reaped */
+/* release everything a slot holds; the child must already be reaped.
+ * A streaming slot's stdio fds are the CALLER's (never closed here —
+ * fd numbers get recycled); the master dup is the slot's own. */
 static void proc_slot_close(wo_vm *vm, wo_child *ch) {
     if (ch->pidfd >= 0) close(ch->pidfd);
     if (ch->epfd >= 0) close(ch->epfd);
     if (ch->ofd >= 0) close(ch->ofd);
     if (ch->efd >= 0) close(ch->efd);
+    if (ch->master_dup > 0) close(ch->master_dup);
     free(ch->obuf);
     free(ch->ebuf);
     if (ch->owner) ch->owner->proc_st = NULL;
     memset(ch, 0, sizeof *ch);
+    ch->master_dup = -1;
     vm->nchildren--;
 }
 
@@ -197,11 +201,73 @@ static void proc_slot_kill(wo_vm *vm, wo_child *ch) {
 
 void wo_proc_abandon(wo_vm *vm, wo_fiber *fb) {
     if (fb->proc_st) proc_slot_kill(vm, fb->proc_st);
+    /* a dead fiber must not linger as a streaming child's waiter */
+    for (uint32_t i = 0; i < WO_PROC_MAX; i++)
+        if (vm->children[i].used && vm->children[i].waiter == fb)
+            vm->children[i].waiter = NULL;
+}
+
+/* runtime-v2 1: a dying actor's streaming children die with it */
+void wo_proc_abandon_actor(wo_vm *vm, struct wo_actor *a) {
+    for (uint32_t i = 0; i < WO_PROC_MAX; i++)
+        if (vm->children[i].used && vm->children[i].owner_actor == a)
+            proc_slot_kill(vm, &vm->children[i]);
 }
 
 void wo_proc_reap_all(wo_vm *vm) {
     for (uint32_t i = 0; i < WO_PROC_MAX; i++)
         if (vm->children[i].used) proc_slot_kill(vm, &vm->children[i]);
+}
+
+/* the language-visible child id: (gen << 6) | slot index. Stale or
+ * foreign ids refuse by name instead of touching a recycled slot. */
+static wo_child *proc_slot_by_id(wo_vm *vm, uint64_t id, const char **msg) {
+    uint32_t idx = (uint32_t)(id & 63u);
+    wo_child *ch = idx < WO_PROC_MAX ? &vm->children[idx] : NULL;
+    if (!ch || !ch->used || !ch->streaming || ch->gen != (uint32_t)(id >> 6)) {
+        *msg = "process id is not a live child";
+        return NULL;
+    }
+    return ch;
+}
+
+/* argv marshalling shared by the streaming spawn forms. argv[0] is the
+ * command; the multi supplies the rest; buffers are the caller's. */
+static int proc_argv(uint64_t vcmd, uint64_t vargv, char *path, size_t pathcap,
+                     char (*argbuf)[512], char **argv, const char **msg) {
+    if (cstr_of(vcmd, path, pathcap, msg)) return -1;
+    wo_multi *m = (wo_multi *)(uintptr_t)vargv;
+    if (!m || m->h.class_id != WO_CLS_MULTI || m->elem_kind != WO_K_TEXT) {
+        *msg = "`proc.spawn` needs a `multi Text` of arguments";
+        return -1;
+    }
+    if (m->len > 62) {
+        *msg = "too many process arguments";
+        return -1;
+    }
+    argv[0] = path;
+    for (uint32_t i = 0; i < m->len; i++) {
+        const wo_str *a = (const wo_str *)(uintptr_t)m->items[i];
+        if (!a || a->h.class_id != WO_CLS_STR || a->len + 1 > 512) {
+            *msg = "process argument is not a short text";
+            return -1;
+        }
+        memcpy(argbuf[i], a->data, a->len);
+        argbuf[i][a->len] = '\0';
+        argv[i + 1] = argbuf[i];
+    }
+    argv[m->len + 1] = NULL;
+    return 0;
+}
+
+/* claim a slot or refuse by name (shared by run/run_dl/spawn forms) */
+static wo_child *proc_slot_claim(wo_vm *vm, const char **msg) {
+    for (uint32_t i = 0; i < WO_PROC_MAX; i++)
+        if (!vm->children[i].used) return &vm->children[i];
+    snprintf(proc_msg, sizeof proc_msg,
+             "process ceiling: %u live children on this shard", WO_PROC_MAX);
+    *msg = proc_msg;
+    return NULL;
 }
 
 /* append a chunk, growing by doubling up to the cap.
@@ -1076,6 +1142,148 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         fb->park_deadline = fb->dl_at;
         fb->park_done = 0;
         return WO_SYS_PARKED;
+    }
+    /* ---- runtime-v2 1: the streaming child --------------------------- */
+    case WO_B_PROC_SPAWN: { /* Child: 0 id, 1 stdin, 2 stdout, 3 stderr.
+                             * The caller owns the three fds (net verbs
+                             * drive them, net.close releases them); the
+                             * runtime owns pid + pidfd. */
+        char argbuf[62][512];
+        char *argv[64];
+        if (proc_argv(R[B], R[B + 1], path, sizeof path, argbuf, argv, msg))
+            return WO_T_BOUNDS;
+        wo_child *ch = proc_slot_claim(vm, msg);
+        if (!ch) return WO_T_IO;
+        int ip[2], op[2], ep[2];
+        if (pipe(ip) != 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        if (pipe(op) != 0) {
+            close(ip[0]); close(ip[1]);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        if (pipe(ep) != 0) {
+            close(ip[0]); close(ip[1]); close(op[0]); close(op[1]);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(ip[0]); close(ip[1]); close(op[0]); close(op[1]);
+            close(ep[0]); close(ep[1]);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        if (pid == 0) {
+            dup2(ip[0], STDIN_FILENO);
+            dup2(op[1], STDOUT_FILENO);
+            dup2(ep[1], STDERR_FILENO);
+            close(ip[0]); close(ip[1]); close(op[0]); close(op[1]);
+            close(ep[0]); close(ep[1]);
+            execvp(path, argv);
+            _exit(127);
+        }
+        close(ip[0]);
+        close(op[1]);
+        close(ep[1]);
+        fcntl(ip[1], F_SETFL, fcntl(ip[1], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(op[0], F_SETFL, fcntl(op[0], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(ep[0], F_SETFL, fcntl(ep[0], F_GETFL, 0) | O_NONBLOCK);
+        int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+        if (pidfd < 0) {
+            int e = errno;
+            kill(pid, SIGKILL);
+            int st;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+            close(ip[1]); close(op[0]); close(ep[0]);
+            *msg = strerror(e);
+            return WO_T_IO;
+        }
+        memset(ch, 0, sizeof *ch);
+        ch->used = 1;
+        ch->streaming = 1;
+        ch->pid = (int)pid;
+        ch->pidfd = pidfd;
+        ch->epfd = -1;
+        ch->ofd = ch->efd = -1;
+        ch->master_dup = -1;
+        ch->gen = ++vm->proc_gen;
+        ch->owner_actor = vm->cur->actor; /* NULL = the program */
+        vm->nchildren++;
+        wo_hdr *o = record_of(vm, R[B + 2], 4, msg);
+        if (!o) {
+            close(ip[1]); close(op[0]); close(ep[0]);
+            proc_slot_kill(vm, ch);
+            return R[B + 2] >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;
+        }
+        uint64_t *fp = wo_fields(o);
+        fp[0] = ((uint64_t)ch->gen << 6) | (uint64_t)(ch - vm->children);
+        fp[1] = (uint64_t)ip[1];
+        fp[2] = (uint64_t)op[0];
+        fp[3] = (uint64_t)ep[0];
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_PROC_WAIT_DL: { /* (id, ms) -> ?Int code; nil = deadline,
+                               * child untouched. One waiter per id. */
+        wo_fiber *fb = vm->cur;
+        wo_child *ch = proc_slot_by_id(vm, R[B], msg);
+        if (!ch) {
+            fb->dl_active = 0;
+            return WO_T_IO;
+        }
+        if (ch->waiter && ch->waiter != fb) {
+            fb->dl_active = 0;
+            *msg = "child already has a waiter";
+            return WO_T_IO;
+        }
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        int64_t dnow = (int64_t)dts.tv_sec * 1000 + dts.tv_nsec / 1000000;
+        if (!fb->dl_active) {
+            int64_t ms = (int64_t)R[B + 1];
+            fb->dl_active = 1;
+            fb->dl_at = ms > 0 ? dnow + ms : 0;
+        }
+        int status = 0;
+        pid_t r = waitpid(ch->pid, &status, WNOHANG);
+        if (r == (pid_t)ch->pid) {
+            fb->dl_active = 0;
+            proc_slot_close(vm, ch);
+            R[A] = (uint64_t)(int64_t)(WIFEXITED(status) ? WEXITSTATUS(status)
+                                                         : -1);
+            return 0;
+        }
+        if (stop_pending()) {
+            fb->dl_active = 0;
+            proc_slot_kill(vm, ch);
+            return WO_SYS_STOPPED;
+        }
+        if (fb->dl_at > 0 && dnow >= fb->dl_at) {
+            /* the deadline answers nil; the CHILD is untouched */
+            fb->dl_active = 0;
+            ch->waiter = NULL;
+            R[A] = WO_NIL_SCALAR;
+            return 0;
+        }
+        ch->waiter = fb;
+        fb->park_fd = ch->pidfd;
+        fb->park_events = POLLIN;
+        fb->park_deadline = fb->dl_at;
+        fb->park_done = 0;
+        return WO_SYS_PARKED;
+    }
+    case WO_B_PROC_SIGNAL: { /* (id, sig) -> 0 through the pidfd */
+        wo_child *ch = proc_slot_by_id(vm, R[B], msg);
+        if (!ch) return WO_T_IO;
+        if (syscall(SYS_pidfd_send_signal, ch->pidfd, (int)R[B + 1], NULL, 0) != 0) {
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        R[A] = 0;
+        return 0;
     }
     default:
         *msg = "unknown stdlib builtin";

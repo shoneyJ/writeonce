@@ -510,9 +510,40 @@ enum {
     WO_B_PROC_RUN_DL = 96,    /* (cmd, multi Text args, deadline_ms,
                                * out_cap, err_cap, cls) -> Proc {code, out,
                                * err}; ms/caps <= 0 pick the default */
+    /* ---- runtime-v2: the runtime beyond sockets (track spec
+     * 2026-09-01). A child/received fd is an ORDINARY fd the existing
+     * net verbs drive; these are acquisition verbs only. ---- */
+    WO_B_PROC_SPAWN = 97,     /* (cmd, args, cls) -> Child {id, stdin,
+                               * stdout, stderr}: streaming child, pipes;
+                               * caller owns the three fds (net.close),
+                               * the runtime owns pid+pidfd */
+    WO_B_PROC_WAIT_DL = 98,   /* (id, ms) -> ?Int exit code; nil = still
+                               * running at the deadline (child untouched).
+                               * One waiter per id — a second refuses */
+    WO_B_PROC_SIGNAL = 99,    /* (id, sig) -> 0: pidfd_send_signal */
+    WO_B_PROC_SPAWN_PTY = 100,/* (cmd, args, cols, rows, cls) -> Child:
+                               * stdin==stdout=PTY master (raw), stderr -1 */
+    WO_B_PROC_RESIZE = 101,   /* (id, cols, rows) -> 0: TIOCSWINSZ; refuses
+                               * by name on a pipe child */
+    WO_B_SIGNAL_ON = 102,     /* (sig, addr, cls) -> 0: standing
+                               * subscription; each arrival delivers a
+                               * fresh Signal {sig} record (payloads must
+                               * be heap objects — vm.c drops them).
+                               * SIGTERM/SIGINT refused: the stop latch
+                               * stays the engine's */
+    WO_B_TERM_RAW = 103,      /* (fd) -> 0: save termios, cfmakeraw.
+                               * Restore is a RUNTIME obligation on
+                               * unwind/stop — no wrecked tty */
+    WO_B_TERM_RESTORE = 104,  /* (fd) -> 0: restore the saved termios */
+    WO_B_NET_SEND_FD = 105,   /* (conn, fd) -> Bool: SCM_RIGHTS, one fd;
+                               * unix sockets only, refuses by name */
+    WO_B_NET_RECV_FD = 106,   /* (conn) -> ?Int: the received fd, nil if
+                               * the peer sent plain bytes */
+    WO_B_NET_CONNECT_UNIX = 107, /* (path) -> Int: AF_UNIX client fd,
+                               * nonblocking */
 };
 
-#define WO_B_MAX 96u
+#define WO_B_MAX 107u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

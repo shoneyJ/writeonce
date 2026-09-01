@@ -987,6 +987,7 @@ static void call_reply_to(wo_vm *vm, wo_fiber *caller, uint32_t caller_shard,
  * (addresses are copyable scalars that may still be sent to). */
 static void actor_die(wo_vm *vm, wo_actor *a, wo_fiber *delivery) {
     a->dead = 1;
+    wo_proc_abandon_actor(vm, a); /* runtime-v2 1: its children die with it */
     if (delivery->cur_msg) {
         wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)delivery->cur_msg);
         delivery->cur_msg = 0;

@@ -178,13 +178,27 @@ typedef struct wo_child {
     size_t olen, elen, oalloc, ealloc;
     uint64_t out_cap, err_cap;
     struct wo_fiber *owner;
+    /* runtime-v2 1/2: the STREAMING child. The caller owns the stdio fds
+     * (Child.stdin/stdout/stderr, closed with net.close — the slot never
+     * touches them: fd numbers get recycled); the slot owns pid + pidfd
+     * and, for a PTY child, a private dup of the master for resize.
+     * `gen` makes the language-visible id ((gen << 6) | index) refuse
+     * stale handles by name. One waiter at a time parks on the pidfd. */
+    int streaming;
+    uint32_t gen;
+    int master_dup;          /* -1 = pipe child */
+    struct wo_fiber *waiter; /* the one wait_dl parker, NULL when none */
+    struct wo_actor *owner_actor; /* NULL = the program owns it */
 } wo_child;
 #define WO_PROC_MAX 32u
 
 /* sysio.c: kill+reap the fiber's in-flight child, if any (fib_reap), and
- * every live child on the shard (wo_vm_destroy / engine stop). */
+ * every live child on the shard (wo_vm_destroy / engine stop).
+ * runtime-v2: abandon_actor kills the streaming children a dying actor
+ * owns (actor_die); wo_proc_abandon also clears a dead fiber's waiter. */
 struct wo_vm;
 void wo_proc_abandon(struct wo_vm *vm, wo_fiber *fb);
+void wo_proc_abandon_actor(struct wo_vm *vm, struct wo_actor *a);
 void wo_proc_reap_all(struct wo_vm *vm);
 
 /* iteration 24: the one mailbox cap (default 1024, WO_MAILBOX overrides
@@ -232,6 +246,7 @@ typedef struct wo_vm {
     /* iteration 42: this shard's live children (proc.run in flight) */
     wo_child children[WO_PROC_MAX];
     uint32_t nchildren;
+    uint32_t proc_gen; /* runtime-v2 1: claim counter behind child ids */
     /* iteration 35, uring backend: the shard's ONE deadline tick — a
      * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
      * deadline (fd parks keep exactly one POLL op each; expiry wakes them

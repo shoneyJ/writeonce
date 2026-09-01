@@ -579,6 +579,308 @@ static void test_stop_kills_child(void) {
     free(img);
 }
 
+/* ---- runtime-v2 1: the streaming child ---------------------------------
+ * Child record class (id, stdin, stdout, stderr — all scalar) is built
+ * into each module; the fds are driven by the NET verbs, which is the
+ * whole design. */
+
+/* echo module: spawn `cat`, write "hi\n" to Child.stdin, read it back
+ * from Child.stdout, close all three fds, return the text. */
+static uint8_t *stream_echo_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "cat");
+    uint32_t khi = wb_const_text(b, "hi\n");
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kms = wb_const_int(b, 3000);
+    uint32_t kmax = wb_const_int(b, 16);
+    uint32_t code[32];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcls);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0); /* argv multi */
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 1); /* stdin */
+    code[n++] = wo_ins_abc(WOP_GETF, 2, 0, 2); /* stdout */
+    code[n++] = wo_ins_abc(WOP_GETF, 3, 0, 3); /* stderr */
+    /* write "hi\n" with a deadline */
+    code[n++] = wo_ins_abc(WOP_MOVE, 4, 1, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)khi);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kms);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_NET_WRITE_DL);
+    /* read it back */
+    code[n++] = wo_ins_abc(WOP_MOVE, 4, 2, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kmax);
+    code[n++] = wo_ins_abx(WOP_LOADK, 6, (uint16_t)kms);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_NET_READ_DL);
+    /* close the caller-owned fds */
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 2, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 3, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0); /* the Child record */
+    code[n++] = wo_ins_abc(WOP_RET, 7, 0, 0);
+    wb_method(b, km, WOB_NONE, 0, 9, code, n, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+static void test_stream_echo(void) {
+    size_t len;
+    uint8_t *img = stream_echo_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), 0);
+    const wo_str *s = (const wo_str *)(uintptr_t)ret;
+    T_CHECK(s != NULL);
+    if (s) {
+        T_EQ(s->len, 3u);
+        T_CHECK(memcmp(s->data, "hi\n", 3) == 0);
+        wo_str_free(&VM.rt, (wo_str *)s);
+    }
+    wo_vm_destroy(&VM); /* cat (EOF'd) reaped here if still live */
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* wait module: spawn `cmd arg`, close the fds, then EITHER one wait
+ * (ms1) returning its result, OR wait(ms1) -> signal(sig) -> wait(ms2)
+ * returning the second result. */
+static uint8_t *stream_wait_module(const char *cmd, const char *arg,
+                                   int64_t ms1, int64_t sig, int64_t ms2,
+                                   size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, cmd);
+    uint32_t karg = arg ? wb_const_text(b, arg) : 0;
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t kms1 = wb_const_int(b, ms1);
+    uint32_t ksig = wb_const_int(b, sig);
+    uint32_t kms2 = wb_const_int(b, ms2);
+    uint32_t code[40];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    if (arg) {
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+    }
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcls);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 1);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 2);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 3);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 4, 0, 0); /* id stays in r4 */
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kms1);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_PROC_WAIT_DL);
+    if (sig > 0) {
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)ksig);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 4, WO_B_PROC_SIGNAL);
+        code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)kms2);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_PROC_WAIT_DL);
+    }
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abc(WOP_RET, 7, 0, 0);
+    wb_method(b, km, WOB_NONE, 0, 9, code, n, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+static int64_t run_stream_wait(const char *cmd, const char *arg, int64_t ms1,
+                               int64_t sig, int64_t ms2, int expect_rc) {
+    size_t len;
+    uint8_t *img = stream_wait_module(cmd, arg, ms1, sig, ms2, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), expect_rc);
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+    return (int64_t)ret;
+}
+
+static void test_stream_wait(void) {
+    /* a fast child answers its code */
+    T_EQ(run_stream_wait("true", NULL, 3000, 0, 0, 0), 0);
+    /* a slow child answers nil at the deadline (and is untouched, then
+     * swept by destroy — ECHILD proves the sweep) */
+    T_EQ((uint64_t)run_stream_wait("sleep", "10", 100, 0, 0, 0),
+         WO_NIL_SCALAR);
+    /* signal SIGKILL, then the wait observes the signal death (-1) */
+    T_EQ(run_stream_wait("sleep", "10", 100, 9, 3000, 0), -1);
+}
+
+/* double-wait: a fiber parks as the waiter; main tries second, refused */
+static uint8_t *double_wait_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t kspawn = wb_const_text(b, "spawner");
+    uint32_t kw = wb_const_text(b, "waiter");
+    uint32_t ksec = wb_const_text(b, "second");
+    uint32_t kcmd = wb_const_text(b, "sleep");
+    uint32_t karg = wb_const_text(b, "1");
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t k3000 = wb_const_int(b, 3000);
+    uint32_t k200 = wb_const_int(b, 200);
+    uint32_t k100 = wb_const_int(b, 100);
+    { /* spawner (method 0): spawn sleep 1, close fds, RET id */
+        uint32_t code[24];
+        uint32_t n = 0;
+        code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)karg);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 4, 2, WO_B_MULTI_PUSH);
+        code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcls);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN);
+        code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+        code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 1);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 2);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 3);
+        code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+        code[n++] = wo_ins_abc(WOP_GETF, 4, 0, 0);
+        code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+        code[n++] = wo_ins_abc(WOP_RET, 4, 0, 0);
+        wb_method(b, kspawn, WOB_NONE, 0, 9, code, n, NULL, 0, NULL, 0);
+    }
+    { /* waiter (method 1, argc 1: r0 = id): wait 3000, RET0 */
+        uint32_t code[4];
+        code[0] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)k3000);
+        code[1] = wo_ins_abc(WOP_BUILTIN, 2, 0, WO_B_PROC_WAIT_DL);
+        code[2] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, kw, WOB_NONE, 1, 3, code, 3, NULL, 0, NULL, 0);
+    }
+    { /* second (method 2, argc 1): sleep 200 so the fiber parks first,
+       * then wait 100 — must trap "already has a waiter" */
+        uint32_t code[6];
+        code[0] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)k200);
+        code[1] = wo_ins_abc(WOP_BUILTIN, 2, 1, WO_B_TIME_SLEEP);
+        code[2] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)k100);
+        code[3] = wo_ins_abc(WOP_BUILTIN, 2, 0, WO_B_PROC_WAIT_DL);
+        code[4] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+        wb_method(b, ksec, WOB_NONE, 1, 3, code, 5, NULL, 0, NULL, 0);
+    }
+    return wb_finish(b, len);
+}
+
+static void test_stream_one_waiter(void) {
+    size_t len;
+    uint8_t *img = double_wait_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t id = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &id, &err), 0); /* spawner */
+    uint64_t warg[1] = {id};
+    T_CHECK(wo_vm_spawn_fiber(&VM, 1, warg, 1) != NULL); /* waiter */
+    uint64_t ret = 0;
+    T_EQ(wo_vm_call(&VM, 2, warg, 1, &ret, &err), -1); /* second */
+    T_EQ(err.code, WO_T_IO);
+    T_CHECK(strstr(err.msg, "waiter") != NULL);
+    wo_vm_destroy(&VM);
+    int st;
+    T_EQ(waitpid(-1, &st, WNOHANG), -1);
+    T_EQ(errno, ECHILD);
+    wo_module_free(&mod);
+    free(img);
+}
+
+/* churn: 200 spawn/wait/close rounds leave the fd table flat */
+static uint8_t *stream_churn_module(size_t *len) {
+    wb_t *b = wb_new();
+    uint32_t kchild = wb_const_text(b, "Child");
+    uint32_t km = wb_const_text(b, "main");
+    uint32_t kcmd = wb_const_text(b, "true");
+    uint8_t kinds[4] = {WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR, WO_K_SCALAR};
+    uint32_t cls = wb_class(b, kchild, 0, kinds, 4);
+    uint32_t kcls = wb_const_int(b, (int64_t)cls);
+    uint32_t k5000 = wb_const_int(b, 5000);
+    uint32_t kz = wb_const_int(b, 0);
+    uint32_t klim = wb_const_int(b, 200);
+    uint32_t k1 = wb_const_int(b, 1);
+    uint32_t code[40];
+    uint32_t n = 0;
+    code[n++] = wo_ins_abx(WOP_LOADK, 10, (uint16_t)kz);
+    code[n++] = wo_ins_abx(WOP_LOADK, 11, (uint16_t)klim);
+    uint32_t loop_pc = n;
+    code[n++] = wo_ins_abc(WOP_LT, 12, 10, 11);
+    uint32_t jz_pc = n;
+    code[n++] = wo_ins_asbx(WOP_JZ, 12, 0); /* patched */
+    code[n++] = wo_ins_abx(WOP_LOADK, 1, (uint16_t)kcmd);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 2, WO_K_TEXT, WO_B_MULTI_NEW);
+    code[n++] = wo_ins_abx(WOP_LOADK, 3, (uint16_t)kcls);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 0, 1, WO_B_PROC_SPAWN);
+    code[n++] = wo_ins_abc(WOP_DROP, 2, 0, 0);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 1);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 2);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 1, 0, 3);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 8, 1, WO_B_NET_CLOSE);
+    code[n++] = wo_ins_abc(WOP_GETF, 4, 0, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 5, (uint16_t)k5000);
+    code[n++] = wo_ins_abc(WOP_BUILTIN, 7, 4, WO_B_PROC_WAIT_DL);
+    code[n++] = wo_ins_abc(WOP_DROP, 0, 0, 0);
+    code[n++] = wo_ins_abx(WOP_LOADK, 12, (uint16_t)k1);
+    code[n++] = wo_ins_abc(WOP_ADD, 10, 10, 12);
+    uint32_t jmp_pc = n;
+    code[n++] = wo_ins_asbx(WOP_JMP, 0, (int)loop_pc - ((int)jmp_pc + 1));
+    uint32_t exit_pc = n;
+    code[n++] = wo_ins_abc(WOP_RET0, 0, 0, 0);
+    code[jz_pc] = wo_ins_asbx(WOP_JZ, 12, (int)exit_pc - ((int)jz_pc + 1));
+    wb_method(b, km, WOB_NONE, 0, 13, code, n, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+static void test_stream_churn(void) {
+    size_t len;
+    uint8_t *img = stream_churn_module(&len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    int fds0 = fd_count();
+    uint64_t ret = 0;
+    wo_err err;
+    memset(&err, 0, sizeof err);
+    T_EQ(wo_vm_call(&VM, 0, NULL, 0, &ret, &err), 0);
+    T_EQ(fd_count(), fds0);
+    T_EQ(VM.nchildren, 0u);
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+}
+
 static void on_alarm(int sig) { (void)sig; } /* interrupt, don't die */
 
 static int64_t mono_ms(void) {
@@ -625,6 +927,10 @@ int main(void) {
     test_ceiling_fails_closed();
     test_unwind_reaps_child();
     test_thousand_spawns_fd_flat();
-    test_stop_kills_child();
+    test_stream_echo();
+    test_stream_wait();
+    test_stream_one_waiter();
+    test_stream_churn();
+    test_stop_kills_child(); /* last: it latches the stop flag */
     return t_report("test_proc");
 }

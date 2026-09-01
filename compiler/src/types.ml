@@ -257,9 +257,26 @@ let proc_record_name = "Proc"
 let proc_record_fields : (string * field_ty) list =
   [ ("code", Scalar "Int"); ("out", Scalar "Text"); ("err", Scalar "Text") ]
 
+(* runtime-v2 1: the streaming child. The fds are ordinary conn-shaped
+   Ints the net verbs drive; stderr is -1 on a PTY child (master carries
+   both streams). The id refuses stale handles by name at runtime. *)
+let child_record_name = "Child"
+
+let child_record_fields : (string * field_ty) list =
+  [ ("id", Scalar "Int"); ("stdin", Scalar "Int"); ("stdout", Scalar "Int");
+    ("stderr", Scalar "Int") ]
+
+(* runtime-v2 3: what signal.on delivers — a fresh record per arrival
+   (message payloads must be heap objects; the runtime drops them). *)
+let signal_record_name = "Signal"
+
+let signal_record_fields : (string * field_ty) list = [ ("sig", Scalar "Int") ]
+
 let predeclared_records : (string * (string * field_ty) list) list =
   [ (error_record_name, error_record_fields); (stat_record_name, stat_record_fields);
-    (time_record_name, time_record_fields); (proc_record_name, proc_record_fields) ]
+    (time_record_name, time_record_fields); (proc_record_name, proc_record_fields);
+    (child_record_name, child_record_fields);
+    (signal_record_name, signal_record_fields) ]
 
 (* One member of a reserved stdlib module (`fs.stat`, `net.write`, ...).
    [sm_builtin] is its .wob builtin id (runtime/src/wob.h); [sm_record] names
@@ -317,6 +334,12 @@ let stdlib_members : stdlib_member list =
        (<= 0 picks the default: 30 000 ms / 1 MiB / 64 KiB). A bound
        violation kills the child and traps WO_T_IO naming the bound. *)
     m "proc" "run_dl" 5 96 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
+    (* runtime-v2 1: the streaming child — fds the net verbs drive; the
+       caller closes them with net.close. wait_dl: nil = still running at
+       the deadline (child untouched); one waiter per id. *)
+    m "proc" "spawn" 2 97 (Some (TNullable (TScalar child_record_name))) (Some child_record_name);
+    m "proc" "wait_dl" 2 98 (Some (TNullable (TScalar "Int"))) None;
+    m "proc" "signal" 2 99 None None;
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
