@@ -313,6 +313,10 @@ let stdlib_members : stdlib_member list =
     m "time" "after" 3 90 None None;
     (* proc *)
     m "proc" "run" 2 56 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
+    (* iteration 42: per-call bounds — deadline_ms, out_cap, err_cap
+       (<= 0 picks the default: 30 000 ms / 1 MiB / 64 KiB). A bound
+       violation kills the child and traps WO_T_IO naming the bound. *)
+    m "proc" "run_dl" 5 96 (Some (TNullable (TScalar proc_record_name))) (Some proc_record_name);
     (* json — both members are lowered specially (emit.ml): encode needs its
        argument's static kind, and decode has no type until an `as` names one,
        so neither goes through the generic builtin path. They are listed here
