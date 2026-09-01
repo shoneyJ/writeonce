@@ -99,6 +99,11 @@ typedef struct wo_fiber {
      * the original deadline. */
     int dl_active;
     int64_t dl_at; /* wall ms */
+    /* iteration 42: the in-flight child while parked inside proc.run — a
+     * slot in the vm's children table (sysio.c owns the protocol). NULL
+     * when no run is in flight. A reaped fiber's child is killed with it
+     * (wo_proc_abandon from fib_reap). */
+    struct wo_child *proc_st;
 } wo_fiber;
 
 /* arc stage 3: park_fd sentinel — PARKED with NO plane wait; the wake is
@@ -159,6 +164,29 @@ typedef struct wo_actor {
     struct wo_actor *next_all; /* the vm's all-actors list */
 } wo_actor;
 
+/* iteration 42: one live child process (proc.run in flight). The slot is
+ * the cross-park state: the _dl retry protocol re-executes the builtin,
+ * and this is where a re-entry finds its buffers, fds and caps. Slots
+ * live in the owning shard's vm (no locks — one thread), capped at
+ * WO_PROC_MAX; the claim failing closed IS the concurrency ceiling. */
+typedef struct wo_child {
+    int used;
+    int pid;
+    int pidfd, epfd;  /* pidfd_open handle; the epoll bundle the fiber parks on */
+    int ofd, efd;     /* pipe read ends, O_NONBLOCK; -1 once EOF-closed */
+    char *obuf, *ebuf;
+    size_t olen, elen, oalloc, ealloc;
+    uint64_t out_cap, err_cap;
+    struct wo_fiber *owner;
+} wo_child;
+#define WO_PROC_MAX 32u
+
+/* sysio.c: kill+reap the fiber's in-flight child, if any (fib_reap), and
+ * every live child on the shard (wo_vm_destroy / engine stop). */
+struct wo_vm;
+void wo_proc_abandon(struct wo_vm *vm, wo_fiber *fb);
+void wo_proc_reap_all(struct wo_vm *vm);
+
 /* iteration 24: the one mailbox cap (default 1024, WO_MAILBOX overrides
  * at boot — soak tests shrink it to force the fail-fast policy). */
 extern uint32_t wo_mailbox_cap;
@@ -201,6 +229,9 @@ typedef struct wo_vm {
     /* iteration 24 T5: this shard's armed timers (unsorted list — the
      * deadline scan is already linear; a wheel is measured-later work) */
     wo_timer *timers;
+    /* iteration 42: this shard's live children (proc.run in flight) */
+    wo_child children[WO_PROC_MAX];
+    uint32_t nchildren;
     /* iteration 35, uring backend: the shard's ONE deadline tick — a
      * TIMEOUT op with a sentinel user_data armed for the nearest fd-park
      * deadline (fd parks keep exactly one POLL op each; expiry wakes them

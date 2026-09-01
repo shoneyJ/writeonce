@@ -754,6 +754,7 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
 }
 
 void wo_vm_destroy(wo_vm *vm) {
+    wo_proc_reap_all(vm); /* iteration 42: no child outlives its shard */
     /* iteration 35: the fiber pool dies with the vm */
     while (vm->fib_pool) {
         wo_fiber *fb = vm->fib_pool;
@@ -862,6 +863,7 @@ wo_fiber *wo_vm_spawn_fiber(wo_vm *vm, uint32_t method_idx, const uint64_t *args
  * queued fibers die as cleanly as trapped ones), then free it if it is a
  * spawned one. `vm->cur` is borrowed to do it, restored after. */
 static void fib_reap(wo_vm *vm, wo_fiber *fb) {
+    wo_proc_abandon(vm, fb); /* iteration 42: its child dies with it */
     wo_fiber *save = vm->cur;
     vm->cur = fb;
     vm_unwind(vm, 0);

@@ -20,6 +20,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/epoll.h>
+#include <sys/syscall.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -142,6 +144,107 @@ static wo_str *read_range(wo_rt *rt, int fd, off_t off, size_t want, const char 
         return NULL;
     }
     return exact;
+}
+
+/* ---- iteration 42: bounded subprocess --------------------------------
+ * proc.run parks instead of blocking: the two pipe read ends and a pidfd
+ * for the child sit behind ONE epoll fd the fiber parks on (the plane
+ * watches one fd per fiber; the bundle turns three waits into it). The
+ * cross-park state is a wo_child slot in the shard's vm — the _dl retry
+ * protocol re-executes the builtin and the slot is how the re-entry
+ * remembers buffers, fds and caps. Every bound violation KILLS the child
+ * and traps WO_T_IO naming the bound; a zombie or an orphan is a bug by
+ * definition (fib_reap and wo_vm_destroy sweep the slots).
+ *
+ * glibc 2.35 (the release build floor) has no pidfd wrappers — raw
+ * syscalls, numbers guarded for older headers. */
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_pidfd_send_signal
+#define SYS_pidfd_send_signal 424
+#endif
+
+#define WO_PROC_DL_DEFAULT 30000
+#define WO_PROC_OUT_DEFAULT (1u << 20)
+#define WO_PROC_ERR_DEFAULT (1u << 16)
+
+/* bound-violation messages carry values; the buffer must outlive the
+ * return (wo_err copies later, on the trap path) — per-thread, one shard
+ * per thread */
+static _Thread_local char proc_msg[96];
+
+/* release everything a slot holds; the child must already be reaped */
+static void proc_slot_close(wo_vm *vm, wo_child *ch) {
+    if (ch->pidfd >= 0) close(ch->pidfd);
+    if (ch->epfd >= 0) close(ch->epfd);
+    if (ch->ofd >= 0) close(ch->ofd);
+    if (ch->efd >= 0) close(ch->efd);
+    free(ch->obuf);
+    free(ch->ebuf);
+    if (ch->owner) ch->owner->proc_st = NULL;
+    memset(ch, 0, sizeof *ch);
+    vm->nchildren--;
+}
+
+/* SIGKILL through the pidfd (no pid-reuse race), reap, release */
+static void proc_slot_kill(wo_vm *vm, wo_child *ch) {
+    syscall(SYS_pidfd_send_signal, ch->pidfd, SIGKILL, NULL, 0);
+    int st;
+    while (waitpid(ch->pid, &st, 0) < 0 && errno == EINTR) {}
+    proc_slot_close(vm, ch);
+}
+
+void wo_proc_abandon(wo_vm *vm, wo_fiber *fb) {
+    if (fb->proc_st) proc_slot_kill(vm, fb->proc_st);
+}
+
+void wo_proc_reap_all(wo_vm *vm) {
+    for (uint32_t i = 0; i < WO_PROC_MAX; i++)
+        if (vm->children[i].used) proc_slot_kill(vm, &vm->children[i]);
+}
+
+/* append a chunk, growing by doubling up to the cap.
+ * 0 ok; -1 cap exceeded; -2 oom */
+static int proc_buf_append(char **buf, size_t *len, size_t *alloc,
+                           uint64_t cap, const char *chunk, size_t n) {
+    if (*len + n > (size_t)cap) return -1;
+    if (*len + n > *alloc) {
+        size_t want = *alloc ? *alloc : 4096;
+        while (want < *len + n) want *= 2;
+        if (want > (size_t)cap) want = (size_t)cap;
+        char *nb = realloc(*buf, want);
+        if (!nb) return -2;
+        *buf = nb;
+        *alloc = want;
+    }
+    memcpy(*buf + *len, chunk, n);
+    *len += n;
+    return 0;
+}
+
+/* drain one pipe until EAGAIN or EOF. 0 ok (fd may now be -1),
+ * -1 cap exceeded, -2 oom, -3 read error (errno kept) */
+static int proc_drain_fd(int *fd, char **buf, size_t *len, size_t *alloc,
+                         uint64_t cap) {
+    char chunk[4096];
+    while (*fd >= 0) {
+        ssize_t n = read(*fd, chunk, sizeof chunk);
+        if (n > 0) {
+            int rc = proc_buf_append(buf, len, alloc, cap, chunk, (size_t)n);
+            if (rc != 0) return rc;
+            continue;
+        }
+        if (n == 0) { /* EOF: the child closed its end (or died) */
+            close(*fd);
+            *fd = -1;
+            return 0;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -3;
+    }
+    return 0;
 }
 
 int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
@@ -719,97 +822,260 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         R[A] = (uint64_t)(uintptr_t)out;
         return 0;
     }
-    /* ---- proc -------------------------------------------------------- */
-    case WO_B_PROC_RUN: { /* Proc: 0 code, 1 out, 2 err. argv[0] is the
-                           * command itself; the `multi Text` argument
-                           * supplies the rest. stdout and stderr are
-                           * captured through one pipe each, capped. */
-        if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
-        wo_multi *argv_m = (wo_multi *)(uintptr_t)R[B + 1];
-        if (!argv_m || argv_m->h.class_id != WO_CLS_MULTI || argv_m->elem_kind != WO_K_TEXT) {
-            *msg = "`proc.run` needs a `multi Text` of arguments";
-            return WO_T_BOUNDS;
-        }
-        if (argv_m->len > 62) {
-            *msg = "too many process arguments";
-            return WO_T_BOUNDS;
-        }
-        char *argv[64];
-        char argbuf[62][512];
-        argv[0] = path;
-        for (uint32_t i = 0; i < argv_m->len; i++) {
-            const wo_str *a = (const wo_str *)(uintptr_t)argv_m->items[i];
-            if (!a || a->h.class_id != WO_CLS_STR || a->len + 1 > sizeof argbuf[0]) {
-                *msg = "process argument is not a short text";
+    /* ---- proc (iteration 42: bounded + parked) ------------------------
+     * Proc: 0 code, 1 out, 2 err. argv[0] is the command itself; the
+     * `multi Text` argument supplies the rest. First entry validates,
+     * forks and claims a wo_child slot; every entry drains whatever is
+     * ready and either finishes (child reaped), refuses (a bound hit,
+     * child killed), or parks on the slot's epoll bundle with the
+     * deadline armed. RUN uses the named defaults; RUN_DL states them
+     * per call (<= 0 picks the default). */
+    case WO_B_PROC_RUN:
+    case WO_B_PROC_RUN_DL: {
+        wo_fiber *fb = vm->cur;
+        int isdl = (C == WO_B_PROC_RUN_DL);
+        uint64_t cls_id = isdl ? R[B + 5] : R[B + 2];
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        int64_t dnow = (int64_t)dts.tv_sec * 1000 + dts.tv_nsec / 1000000;
+
+        if (!fb->proc_st) { /* ---- first entry: validate, fork, claim */
+            if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
+            wo_multi *argv_m = (wo_multi *)(uintptr_t)R[B + 1];
+            if (!argv_m || argv_m->h.class_id != WO_CLS_MULTI ||
+                argv_m->elem_kind != WO_K_TEXT) {
+                *msg = "`proc.run` needs a `multi Text` of arguments";
                 return WO_T_BOUNDS;
             }
-            memcpy(argbuf[i], a->data, a->len);
-            argbuf[i][a->len] = '\0';
-            argv[i + 1] = argbuf[i];
-        }
-        argv[argv_m->len + 1] = NULL;
-        int op[2], ep[2];
-        if (pipe(op) != 0) {
-            *msg = strerror(errno);
-            return WO_T_IO;
-        }
-        if (pipe(ep) != 0) {
-            close(op[0]);
+            if (argv_m->len > 62) {
+                *msg = "too many process arguments";
+                return WO_T_BOUNDS;
+            }
+            char *argv[64];
+            char argbuf[62][512];
+            argv[0] = path;
+            for (uint32_t i = 0; i < argv_m->len; i++) {
+                const wo_str *a = (const wo_str *)(uintptr_t)argv_m->items[i];
+                if (!a || a->h.class_id != WO_CLS_STR ||
+                    a->len + 1 > sizeof argbuf[0]) {
+                    *msg = "process argument is not a short text";
+                    return WO_T_BOUNDS;
+                }
+                memcpy(argbuf[i], a->data, a->len);
+                argbuf[i][a->len] = '\0';
+                argv[i + 1] = argbuf[i];
+            }
+            argv[argv_m->len + 1] = NULL;
+
+            int64_t dl_ms = WO_PROC_DL_DEFAULT;
+            uint64_t out_cap = WO_PROC_OUT_DEFAULT, err_cap = WO_PROC_ERR_DEFAULT;
+            if (isdl) {
+                if ((int64_t)R[B + 2] > 0) dl_ms = (int64_t)R[B + 2];
+                if ((int64_t)R[B + 3] > 0) out_cap = R[B + 3];
+                if ((int64_t)R[B + 4] > 0) err_cap = R[B + 4];
+            }
+
+            wo_child *ch = NULL;
+            for (uint32_t i = 0; i < WO_PROC_MAX; i++)
+                if (!vm->children[i].used) {
+                    ch = &vm->children[i];
+                    break;
+                }
+            if (!ch) { /* the ceiling fails CLOSED, by name */
+                snprintf(proc_msg, sizeof proc_msg,
+                         "process ceiling: %u live children on this shard",
+                         WO_PROC_MAX);
+                *msg = proc_msg;
+                return WO_T_IO;
+            }
+
+            int op[2], ep[2];
+            if (pipe(op) != 0) {
+                *msg = strerror(errno);
+                return WO_T_IO;
+            }
+            if (pipe(ep) != 0) {
+                close(op[0]);
+                close(op[1]);
+                *msg = strerror(errno);
+                return WO_T_IO;
+            }
+            pid_t pid = fork();
+            if (pid < 0) {
+                close(op[0]);
+                close(op[1]);
+                close(ep[0]);
+                close(ep[1]);
+                *msg = strerror(errno);
+                return WO_T_IO;
+            }
+            if (pid == 0) {
+                dup2(op[1], STDOUT_FILENO);
+                dup2(ep[1], STDERR_FILENO);
+                close(op[0]);
+                close(op[1]);
+                close(ep[0]);
+                close(ep[1]);
+                execvp(path, argv);
+                _exit(127); /* exec failed: the same code a shell reports */
+            }
             close(op[1]);
-            *msg = strerror(errno);
-            return WO_T_IO;
-        }
-        pid_t pid = fork();
-        if (pid < 0) {
-            close(op[0]);
-            close(op[1]);
-            close(ep[0]);
             close(ep[1]);
-            *msg = strerror(errno);
+            /* NONBLOCK on the parent's read ends only — the child keeps
+             * ordinary blocking pipes */
+            fcntl(op[0], F_SETFL, fcntl(op[0], F_GETFL, 0) | O_NONBLOCK);
+            fcntl(ep[0], F_SETFL, fcntl(ep[0], F_GETFL, 0) | O_NONBLOCK);
+            int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+            int epfd = pidfd >= 0 ? epoll_create1(0) : -1;
+            if (epfd >= 0) {
+                struct epoll_event ev;
+                memset(&ev, 0, sizeof ev);
+                ev.events = EPOLLIN;
+                ev.data.fd = op[0];
+                epoll_ctl(epfd, EPOLL_CTL_ADD, op[0], &ev);
+                ev.data.fd = ep[0];
+                epoll_ctl(epfd, EPOLL_CTL_ADD, ep[0], &ev);
+                ev.data.fd = pidfd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, pidfd, &ev);
+            }
+            if (epfd < 0) { /* pidfd_open or epoll failed: no orphan */
+                if (pidfd >= 0) close(pidfd);
+                kill(pid, SIGKILL);
+                int st;
+                while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+                close(op[0]);
+                close(ep[0]);
+                *msg = strerror(errno);
+                return WO_T_IO;
+            }
+            ch->used = 1;
+            ch->pid = (int)pid;
+            ch->pidfd = pidfd;
+            ch->epfd = epfd;
+            ch->ofd = op[0];
+            ch->efd = ep[0];
+            ch->obuf = ch->ebuf = NULL;
+            ch->olen = ch->elen = ch->oalloc = ch->ealloc = 0;
+            ch->out_cap = out_cap;
+            ch->err_cap = err_cap;
+            ch->owner = fb;
+            fb->proc_st = ch;
+            vm->nchildren++;
+            /* the _dl protocol: arm once, the retry remembers */
+            fb->dl_active = 1;
+            fb->dl_at = dnow + dl_ms;
+        }
+
+        wo_child *ch = fb->proc_st;
+        /* ---- drain whatever is ready, caps enforced */
+        int drc = proc_drain_fd(&ch->ofd, &ch->obuf, &ch->olen, &ch->oalloc,
+                                ch->out_cap);
+        uint64_t hit_cap = ch->out_cap;
+        const char *hit_name = "stdout";
+        if (drc == 0) {
+            drc = proc_drain_fd(&ch->efd, &ch->ebuf, &ch->elen, &ch->ealloc,
+                                ch->err_cap);
+            hit_cap = ch->err_cap;
+            hit_name = "stderr";
+        }
+        if (drc != 0) {
+            int rderr = errno;
+            fb->dl_active = 0;
+            if (drc == -1) {
+                snprintf(proc_msg, sizeof proc_msg,
+                         "process %s cap %llu bytes exceeded", hit_name,
+                         (unsigned long long)hit_cap);
+                *msg = proc_msg;
+                proc_slot_kill(vm, ch);
+                return WO_T_IO;
+            }
+            proc_slot_kill(vm, ch);
+            if (drc == -2) {
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            *msg = strerror(rderr);
             return WO_T_IO;
         }
-        if (pid == 0) {
-            dup2(op[1], STDOUT_FILENO);
-            dup2(ep[1], STDERR_FILENO);
-            close(op[0]);
-            close(op[1]);
-            close(ep[0]);
-            close(ep[1]);
-            execvp(path, argv);
-            _exit(127); /* exec failed: the same code a shell reports */
-        }
-        close(op[1]);
-        close(ep[1]);
-        char obuf[8192], ebuf[4096];
-        size_t olen = 0, elen = 0;
-        ssize_t n;
-        while (olen < sizeof obuf && (n = read(op[0], obuf + olen, sizeof obuf - olen)) > 0)
-            olen += (size_t)n;
-        while (elen < sizeof ebuf && (n = read(ep[0], ebuf + elen, sizeof ebuf - elen)) > 0)
-            elen += (size_t)n;
-        close(op[0]);
-        close(ep[0]);
+
         int status = 0;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-            if (stop_pending()) return WO_SYS_STOPPED;
+        pid_t r = waitpid(ch->pid, &status, WNOHANG);
+        if (r == (pid_t)ch->pid) { /* ---- exited: final drain, answer */
+            /* the write ends died with the child; what remains in the
+             * pipes reads out then EOFs — still cap-bounded */
+            int frc = proc_drain_fd(&ch->ofd, &ch->obuf, &ch->olen,
+                                    &ch->oalloc, ch->out_cap);
+            uint64_t fcap = ch->out_cap;
+            const char *fname = "stdout";
+            if (frc == 0) {
+                frc = proc_drain_fd(&ch->efd, &ch->ebuf, &ch->elen,
+                                    &ch->ealloc, ch->err_cap);
+                fcap = ch->err_cap;
+                fname = "stderr";
+            }
+            fb->dl_active = 0;
+            if (frc != 0) {
+                int rderr = errno;
+                proc_slot_close(vm, ch);
+                if (frc == -1) {
+                    snprintf(proc_msg, sizeof proc_msg,
+                             "process %s cap %llu bytes exceeded", fname,
+                             (unsigned long long)fcap);
+                    *msg = proc_msg;
+                    return WO_T_IO;
+                }
+                if (frc == -2) {
+                    *msg = "out of memory";
+                    return WO_T_OOM;
+                }
+                *msg = strerror(rderr);
+                return WO_T_IO;
+            }
+            wo_hdr *o = record_of(vm, cls_id, 3, msg);
+            if (!o) {
+                proc_slot_close(vm, ch);
+                return cls_id >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;
+            }
+            wo_str *out = wo_str_new(rt, ch->obuf ? ch->obuf : "", (uint32_t)ch->olen);
+            wo_str *errs = wo_str_new(rt, ch->ebuf ? ch->ebuf : "", (uint32_t)ch->elen);
+            proc_slot_close(vm, ch);
+            if (!out || !errs) {
+                if (out) wo_str_free(rt, out);
+                if (errs) wo_str_free(rt, errs);
+                wo_drop_obj(rt, o);
+                *msg = "out of memory";
+                return WO_T_OOM;
+            }
+            uint64_t *fp = wo_fields(o);
+            fp[0] = (uint64_t)(int64_t)(WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            fp[1] = (uint64_t)(uintptr_t)out;
+            fp[2] = (uint64_t)(uintptr_t)errs;
+            R[A] = (uint64_t)(uintptr_t)o;
+            return 0;
         }
-        wo_hdr *o = record_of(vm, R[B + 2], 3, msg);
-        if (!o) return R[B + 2] >= vm->mod->class_cnt ? WO_T_BOUNDS : WO_T_OOM;
-        wo_str *out = wo_str_new(rt, obuf, (uint32_t)olen);
-        wo_str *errs = wo_str_new(rt, ebuf, (uint32_t)elen);
-        if (!out || !errs) {
-            if (out) wo_str_free(rt, out);
-            if (errs) wo_str_free(rt, errs);
-            wo_drop_obj(rt, o);
-            *msg = "out of memory";
-            return WO_T_OOM;
+
+        if (stop_pending()) { /* told to stop: no orphan survives it */
+            fb->dl_active = 0;
+            proc_slot_kill(vm, ch);
+            return WO_SYS_STOPPED;
         }
-        uint64_t *fp = wo_fields(o);
-        fp[0] = (uint64_t)(int64_t)(WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-        fp[1] = (uint64_t)(uintptr_t)out;
-        fp[2] = (uint64_t)(uintptr_t)errs;
-        R[A] = (uint64_t)(uintptr_t)o;
-        return 0;
+        if (fb->dl_at > 0 && dnow >= fb->dl_at) { /* ---- deadline: refuse */
+            fb->dl_active = 0;
+            snprintf(proc_msg, sizeof proc_msg,
+                     "process deadline exceeded after %lld ms",
+                     (long long)(isdl && (int64_t)R[B + 2] > 0
+                                     ? (int64_t)R[B + 2]
+                                     : WO_PROC_DL_DEFAULT));
+            *msg = proc_msg;
+            proc_slot_kill(vm, ch);
+            return WO_T_IO;
+        }
+        /* ---- child alive, nothing more ready: park on the bundle */
+        fb->park_fd = ch->epfd;
+        fb->park_events = POLLIN;
+        fb->park_deadline = fb->dl_at;
+        fb->park_done = 0;
+        return WO_SYS_PARKED;
     }
     default:
         *msg = "unknown stdlib builtin";

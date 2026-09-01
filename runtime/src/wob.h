@@ -503,9 +503,16 @@ enum {
                                * never needs manual cleanup) */
     WO_B_NET_PEER = 95,       /* (fd) -> Text: "ip:port" for TCP peers,
                                * "unix" for unix-socket peers, "" on error */
+    /* ---- iteration 42: bounded subprocess. proc.run keeps id 56 and
+     * gains the same machinery with the named defaults (30 000 ms, 1 MiB
+     * out, 64 KiB err). Bound violations KILL the child and trap WO_T_IO
+     * naming the bound — never nil, never truncation. ---- */
+    WO_B_PROC_RUN_DL = 96,    /* (cmd, multi Text args, deadline_ms,
+                               * out_cap, err_cap, cls) -> Proc {code, out,
+                               * err}; ms/caps <= 0 pick the default */
 };
 
-#define WO_B_MAX 95u
+#define WO_B_MAX 96u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

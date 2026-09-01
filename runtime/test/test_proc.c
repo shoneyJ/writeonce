@@ -4,9 +4,13 @@
  * stdout, the execvp-failed 127) so the parked rework in Task 3 has a
  * baseline that must not move. Later tasks add the bounds legs: deadline,
  * output caps, ceiling, fd hygiene, stop/unwind reaping. */
+#define _POSIX_C_SOURCE 200809L /* sigaction/clock_gettime under -std=c11 */
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "gc.h"
 #include "loader.h"
@@ -84,6 +88,34 @@ static int run_proc(const char *cmd, const char **args, uint32_t nargs,
     return rc;
 }
 
+/* Like run_proc but keeps only the exit code and output LENGTHS — for legs
+ * whose output is too big to copy out. */
+static int run_proc_lens(const char *cmd, const char **args, uint32_t nargs,
+                         int64_t *pcode, size_t *outlen, size_t *errlen,
+                         wo_err *err) {
+    size_t len;
+    uint8_t *img = run_module(cmd, args, nargs, &len);
+    wo_module mod;
+    char lerr[256];
+    T_EQ(wo_load_buf(&mod, img, len, lerr, sizeof lerr), 0);
+    T_EQ(wo_vm_init(&VM, &mod, 1 << 20), 0);
+    uint64_t ret = 0;
+    int rc = wo_vm_call(&VM, 0, NULL, 0, &ret, err);
+    if (rc == 0) {
+        wo_hdr *o = (wo_hdr *)(uintptr_t)ret;
+        T_CHECK(o != NULL);
+        uint64_t *fp = wo_fields(o);
+        *pcode = (int64_t)fp[0];
+        *outlen = ((const wo_str *)(uintptr_t)fp[1])->len;
+        *errlen = ((const wo_str *)(uintptr_t)fp[2])->len;
+        wo_drop_obj(&VM.rt, o);
+    }
+    wo_vm_destroy(&VM);
+    wo_module_free(&mod);
+    free(img);
+    return rc;
+}
+
 static char OUTBUF[1 << 16], ERRBUF[1 << 16];
 
 /* a child that exits 0 with known stdout */
@@ -120,9 +152,45 @@ static void test_missing(void) {
     T_EQ(code, 127);
 }
 
+static void on_alarm(int sig) { (void)sig; } /* interrupt, don't die */
+
+static int64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* The Task 3 deadlock repro: a child that writes 200 KB to stdout and only
+ * THEN a line to stderr. The old sequential drain stopped reading stdout at
+ * its 8 KiB cap, the child blocked on the full pipe and never reached
+ * stderr, and the parent sat in the stderr read forever. The leg demands
+ * completion well under the 5 s alarm — the alarm exists so the OLD code
+ * FAILS instead of hanging the suite. */
+static void test_chatty_child_completes(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_alarm; /* no SA_RESTART: reads must EINTR */
+    sigaction(SIGALRM, &sa, NULL);
+    alarm(5);
+    int64_t t0 = mono_ms();
+    const char *args[] = {"-c", "head -c 200000 /dev/zero; echo done >&2"};
+    int64_t code = -99;
+    size_t outlen = 0, errlen = 0;
+    wo_err err;
+    int rc = run_proc_lens("sh", args, 2, &code, &outlen, &errlen, &err);
+    int64_t elapsed = mono_ms() - t0;
+    alarm(0);
+    T_EQ(rc, 0);
+    T_EQ(code, 0);
+    T_CHECK(elapsed < 4000); /* the old drain needs the alarm to escape */
+    T_EQ(outlen, 200000u);
+    T_EQ(errlen, 5u); /* "done\n" */
+}
+
 int main(void) {
     test_echo();
     test_false();
     test_missing();
+    test_chatty_child_completes();
     return t_report("test_proc");
 }
