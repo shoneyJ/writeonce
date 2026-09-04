@@ -338,19 +338,28 @@ int main(int argc, char **argv) {
                     const wo_schema_class *ok = &stored->classes[c];
                     fprintf(stderr, "wovm: %s: migrating `%.*s`:", wal_path,
                             (int)ok->name_len, (const char *)ok->name);
-                    for (uint32_t f = 0; f < ok->field_cnt; f++)
-                        if (plan.classes[c].fmap[f] == -1)
-                            fprintf(stderr, " -%.*s", (int)ok->fields[f].name_len,
-                                    (const char *)ok->fields[f].name);
-                    const wo_schema_class *nk =
-                        &compiled_schema.classes[plan.classes[c].new_cid];
-                    for (uint32_t f = 0; f < nk->field_cnt; f++) {
-                        int found = 0;
-                        for (uint32_t g = 0; g < ok->field_cnt && !found; g++)
-                            found = plan.classes[c].fmap[g] == (int32_t)f;
-                        if (!found)
-                            fprintf(stderr, " +%.*s", (int)nk->fields[f].name_len,
-                                    (const char *)nk->fields[f].name);
+                    /* A poisoned class (a referenced/nested type changed, or a
+                     * field's type is incompatible) has fmap == NULL and
+                     * new_cid == NONE — the field-level diff does not apply.
+                     * Dereferencing fmap here was a NULL read (SEGV); name the
+                     * situation and let wo_wal_migrate below refuse cleanly. */
+                    if (plan.classes[c].fmap) {
+                        for (uint32_t f = 0; f < ok->field_cnt; f++)
+                            if (plan.classes[c].fmap[f] == -1)
+                                fprintf(stderr, " -%.*s", (int)ok->fields[f].name_len,
+                                        (const char *)ok->fields[f].name);
+                        const wo_schema_class *nk =
+                            &compiled_schema.classes[plan.classes[c].new_cid];
+                        for (uint32_t f = 0; f < nk->field_cnt; f++) {
+                            int found = 0;
+                            for (uint32_t g = 0; g < ok->field_cnt && !found; g++)
+                                found = plan.classes[c].fmap[g] == (int32_t)f;
+                            if (!found)
+                                fprintf(stderr, " +%.*s", (int)nk->fields[f].name_len,
+                                        (const char *)nk->fields[f].name);
+                        }
+                    } else {
+                        fprintf(stderr, " (a referenced type changed — cannot migrate in place)");
                     }
                     fprintf(stderr, "\n");
                 }
