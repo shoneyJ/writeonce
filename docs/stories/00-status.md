@@ -1195,15 +1195,16 @@ the language arc as v1 history.
 ### ▸ porch — the web framework track
 
 New 2026-08-26, from [the Fiber v3.5.0 parity study](../plan/exploration/fiber/00-fiber-parity.md).
-Supersedes language iteration 39, now a pointer. All eight are ⬜ `refine` —
-none has an approved spec yet. Ordered by dependency; the first slice is
-deliberately the cheapest so the store pattern and gate shape are proven before
-the runtime and `Resp` are touched.
+Supersedes language iteration 39, now a pointer. **Story 2 is `ready`
+(brainstormed 2026-09-06, five forks locked, validated against
+`.dev/reference/fiber`); 3–8 remain `refine`.** Ordered by dependency; the
+first slice is deliberately the cheapest so the store pattern and gate shape are
+proven before the runtime and `Resp` are touched.
 
 | # | Iteration | State |
 | --- | --- | --- |
 | 1 | [Store-backed middleware](porch/01-store-backed-middleware.md) | ✅ **DONE 2026-08-30** — rate limiter + idempotency serialized through a per-key actor pool, both durable in a `@table`. Gate-proven end to end: threshold + restart + exact concurrent counts (limiter), byte-identical replay + digest refusal + concurrent duplicates + no-5xx-replay (idempotency), and pool saturation failing closed (503, never a bypass) |
-| 2 | [Randomness and cookies](porch/02-randomness-and-cookies.md) | ⬜ the foundation. Phase A is **language-track work**: a CSPRNG builtin (id 96+; 89/90 are iteration 31's reserved holes). Then repeated response headers — `Resp.headers` is a `map<Text,Text>` and structurally cannot emit two `Set-Cookie` lines — then `Cookie:` parsing and signed cookies |
+| 2 | [Randomness and cookies](porch/02-randomness-and-cookies.md) | ✅ **`ready` 2026-09-06** — the foundation; the reference read settled that **exactly one language enhancement is needed**. Phase A is that language work: a bare-name `random_bytes(n) -> Bytes` builtin in the compiler's crypto-family table (`emit.ml` `b_*` + `types.ml` function list — **not** `wob.h`'s module enum; next free id `84`/`90`, confirm before use), `getrandom(2)`-sourced, refuses loudly. Then `Resp` gains `cookies: multi SetCookie` beside the unchanged `headers` map (the map can't emit two `Set-Cookie` lines; `multi` already exists), `Cookie:` parsing (structural 400 in `parse_request`, on-demand `cookie()` helper), and signed cookies (`base64(value).base64(mac)`, app-supplied key) |
 | 3 | [Sessions](porch/03-sessions.md) | ⬜ after 2. Server-side rows keyed by a random id, idle **and** absolute timeout, id rotation on login, revoke-all-for-principal, durable across restart |
 | 4 | [CSRF](porch/04-csrf.md) | ⬜ after 2 + 3. Session-bound tokens, trusted origins as the second layer, opt-in single use, and refusal classes that are distinguishable in logs |
 | 5 | [Routing + response ergonomics](porch/05-routing-response-ergonomics.md) | ⬜ **independent, any time** — `patch`/`options`/`head`/`all`, named routes + URL building, per-route body limit (today `BODY_MAX` is one compile-time number), request ids, `Location`/`Vary`/`Attachment`, and q-value ranking (retires a standing 🔶) |
