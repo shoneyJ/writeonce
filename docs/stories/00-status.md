@@ -1195,9 +1195,9 @@ the language arc as v1 history.
 ### ▸ porch — the web framework track
 
 New 2026-08-26, from [the Fiber v3.5.0 parity study](../plan/exploration/fiber/00-fiber-parity.md).
-Supersedes language iteration 39, now a pointer. **Stories 2–6 are `ready`
+Supersedes language iteration 39, now a pointer. **Stories 2–7 are `ready`
 (brainstormed 2026-09-06, forks locked, validated against
-`.dev/reference/fiber`); 7–8 remain `refine`.** Ordered by dependency; the
+`.dev/reference/fiber`); 8 remains `refine`.** Ordered by dependency; the
 first slice is deliberately the cheapest so the store pattern and gate shape are
 proven before the runtime and `Resp` are touched.
 
@@ -1209,7 +1209,7 @@ proven before the runtime and `Resp` are touched.
 | 4 | [CSRF](porch/04-csrf.md) | ✅ **`ready` 2026-09-06** — after 2 + 3. Five decisions locked: fiber's **hybrid** transport (session-stored `CsrfToken` @table keyed by token + double-submit cookie, both must pass; no CSRF for sessionless apps); opt-in single-use (checkout the example, admin multi-use); a double-click yields a distinct `SPENT` refusal with **no coupling to the lang-41-blocked idempotency**; trusted origin/referer/`Sec-Fetch-Site` as the second layer; refusal classes distinguishable in logs, opaque in body. Plain `@table` CRUD — no actor pool, not blocked on lang-41 |
 | 5 | [Routing + response ergonomics](porch/05-routing-response-ergonomics.md) | ✅ **`ready` 2026-09-06** — **independent, any time; NO upstream dependency (not even iteration 2)**. Five decisions: `head` auto-registers with an opt-out (+ `patch`/`options`/`all`); request ids mirror the limiter's trust model with a **non-crypto** source (so no CSPRNG dependency); per-route `body_limit` is a **second check after routing** (global `BODY_MAX` stays the pre-routing ceiling, over-limit = 413); adding `name`/`body_limit` to `Route` is corpus-free; `Vary` accumulates by comma-join. Plus named routes + runtime-checked URL building, q-value ranking (retires the 🔶) |
 | 6 | [Streaming core](porch/06-streaming-core.md) | ✅ **`ready` 2026-09-06** — riskiest/highest-leverage; **re-scoped to outbound only**. Three decisions: separate `StreamHandler`/`BodyProducer` parallel path (the `Resp` path untouched → existing responses byte-identical); streaming routes **opt out** of the after-chain, framework **refuses at registration** to combine with header-mutating middleware (loud, never silent), handlers stamp headers via a `security_headers()` helper; chunked **REQUEST** bodies **split into their own future iteration** (parse.wo refusal stays). No language enhancement; rides the fiber loop, not the actor pool (not lang-41-exposed) |
-| 7 | [SSE + compression](porch/07-sse-and-compression.md) | ⬜ after 6. SSE fits the actor/fiber model unusually well; compression carries a real fork — pure-`.wo` DEFLATE (now expressible after iteration 36's bit operators) vs a C builtin. CRC32 finally gets its consumer |
+| 7 | [SSE + compression](porch/07-sse-and-compression.md) | ✅ **`ready` 2026-09-06** — after 6 (+ 5 for q-ranking/comma-join Vary; NOT 2). Five decisions: refuse an incoherent heartbeat/`idle_ms` pair at construction; **codec = two C builtins `deflate`+`crc32`** (perf over pure-`.wo`; hand-rolled, no zlib dep; gzip framing in `.wo`) — the track's **second language dependency** after iteration 2; ETag over uncompressed bytes + `Vary`; `Last-Event-ID` explicitly unsupported (not silently ignored); Vary via comma-join. Codec is pure compute — not lang-41-exposed |
 | 8 | [Static files + lifecycle](porch/08-static-and-lifecycle.md) | ⬜ static half after 6. Byte ranges, `Last-Modified`/`Cache-Control`, index resolution, listing off-by-default, shutdown hooks (the ledger's "no user teardown hooks yet"), plus healthcheck/favicon/redirect/rewrite/skip |
 
 ---
