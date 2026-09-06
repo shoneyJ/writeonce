@@ -2,13 +2,17 @@
 track: porch
 iteration: "4"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
 # porch 4 — CSRF: tokens that are unguessable, bound, and spendable once
 
 > Part of [Story — `porch`, the writeonce web framework](00-story.md).
-> Source: [the Fiber parity study](../../plan/exploration/fiber/00-fiber-parity.md) §2.
+> Source: [the Fiber parity study](../../plan/exploration/fiber/00-fiber-parity.md) §2,
+> re-checked 2026-09-06 against `.dev/reference/fiber` (v3, `3ca9a9d`):
+> `middleware/csrf` — its hybrid double-submit-plus-session-stored model
+> (`csrf.go`, `session_manager.go`), `SingleUseToken`, the
+> origin/referer/`Sec-Fetch-Site` checks, and `KeyGenerator` = `utils.SecureToken`.
 > Needs [2](02-randomness-and-cookies.md) for randomness and cookies, and
 > [3](03-sessions.md) for something to bind a token to.
 
@@ -34,46 +38,93 @@ readiness: refine
   already-spent must be told apart in the logs, or nobody can debug a form that
   stopped working.
 
+## Decisions locked (brainstorm 2026-09-06)
+
+1. **Fiber's hybrid transport: a session-stored token AND a double-submit cookie
+   compare, both must pass.** Because iteration 3's session row carries no
+   payload bag, the token lives in a dedicated framework `@table` keyed by the
+   token with a `session_id` index — the "own table keyed by session id" pattern
+   iteration 3 established. A CSRF cookie carries the same token; the client also
+   echoes it in a form field or header. Verify requires (a) the echoed token
+   equals the cookie value, and (b) the stored row exists and binds to the
+   current session. The stored row is the authority, so signing the CSRF cookie
+   is optional and not relied upon — the token is high-entropy and a tampered
+   cookie simply misses the row. **porch has no CSRF story for sessionless apps,
+   said plainly rather than shipping the weaker double-submit-only silently.**
+2. **Single-use is opt-in per route; the default token is multi-use.** Matches
+   fiber (`SingleUseToken` defaults off). A multi-use token is valid until idle
+   expiry and has no double-click problem at all, so the sharp edge shrinks to
+   exactly the routes that opt in. Worked examples: the storefront checkout is
+   single-use, the site's admin edit is multi-use.
+3. **A double-submitted single-use token yields a distinct `SPENT` refusal, and
+   CSRF does not couple to idempotency.** The story floated reusing iteration 1's
+   idempotency so a replay returns the same response — but that middleware is
+   reverted and blocked on the lang-41 arena hang, so coupling would drag CSRF
+   behind that blocker. Instead the spent-token refusal is its own class,
+   distinguishable in the logs from forged/missing/stale, so an app can present
+   "already submitted" rather than a raw 403. True exactly-once *execution* is
+   idempotency's job (iteration 9), a separate concern.
+4. **No actor pool; not blocked on lang-41.** Like sessions, the `CsrfToken`
+   table is plain `@table` CRUD — insert on mint, load on verify, delete on spend
+   or rotation. None of it is the read-modify-write that iteration 1's per-key
+   actor pool exists for, so this iteration rides the same gate-green DB path the
+   storefront uses and is unblocked today.
+5. **Refusal classes are distinguishable in logs, opaque in the body.** `MISSING`,
+   `FORGED` (echo/cookie mismatch or unknown token), `STALE` (expired row),
+   `FOREIGN` (origin/referer untrusted), `SPENT` (single-use replay) are logged
+   distinctly; the response body says only "forbidden" and never which check
+   failed.
+
 ## Phases
 
 ### Phase A — mint and verify
 
-- Token generation, storage keyed by session, and constant-time verification.
-- Decide the transport: a dedicated cookie plus a form field (double-submit), or
-  session-stored plus a form field. The second needs no second cookie and is the
-  stronger of the two once sessions exist.
-- Extraction from where forms and fetch clients actually put it: a form field, a
-  header, and decide whether a query parameter is ever allowed (it should not be
-  — it leaks into logs and referrers).
+- The `CsrfToken` `@table`: `token @unique`, `session_id` (indexed for
+  rotation cleanup), `created_at` (wall-clock, lazy idle expiry like sessions).
+  Mint draws from iteration 2's `random_bytes`, stores the row, and sets the
+  CSRF cookie carrying the token.
+- Verify does the hybrid check (decision 1) with `ct_eq` on the token halves,
+  then the session-binding lookup.
+- Extraction from where forms and fetch clients actually put it: a form field
+  (`form_values`, which exists) and a header. A query parameter is never
+  allowed — it leaks into logs and referrers.
 - Verify: a valid token passes; altered, absent and foreign tokens each fail
-  distinctly.
+  distinctly; a token minted for session A presented under session B is refused.
 
 ### Phase B — the middleware and safe-method policy
 
-- A `Csrf` middleware gating unsafe methods only. `GET`/`HEAD`/`OPTIONS` must
-  pass untouched or every link on the site breaks.
-- Origin and `Referer` checking against a configured trusted set, including the
-  awkward cases: absent origin, `null` origin, and a same-origin request that
-  arrives without the header.
-- Failure is a distinct status with a body that does not leak whether the token
-  was wrong or merely stale.
+- A `Csrf` middleware gating unsafe methods only. `GET`/`HEAD`/`OPTIONS` pass
+  untouched — and a `GET` of a form page is where the token is minted for the
+  form that will submit it — or every link on the site breaks.
+- Origin and `Referer` checking against a configured trusted set (the app's own
+  host, which behind the proxy is the forwarded `Host` that `HostAllow` already
+  validates, plus configured extras), including the awkward cases fiber handles:
+  absent Origin (fall back to Referer on HTTPS, allow on plain HTTP where it
+  cannot be told), `null` origin, and a same-origin request without the header.
+  A `Sec-Fetch-Site` the browser would never have sent is rejected.
+- Failure is a distinct status with a body that does not leak which check failed
+  (decision 5).
 - Verify: the site's admin edit flow works through the middleware; unsafe
   methods without a token are refused; safe methods are unaffected.
 
 ### Phase C — single use and rotation
 
-- Mark-spent-on-use for the routes that opt in, and decide what happens to a
-  double-submitted form (the user double-clicking is not an attack, and treating
-  it as one is a support ticket).
-- Rotate on privilege change, matching the session-id rotation from iteration 3.
+- Mark-spent-on-use (delete the row) for the routes that opt in (decision 2); a
+  double-click produces the `SPENT` class (decision 3), not a raw 403.
+- Rotate on privilege change, matching the session-id rotation from iteration 3:
+  when the session id rotates at login, delete the `CsrfToken` rows for the old
+  session id through the `session_id` index — the same shape as sessions'
+  revoke-all-by-principal.
 - Verify: a spent token is refused; a double-click produces a comprehensible
-  outcome rather than a raw 403.
+  outcome; a token outstanding for the pre-login session is inert after login.
 
 ### Phase D — the gate and the ledger
 
-- Both serving gates: the site's admin edit is the natural CSRF subject, the
-  storefront's checkout the natural single-use subject.
-- Ledger and status board.
+- Both serving gates: the site's admin edit is the natural CSRF subject (and the
+  phase migrates it from its current per-request bearer check onto session +
+  CSRF), the storefront's checkout the natural single-use subject.
+- Ledger and status board, standup questions answered including the
+  `.dev/reference` projects used.
 - Verify: `just web-app`, `just site`, `just linkcheck` green.
 
 ## Acceptance Criteria
@@ -82,6 +133,8 @@ readiness: refine
   it is refused and the handler never runs.
 - **Given** a token minted for session A, **when** it is presented with session
   B's cookie, **then** it is refused — binding is enforced, not decorative.
+- **Given** a token whose echoed copy and cookie disagree, **when** it is
+  verified, **then** it is refused — the double-submit half is enforced too.
 - **Given** a token altered by one bit, **when** it is verified, **then** it is
   refused in constant time.
 - **Given** a request from an untrusted origin carrying an otherwise valid
@@ -90,8 +143,8 @@ readiness: refine
 - **Given** a safe method (`GET`, `HEAD`, `OPTIONS`), **when** it arrives with
   no token, **then** it passes untouched.
 - **Given** a single-use token, **when** it is submitted twice, **then** the
-  second attempt is refused and the outcome is distinguishable from a forged
-  token in the logs.
+  second attempt is refused as `SPENT`, told apart from a forged token in the
+  logs.
 - **Given** login, **when** the session id rotates, **then** the outstanding
   token for the old session is no longer valid.
 - **Given** each refusal class, **when** the logs are read, **then** missing,
@@ -110,22 +163,17 @@ readiness: refine
   iteration [1](01-store-backed-middleware.md); the rest is not porch's.
 - **Encrypted or stateless tokens.** No symmetric cipher exists, and a
   stateless token cannot be revoked or spent once.
+- **Exactly-once execution of a replayed unsafe request.** That is idempotency's
+  job — iteration [9](09-idempotent-replay.md) — not CSRF's (decision 3). CSRF
+  only makes the double-submit refusal comprehensible.
+- **CSRF for sessionless apps.** The hybrid model binds to a session; an app
+  with no sessions has no CSRF story here (decision 1).
 
 ## Info
 
-Forks the spec must settle:
-
-1. **Double-submit cookie, or session-stored token?** Double-submit needs no
-   store and works without sessions; session-stored needs no second cookie and
-   is strictly stronger. Since iteration 3 lands first, leaning session-stored —
-   and if so, say plainly that porch has no CSRF story for sessionless apps
-   rather than shipping the weaker one silently.
-2. **Which routes default to single-use?** All of them is safest and the most
-   annoying; opt-in is pleasant and easy to forget on the one route that
-   mattered. Leaning opt-in with the checkout as the worked example, because a
-   default nobody can live with gets disabled wholesale.
-3. **What happens when a form is submitted twice by a human?** This is the fork
-   that decides whether the feature is usable. Iteration
-   [1](01-store-backed-middleware.md)'s idempotency machinery may be the honest
-   answer — the same key, replayed, gets the same response — which would make
-   these two features compose rather than collide.
+The one language dependency is entirely upstream: iteration 2's `random_bytes`
+and cookie helpers. This iteration is pure `.wo` on top of them plus the
+`@table` engine — no new runtime work, and, like sessions, no dependence on the
+per-key actor pool or on the lang-41 fix. Origin and Referer matching is string
+comparison against the trusted set; form-field extraction is `form_values`,
+which already exists.

@@ -1195,9 +1195,9 @@ the language arc as v1 history.
 ### ▸ porch — the web framework track
 
 New 2026-08-26, from [the Fiber v3.5.0 parity study](../plan/exploration/fiber/00-fiber-parity.md).
-Supersedes language iteration 39, now a pointer. **Story 2 is `ready`
-(brainstormed 2026-09-06, five forks locked, validated against
-`.dev/reference/fiber`); 3–8 remain `refine`.** Ordered by dependency; the
+Supersedes language iteration 39, now a pointer. **Stories 2, 3 and 4 are
+`ready` (brainstormed 2026-09-06, forks locked, validated against
+`.dev/reference/fiber`); 5–8 remain `refine`.** Ordered by dependency; the
 first slice is deliberately the cheapest so the store pattern and gate shape are
 proven before the runtime and `Resp` are touched.
 
@@ -1205,8 +1205,8 @@ proven before the runtime and `Resp` are touched.
 | --- | --- | --- |
 | 1 | [Store-backed middleware](porch/01-store-backed-middleware.md) | ✅ **DONE 2026-08-30** — rate limiter + idempotency serialized through a per-key actor pool, both durable in a `@table`. Gate-proven end to end: threshold + restart + exact concurrent counts (limiter), byte-identical replay + digest refusal + concurrent duplicates + no-5xx-replay (idempotency), and pool saturation failing closed (503, never a bypass) |
 | 2 | [Randomness and cookies](porch/02-randomness-and-cookies.md) | ✅ **`ready` 2026-09-06** — the foundation; the reference read settled that **exactly one language enhancement is needed**. Phase A is that language work: a bare-name `random_bytes(n) -> Bytes` builtin in the compiler's crypto-family table (`emit.ml` `b_*` + `types.ml` function list — **not** `wob.h`'s module enum; next free id `84`/`90`, confirm before use), `getrandom(2)`-sourced, refuses loudly. Then `Resp` gains `cookies: multi SetCookie` beside the unchanged `headers` map (the map can't emit two `Set-Cookie` lines; `multi` already exists), `Cookie:` parsing (structural 400 in `parse_request`, on-demand `cookie()` helper), and signed cookies (`base64(value).base64(mac)`, app-supplied key) |
-| 3 | [Sessions](porch/03-sessions.md) | ⬜ after 2. Server-side rows keyed by a random id, idle **and** absolute timeout, id rotation on login, revoke-all-for-principal, durable across restart |
-| 4 | [CSRF](porch/04-csrf.md) | ⬜ after 2 + 3. Session-bound tokens, trusted origins as the second layer, opt-in single use, and refusal classes that are distinguishable in logs |
+| 3 | [Sessions](porch/03-sessions.md) | ✅ **`ready` 2026-09-06** — after 2. Six decisions locked: row is a pure auth primitive (id/principal/created_at/last_seen, no payload bag); **wall-clock `time.now`, not monotonic `time.ticks`** (sessions survive restart); rotation = login always mints a fresh id (no anon-session model); throttled `last_seen` touch at `idle/20` (not a WAL write per request); `Session` writes `req.principal`; config refuses absolute < idle. Pure `.wo` on iteration 2 + the `@table` engine — no new runtime work |
+| 4 | [CSRF](porch/04-csrf.md) | ✅ **`ready` 2026-09-06** — after 2 + 3. Five decisions locked: fiber's **hybrid** transport (session-stored `CsrfToken` @table keyed by token + double-submit cookie, both must pass; no CSRF for sessionless apps); opt-in single-use (checkout the example, admin multi-use); a double-click yields a distinct `SPENT` refusal with **no coupling to the lang-41-blocked idempotency**; trusted origin/referer/`Sec-Fetch-Site` as the second layer; refusal classes distinguishable in logs, opaque in body. Plain `@table` CRUD — no actor pool, not blocked on lang-41 |
 | 5 | [Routing + response ergonomics](porch/05-routing-response-ergonomics.md) | ⬜ **independent, any time** — `patch`/`options`/`head`/`all`, named routes + URL building, per-route body limit (today `BODY_MAX` is one compile-time number), request ids, `Location`/`Vary`/`Attachment`, and q-value ranking (retires a standing 🔶) |
 | 6 | [Streaming core](porch/06-streaming-core.md) | ⬜ the riskiest and highest-leverage slice: incremental writes + chunked framing + an explicit commit point. `serialize()` always emits `Content-Length` today. Chunked REQUEST bodies are deliberately refused (request smuggling) and that refusal must survive |
 | 7 | [SSE + compression](porch/07-sse-and-compression.md) | ⬜ after 6. SSE fits the actor/fiber model unusually well; compression carries a real fork — pure-`.wo` DEFLATE (now expressible after iteration 36's bit operators) vs a C builtin. CRC32 finally gets its consumer |
