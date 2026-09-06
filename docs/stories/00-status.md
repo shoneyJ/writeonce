@@ -1195,9 +1195,11 @@ the language arc as v1 history.
 ### ▸ porch — the web framework track
 
 New 2026-08-26, from [the Fiber v3.5.0 parity study](../plan/exploration/fiber/00-fiber-parity.md).
-Supersedes language iteration 39, now a pointer. **Stories 2–7 are `ready`
-(brainstormed 2026-09-06, forks locked, validated against
-`.dev/reference/fiber`); 8 remains `refine`.** Ordered by dependency; the
+Supersedes language iteration 39, now a pointer. **The whole track (2–8) is
+`ready`** (brainstormed 2026-09-06, forks locked, validated against
+`.dev/reference/fiber`). The three language touches the track needs are now
+explicit and small, each a builtin with a named consumer: `random_bytes` (2),
+`deflate`/`crc32` (7), `time.utc` (8). Ordered by dependency; the
 first slice is deliberately the cheapest so the store pattern and gate shape are
 proven before the runtime and `Resp` are touched.
 
@@ -1210,7 +1212,7 @@ proven before the runtime and `Resp` are touched.
 | 5 | [Routing + response ergonomics](porch/05-routing-response-ergonomics.md) | ✅ **`ready` 2026-09-06** — **independent, any time; NO upstream dependency (not even iteration 2)**. Five decisions: `head` auto-registers with an opt-out (+ `patch`/`options`/`all`); request ids mirror the limiter's trust model with a **non-crypto** source (so no CSPRNG dependency); per-route `body_limit` is a **second check after routing** (global `BODY_MAX` stays the pre-routing ceiling, over-limit = 413); adding `name`/`body_limit` to `Route` is corpus-free; `Vary` accumulates by comma-join. Plus named routes + runtime-checked URL building, q-value ranking (retires the 🔶) |
 | 6 | [Streaming core](porch/06-streaming-core.md) | ✅ **`ready` 2026-09-06** — riskiest/highest-leverage; **re-scoped to outbound only**. Three decisions: separate `StreamHandler`/`BodyProducer` parallel path (the `Resp` path untouched → existing responses byte-identical); streaming routes **opt out** of the after-chain, framework **refuses at registration** to combine with header-mutating middleware (loud, never silent), handlers stamp headers via a `security_headers()` helper; chunked **REQUEST** bodies **split into their own future iteration** (parse.wo refusal stays). No language enhancement; rides the fiber loop, not the actor pool (not lang-41-exposed) |
 | 7 | [SSE + compression](porch/07-sse-and-compression.md) | ✅ **`ready` 2026-09-06** — after 6 (+ 5 for q-ranking/comma-join Vary; NOT 2). Five decisions: refuse an incoherent heartbeat/`idle_ms` pair at construction; **codec = two C builtins `deflate`+`crc32`** (perf over pure-`.wo`; hand-rolled, no zlib dep; gzip framing in `.wo`) — the track's **second language dependency** after iteration 2; ETag over uncompressed bytes + `Vary`; `Last-Event-ID` explicitly unsupported (not silently ignored); Vary via comma-join. Codec is pure compute — not lang-41-exposed |
-| 8 | [Static files + lifecycle](porch/08-static-and-lifecycle.md) | ⬜ static half after 6. Byte ranges, `Last-Modified`/`Cache-Control`, index resolution, listing off-by-default, shutdown hooks (the ledger's "no user teardown hooks yet"), plus healthcheck/favicon/redirect/rewrite/skip |
+| 8 | [Static files + lifecycle](porch/08-static-and-lifecycle.md) | ✅ **`ready` 2026-09-06** — static half after 6 (+ 5's Download helper). Four decisions: three hooks (on-listen/on-shutdown/on-route-registered); healthcheck ships **both** `/livez`+`/readyz`; directory listing **off by default**, documented; **`Last-Modified` needs a small `time.utc(ms)->TimeParts` builtin** (gmtime sibling of time.local — the track's third, smallest language touch; time.local is local-tz, time.iso is UTC-but-ISO), IMS by string-equality (no parser). Byte ranges via `fs.read_at`+iteration 6 writer. Not lang-41-exposed |
 
 ---
 
