@@ -547,9 +547,14 @@ enum {
     WO_B_TERM_WIDTH = 109,    /* (codepoint) -> Int cell width via libc
                                * wcwidth under C.UTF-8: -1 control,
                                * 0 combining, 1, or 2 */
+    /* ---- language 38 / jarvis: the outbound-socket client side. TCP
+     * connect with DNS via getaddrinfo; blocking connect then nonblocking
+     * for the plane, mirroring WO_B_NET_CONNECT_UNIX. A _dl deadline/park
+     * variant is the next slice. Underneath runtime-v2 9's outbound TLS. */
+    WO_B_NET_CONNECT = 110,   /* (host, port) -> Int: outbound TCP client fd */
 };
 
-#define WO_B_MAX 109u
+#define WO_B_MAX 110u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

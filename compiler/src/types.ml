@@ -364,6 +364,7 @@ let stdlib_members : stdlib_member list =
     m "net" "send_fd" 2 105 (Some (TScalar "Bool")) None;
     m "net" "recv_fd" 1 106 (Some (TNullable (TScalar "Int"))) None;
     m "net" "connect_unix" 1 107 (Some (TScalar "Int")) None;
+    m "net" "connect" 2 110 (Some (TScalar "Int")) None;
     (* runtime-v2 6: resize's read twin (nil = not a tty), and a
        codepoint's terminal cell width (libc wcwidth under C.UTF-8) *)
     m "term" "size" 1 108 (Some (TNullable (TScalar termsize_record_name))) (Some termsize_record_name);

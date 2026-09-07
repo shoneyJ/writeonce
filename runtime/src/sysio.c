@@ -25,6 +25,7 @@
 #include <sys/syscall.h>
 #include <termios.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -1545,6 +1546,59 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         if (rc != 0) {
             close(fd);
+            *msg = strerror(errno);
+            return WO_T_IO;
+        }
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_CONNECT: { /* (host, port) -> Int: outbound TCP client fd.
+                              * DNS via getaddrinfo (v4 or v6), blocking
+                              * connect with the same EINTR/stop handling as
+                              * WO_B_NET_CONNECT_UNIX, then nonblocking for the
+                              * plane. A _dl deadline/park variant is the next
+                              * slice; this one can stall the shard during the
+                              * handshake, tolerable while connect is rare. */
+        if (cstr_of(R[B], path, sizeof path, msg)) return WO_T_BOUNDS;
+        int64_t port = (int64_t)R[B + 1];
+        if (port < 0 || port > 65535) {
+            *msg = "port out of range";
+            return WO_T_BOUNDS;
+        }
+        char portstr[8];
+        snprintf(portstr, sizeof portstr, "%u", (unsigned)port);
+        struct addrinfo hints;
+        struct addrinfo *res = NULL;
+        struct addrinfo *ai;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        int grc = getaddrinfo(path, portstr, &hints, &res);
+        if (grc != 0) {
+            *msg = gai_strerror(grc);
+            return WO_T_IO;
+        }
+        int fd = -1;
+        for (ai = res; ai; ai = ai->ai_next) {
+            fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            if (fd < 0) continue;
+            int rc;
+            for (;;) {
+                rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+                if (rc == 0 || errno != EINTR) break;
+                if (stop_pending()) {
+                    close(fd);
+                    freeaddrinfo(res);
+                    return WO_SYS_STOPPED;
+                }
+            }
+            if (rc == 0) break;
+            close(fd);
+            fd = -1;
+        }
+        freeaddrinfo(res);
+        if (fd < 0) {
             *msg = strerror(errno);
             return WO_T_IO;
         }
