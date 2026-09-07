@@ -34,7 +34,17 @@ cross a unix socket. Five seams, each builtin-sized, each in
 | 4 | [termios adoption](04-termios.md) | the process's OWN tty into raw mode and back — adopting a terminal it was given |
 | 5 | [fd passing](05-fd-passing.md) | SCM_RIGHTS over unix sockets — detach/attach's foundation, and the Wayland stage's later |
 
-**ALL FIVE LANDED 2026-09-02, one execution run** (plan:
+The track then grew past its original five seams — same shape (a builtin in
+`runtime/src/` with a `types.ml` row), broader than processes/terminals/signals:
+
+| # | Iteration | What it adds |
+| --- | --- | --- |
+| 6 | [term.size + term.width](06-term-size-width.md) | the two terminal-measurement verbs the wmux ladder asked for |
+| 7 | [observability](07-observability.md) | metrics/gauges, a `pprof`-equivalent profile, stack-trace-on-trap (moved from language iteration 30, 2026-09-06) — `refine` |
+| 8 | [symmetric cipher](08-symmetric-cipher.md) | AEAD (encrypt/decrypt) for encrypted cookies and data at rest, extending iteration 34's digests (moved from language iteration 43, 2026-09-06) — `refine` |
+| 9 | [in-process TLS](09-in-process-tls.md) | TLS **both directions** — an outbound client (dial HTTPS) and inbound termination — **retiring the "TLS is the proxy's job" doctrine**; created 2026-09-07 from the gap [jarvis](../jarvis/00-story.md) surfaces. The track's heaviest seam (not builtin-sized; likely a vendored-lib exception) — `refine` |
+
+**ALL FIVE [1–5] LANDED 2026-09-02, one execution run** (plan:
 [`2026-09-01-runtime-v2.md`](../../superpowers/plans/2026-09-01-runtime-v2.md);
 three implementation amendments in the spec's History). Gates:
 `test_proc` 193/0 + `test_term` 60/0 inside a fully green ASan suite on

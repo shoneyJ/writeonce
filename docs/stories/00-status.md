@@ -54,7 +54,13 @@ settled", so a held iteration with an approved spec was indistinguishable from
 one nobody had thought about. **The startable set is `readiness: ready` and
 `status: pending`.**
 
-**As of the 2026-08-27 sweep that set has exactly one member:**
+**Startable-set counts below are STALE** — the paragraph that follows is the
+2026-08-27 sweep and predates the entire **wmux** (23 rungs, ~17 done/partial
+as of 2026-09-05) and **runtime-v2** (6 iterations, all done) tracks, plus
+lang 42. Treat the per-track tables further down as the current truth; this
+snapshot is kept for its explanation of the two-axis model, not its numbers.
+
+**As of the 2026-08-27 sweep (STALE — see above):**
 [databasev2 4, io_uring group-commit](databasev2/04-io-uring-commit.md) — its
 four forks were confirmed settled on 2026-08-20 and nothing has started. Across
 47 iterations: 19 done, 5 in-progress, 15 pending, 8 hold; 27 `ready`, 20
@@ -69,6 +75,287 @@ behind this board; live Obsidian Dataview views:
 ---
 
 ## ▶ NEXT PLAN
+
+### Brainstormed 2026-09-06 — the porch track (2–8) and language 41's fix, both to `ready`
+
+**What happened this session (docs only, no code):** the whole
+[porch track](porch/00-story.md) 2–8 was brainstormed to `readiness: ready`
+against `.dev/reference/fiber`; the track's language bill is three small builtins
+(`random_bytes`, `deflate`/`crc32`, `time.utc`), plus two gaps moved out to
+runtime-v2 ([7 observability](runtime-v2/07-observability.md),
+[8 symmetric cipher](runtime-v2/08-symmetric-cipher.md)). And
+[language 41](language-runtime-database/41-actor-arena-crash.md) — the arena
+hang — was **root-caused and its fix designed to `ready`**.
+
+**Language 41, settled:** the hang is a **double free from a broken invariant**.
+`wo_db_rpc` marshals ("VM heaps are never read cross-shard"), but cross-shard
+actor `send`/`call` pointer-shares the message into the receiver's shard — a
+worker then drops an object in the sender's arena. **Fix = marshal cross-shard
+messages** (copy into the receiver's arena, matching the DB RPC), which
+eliminates the class by construction without needing the exact aliasing site;
+**plus** aligning the `shard_id % nshards` route/compare mismatch and asserting
+`shard_id < nshards`. Poison-on-free and a minimal corpus fixture are named
+follow-ups. Proven against `archive/porch-idempotency` 18a–18h/19.
+
+**Next steps:** implement language 41's marshal fix (unblocks
+[porch 9](porch/09-idempotent-replay.md), already written); then porch is
+buildable — [porch 5](porch/05-routing-response-ergonomics.md) has zero upstream
+deps and is the natural start, with `random_bytes` (porch 2) opening the 3→4
+chain.
+
+### Landed 2026-09-04 — wmux: switch-client + choose-session (rung 21)
+
+**Implemented (2026-09-04):** an in-session `switch-client -t B` / `-l`
+moves a live client between sessions — the Input `call`s the session (sync,
+so a refusal keeps the client on A), a `reg` handle threaded into every
+session resolves B, the fds hand off WITHOUT closing, B adopts them and
+spawns a fresh Input, the old Input exits only on success; B-occupied
+refuses, missing→error, per-session `last_session` for `-l`. Plus a native
+**`choose-session` picker** (bound `prefix o`): lists sessions on the status
+row, a digit switches. Brainstormed + story-refined first (readiness ready),
+then built. Landmine: a `?actor RMsg` nullable field reordered the checkpoint
+schema (spurious restart migration) — fixed with a non-nilable `me` +
+`DeadReg` placeholder. Gate 52 → 54/0; committed + reinstalled. Full fuzzy
+`sesh connect` (fzf + zoxide/config dirs) still needs the tmux-compatible
+CLI shim — that's rung 23.
+
+### Landed 2026-09-04 — wmux: theming, active-pane border, automatic-rename
+
+**Implemented (2026-09-04):** three developer-requested UI features, each
+gated (`just wmux` 50 → 52/0) + committed + reinstalled.
+- **Theming (rung 22, first slice)** — a tmux-style style engine
+  (`style_sgr`: `fg=`/`bg=` named/`bright*`/`colourN`, plus
+  bold/dim/italic/underscore/reverse), read from durable options
+  (`opt_style`). Applied to `status-style`, `window-status-current-style`,
+  `pane-active-border-style` — all `set-option`-able, restart-durable.
+- **Active-pane border** — the split divider is now the active border:
+  drawn in `pane-active-border-style` (green default) as box-drawing, with
+  a marker pointing at the focused pane (`◄`/`►` / `▲`/`▼`). Focus changes
+  (click / `select-pane` / cycle) redraw so it follows immediately. This
+  answers the "panes not clickable" report — clicks always worked (the
+  cursor moved), there was just no visible cue.
+- **Automatic-rename** — the VTE captures the pane's OSC 0/1/2 title; the
+  Window pushes it to a non-durable `AutoName` table; `window_list` shows
+  it unless a manual `rename-window` overrides. So starship/vim/bash
+  setting the title renames the window (refreshed on the status tick).
+
+**Also fixed same day:** the popup mouse wheel (was dropped — now forwarded
+to the popup's app as translated SGR) and mouse re-arm after a full-screen
+app disables it (`\e[?1000l` on exit); both gated.
+
+**`.dev/reference`:** the developer's live lazydocker session + screenshots;
+tmux's `pane-active-border-style` / `automatic-rename` / style-string shape.
+
+**Still the big ones (each its own focused run, NOT rushed):** N-way panes
+(3+) + break/swap-pane (rung 10 full), sesh `switch-client` (20), plugin
+ports thumbs/fzf/fzf-url (21), control-mode `%notifications` (14),
+run-shell/if-shell, pane/layout persistence (16). And the rest of the new
+[mouse-UX rung 19](wmux/19-mouse-ux.md): status-line click → window,
+drag-resize, drag-select.
+
+### Landed 2026-09-04 — wmux: lazydocker popup renders clean (OSC + flicker)
+
+**Reported:** the developer ran `lazydocker` via `display-popup`; it showed
+`8;;` garbage smeared across every border/panel and flickered — while the
+same lazydocker in tmux was pixel-clean.
+
+**Root-caused (measured, not guessed):** captured lazydocker's real pty
+bytes and replayed a 24 KB slice through the VTE. Two gaps, both gated now:
+- **OSC dropped.** lazydocker wraps every bordered element in an OSC-8
+  hyperlink (`\e]8;;URI\e\…\e]8;;\e\`). The ESC dispatch had no `\e]` arm,
+  so it dropped `\e]` and printed the `8;;` payload as cells. Now `\e]…`
+  consumes the string to its `ST`/`BEL` terminator (covers OSC 0/2 title +
+  OSC 52 clipboard); `\e(`/`\e)`/`\e*`/`\e+` eat their charset byte too (no
+  literal `B`/`0`). The garbage was **repaint-only** — a focused pane
+  passes OSC raw to the client's own terminal, which handles it.
+- **Flicker.** `PopReader` read 4 KB, so a ~24 KB frame split into ~6
+  partial repaints. It now reads 64 K and drains already-available bytes
+  (3 ms poll) → one frame, one paint.
+
+**Verified:** replay of the real capture shows box-drawing/colours/text
+intact, zero `8;;`. New gate leg runs an OSC-8 line in a popup (the
+repaint path) and asserts clean. `just wmux` **46 → 47/0**. Binary
+rebuilt (`woc build … -o wmux`) + reinstalled to `~/.local/lib/wmux/wmux`.
+
+**`.dev/reference`:** a live `lazydocker` capture via a python pty harness;
+the developer's screenshots (wmux vs tmux side by side).
+
+**Next:** the big remaining parity items are unchanged (N-way panes, sesh
+switch-client, plugin ports) — see the marathon entry below.
+
+### Landed 2026-09-03 — wmux tmux-parity marathon (7 rungs, all gated)
+
+**Implemented (2026-09-03, "complete all rungs" multi-rung push):** the
+switch-blocking tmux features, each gated (`just wmux` 45 → 46/0) +
+committed + reinstalled to `~/.local/lib/wmux/wmux`, in dependency order:
+- **Rung 10 core** — `split-window -h` (side-by-side) + `-v`; directional
+  `select-pane -L/R/U/D` (h/j/k/l); zoom (`resize-pane -Z`). Fixed a
+  spawn-time winsize race (spawn panes at their band size).
+- **Rung 12** — system **clipboard** (OSC 52 on yank, verified base64);
+  **mouse** (SGR enable on attach, wheel→copy-scroll, click→select-pane).
+- **Rung 20** (committed at the time as "rung 19") — **display-popup**: a
+  session-owned modal float running a command (lazygit/lazydocker/sesh) in
+  a bordered box, reaped on exit.
+- **Rung 13** — copy-mode **char selection** (vi `v`/`y`, highlighted,
+  multi-line range yank → buffer + OSC 52).
+- **Rung 15** — terminfo-lite: accept the common TERM families (tmux/
+  screen/alacritty/kitty/…), still refuse `dumb`.
+- **Rung 17 (full)** — **`#(shell-command)`** (cached, `time.after`-
+  refreshed) PLUS the recursive expander: `#{?cond,a,b}` conditionals,
+  `#{b:}`/`#{d:}` modifiers, `#{time}` clock, `#{host_short}`.
+- **Window names** — durable `rename-window`, shown as `[idx:name*]`,
+  `#{window_name}`; **last-window** (`prev`).
+- (Earlier same day) **Rung 18** — key tables (`bind-key -n`, Meta/named
+  keys); and the screen-completeness cluster (UTF-8, sizing, alt-screen,
+  erase 0/1, SGR reset, O(n log n) replay).
+
+**Config:** `~/.config/wmux/wmux.conf` maps the developer's tmux binds
+(prefix C-a, `-n M-h/M-l`, h/j/k/l select-pane, z zoom, %, G/D/T popups),
+auto-loaded by the launcher.
+
+**Daily-drivable now on xterm.** Remaining for FULL parity (larger, each
+its own effort) — rung numbers corrected to final: **N-way panes (3+)** +
+break/swap-pane (rung 10 full); ~~format conditionals/modifiers (17)~~ and
+~~theming (22)~~ and ~~sesh switch-client (21)~~ have since landed;
+**plugin ports** thumbs/fzf/fzf-url + the tmux-compat CLI shim (rung 23,
+popup+capture-pane ready); control-mode `%notifications` (14),
+run-shell/if-shell, pane/layout persistence (16).
+
+**`.dev/reference`:** the developer's `~/.tmux.conf` + plugins (the target
+config), tmux `popup.c`/`window-copy.c`/`tty.c` shapes, runtime `proc`/
+`term`/`time` seams.
+
+### Landed 2026-09-03 — wmux screen-completeness + rung 18 (key tables, first slice)
+
+**Implemented (2026-09-03):** a burst of real-usage fixes driven by
+running wmux with the developer's live starship/eza + tmux setup, plus
+the first slice of the new [key-tables rung 18](wmux/18-key-tables.md).
+- **Dynamic sizing** — the session sizes to the client's terminal via
+  `term.size` at attach (was a fixed 80×23 box); gate 120×40 → 39×120.
+- **Screen completeness (vte.wo)** — the alternate screen (`\e[?1049h/l`,
+  so btop/vim stop bleeding into the shell), scroll region + cursor
+  save/restore, erase-display modes 0/1 (`\e[J` clears stale lines below
+  the cursor), a per-row SGR reset (no colour-bleed blank rows), and
+  **UTF-8 decoding** (one cell per glyph via `term.width` — nerd-font/CJK/
+  emoji render instead of `000`).
+- **O(n log n) boot replay** — killed an O(n²) startup CPU burst.
+- **Rung 18 slice** — a no-prefix `RootBind` table, `key_code` (Meta +
+  named keys), a tty key decoder in the Input actor, `bind-key -n`/`-T`.
+
+**Key findings (measured):** a byte-based VTE mangles every multi-byte
+glyph — `feed()` now decodes UTF-8 lead+continuation bytes into one cell
+and `term.width(cp)` sets the advance. `\e[K` erases with the CURRENT
+SGR, so an un-reset colour painted whole blank rows once the grid filled
+the screen. And a **compiler bug** surfaced: `self.f = self.f .. x`
+(self-referential field concat-assign) miscompiles — worked around with a
+local temp, `emit.ml` fix tracked. Gate `just wmux` 37 → 42, 0 failures.
+
+**Dependencies unblocked:** rung 18's decoder + tables are the seam the
+copy-mode-vi table and `-r` repeat extend; UTF-8 + sizing make the VTE
+usable for real prompts/TUIs. The audit's siblings have since landed with
+final numbers — 17 formats-v2, 20 display-popup, 21 sesh switch-client, 22
+theming all DONE; 23 plugin ports (the tmux-compat CLI shim) remains.
+
+**Next steps:** finish rung 18 (copy-mode-vi + `-r`, with rungs 10/13), or
+the paused rung 10–22 story map; the `emit.ml` self-concat fix is a
+standalone language follow-up.
+
+**`.dev/reference` used:** the developer's own `~/.tmux.conf` + plugins
+(the config the fixes had to render), and the runtime's `term`/`sysio`
+seams (`term.size`/`term.width`, EIO).
+
+### Landed 2026-09-02 — wmux 16 (first slice): the Window owns + reaps its panes
+
+**Implemented last time (2026-09-02):** the pane-ownership + reaping fix,
+a discrete slice of [rung 16](wmux/16-durability-polish.md) surfaced by
+live usage — a pane whose child exited on its own (a shell exiting, a
+command pane finishing) was left a `<defunct>` zombie until the session
+was killed. The `Window` actor now spawns its OWN panes: `make_window`
+and `do_split` `call` the Window (`kind 0` / `kind 6`), it `spawn_pane`s
+in-actor (so `owner_actor` = the Window) and returns the reader fd. A
+pane's Reader, on EOF/EIO, sends `kind 8`; the Window `wait_dl`s the
+child on its own shard to reap it and marks it dead. `DeadWin` and the
+`kind 9` replay-feed became dead code and were removed. Gate leg
+`attach-zombie` added; `just wmux` 36 → 37, 0 failures.
+
+**Key findings (measured, not asserted):** the leak was structural, not
+a missing `wait()` — the runtime's child slots are PER-SHARD, so
+`proc.wait_dl(id)` only works from the actor that spawned the child.
+Instrumentation proved it: two live panes reported the SAME shard-local
+id (64), and the reader's `wait_dl` trapped `"process id is not a live
+child"` because it ran on a different shard. So the kill-time `wait_dl`
+was silently failing too; only owner-actor death (kill-session, server
+exit) was actually reaping. Moving the spawn into the Window put the
+child and its reaper on one shard. Verified: after a command pane and a
+window shell both exit, the server has zero defunct children; 0 traps.
+
+**Learned:** an actor cannot fetch its own address (no self primitive),
+so the Reader's window address is threaded from the spawn site — but the
+child fd can ride back through a synchronous `call` return (WMsg receive
+returns Int), which let the Window own the spawn while the caller (which
+holds the window address) wires the Reader. That `call`-returns-a-fd
+shape is the clean way to keep ownership and wiring in the right actors.
+
+**Dependencies unblocked:** the rest of rung 16 (pane/layout
+persistence, killw compaction, named buffers) is unchanged and still
+pending. The Window-owns-panes shape also makes per-pane resize and
+future pane persistence cleaner (the Window is now the single owner).
+
+**Next steps:** the remaining wmux burn-down — rung 10 (layout tree) or
+rung 12 (resize + mouse); then cherry-pick the wmux track dev→master
+when the ladder is declared ready.
+
+**`.dev/reference` used:** the runtime's own `sysio.c`
+(`WO_B_PROC_WAIT_DL`, `proc_slot_by_id`, `owner_actor`) — to source the
+per-shard child-ownership model that dictated the fix.
+
+### Landed 2026-09-02 — wmux 11: options/formats/keys + two baseline bug fixes
+
+**Implemented last time (2026-09-02):** wmux
+[rung 11](wmux/11-formats-options-keys.md) — behaviour became durable
+DATA. A `Setting {key, val}` options table (`set-option`, `wmux_opt`)
+and a `Bind {key, cmd}` key table (`bind-key`), both seeded idempotently
+at boot and replayed after a restart; a `#{...}` status-format expander
+(`format()`); and ONE `run_command`/`run_session_command` dispatcher
+that the CLI, control mode, the `C-b :` prompt, key bindings and the
+`WMUX_CONF` config file all feed. Folded rung 14's command-prompt race
+fix by moving the line editor into the Input actor. Pure `.wo`, zero
+runtime work. `just wmux` 30→36 checks, 0 failures.
+
+**Key findings (measured, not asserted):** the tmux options/format/keys
+DSL (~12k lines in tmux) collapses to two durable tables, a ~40-line
+`#{...}` walker, and one dispatcher — and unlike tmux the config SURVIVES
+a server restart (proven: `set-option prefix C-t` + `bind-key X` are in
+effect after SIGTERM). The prompt race the command-pane rung disclosed is
+gone: with the flag and keystrokes in one actor, `C-b : split <cmd>` runs
+the whole line. The gate's old "command prompt neww" leg was a false
+positive — its `[1` needle matched an ANSI cursor escape, not a window;
+the new legs assert on the expanded format text instead.
+
+**Learned (two latent baseline bugs the new paths exposed, both fixed):**
+(1) `net.read_dl` returns nil on a timeout but TRAPS on a hard error, and
+a dead PTY master returns EIO, so the pane Reader's `catch (e) nil;
+continue` pinned a core at 100% the moment ANY command pane's child
+exited — a pre-existing runaway confirmed identical on the pre-rung-11
+build. Fix: the catch `return`s (the parser allows a `{ … }` catch arm),
+stopping the reader like EOF; same guard added to the Input tty read.
+(2) `kill-session` fired `kind 4` at every window at once and each
+scanned the shared `Chunk where c.sess` bucket and deleted — colliding
+cursors trapped WO-5 "no such row"; chunk cleanup moved into the
+serializing session. Only reachable once prompt-`neww` opened real
+windows.
+
+**Dependencies unblocked:** rung 14 narrows to the control-mode command
+surface + `%notifications` (its prompt-race scope is done). The unified
+dispatcher is the seam rungs 12–16 extend (each new verb is added once).
+
+**Next steps:** the remaining wmux burn-down — rung 10 (layout tree) or
+rung 12 (resize + mouse, runtime already ready via rt2 3/6); then
+cherry-pick the wmux track dev→master when the ladder is declared ready.
+
+**`.dev/reference` used:** tmux (`options.c`, `format.c`, `key-bindings.c`
+— the option/format/key shapes wmux compresses); the runtime's own
+`sysio.c` `read_dl` (to source the EIO-vs-timeout distinction).
 
 ### Landed 2026-09-02 — runtime-v2 COMPLETE: all five iterations in one run
 
@@ -629,8 +916,9 @@ asset nobody had built.
 
 **Next steps:** the live slice is iteration 24, untouched by this. CI is
 release-only — no workflow runs the gates per change, which remains the
-open half of iteration 30 (observability, CI, fuzz — still no story
-file).
+open half of iteration 30 (observability — now
+[runtime-v2 7](runtime-v2/07-observability.md), moved there 2026-09-06;
+CI and fuzz are tooling, split out).
 
 **`.dev/reference` used:** none — GitHub Actions' own docs and the
 runner images' glibc versions were the only sources.
@@ -1231,8 +1519,10 @@ check mode, and the `internal/` dep boundary (WO-E108). Driver-only.
 
 New 2026-09-01. The I/O plane learned sockets in 8/11/35 and files in 6;
 this track adds the missing third — **processes, terminals, signals** —
-five builtin-sized seams, each `runtime/src/` work with a `types.ml` row
-as its whole compiler cost (the iteration 42 precedent). Iteration 42
+first five builtin-sized seams, each `runtime/src/` work with a `types.ml`
+row as its whole compiler cost (the iteration 42 precedent); the track then
+grew a 6th (terminal measurement) and, 2026-09-06, a 7th and 8th (observability,
+moved from language 30; a symmetric cipher) both `refine`. Iteration 42
 (bounded subprocess, ✅ on `master` 2026-09-01) opened the arc from the
 language track before it had a name. **All five `readiness: ready`** —
 one track-wide brainstorm settled every fork
@@ -1251,19 +1541,45 @@ starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 | 4 | [termios adoption](runtime-v2/04-termios.md) | ✅ **DONE 2026-09-02** — `term.raw/restore`; restore proven a runtime obligation twice (DIV0 while raw, and the double-raw refusal itself) |
 | 5 | [fd passing](runtime-v2/05-fd-passing.md) | ✅ **DONE 2026-09-02** — `net.send_fd`/`recv_fd`/`connect_unix`; a tty crossed the socket, was raw'd through the received copy and restored at destroy — the wmux handover in miniature |
 | 6 | [term.size + term.width](runtime-v2/06-term-size-width.md) | ✅ **DONE 2026-09-02** — TIOCGWINSZ read twin (nil = not a tty) and libc wcwidth under C.UTF-8; the only runtime work the whole wmux parity ladder needs |
+| 7 | [observability](runtime-v2/07-observability.md) | ⬜ `refine` — **moved here 2026-09-06** from language iteration 30 (`was_language_iteration: 30`). Runtime metrics/gauges, a `pprof`-equivalent profile, stack-trace-on-trap; consumers named (porch [8](porch/08-static-and-lifecycle.md)/[39](language-runtime-database/39-web-framework-parity.md), databasev2 [5](databasev2/05-bounded-tables-eviction.md), the limiter's lazy expiry). Forks: counters-only vs profiling, exposition format, pull vs push, trace-on-trap as a separable first slice. Stretches the track's charter (instrumentation, not processes/terminals/signals) — noted in the story |
+| 8 | [symmetric cipher](runtime-v2/08-symmetric-cipher.md) | ⬜ `refine` — **created 2026-09-06** from the [porch↔fiber scope-gap](../plan/exploration/fiber/01-porch-vs-fiber-scope-gap.md); a cipher builtin fits the builtin-seam shape. AEAD for encrypted cookies (porch [2](porch/02-randomness-and-cookies.md) out-of-scope) + data-at-rest; extends [34](language-runtime-database/34-crypto-builtins.md)'s digests, needs porch 2's `random_bytes` for nonces. Load-bearing fork: AES-256-GCM (expected, hard constant-time in software) vs ChaCha20-Poly1305 (easier hand-roll, no-dep doctrine fit) |
+| 9 | [in-process TLS](runtime-v2/09-in-process-tls.md) | ⬜ `refine` — **created 2026-09-07** from the gap [jarvis](jarvis/00-story.md) surfaces. TLS **both directions** (outbound client + inbound termination), **retiring the "TLS is the proxy's job" doctrine** (recorded in 34/38/porch). The track's heaviest seam — **not** builtin-sized, and likely a **vendored-lib exception** to no-external-deps (TLS is the one thing not to hand-roll). Load-bearing fork (left open): vendor mbedTLS/BearSSL vs hand-roll a subset. Sits on language 38's `net.connect`; gates jarvis entirely |
 
 ### ▸ wmux — the terminal multiplexer track
 
-New 2026-09-01, from [the tmux parity study](../plan/exploration/tmux/00-tmux-parity.md).
-First of the *softwares built with writeonce* tracks: the product is an
-end-user program, not a library. Its runtime prerequisites are the
-[runtime-v2 track](runtime-v2/00-story.md) above — iteration 42 was the
-first domino; runtime-v2 1–5 remain, streaming-subprocess first — plus
-the VTE grid + unicode width work wmux 1 itself owns.
+New 2026-09-01, from [the tmux parity study](../plan/exploration/tmux/00-tmux-parity.md);
+**re-scoped 2026-09-02 to FULL tmux parity** as a nine-rung ladder
+([ladder spec](../superpowers/specs/2026-09-02-wmux-ladder-design.md)),
+serving the recorded goal: acceptance by Linux-based developers. Runtime
+prerequisites ALL landed (runtime-v2 1–6); every rung past 1 is pure
+`.wo`. Durability is the ladder-wide differentiator — every rung's
+state replays after a server restart, which tmux loses by design.
 
 | # | Iteration | State |
 | --- | --- | --- |
-| 1 | [wmux](wmux/01-wmux.md) *(was language 43)* | ⬜ `refine` — five forks recorded (terminfo, v1 surface without split panes, scrollback residency, command surface, streaming verb shape). The beyond-tmux leg: durable sessions replay layout + scrollback after a server RESTART |
+| 1 | [foundation](wmux/01-wmux.md) *(was language 43)* | ✅ **DONE 2026-09-02** — sessions, attach by fd-handover, durable capped chunk log, restart replay; `just wmux` 19/0 under a real PTY harness incl. the beyond-tmux restart-replay leg |
+| 2 | [the screen](wmux/02-the-screen.md) | ✅ **DONE 2026-09-02** — VTE grid (vte.wo); reattach/restart paint the screen, proven grid-specific in the gate |
+| 3 | [windows + status](wmux/03-windows-and-status.md) | ✅ **DONE 2026-09-02** — actor-per-window, status line, C-b c/n/p/digit; windows durable across restart |
+| 4 | [split panes](wmux/04-split-panes.md) | ✅ **DONE 2026-09-02** — vertical 2-pane split, focus, composite grid render (N-way/horizontal deferred) |
+| 5 | [copy mode](wmux/05-copy-mode.md) | ✅ **DONE 2026-09-02** — scrollback, copy-mode paging, yank to a durable paste buffer, paste |
+| 6 | [multi-client](wmux/06-multi-client.md) | ✅ **DONE 2026-09-02** — multi-client mirroring (min-size/live-resize/mouse deferred) |
+| 7 | [command system](wmux/07-command-system.md) | ✅ **DONE 2026-09-02** — C-b : prompt (neww/split/next/prev/killw) + config file (session directive) |
+| 8 | [hooks + control](wmux/08-hooks-and-control.md) | ✅ **DONE 2026-09-02** — control-mode line protocol + session-created hooks delivered as actor messages |
+| 9 | [parity audit](wmux/09-parity-audit.md) | ✅ **DONE 2026-09-02** — the tmux-vs-wmux catalog: every gap a named follow-up or a refusal by name |
+| 10 | [layout tree](wmux/10-layout-tree.md) | 🟡 `refine` — **first slice DONE 2026-09-03**: horizontal `split-window -h`, directional `select-pane -L/R/U/D` (h/j/k/l), zoom (`resize-pane -Z`); rung-22 added the active-pane border marker. Still 2-pane max — N-way (3+), swap/break-pane, presets, durable layout pending |
+| 11 | [formats + options + keys](wmux/11-formats-options-keys.md) | ✅ **DONE 2026-09-02** — durable options + `bind-key` tables, `#{...}` status format, one `run_command` dispatcher behind CLI/control/prompt/keys/config; folded rung 14's prompt-race fix. Fixed two baseline bugs: a PTY-EIO reader 100%-CPU spin and a concurrent kill-session chunk race. `just wmux` 36/0 |
+| 12 | [resize + mouse](wmux/12-resize-and-mouse.md) | 🟡 `refine` — **attach-time sizing + SGR mouse DONE 2026-09-03/04**: sizes to the client's terminal via `term.size` (was fixed 80×23); wheel→copy-scroll, click→select-pane, status-row click→window; mouse re-armed after a full-screen app. Live SIGWINCH resize + multi-client min-size still pending |
+| 13 | [copy selection + search](wmux/13-copy-selection-search.md) | 🟡 `refine` — **char-range selection DONE 2026-09-03**: vi `v`/`y`, highlighted, multi-line yank → buffer + OSC 52. Only incremental search + rectangle select pending |
+| 14 | [control surface + prompt fix](wmux/14-control-and-prompt.md) | ⬜ `refine` — broaden control mode. **Prompt-race fix DONE in rung 11**; this rung narrows to the control-mode command surface + `%notifications` |
+| 15 | [terminfo](wmux/15-terminfo.md) | 🟡 `refine` — **terminfo-lite DONE 2026-09-03**: a TERM allowlist (xterm/screen/tmux/alacritty/kitty/…; refuses only `dumb`) retired the foreign-`TERM` refusal. Full compiled-terminfo parsing still pending |
+| 16 | [durability polish](wmux/16-durability-polish.md) | 🟡 `refine` — pane/layout persistence, killw compaction, buffers STILL pending. **First slice DONE 2026-09-02**: the Window owns + reaps its panes (spawns them in-actor so `wait_dl` works on its shard), fixing a `<defunct>` zombie leak; gate leg `attach-zombie`, 37/0 |
+| 17 | [formats v2](wmux/17-formats.md) | ✅ **DONE 2026-09-03** — the full status format engine: `#(shell)` (cached, timer-refreshed), recursive `#{...}` with `#{?cond,a,b}` conditionals, `#{b:}`/`#{d:}` modifiers, `#{time}`/`#{host_short}`/real `#{window_name}` |
+| 18 | [key tables](wmux/18-key-tables.md) *(new, from the config audit)* | 🟡 `refine` — **first slice DONE 2026-09-03**: no-prefix root table (`bind-key -n`), Meta + named keys (`key_code`), a tty key decoder in the Input actor; gate `bind-key -n M-h` fires without prefix, 42/0. `copy-mode-vi` table, `-r` repeat still pending |
+| 19 | [mouse-driven UX](wmux/19-mouse-ux.md) *(new)* | 🟡 `refine` — **active-pane border highlight DONE 2026-09-04** (the split divider is the focus border + a direction marker; click flips it) plus **status-row click → select window** (2026-09-04). Still pending: drag-resize, drag-select. Forks open — brainstorm the rest before build |
+| 20 | [display-popup](wmux/20-display-popup.md) | ✅ **DONE 2026-09-03/04** — session-owned modal float (`-E`), `-B` borderless (flush app frame), rounded gray border, popup mouse-wheel forwarding; drove the VTE OSC-swallow + popup frame-coalesce fixes. (Committed as "rung 19" then renumbered) |
+| 21 | [sesh + switch-client](wmux/21-sesh-switch-client.md) | ✅ **DONE 2026-09-04** — in-session `switch-client -t B` / `-l`: sync `call` hand-off (Input exits only on success), `reg` threaded into sessions, fds handed off without close, B adopts + spawns a fresh Input; B-occupied refuses, missing→error. Plus a native **`choose-session` picker** (prefix `o`) — lists sessions on the status row, a digit switches. Fixed a `?actor RMsg` nullable-wrapper schema reorder (spurious restart migration) with a non-nilable `me`. Gate 54/0. (Full fuzzy `sesh connect` needs the tmux-compat CLI — rung 23) |
+| 22 | [theming](wmux/22-theming.md) | ✅ **DONE 2026-09-04** — a tmux-style `style_sgr` engine (fg/bg named/bright/colourN + attrs) read from durable options; applied to `status-style`, `window-status-current-style`, `pane-active-border-style` (active border). Plus **automatic-rename** (window name follows the pane's OSC title). Later surface (`mode-style`, per-window format styling, `message-style`) can extend it |
+| 23 | [plugin ports](wmux/23-plugin-ports.md) | ⬜ `refine` — run the developer's tmux plugins (thumbs, fzf, fzf-url) under wmux via `capture-pane` + a popup picker. Forks open (port each vs a `tmux` compat shim, which plugins first, capture scope). Rides rung 20 + rung 12 |
 
 ### Language track — sequenced, on the critical path
 

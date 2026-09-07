@@ -73,7 +73,7 @@ risky work starts.
 | typed binding of query/params/form into a class | language: [`@derive`](../language-runtime-database/29-compile-time-metaprogramming.md) — reflection is forbidden by principle 13 |
 | TTL cache, `transaction { }`, durable job queue | language: [iteration 18](../language-runtime-database/18-memory-db-features.md) |
 | a `proxy` middleware | language: [iteration 38](../language-runtime-database/38-content-platform-capabilities.md) — needs `net.connect`, which does not exist |
-| metrics, profiling, per-change CI, fuzzing | language iteration 30 (no story file yet) |
+| metrics, profiling, per-change CI, fuzzing | [runtime-v2 7](../runtime-v2/07-observability.md) — observability (was language iteration 30; metrics/profiling/trace-on-trap; CI + fuzz are tooling, split out) |
 | TLS, HTTP/2 | nobody — proxy-terminated by doctrine |
 | a runtime template engine | nobody — rejected; markup is a compile-time literal (`writeonce-view`) |
 | a radix-tree router | nobody yet — waiting on a *measurement*, not a decision |

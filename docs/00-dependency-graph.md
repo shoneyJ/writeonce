@@ -274,48 +274,103 @@ appear in graph 2 — they need iteration 11 as well as 18.
 
 ## 5. porch — the web framework track
 
-States live on [the board's porch section](stories/00-status.md); every
-pending node is `readiness: refine` (no approved spec), so a brainstorm
-precedes any plan. Three independent roots: **2** (the auth chain),
-**6** (the streaming chain), **5** (anytime, no incoming edges). **9** is
-the track's only `readiness: ready` item and is held.
+States live on [the board's porch section](stories/00-status.md). **The whole
+track (2–8) is `readiness: ready`** as of the 2026-09-06 brainstorm; **1** is
+done, **9** is held (blocked on the lang-41 arena hang, not an enhancement).
+Three independent roots: **2** (the auth chain), **6** (the streaming chain),
+**5** (anytime, no incoming edges at all — not even iteration 2).
+
+This graph makes the **cross-track language edges** visible: the three builtins
+the track needs, each drawn as a `lang` node feeding the story that owns it.
 
 ```mermaid
 flowchart TD
     classDef done fill:#1a7f37,color:#fff,stroke:none
-    classDef refine fill:#eac54f,color:#000,stroke:none
+    classDef ready fill:#0969da,color:#fff,stroke:none
     classDef held fill:#6e7781,color:#fff,stroke:none
     classDef lang fill:#8250df,color:#fff,stroke:none
 
-    CSPRNG["language track: CSPRNG builtin (id 96+) — porch 2's Phase A"]:::lang
-    P1["porch 1 store-backed middleware ✅ 2026-08-30"]:::done
-    P2["porch 2 randomness + cookies (repeated Set-Cookie/Vary headers, Cookie: parsing, signed cookies)"]:::refine
-    P3["porch 3 sessions"]:::refine
-    P4["porch 4 CSRF"]:::refine
-    P5["porch 5 routing + response ergonomics"]:::refine
-    P6["porch 6 streaming core"]:::refine
-    P7["porch 7 SSE + compression"]:::refine
-    P8["porch 8 static files + lifecycle"]:::refine
-    P9["porch 9 idempotent replay (⏸ hold; readiness: ready)"]:::held
+    RB["language work: random_bytes builtin (bare-name, id 84/90) — porch 2 Phase A"]:::lang
+    DFL["language work: deflate + crc32 builtins (C) — porch 7 Phase C"]:::lang
+    TU["language work: time.utc builtin (gmtime sibling of time.local) — porch 8 Phase A"]:::lang
 
-    CSPRNG --> P2
+    P1["porch 1 store-backed middleware ✅ 2026-08-30"]:::done
+    P2["porch 2 randomness + cookies"]:::ready
+    P3["porch 3 sessions"]:::ready
+    P4["porch 4 CSRF"]:::ready
+    P5["porch 5 routing + response ergonomics (zero upstream deps)"]:::ready
+    P6["porch 6 streaming core"]:::ready
+    P7["porch 7 SSE + compression"]:::ready
+    P8["porch 8 static files + lifecycle"]:::ready
+    P9["porch 9 idempotent replay (⏸ hold; readiness: ready)"]:::held
+    L41["language 41 actor-arena hang (in-progress)"]:::held
+
+    RB --> P2
     P2 --> P3
     P2 --> P4
     P3 --> P4
     P6 --> P7
     P6 --> P8
-    P2 --> P7
     P5 --> P7
+    P5 --> P8
+    DFL --> P7
+    TU --> P8
+    L41 -.blocks.-> P9
     P1 -.re-scope 79e6da4: replay-on-retry split out of 1.-> P9
 ```
 
-The two non-obvious edges are stated in porch 7's own story: gzip's
-`Accept-Encoding` negotiation reuses the q-value ranking iteration 5 adds,
-and `Vary: Accept-Encoding` needs iteration 2's repeated-header work to
-accumulate with other `Vary` contributions. Porch 2's Phase A is
-language-track work (the CSPRNG builtin) — the cross-track edge this graph
-exists to make visible. Streaming responses' runtime prerequisites
-(fibers, iteration 11) are already green in graph 2.
+Edges corrected by the 2026-09-06 brainstorm: `P5 --> P7` (gzip's
+`Accept-Encoding` reuses iteration 5's q-value ranking) stays, but the old
+`P2 --> P7` edge is **gone** — story 7 decided `Vary` accumulates by comma-join
+(iteration 5's shape), not iteration 2's repeated-header work. `P5 --> P8` is the
+`Download`/`Attachment` helper. The three `lang` nodes are the track's entire
+language bill; each is a builtin with a named consumer, none shipped as
+decoration.
+
+## 5a. porch's language-driven gaps (out-of-scope features and the language stories that own them)
+
+These are the features fiber ships that porch deliberately does **not** — each
+excluded because a language primitive does not exist yet. Every edge points from
+the owning language story to the porch feature it would unblock (see the
+[porch↔fiber scope-gap analysis](plan/exploration/fiber/01-porch-vs-fiber-scope-gap.md)).
+
+```mermaid
+flowchart LR
+    classDef done fill:#1a7f37,color:#fff,stroke:none
+    classDef refine fill:#eac54f,color:#000,stroke:none
+    classDef held fill:#6e7781,color:#fff,stroke:none
+    classDef gap fill:#cf222e,color:#fff,stroke:none
+
+    L29["language 29 @derive (⏸ hold)"]:::held
+    L38["language 38 net.connect (refine)"]:::refine
+    L43["runtime-v2 8 symmetric cipher (refine, NEW 2026-09-06)"]:::refine
+    L30["runtime-v2 7 observability (refine, moved from language 30, 2026-09-06)"]:::refine
+    L18["language 18 TTL cache + transaction{} (⏸ hold)"]:::held
+    L31["language 31 cancellation ✅ (landed in 24)"]:::done
+
+    BIND["typed request binding (fiber Bind)"]:::gap
+    PROXY["reverse proxy + outbound HTTP client"]:::gap
+    ENC["encrypted cookies (fiber encryptcookie)"]:::gap
+    METRICS["metrics / pprof / expvar endpoints"]:::gap
+    CACHE["cache middleware + recovery rollback"]:::gap
+    TIMEOUT["per-handler timeout + streaming backpressure"]:::gap
+
+    L29 --> BIND
+    L38 --> PROXY
+    L43 --> ENC
+    L30 --> METRICS
+    L18 --> CACHE
+    L31 --> TIMEOUT
+```
+
+31 (cancellation) is already green — per-handler timeout and streaming
+backpressure are unblocked at the language level and wait only on a porch slice
+to consume them. The other five gaps are gated on an upstream story: two
+brand-new runtime-v2 iterations (8 cipher, 7 observability — moved out of the
+language track 2026-09-06), two language iterations on hold (29, 18), one pending
+a spec (38). Landed enablers the
+track already consumed — 34 (crypto digests), 36 (bit operators), 35 (net
+seams) — are green in graphs 1–3 and not repeated here.
 
 ## 6. wmux — the multiplexer track (wmux 1) and its gap chain
 
