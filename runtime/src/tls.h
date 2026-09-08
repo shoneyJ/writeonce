@@ -47,4 +47,37 @@ int wo_tls_record_open(int suite, const uint8_t *key, size_t keylen,
                        const uint8_t iv[12], uint64_t seq, const uint8_t *rec,
                        size_t reclen, uint8_t *out, uint8_t *content_type);
 
+/* ---- key schedule (phase F2, RFC 8446 §7.1, SHA-256) --------------------- */
+
+/* The traffic secrets the handshake derives, in the order they become known. */
+typedef struct {
+    uint8_t handshake_secret[32];
+    uint8_t master_secret[32];
+    uint8_t client_hs_traffic[32];
+    uint8_t server_hs_traffic[32];
+    uint8_t client_ap_traffic[32];
+    uint8_t server_ap_traffic[32];
+} wo_tls_key_schedule;
+
+/* Handshake-phase secrets from the ECDHE shared secret and the
+ * ClientHello..ServerHello transcript hash. Fills handshake_secret, the two
+ * hs-traffic secrets, and master_secret (which needs no further transcript). */
+void wo_tls_derive_handshake(wo_tls_key_schedule *ks, const uint8_t *ecdhe,
+                             size_t ecdhe_len, const uint8_t hash_ch_sh[32]);
+
+/* Application-phase traffic secrets from master_secret (already in ks) and the
+ * ClientHello..server-Finished transcript hash. */
+void wo_tls_derive_application(wo_tls_key_schedule *ks,
+                               const uint8_t hash_ch_sf[32]);
+
+/* Per-direction AEAD key (key_len 16 or 32) and 12-byte IV from a traffic
+ * secret (HKDF-Expand-Label "key"/"iv"). */
+void wo_tls_traffic_keys(const uint8_t traffic_secret[32], size_t key_len,
+                         uint8_t *key, uint8_t iv[12]);
+
+/* Finished verify_data = HMAC(HKDF-Expand-Label(base_key,"finished","",32),
+ * transcript_hash). Same routine builds and checks it (compare with ct_memeq). */
+void wo_tls_finished_verify(const uint8_t base_key[32],
+                            const uint8_t transcript_hash[32], uint8_t out[32]);
+
 #endif

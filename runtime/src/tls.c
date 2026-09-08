@@ -109,3 +109,61 @@ int wo_tls_record_open(int suite, const uint8_t *key, size_t keylen,
     *content_type = out[n - 1];
     return (int)(n - 1);
 }
+
+/* ---- key schedule (phase F2, RFC 8446 §7.1) -----------------------------
+ * Derive-Secret(Secret, Label, Messages)
+ *     = HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.len)
+ * with Hash = SHA-256 for the suites we implement. The whole schedule is a
+ * chain of HKDF-Extract and Derive-Secret over the phase-B primitives. */
+
+/* Transcript hash of the empty message list: SHA-256(""). */
+static void empty_hash(uint8_t out[32]) { wo_sha256((const uint8_t *)"", 0, out); }
+
+/* Derive-Secret with an explicit 32-byte transcript hash. */
+static void derive_secret(const uint8_t secret[32], const char *label,
+                          const uint8_t transcript[32], uint8_t out[32]) {
+    wo_hkdf_sha256_expand_label(secret, label, strlen(label), transcript, 32,
+                                out, 32);
+}
+
+void wo_tls_derive_handshake(wo_tls_key_schedule *ks, const uint8_t *ecdhe,
+                             size_t ecdhe_len, const uint8_t hash_ch_sh[32]) {
+    uint8_t zeros[32] = {0}, eh[32], early[32], derived[32];
+    empty_hash(eh);
+
+    /* Early Secret = HKDF-Extract(0, 0) (no PSK). */
+    wo_hkdf_sha256_extract(zeros, 32, zeros, 32, early);
+    /* Handshake Secret = HKDF-Extract(Derive-Secret(early,"derived",""), ECDHE). */
+    derive_secret(early, "derived", eh, derived);
+    wo_hkdf_sha256_extract(derived, 32, ecdhe, ecdhe_len, ks->handshake_secret);
+
+    derive_secret(ks->handshake_secret, "c hs traffic", hash_ch_sh,
+                  ks->client_hs_traffic);
+    derive_secret(ks->handshake_secret, "s hs traffic", hash_ch_sh,
+                  ks->server_hs_traffic);
+
+    /* Master Secret = HKDF-Extract(Derive-Secret(hs,"derived",""), 0). */
+    derive_secret(ks->handshake_secret, "derived", eh, derived);
+    wo_hkdf_sha256_extract(derived, 32, zeros, 32, ks->master_secret);
+}
+
+void wo_tls_derive_application(wo_tls_key_schedule *ks,
+                               const uint8_t hash_ch_sf[32]) {
+    derive_secret(ks->master_secret, "c ap traffic", hash_ch_sf,
+                  ks->client_ap_traffic);
+    derive_secret(ks->master_secret, "s ap traffic", hash_ch_sf,
+                  ks->server_ap_traffic);
+}
+
+void wo_tls_traffic_keys(const uint8_t traffic_secret[32], size_t key_len,
+                         uint8_t *key, uint8_t iv[12]) {
+    wo_hkdf_sha256_expand_label(traffic_secret, "key", 3, NULL, 0, key, key_len);
+    wo_hkdf_sha256_expand_label(traffic_secret, "iv", 2, NULL, 0, iv, 12);
+}
+
+void wo_tls_finished_verify(const uint8_t base_key[32],
+                            const uint8_t transcript_hash[32], uint8_t out[32]) {
+    uint8_t finished_key[32];
+    wo_hkdf_sha256_expand_label(base_key, "finished", 8, NULL, 0, finished_key, 32);
+    wo_hmac_sha256(finished_key, 32, transcript_hash, 32, out);
+}
