@@ -2,18 +2,23 @@
 track: runtime-v2
 iteration: "8"
 status: pending
-readiness: refine
+readiness: ready
 ---
 
-# runtime-v2 8 — a symmetric cipher: authenticated encryption for cookies and data at rest
+# runtime-v2 8 — AEAD ciphers: authenticated encryption for cookies, data at rest, and TLS
 
 > Created 2026-09-06 from the porch-vs-fiber scope-gap analysis
 > ([exploration](../../plan/exploration/fiber/01-porch-vs-fiber-scope-gap.md)) as
 > a runtime-v2 iteration — a hand-rolled cipher builtin with a `types.ml` row is
 > exactly the track's builtin-sized-seam shape (the iteration 42 precedent). (It
 > is not a language-track iteration; the language number 43 was already spent on
-> the wmux foundation.) **`readiness: refine`** — the
-> gap, its consumer and its forks are named; not brainstormed to `ready`.
+> the wmux foundation.)
+>
+> **Brainstormed to `ready` 2026-09-08.** A second consumer appeared after the
+> first draft — runtime-v2 [9](09-in-process-tls.md)'s TLS phase A — and it
+> reshaped the forks: TLS 1.3 **mandates AES-128-GCM** (RFC 8446), so the
+> original ChaCha-only lean is out, and TLS constructs its own per-record nonce,
+> so the primitive takes a **caller-supplied** nonce.
 
 ## Why this exists
 
@@ -36,52 +41,103 @@ may see it, it just may not forge it. Encryption is for the case where the
 *payload itself* must be hidden from the client: an encrypted cookie carrying
 app state, or a database field encrypted at rest.
 
-## What it should deliver (scope to be refined)
+## Decisions locked (brainstorm 2026-09-08)
 
-- **An AEAD primitive** — authenticated encryption with associated data — as one
-  or two builtins in the crypto family beside `hmac_sha256`: encrypt (key,
-  nonce, associated-data, plaintext) → ciphertext+tag, and decrypt returning the
-  plaintext or nil on any authentication failure. AEAD, not a bare cipher,
-  because unauthenticated encryption is a footgun that ships.
-- **The porch consumer**: an `encryptcookie`-equivalent — a cookie whose value is
-  encrypted, not merely signed — layered on iteration 2's cookie machinery.
+1. **Two AEAD ciphers: AES-GCM (128 and 256) and ChaCha20-Poly1305.** TLS 1.3
+   mandates AES-128-GCM, so it is in whatever happens; ChaCha20-Poly1305
+   (RFC 8439) rides along because it is a valid TLS 1.3 suite, is far easier to
+   get constant-time, is preferred where no AES hardware exists, and is the clean
+   default for cookies and data-at-rest. TLS negotiates whichever the server
+   picks; application code defaults to ChaCha.
+2. **AES is made constant-time by hardware, with a software fallback.** AES-NI on
+   x86-64 (`<wmmintrin.h>`) and the ARMv8 crypto extension give constant-time AES
+   and GHASH (CLMUL/PMULL) with zero external dependency — these are compiler
+   intrinsics, not a library. A bitsliced constant-time software AES + a
+   constant-time GHASH covers CPUs without the extension. ChaCha20-Poly1305 is
+   naturally constant-time in portable C and needs no hardware path.
+3. **The primitive takes a caller-supplied nonce.** Shape:
+   `<cipher>_seal(key, nonce, aad, plaintext) -> Bytes` (ciphertext‖tag) and
+   `<cipher>_open(key, nonce, aad, ciphertext) -> ?Bytes` (`nil` on any
+   authentication failure). Caller-supplied because TLS builds its own per-record
+   nonce (static IV XOR sequence number); the random-nonce convenience for
+   cookies is a **wrapper** on top (phase D), not the primitive. Named per cipher
+   (matching the existing `sha1`/`sha256`/`hmac_sha256` style), AES variant
+   inferred from key length (16 → AES-128, 32 → AES-256). New builtin ids start
+   at 111 (after `net.connect` = 110); confirm against `wob.h` at implementation.
+4. **Raw key with a length check.** A raw key (16 or 32 bytes, from
+   `random_bytes`, carried as base64 in config — the `encryptcookie.GenerateKey`
+   shape), length-validated. A passphrase-plus-KDF is a separate ask.
+5. **Hand-rolled, no vendored library** — consistent with rv2 9's decision and
+   the SHA-256 precedent. AEAD, never a bare cipher: unauthenticated encryption
+   is a footgun that will not ship.
 
-## Forks the brainstorm must settle
+## Phases
 
-1. **Which cipher? This is the load-bearing fork.** AES-256-GCM is what browsers,
-   fiber and every peer expect — but constant-time AES in pure software (no
-   AES-NI intrinsics) is genuinely hard to get right. ChaCha20-Poly1305
-   (RFC 8439) is modern, is far easier to implement constant-time in portable C,
-   and is what a from-scratch no-dependency runtime should probably prefer — at
-   the cost of being less "expected." The runtime hand-rolls its crypto (the
-   SHA-256 precedent, no external dependency), which weighs toward ChaCha.
-2. **Nonce management.** A reused nonce is catastrophic for both GCM and ChaCha.
-   Caller-supplied nonces put that footgun in every app; a builtin-generated
-   random nonce (drawing on iteration 2's `random_bytes`, prepended to the
-   ciphertext, as fiber's `NewGCMWithRandomNonce` does) removes it. Leaning
-   builtin-generated — so this iteration is ordered after porch 2's builtin.
-3. **Key handling.** A raw 32-byte key (from `random_bytes`, carried as base64 in
-   config, the `encryptcookie.GenerateKey` shape) with a length check, versus a
-   passphrase-plus-KDF. Leaning raw key with validation; a KDF is its own ask.
-4. **Hand-roll versus vendor.** Doctrine is no external dependencies. A
-   hand-rolled ChaCha20-Poly1305 in C is bounded and well-specified; hand-rolled
-   AES-GCM is more error-prone. This fork is the practical face of fork 1.
+Easy cipher first, so a working AEAD exists before the hard constant-time AES
+work; TLS's ChaCha suite and the cookie consumer unblock at phase A.
+
+| Phase | Delivers |
+| --- | --- |
+| A — ChaCha20-Poly1305 | `chacha20poly1305_seal`/`open` (RFC 8439), the easy constant-time cipher; unblocks cookies and TLS's ChaCha suite |
+| B — AES-GCM via hardware | `aes_gcm_seal`/`open` on AES-NI + CLMUL (x86-64) / ARMv8 crypto ext — constant-time by hardware; TLS's mandatory suite |
+| C — AES-GCM software fallback | bitsliced constant-time AES + constant-time GHASH for CPUs without the extension; same builtins, dispatched at runtime |
+| D — the cookie wrapper | an `encryptcookie`-equivalent on porch [2](../porch/02-randomness-and-cookies.md)'s cookie machinery: random nonce (from `random_bytes`) prepended to the ciphertext, default ChaCha |
+| E — the gate | RFC 8439 + NIST GCM known-answer vectors, ASan/UBSan on both paths, and a reference cross-check (`openssl enc`/a scripted peer) |
+
+## Consumers
+
+- **runtime-v2 [9](09-in-process-tls.md), TLS phase A** — the record-layer AEAD;
+  needs AES-GCM (mandatory) and gets ChaCha too. This is why AES-GCM is in scope.
+- **porch encrypted cookies** — the original consumer (phase D), the
+  `encryptcookie`-equivalent porch [2](../porch/02-randomness-and-cookies.md)
+  scoped out.
+- **database field-at-rest** — a plausible third, unbuilt until a workload asks.
+
+## Dependencies
+
+- **porch [2](../porch/02-randomness-and-cookies.md)** — `random_bytes`, for the
+  cookie wrapper's random nonce (phase D only). The AEAD primitives themselves
+  are self-contained.
+- **AES-NI / ARMv8 crypto** — compiler intrinsics, not an external dependency.
 
 ## Out of scope
 
-- **Asymmetric crypto** (RSA, ECDH, signatures beyond HMAC). A different, much
-  larger surface with no current consumer.
+- **Asymmetric crypto** (RSA, ECDH, signatures). A different, much larger
+  surface — owned by rv2 [9](09-in-process-tls.md)'s TLS phases C/D, not here.
 - **Key rotation, a KMS, envelope encryption.** Operational key management is its
   own story if a consumer appears.
-- **TLS.** Proxy-terminated by doctrine; this cipher is for application payloads,
-  not the transport.
+- **A passphrase KDF** (fork 4) — raw keys only; a KDF is a separate ask.
+- **Nonce-misuse-resistant modes** (AES-GCM-SIV). The caller-supplied-nonce
+  contract stands; misuse resistance is a later slice if a consumer needs it.
 - **Compression before encryption** (the CRIME/BREACH interaction). A caller
   concern to document, not a primitive.
 
+> The earlier draft listed "TLS — proxy-terminated by doctrine" here. That
+> doctrine was **retired** by rv2 [9](09-in-process-tls.md); TLS is now a
+> first-class consumer of this cipher, which is what pulled AES-GCM into scope.
+
+## Risk and test strategy
+
+Encryption code is get-it-exactly-right code, and the risk is timing side
+channels and a reused nonce:
+
+- **Constant-time is mandatory** for every key/plaintext-dependent operation —
+  hardware AES/GHASH by construction, and the bitsliced fallback and ChaCha/
+  Poly1305 verified table-free and branch-free. The Poly1305/GHASH tag compare is
+  constant-time (`ct_eq`-style).
+- **Known-answer vectors gate every cipher**: RFC 8439 for ChaCha20-Poly1305,
+  the NIST GCM test vectors for AES-GCM, on both the hardware and software paths;
+  plus a reference cross-check and an ASan/UBSan leg.
+- **The reused-nonce hazard is documented loudly.** A key+nonce pair must never
+  repeat; the cookie wrapper (phase D) draws a fresh random nonce per seal, and
+  TLS owns its own per-record nonce discipline — the primitive trusts the caller
+  and says so.
+
 ## Info
 
-One named consumer today (encrypted cookies), with database-field-at-rest as a
-plausible second — enough to not be decoration, not so much as to over-build.
-Depends on iteration 2's `random_bytes` (for the nonce, fork 2) and extends
-iteration 34's crypto builtins. Pure compute — no actors, not exposed to the
-lang-41 hang.
+Two named consumers now — TLS (rv2 9 phase A, the reason AES-GCM is in) and porch
+encrypted cookies — with database-field-at-rest a plausible third. Pure compute,
+no actors, not exposed to the lang-41 hang. It is the **first rung of the TLS
+ladder**, so it gates rv2 9: nothing above TLS phase A can be built until this
+lands. Implementation order is A (ChaCha, unblocks the most for the least risk) →
+B (hardware AES-GCM) → C (software AES fallback) → D (cookie wrapper) → E (gate).
