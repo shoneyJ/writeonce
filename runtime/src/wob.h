@@ -558,9 +558,12 @@ enum {
      * failure or a too-short input). */
     WO_B_CHACHA20POLY1305_SEAL = 111, /* (key, nonce, aad, plaintext) -> Bytes */
     WO_B_CHACHA20POLY1305_OPEN = 112, /* (key, nonce, aad, ct||tag) -> ?Bytes */
+    /* rv2 8 phase B: AES-GCM (AES-128/256 by key length), AES-NI hardware. */
+    WO_B_AES_GCM_SEAL = 113,          /* (key, nonce, aad, plaintext) -> Bytes */
+    WO_B_AES_GCM_OPEN = 114,          /* (key, nonce, aad, ct||tag) -> ?Bytes */
 };
 
-#define WO_B_MAX 112u
+#define WO_B_MAX 114u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

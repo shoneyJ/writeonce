@@ -957,6 +957,8 @@ let builtin_signatures : (string * int * builtin_arg_req list) list =
        plaintext|ciphertext). seal -> Bytes; open -> ?Bytes (nil on auth fail). *)
     ("chacha20poly1305_seal", 4, [ ReqBytes; ReqBytes; ReqBytes; ReqBytes ]);
     ("chacha20poly1305_open", 4, [ ReqBytes; ReqBytes; ReqBytes; ReqBytes ]);
+    ("aes_gcm_seal", 4, [ ReqBytes; ReqBytes; ReqBytes; ReqBytes ]);
+    ("aes_gcm_open", 4, [ ReqBytes; ReqBytes; ReqBytes; ReqBytes ]);
   ]
 
 let rec unwrap_nullable (t : typ) : typ =
@@ -1165,6 +1167,8 @@ let builtin_confident_ret (name : string) (arg0 : typ option) : typ option =
   | "sha1" | "sha256" | "hmac_sha256" -> Some (TScalar "Bytes")
   | "chacha20poly1305_seal" -> Some (TScalar "Bytes")
   | "chacha20poly1305_open" -> Some (TNullable (TScalar "Bytes"))
+  | "aes_gcm_seal" -> Some (TScalar "Bytes")
+  | "aes_gcm_open" -> Some (TNullable (TScalar "Bytes"))
   (* malformed base64 is nil, not a trap: it arrives from the network *)
   | "base64_decode" -> Some (TNullable (TScalar "Bytes"))
   | _ -> None

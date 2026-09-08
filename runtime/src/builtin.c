@@ -175,7 +175,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         || (C >= WO_B_NET_READ_DL && C <= WO_B_NET_CONNECT))
         return wo_builtin_sys(vm, R, ins, msg);
     if ((C >= WO_B_SHA1 && C <= WO_B_HMAC_SHA256)
-        || (C >= WO_B_CHACHA20POLY1305_SEAL && C <= WO_B_CHACHA20POLY1305_OPEN))
+        || (C >= WO_B_CHACHA20POLY1305_SEAL && C <= WO_B_AES_GCM_OPEN))
         return wo_builtin_crypto(vm, R, ins, msg);
     if (C >= WO_B_DB_INSERT && C <= WO_B_DB_PROBE) {
         /* arc stage 3: the database is an actor on shard 0. A worker shard

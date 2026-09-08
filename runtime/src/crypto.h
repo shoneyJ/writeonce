@@ -26,6 +26,17 @@ int wo_chacha20poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
                              const uint8_t *ct, size_t ctlen,
                              const uint8_t tag[16], uint8_t *out);
 
+/* AES-GCM (rv2 8 phase B, hardware AES-NI/PCLMULQDQ path). keylen 16 or 32,
+ * nonce 12 bytes. seal writes out[ptlen] || tag[16]. Returns 0 ok, 1 auth
+ * failure (open), -2 when no hardware AES is available (phase C fallback). */
+int wo_aes_gcm_available(void);
+int wo_aes_gcm_seal(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
+                    const uint8_t *aad, size_t aadlen, const uint8_t *pt,
+                    size_t ptlen, uint8_t *out);
+int wo_aes_gcm_open(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
+                    const uint8_t *aad, size_t aadlen, const uint8_t *ct,
+                    size_t ctlen, const uint8_t tag[16], uint8_t *out);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif

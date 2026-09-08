@@ -393,6 +393,262 @@ int wo_chacha20poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
     return 0;
 }
 
+/* ---- AES-GCM via AES-NI + PCLMULQDQ (rv2 8 phase B, x86-64 hardware path) --
+ * Constant-time by hardware (no tables, no data-dependent branches). The
+ * functions carry target attributes so the binary still runs on CPUs without
+ * the extensions; aes_gcm_available() gates entry (the bitsliced software
+ * fallback is phase C). Refs: Intel AES-NI + carry-less-multiplication
+ * whitepapers, NIST SP 800-38D. Vectors: NIST/RFC in test/test_crypto.c. */
+#if defined(__x86_64__)
+#include <wmmintrin.h>
+#include <emmintrin.h>
+#include <tmmintrin.h>
+
+int wo_aes_gcm_available(void) {
+    return __builtin_cpu_supports("aes") && __builtin_cpu_supports("pclmul") &&
+           __builtin_cpu_supports("ssse3");
+}
+
+#define AES128_ASSIST(t1, t2)                                                  \
+    do {                                                                       \
+        __m128i _t3;                                                           \
+        t2 = _mm_shuffle_epi32(t2, 0xff);                                      \
+        _t3 = _mm_slli_si128(t1, 4); t1 = _mm_xor_si128(t1, _t3);              \
+        _t3 = _mm_slli_si128(_t3, 4); t1 = _mm_xor_si128(t1, _t3);             \
+        _t3 = _mm_slli_si128(_t3, 4); t1 = _mm_xor_si128(t1, _t3);             \
+        t1 = _mm_xor_si128(t1, t2);                                            \
+    } while (0)
+
+__attribute__((target("aes,sse2")))
+static void aes128_expand(const uint8_t *key, __m128i rk[11]) {
+    __m128i t1 = _mm_loadu_si128((const __m128i *)key), t2;
+    rk[0] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x01); AES128_ASSIST(t1, t2); rk[1] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x02); AES128_ASSIST(t1, t2); rk[2] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x04); AES128_ASSIST(t1, t2); rk[3] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x08); AES128_ASSIST(t1, t2); rk[4] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x10); AES128_ASSIST(t1, t2); rk[5] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x20); AES128_ASSIST(t1, t2); rk[6] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x40); AES128_ASSIST(t1, t2); rk[7] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x80); AES128_ASSIST(t1, t2); rk[8] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x1b); AES128_ASSIST(t1, t2); rk[9] = t1;
+    t2 = _mm_aeskeygenassist_si128(t1, 0x36); AES128_ASSIST(t1, t2); rk[10] = t1;
+}
+
+__attribute__((target("aes,sse2")))
+static void aes256_assist1(__m128i *t1, __m128i *t2) {
+    __m128i t4;
+    *t2 = _mm_shuffle_epi32(*t2, 0xff);
+    t4 = _mm_slli_si128(*t1, 4); *t1 = _mm_xor_si128(*t1, t4);
+    t4 = _mm_slli_si128(t4, 4); *t1 = _mm_xor_si128(*t1, t4);
+    t4 = _mm_slli_si128(t4, 4); *t1 = _mm_xor_si128(*t1, t4);
+    *t1 = _mm_xor_si128(*t1, *t2);
+}
+__attribute__((target("aes,sse2")))
+static void aes256_assist2(__m128i *t1, __m128i *t3) {
+    __m128i t2, t4;
+    t4 = _mm_aeskeygenassist_si128(*t1, 0x00);
+    t2 = _mm_shuffle_epi32(t4, 0xaa);
+    t4 = _mm_slli_si128(*t3, 4); *t3 = _mm_xor_si128(*t3, t4);
+    t4 = _mm_slli_si128(t4, 4); *t3 = _mm_xor_si128(*t3, t4);
+    t4 = _mm_slli_si128(t4, 4); *t3 = _mm_xor_si128(*t3, t4);
+    *t3 = _mm_xor_si128(*t3, t2);
+}
+/* rcon must be a compile-time immediate to aeskeygenassist, so the schedule
+ * is unrolled rather than looped over an rcon array. */
+#define AES256_STEP(RC)                                                        \
+    do {                                                                       \
+        t2 = _mm_aeskeygenassist_si128(t3, (RC));                              \
+        aes256_assist1(&t1, &t2); rk[k++] = t1;                                \
+        aes256_assist2(&t1, &t3); rk[k++] = t3;                                \
+    } while (0)
+
+__attribute__((target("aes,sse2")))
+static void aes256_expand(const uint8_t *key, __m128i rk[15]) {
+    __m128i t1 = _mm_loadu_si128((const __m128i *)key);
+    __m128i t3 = _mm_loadu_si128((const __m128i *)(key + 16));
+    __m128i t2;
+    int k = 2;
+    rk[0] = t1; rk[1] = t3;
+    AES256_STEP(0x01); AES256_STEP(0x02); AES256_STEP(0x04);
+    AES256_STEP(0x08); AES256_STEP(0x10); AES256_STEP(0x20);
+    t2 = _mm_aeskeygenassist_si128(t3, 0x40);
+    aes256_assist1(&t1, &t2); rk[k] = t1; /* rk[14] */
+}
+
+__attribute__((target("aes")))
+static __m128i aes_enc(const __m128i *rk, int nr, __m128i m) {
+    m = _mm_xor_si128(m, rk[0]);
+    for (int i = 1; i < nr; i++) m = _mm_aesenc_si128(m, rk[i]);
+    return _mm_aesenclast_si128(m, rk[nr]);
+}
+
+/* Carry-less multiply in GF(2^128) with the GCM reduction, operands in the
+ * byte-reversed domain (Intel CLMUL whitepaper gfmul + fast reduction). */
+__attribute__((target("pclmul,sse2")))
+static __m128i gfmul(__m128i a, __m128i b) {
+    __m128i t3, t4, t5, t6, t7, t8, t9, t2;
+    t3 = _mm_clmulepi64_si128(a, b, 0x00);
+    t4 = _mm_clmulepi64_si128(a, b, 0x10);
+    t5 = _mm_clmulepi64_si128(a, b, 0x01);
+    t6 = _mm_clmulepi64_si128(a, b, 0x11);
+    t4 = _mm_xor_si128(t4, t5);
+    t5 = _mm_slli_si128(t4, 8);
+    t4 = _mm_srli_si128(t4, 8);
+    t3 = _mm_xor_si128(t3, t5);
+    t6 = _mm_xor_si128(t6, t4);
+    t7 = _mm_srli_epi32(t3, 31);
+    t8 = _mm_srli_epi32(t6, 31);
+    t3 = _mm_slli_epi32(t3, 1);
+    t6 = _mm_slli_epi32(t6, 1);
+    t9 = _mm_srli_si128(t7, 12);
+    t8 = _mm_slli_si128(t8, 4);
+    t7 = _mm_slli_si128(t7, 4);
+    t3 = _mm_or_si128(t3, t7);
+    t6 = _mm_or_si128(t6, t8);
+    t6 = _mm_or_si128(t6, t9);
+    t7 = _mm_slli_epi32(t3, 31);
+    t8 = _mm_slli_epi32(t3, 30);
+    t9 = _mm_slli_epi32(t3, 25);
+    t7 = _mm_xor_si128(t7, t8);
+    t7 = _mm_xor_si128(t7, t9);
+    t8 = _mm_srli_si128(t7, 4);
+    t7 = _mm_slli_si128(t7, 12);
+    t3 = _mm_xor_si128(t3, t7);
+    t2 = _mm_srli_epi32(t3, 1);
+    t4 = _mm_srli_epi32(t3, 2);
+    t5 = _mm_srli_epi32(t3, 7);
+    t2 = _mm_xor_si128(t2, t4);
+    t2 = _mm_xor_si128(t2, t5);
+    t2 = _mm_xor_si128(t2, t8);
+    t3 = _mm_xor_si128(t3, t2);
+    t6 = _mm_xor_si128(t6, t3);
+    return t6;
+}
+
+/* GHASH `T = (T ^ block)·H` over full+partial 16-byte blocks (bswap domain). */
+__attribute__((target("pclmul,ssse3")))
+static __m128i ghash(__m128i T, __m128i H, const uint8_t *data, size_t len,
+                     __m128i bswap) {
+    size_t off = 0;
+    while (len - off >= 16) {
+        __m128i b = _mm_loadu_si128((const __m128i *)(data + off));
+        b = _mm_shuffle_epi8(b, bswap);
+        T = gfmul(_mm_xor_si128(T, b), H);
+        off += 16;
+    }
+    if (off < len) {
+        uint8_t last[16];
+        memset(last, 0, 16);
+        memcpy(last, data + off, len - off);
+        __m128i b = _mm_loadu_si128((const __m128i *)last);
+        b = _mm_shuffle_epi8(b, bswap);
+        T = gfmul(_mm_xor_si128(T, b), H);
+    }
+    return T;
+}
+
+/* GCM core (encrypt==1 seals, 0 opens). On open, `tag_in` is compared
+ * constant-time; returns 0 ok, 1 auth failure. On seal, writes tag_out. */
+__attribute__((target("aes,pclmul,ssse3")))
+static int aes_gcm_core(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
+                        const uint8_t *aad, size_t aadlen, const uint8_t *in,
+                        size_t inlen, uint8_t *out, uint8_t tag_out[16],
+                        const uint8_t *tag_in) {
+    __m128i rk[15];
+    int nr;
+    if (keylen == 16) { aes128_expand(key, rk); nr = 10; }
+    else { aes256_expand(key, rk); nr = 14; }
+    const __m128i bswap =
+        _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+
+    __m128i H = aes_enc(rk, nr, _mm_setzero_si128());
+    H = _mm_shuffle_epi8(H, bswap); /* reflect H once */
+
+    uint8_t j0[16];
+    memcpy(j0, nonce, 12);
+    j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
+    __m128i ej0 = aes_enc(rk, nr, _mm_loadu_si128((const __m128i *)j0));
+
+    /* GHASH over aad || pad || ciphertext || pad || len-block.
+     * On seal the ciphertext is what we produce; on open it is the input. */
+    __m128i T = _mm_setzero_si128();
+    T = ghash(T, H, aad, aadlen, bswap);
+    if (!tag_in) {
+        /* seal: CTR-encrypt from counter 2, then GHASH the produced ct */
+    }
+
+    /* CTR: counter starts at 2 (inc32(J0)); build blocks from nonce||BE32 */
+    uint32_t ctr = 2;
+    size_t off = 0;
+    /* For open, GHASH the input ciphertext first (before we overwrite via out) */
+    if (tag_in) T = ghash(T, H, in, inlen, bswap);
+    while (off < inlen) {
+        uint8_t cb[16];
+        memcpy(cb, nonce, 12);
+        cb[12] = (uint8_t)(ctr >> 24); cb[13] = (uint8_t)(ctr >> 16);
+        cb[14] = (uint8_t)(ctr >> 8); cb[15] = (uint8_t)ctr;
+        __m128i ks = aes_enc(rk, nr, _mm_loadu_si128((const __m128i *)cb));
+        uint8_t ksb[16];
+        _mm_storeu_si128((__m128i *)ksb, ks);
+        size_t n = inlen - off < 16 ? inlen - off : 16;
+        for (size_t i = 0; i < n; i++) out[off + i] = in[off + i] ^ ksb[i];
+        off += n; ctr++;
+    }
+    if (!tag_in) T = ghash(T, H, out, inlen, bswap); /* seal: GHASH the ct */
+
+    uint8_t lb[16];
+    uint64_t aBits = (uint64_t)aadlen * 8, cBits = (uint64_t)inlen * 8;
+    for (int i = 0; i < 8; i++) lb[i] = (uint8_t)(aBits >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) lb[8 + i] = (uint8_t)(cBits >> (56 - 8 * i));
+    T = ghash(T, H, lb, 16, bswap);
+
+    T = _mm_shuffle_epi8(T, bswap); /* back to big-endian bytes */
+    __m128i tagv = _mm_xor_si128(T, ej0);
+    uint8_t tag[16];
+    _mm_storeu_si128((__m128i *)tag, tagv);
+
+    if (tag_in) {
+        uint8_t d = 0;
+        for (int i = 0; i < 16; i++) d |= (uint8_t)(tag[i] ^ tag_in[i]);
+        return d == 0 ? 0 : 1;
+    }
+    memcpy(tag_out, tag, 16);
+    return 0;
+}
+#else
+int wo_aes_gcm_available(void) { return 0; }
+#endif
+
+/* Public seal/open. keylen 16 (AES-128) or 32 (AES-256), nonce 12 bytes.
+ * Returns 0 ok, 1 auth failure (open), -2 when no hardware AES is available. */
+int wo_aes_gcm_seal(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
+                    const uint8_t *aad, size_t aadlen, const uint8_t *pt,
+                    size_t ptlen, uint8_t *out) {
+#if defined(__x86_64__)
+    if (!wo_aes_gcm_available()) return -2;
+    return aes_gcm_core(key, keylen, nonce, aad, aadlen, pt, ptlen, out,
+                        out + ptlen, NULL);
+#else
+    (void)key; (void)keylen; (void)nonce; (void)aad; (void)aadlen;
+    (void)pt; (void)ptlen; (void)out;
+    return -2;
+#endif
+}
+int wo_aes_gcm_open(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
+                    const uint8_t *aad, size_t aadlen, const uint8_t *ct,
+                    size_t ctlen, const uint8_t tag[16], uint8_t *out) {
+#if defined(__x86_64__)
+    if (!wo_aes_gcm_available()) return -2;
+    return aes_gcm_core(key, keylen, nonce, aad, aadlen, ct, ctlen, out, NULL,
+                        tag);
+#else
+    (void)key; (void)keylen; (void)nonce; (void)aad; (void)aadlen; (void)ct;
+    (void)ctlen; (void)tag; (void)out;
+    return -2;
+#endif
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {
@@ -479,6 +735,64 @@ int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             (const uint8_t *)ctag->data, bodylen,
             (const uint8_t *)ctag->data + bodylen, buf);
         if (rc == -1) { free(buf); *msg = "out of memory"; return WO_T_OOM; }
+        if (rc != 0) { free(buf); R[A] = 0; return 0; } /* auth failure -> nil */
+        wo_str *o = wo_bytes_new(rt, (const char *)buf, bodylen);
+        free(buf);
+        if (!o) { *msg = "out of memory"; return WO_T_OOM; }
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_AES_GCM_SEAL: {
+        const wo_str *k = arg_bytes(R[B], msg);
+        const wo_str *n = k ? arg_bytes(R[B + 1], msg) : NULL;
+        const wo_str *a = n ? arg_bytes(R[B + 2], msg) : NULL;
+        const wo_str *p = a ? arg_bytes(R[B + 3], msg) : NULL;
+        if (!p) return WO_T_BOUNDS;
+        if ((k->len != 16 && k->len != 32) || n->len != 12) {
+            *msg = "aes_gcm: key must be 16 or 32 bytes, nonce 12";
+            return WO_T_BOUNDS;
+        }
+        uint8_t *buf = (uint8_t *)malloc(p->len + 16u);
+        if (!buf) { *msg = "out of memory"; return WO_T_OOM; }
+        int rc = wo_aes_gcm_seal((const uint8_t *)k->data, k->len,
+                                 (const uint8_t *)n->data,
+                                 (const uint8_t *)a->data, a->len,
+                                 (const uint8_t *)p->data, p->len, buf);
+        if (rc == -2) {
+            free(buf);
+            *msg = "aes_gcm requires hardware AES (AES-NI); software fallback is rv2 8 phase C";
+            return WO_T_BOUNDS;
+        }
+        wo_str *o = wo_bytes_new(rt, (const char *)buf, (uint32_t)(p->len + 16u));
+        free(buf);
+        if (!o) { *msg = "out of memory"; return WO_T_OOM; }
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_AES_GCM_OPEN: {
+        const wo_str *k = arg_bytes(R[B], msg);
+        const wo_str *n = k ? arg_bytes(R[B + 1], msg) : NULL;
+        const wo_str *a = n ? arg_bytes(R[B + 2], msg) : NULL;
+        const wo_str *ctag = a ? arg_bytes(R[B + 3], msg) : NULL;
+        if (!ctag) return WO_T_BOUNDS;
+        if ((k->len != 16 && k->len != 32) || n->len != 12) {
+            *msg = "aes_gcm: key must be 16 or 32 bytes, nonce 12";
+            return WO_T_BOUNDS;
+        }
+        if (ctag->len < 16) { R[A] = 0; return 0; }
+        uint32_t bodylen = ctag->len - 16u;
+        uint8_t *buf = (uint8_t *)malloc(bodylen ? bodylen : 1u);
+        if (!buf) { *msg = "out of memory"; return WO_T_OOM; }
+        int rc = wo_aes_gcm_open((const uint8_t *)k->data, k->len,
+                                 (const uint8_t *)n->data,
+                                 (const uint8_t *)a->data, a->len,
+                                 (const uint8_t *)ctag->data, bodylen,
+                                 (const uint8_t *)ctag->data + bodylen, buf);
+        if (rc == -2) {
+            free(buf);
+            *msg = "aes_gcm requires hardware AES (AES-NI); software fallback is rv2 8 phase C";
+            return WO_T_BOUNDS;
+        }
         if (rc != 0) { free(buf); R[A] = 0; return 0; } /* auth failure -> nil */
         wo_str *o = wo_bytes_new(rt, (const char *)buf, bodylen);
         free(buf);

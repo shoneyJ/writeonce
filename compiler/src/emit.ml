@@ -297,6 +297,8 @@ let b_hmac_sha256 = 87
 (* runtime-v2 8 phase A: ChaCha20-Poly1305 AEAD (ids match wob.h 111/112) *)
 let b_chacha20poly1305_seal = 111
 let b_chacha20poly1305_open = 112
+let b_aes_gcm_seal = 113
+let b_aes_gcm_open = 114
 let b_call = 88
 let b_monitor = 89
 let b_split = 28
@@ -1104,6 +1106,8 @@ let builtin_ret (name : string) (argty : Ast.field_ty option) : Ast.field_ty opt
   | "sha1" | "sha256" | "hmac_sha256" -> Some (Scalar "Bytes")
   | "chacha20poly1305_seal" -> Some (Scalar "Bytes")
   | "chacha20poly1305_open" -> Some (Nullable (Scalar "Bytes"))
+  | "aes_gcm_seal" -> Some (Scalar "Bytes")
+  | "aes_gcm_open" -> Some (Nullable (Scalar "Bytes"))
   | "base64_decode" -> Some (Nullable (Scalar "Bytes"))
   | _ -> None
 
@@ -1124,7 +1128,8 @@ let is_builtin_name (n : string) =
       (* iteration 34: digests *)
       "sha1"; "sha256"; "hmac_sha256";
       (* runtime-v2 8 phase A: AEAD *)
-      "chacha20poly1305_seal"; "chacha20poly1305_open" ]
+      "chacha20poly1305_seal"; "chacha20poly1305_open";
+      "aes_gcm_seal"; "aes_gcm_open" ]
 
 (* ---- unions and variants (haxe-parity Task 4) ------------------------
 
@@ -3703,7 +3708,8 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
       (* iteration 24, two arguments *)
       || id = b_call
     then 2
-    else if id = b_chacha20poly1305_seal || id = b_chacha20poly1305_open then 4
+    else if id = b_chacha20poly1305_seal || id = b_chacha20poly1305_open
+            || id = b_aes_gcm_seal || id = b_aes_gcm_open then 4
       (* rv2 8: (key, nonce, aad, plaintext|ciphertext) *)
     else 3 (* b_bytes_slice lands here with substr's shape: (value, start, len) *)
   in
@@ -3826,6 +3832,8 @@ and emit_builtin (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e :
   | "hmac_sha256" -> fixed b_hmac_sha256
   | "chacha20poly1305_seal" -> fixed b_chacha20poly1305_seal
   | "chacha20poly1305_open" -> fixed b_chacha20poly1305_open
+  | "aes_gcm_seal" -> fixed b_aes_gcm_seal
+  | "aes_gcm_open" -> fixed b_aes_gcm_open
   | "multi_new" | "map_new" ->
     let is_map = name = "map_new" in
     if args <> [] then bad (Printf.sprintf "builtin `%s` takes no arguments" name)

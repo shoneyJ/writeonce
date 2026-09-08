@@ -52,6 +52,37 @@ static void t_poly1305(const uint8_t key[32], const char *msg, size_t mlen,
     T_CHECK(strcmp(got, want) == 0);
 }
 
+static size_t unhex(const char *h, uint8_t *out) {
+    size_t n = strlen(h) / 2;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v;
+        sscanf(h + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+    return n;
+}
+
+/* NIST SP 800-38D GCM test vector: seal matches ct||tag, open round-trips,
+ * a flipped tag is rejected. `cth` is the expected ciphertext concatenated
+ * with the 16-byte tag. */
+static void t_aesgcm(const char *kh, const char *ih, const char *ah,
+                     const char *ph, const char *cth) {
+    uint8_t key[32], iv[12], aad[64], pt[256], expect[272], out[272], back[256];
+    size_t klen = unhex(kh, key), alen = unhex(ah, aad);
+    unhex(ih, iv);
+    size_t plen = unhex(ph, pt), elen = unhex(cth, expect);
+    T_CHECK(elen == plen + 16);
+    T_CHECK(wo_aes_gcm_seal(key, klen, iv, aad, alen, pt, plen, out) == 0);
+    T_CHECK(memcmp(out, expect, plen + 16) == 0);
+    T_CHECK(wo_aes_gcm_open(key, klen, iv, aad, alen, out, plen, out + plen,
+                            back) == 0);
+    T_CHECK(memcmp(back, pt, plen) == 0);
+    uint8_t bad[16];
+    memcpy(bad, out + plen, 16);
+    bad[0] ^= 0x01;
+    T_CHECK(wo_aes_gcm_open(key, klen, iv, aad, alen, out, plen, bad, back) == 1);
+}
+
 int main(void) {
     /* RFC 3174 */
     t_sha1("abc", 3, "a9993e364706816aba3e25717850c26c9cd0d89d");
@@ -172,6 +203,30 @@ int main(void) {
         rc = wo_chacha20poly1305_open(key, nonce, aad, 12, out, ptlen,
                                       tampered, back);
         T_CHECK(rc == 1);
+    }
+
+    /* AES-GCM (rv2 8 phase B) — NIST SP 800-38D test vectors, when hardware
+     * AES is present (the bitsliced software fallback is phase C). */
+    if (wo_aes_gcm_available()) {
+        /* AES-128 GCM test case 4 */
+        t_aesgcm("feffe9928665731c6d6a8f9467308308",
+                 "cafebabefacedbaddecaf888",
+                 "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+                 "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721"
+                 "c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+                 "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e2"
+                 "1d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091"
+                 "5bc94fbc3221a5db94fae95ae7121a47");
+        /* AES-256 GCM test case 16 */
+        t_aesgcm("feffe9928665731c6d6a8f9467308308"
+                 "feffe9928665731c6d6a8f9467308308",
+                 "cafebabefacedbaddecaf888",
+                 "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+                 "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721"
+                 "c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+                 "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8"
+                 "cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662"
+                 "76fc6ece0f4e1768cddf8853bb2d551b");
     }
 
     return t_report("test_crypto");
