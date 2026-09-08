@@ -620,33 +620,219 @@ static int aes_gcm_core(const uint8_t *key, size_t keylen, const uint8_t nonce[1
 int wo_aes_gcm_available(void) { return 0; }
 #endif
 
+/* ---- Portable constant-time AES-GCM (rv2 8 phase C software fallback) ------
+ * No intrinsics, no lookup tables: the S-box is the GF(2^8) inverse via a
+ * fixed-exponent power ladder (constant-time in the input), GHASH is the
+ * bit-by-bit GF(2^128) multiply (constant-time, mask-driven). Slower than the
+ * AES-NI path; its job is portability and side-channel safety, not speed. The
+ * ARMv8 crypto-extension hardware path is deferred (untestable on the x86-64
+ * dev host). */
+
+int wo_aes_force_software = 0; /* test hook: force the software path */
+
+static uint8_t gf8_mul(uint8_t a, uint8_t b) {
+    uint8_t p = 0;
+    for (int i = 0; i < 8; i++) {
+        p ^= (uint8_t)(-(b & 1)) & a;
+        uint8_t hi = (uint8_t)(-((a >> 7) & 1));
+        a = (uint8_t)((a << 1)) ^ (uint8_t)(hi & 0x1b);
+        b = (uint8_t)(b >> 1);
+    }
+    return p;
+}
+
+static uint8_t aes_sbox_ct(uint8_t x) {
+    /* inverse = x^254 in GF(2^8); the exponent is a compile-time constant so
+     * the ladder is a fixed op sequence — constant-time in x. inv(0) = 0. */
+    uint8_t base = x, inv = 1;
+    for (int i = 0; i < 8; i++) {
+        if ((254u >> i) & 1u) inv = gf8_mul(inv, base);
+        base = gf8_mul(base, base);
+    }
+    /* affine: out_i = inv_i ^ inv_{i+4} ^ inv_{i+5} ^ inv_{i+6} ^ inv_{i+7}, ^0x63 */
+    uint8_t s = 0;
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (uint8_t)(((inv >> i) ^ (inv >> ((i + 4) & 7)) ^
+                                 (inv >> ((i + 5) & 7)) ^ (inv >> ((i + 6) & 7)) ^
+                                 (inv >> ((i + 7) & 7))) & 1u);
+        s |= (uint8_t)(bit << i);
+    }
+    return (uint8_t)(s ^ 0x63);
+}
+
+static uint32_t subword(uint32_t w) {
+    return ((uint32_t)aes_sbox_ct(w >> 24) << 24) |
+           ((uint32_t)aes_sbox_ct((w >> 16) & 0xff) << 16) |
+           ((uint32_t)aes_sbox_ct((w >> 8) & 0xff) << 8) |
+           (uint32_t)aes_sbox_ct(w & 0xff);
+}
+
+static void aes_expand_sw(const uint8_t *key, size_t keylen, uint8_t *rk,
+                          int *nr_out) {
+    int nk = (int)(keylen / 4);   /* 4 (AES-128) or 8 (AES-256) */
+    int nr = nk + 6;              /* 10 or 14 */
+    int total = 4 * (nr + 1);
+    uint32_t w[60];
+    for (int i = 0; i < nk; i++)
+        w[i] = ((uint32_t)key[4 * i] << 24) | ((uint32_t)key[4 * i + 1] << 16) |
+               ((uint32_t)key[4 * i + 2] << 8) | (uint32_t)key[4 * i + 3];
+    uint8_t rcon = 1;
+    for (int i = nk; i < total; i++) {
+        uint32_t t = w[i - 1];
+        if (i % nk == 0) {
+            t = (t << 8) | (t >> 24);                /* RotWord */
+            t = subword(t);                          /* SubWord */
+            t ^= (uint32_t)rcon << 24;
+            rcon = gf8_mul(rcon, 2);
+        } else if (nk > 6 && i % nk == 4) {
+            t = subword(t);
+        }
+        w[i] = w[i - nk] ^ t;
+    }
+    for (int i = 0; i < total; i++) {
+        rk[4 * i] = (uint8_t)(w[i] >> 24);
+        rk[4 * i + 1] = (uint8_t)(w[i] >> 16);
+        rk[4 * i + 2] = (uint8_t)(w[i] >> 8);
+        rk[4 * i + 3] = (uint8_t)w[i];
+    }
+    *nr_out = nr;
+}
+
+static void aes_block_sw(const uint8_t *rk, int nr, const uint8_t in[16],
+                         uint8_t out[16]) {
+    uint8_t s[16];
+    memcpy(s, in, 16);
+    for (int i = 0; i < 16; i++) s[i] ^= rk[i];
+    for (int round = 1; round <= nr; round++) {
+        for (int i = 0; i < 16; i++) s[i] = aes_sbox_ct(s[i]);
+        uint8_t t[16]; /* ShiftRows: state is column-major, byte = row + 4*col */
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++) t[r + 4 * c] = s[r + 4 * ((c + r) & 3)];
+        memcpy(s, t, 16);
+        if (round != nr) {
+            for (int c = 0; c < 4; c++) {
+                uint8_t *col = s + 4 * c;
+                uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
+                col[0] = gf8_mul(a0, 2) ^ gf8_mul(a1, 3) ^ a2 ^ a3;
+                col[1] = a0 ^ gf8_mul(a1, 2) ^ gf8_mul(a2, 3) ^ a3;
+                col[2] = a0 ^ a1 ^ gf8_mul(a2, 2) ^ gf8_mul(a3, 3);
+                col[3] = gf8_mul(a0, 3) ^ a1 ^ a2 ^ gf8_mul(a3, 2);
+            }
+        }
+        for (int i = 0; i < 16; i++) s[i] ^= rk[16 * round + i];
+    }
+    memcpy(out, s, 16);
+}
+
+/* GF(2^128) multiply, GCM bit order, constant-time (mask-driven, no tables). */
+static void gf128_mul(const uint8_t X[16], const uint8_t Y[16], uint8_t out[16]) {
+    uint8_t Z[16] = { 0 }, V[16];
+    memcpy(V, Y, 16);
+    for (int i = 0; i < 128; i++) {
+        uint8_t bit = (uint8_t)((X[i >> 3] >> (7 - (i & 7))) & 1);
+        uint8_t m = (uint8_t)(-bit);
+        for (int j = 0; j < 16; j++) Z[j] ^= (uint8_t)(V[j] & m);
+        uint8_t lsb = (uint8_t)(V[15] & 1);
+        for (int j = 15; j > 0; j--)
+            V[j] = (uint8_t)((V[j] >> 1) | (V[j - 1] << 7));
+        V[0] = (uint8_t)(V[0] >> 1);
+        V[0] ^= (uint8_t)(0xe1 & (uint8_t)(-lsb));
+    }
+    memcpy(out, Z, 16);
+}
+
+static void ghash_sw(const uint8_t H[16], const uint8_t *data, size_t len,
+                     uint8_t T[16]) {
+    size_t off = 0;
+    while (off < len) {
+        uint8_t blk[16];
+        size_t n = len - off < 16 ? len - off : 16;
+        memset(blk, 0, 16);
+        memcpy(blk, data + off, n);
+        for (int j = 0; j < 16; j++) T[j] ^= blk[j];
+        uint8_t tmp[16];
+        gf128_mul(T, H, tmp);
+        memcpy(T, tmp, 16);
+        off += n;
+    }
+}
+
+static int aes_gcm_core_sw(const uint8_t *key, size_t keylen,
+                           const uint8_t nonce[12], const uint8_t *aad,
+                           size_t aadlen, const uint8_t *in, size_t inlen,
+                           uint8_t *out, uint8_t tag_out[16],
+                           const uint8_t *tag_in) {
+    uint8_t rk[15 * 16];
+    int nr;
+    aes_expand_sw(key, keylen, rk, &nr);
+    uint8_t H[16] = { 0 };
+    aes_block_sw(rk, nr, H, H); /* H = AES(0) */
+    uint8_t j0[16];
+    memcpy(j0, nonce, 12);
+    j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
+    uint8_t ej0[16];
+    aes_block_sw(rk, nr, j0, ej0);
+
+    uint8_t T[16] = { 0 };
+    ghash_sw(H, aad, aadlen, T);
+    if (tag_in) ghash_sw(H, in, inlen, T); /* open: GHASH ciphertext first */
+
+    uint32_t ctr = 2;
+    size_t off = 0;
+    while (off < inlen) {
+        uint8_t cb[16];
+        memcpy(cb, nonce, 12);
+        cb[12] = (uint8_t)(ctr >> 24); cb[13] = (uint8_t)(ctr >> 16);
+        cb[14] = (uint8_t)(ctr >> 8); cb[15] = (uint8_t)ctr;
+        uint8_t ks[16];
+        aes_block_sw(rk, nr, cb, ks);
+        size_t n = inlen - off < 16 ? inlen - off : 16;
+        for (size_t i = 0; i < n; i++) out[off + i] = in[off + i] ^ ks[i];
+        off += n; ctr++;
+    }
+    if (!tag_in) ghash_sw(H, out, inlen, T); /* seal: GHASH produced ciphertext */
+
+    uint8_t lb[16];
+    uint64_t aB = (uint64_t)aadlen * 8, cB = (uint64_t)inlen * 8;
+    for (int i = 0; i < 8; i++) lb[i] = (uint8_t)(aB >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) lb[8 + i] = (uint8_t)(cB >> (56 - 8 * i));
+    ghash_sw(H, lb, 16, T);
+
+    uint8_t tag[16];
+    for (int i = 0; i < 16; i++) tag[i] = (uint8_t)(T[i] ^ ej0[i]);
+    if (tag_in) {
+        uint8_t d = 0;
+        for (int i = 0; i < 16; i++) d |= (uint8_t)(tag[i] ^ tag_in[i]);
+        return d == 0 ? 0 : 1;
+    }
+    memcpy(tag_out, tag, 16);
+    return 0;
+}
+
 /* Public seal/open. keylen 16 (AES-128) or 32 (AES-256), nonce 12 bytes.
- * Returns 0 ok, 1 auth failure (open), -2 when no hardware AES is available. */
+ * Dispatches to the AES-NI path when available (and not forced software),
+ * else the portable constant-time fallback. Returns 0 ok, 1 auth failure. */
 int wo_aes_gcm_seal(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
                     const uint8_t *aad, size_t aadlen, const uint8_t *pt,
                     size_t ptlen, uint8_t *out) {
 #if defined(__x86_64__)
-    if (!wo_aes_gcm_available()) return -2;
-    return aes_gcm_core(key, keylen, nonce, aad, aadlen, pt, ptlen, out,
-                        out + ptlen, NULL);
-#else
-    (void)key; (void)keylen; (void)nonce; (void)aad; (void)aadlen;
-    (void)pt; (void)ptlen; (void)out;
-    return -2;
+    if (wo_aes_gcm_available() && !wo_aes_force_software)
+        return aes_gcm_core(key, keylen, nonce, aad, aadlen, pt, ptlen, out,
+                            out + ptlen, NULL);
 #endif
+    return aes_gcm_core_sw(key, keylen, nonce, aad, aadlen, pt, ptlen, out,
+                           out + ptlen, NULL);
 }
 int wo_aes_gcm_open(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
                     const uint8_t *aad, size_t aadlen, const uint8_t *ct,
                     size_t ctlen, const uint8_t tag[16], uint8_t *out) {
 #if defined(__x86_64__)
-    if (!wo_aes_gcm_available()) return -2;
-    return aes_gcm_core(key, keylen, nonce, aad, aadlen, ct, ctlen, out, NULL,
-                        tag);
-#else
-    (void)key; (void)keylen; (void)nonce; (void)aad; (void)aadlen; (void)ct;
-    (void)ctlen; (void)tag; (void)out;
-    return -2;
+    if (wo_aes_gcm_available() && !wo_aes_force_software)
+        return aes_gcm_core(key, keylen, nonce, aad, aadlen, ct, ctlen, out,
+                            NULL, tag);
 #endif
+    return aes_gcm_core_sw(key, keylen, nonce, aad, aadlen, ct, ctlen, out, NULL,
+                           tag);
 }
 
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps

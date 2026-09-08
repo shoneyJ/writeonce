@@ -30,6 +30,7 @@ int wo_chacha20poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
  * nonce 12 bytes. seal writes out[ptlen] || tag[16]. Returns 0 ok, 1 auth
  * failure (open), -2 when no hardware AES is available (phase C fallback). */
 int wo_aes_gcm_available(void);
+extern int wo_aes_force_software; /* test hook: force the portable AES path */
 int wo_aes_gcm_seal(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
                     const uint8_t *aad, size_t aadlen, const uint8_t *pt,
                     size_t ptlen, uint8_t *out);
