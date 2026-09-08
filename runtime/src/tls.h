@@ -109,4 +109,68 @@ int wo_tls_build_client_hello(const char *hostname, size_t hostlen,
                               const uint8_t session_id[32], uint8_t *out,
                               size_t outcap, size_t *outlen);
 
+/* ---- sans-io client handshake driver (phase F3c) -------------------------
+ * A pure state machine: no sockets. The caller frames TLS records (read the
+ * 5-byte header, then that many bytes) and feeds whole records in; the driver
+ * advances the handshake and hands back bytes to send. This keeps every I/O
+ * concern out of the security-critical FSM, so it is fully testable offline
+ * (KAT'd against the RFC 8448 record trace).
+ *
+ * SECURITY NOTE — not yet a safe live client: this core verifies the server's
+ * CertificateVerify and Finished (proving possession of the leaf key) but does
+ * NOT yet walk the certificate chain to a trust anchor or match the hostname
+ * against the cert SAN. Those (the deferred phase-E bits) MUST land before this
+ * drives a real connection, or the client is open to MITM. It is currently an
+ * internal building block; net.connect_tls is not wired to it. */
+
+#define WO_TLS_BUF_MAX 16384u     /* transcript / reassembly cap (RFC 8448 fits) */
+#define WO_TLS_LEAF_MAX 8192u     /* largest leaf certificate accepted */
+
+typedef enum {
+    WO_TLS_WANT_MORE = 0,         /* need another record */
+    WO_TLS_ESTABLISHED = 1,       /* handshake done; output holds client Finished */
+    WO_TLS_FAILED = -1,           /* verification/parse failure — connection dead */
+} wo_tls_status;
+
+typedef struct {
+    int suite;
+    size_t keylen;                            /* AEAD key length, 16 or 32 */
+    uint8_t client_priv[32], client_pub[32];
+    wo_tls_key_schedule ks;
+    /* current read/write record protection (handshake, then application) */
+    uint8_t rd_key[32], rd_iv[12], wr_key[32], wr_iv[12];
+    uint64_t rd_seq, wr_seq;
+    uint8_t transcript[WO_TLS_BUF_MAX]; size_t tlen;
+    uint8_t hsbuf[WO_TLS_BUF_MAX]; size_t hsn;   /* reassembled handshake bytes */
+    uint8_t leaf[WO_TLS_LEAF_MAX]; size_t leaflen;
+    uint16_t cv_scheme;
+    uint8_t out[1024]; size_t outn;              /* bytes for the caller to send */
+    int st;                                      /* internal FSM state */
+} wo_tls_client;
+
+/* Start a handshake from a caller-built ClientHello handshake message and a
+ * fixed X25519 private key (production passes fresh randomness; the KAT injects
+ * the RFC's). Frames the ClientHello into a plaintext record in c->out for the
+ * caller to send, and seeds the transcript. 0 ok, -1 on a buffer problem. */
+int wo_tls_client_start_with(wo_tls_client *c, const uint8_t *ch_msg,
+                             size_t ch_len, const uint8_t priv[32]);
+
+/* Feed one whole TLS record. Advances the FSM. Returns WANT_MORE (need the
+ * next record), ESTABLISHED (handshake complete — drain c->out for the client
+ * Finished, then use the encrypt/decrypt calls), or FAILED. */
+wo_tls_status wo_tls_client_push_record(wo_tls_client *c, const uint8_t *rec,
+                                        size_t reclen);
+
+/* Copy out (and clear) the bytes the driver wants sent. Returns the count. */
+size_t wo_tls_client_take_output(wo_tls_client *c, uint8_t *out, size_t outcap);
+
+/* Application data, post-handshake (application traffic keys). encrypt writes a
+ * full record into out; decrypt reads one record and yields the plaintext plus
+ * its inner content type. Return the byte count, or -1 on overflow / auth
+ * failure. */
+int wo_tls_client_encrypt(wo_tls_client *c, const uint8_t *data, size_t len,
+                          uint8_t *out, size_t outcap);
+int wo_tls_client_decrypt(wo_tls_client *c, const uint8_t *rec, size_t reclen,
+                          uint8_t *out, size_t outcap, uint8_t *content_type);
+
 #endif

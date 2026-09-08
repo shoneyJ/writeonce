@@ -401,3 +401,204 @@ int wo_tls_build_client_hello(const char *hostname, size_t hostlen,
     *outlen = w.n;
     return 0;
 }
+
+/* ---- sans-io client handshake driver (phase F3c) -------------------------
+ * The FSM described in tls.h. The caller frames records; this drives the
+ * handshake and produces the client Finished. Every failure path lands in
+ * ST_FAILED and returns WO_TLS_FAILED — there is no "warn and continue". */
+
+enum { ST_WANT_SH = 0, ST_WANT_FLIGHT, ST_ESTABLISHED, ST_FAILED };
+
+/* Constant-time 32-byte compare (verify_data). 1 equal, 0 not. */
+static int ct_eq32(const uint8_t *a, const uint8_t *b) {
+    uint8_t d = 0;
+    for (int i = 0; i < 32; i++) d |= a[i] ^ b[i];
+    return d == 0;
+}
+
+/* Append to the transcript; 0 ok, -1 overflow. */
+static int tr_add(wo_tls_client *c, const uint8_t *p, size_t n) {
+    if (c->tlen + n > sizeof c->transcript) return -1;
+    memcpy(c->transcript + c->tlen, p, n); c->tlen += n;
+    return 0;
+}
+
+int wo_tls_client_start_with(wo_tls_client *c, const uint8_t *ch_msg,
+                             size_t ch_len, const uint8_t priv[32]) {
+    memset(c, 0, sizeof *c);
+    memcpy(c->client_priv, priv, 32);
+    /* client_pub = X25519(priv, basepoint 9) — informational here. */
+    uint8_t base[32] = { 9 };
+    wo_x25519(c->client_pub, priv, base);
+
+    if (tr_add(c, ch_msg, ch_len) != 0) { c->st = ST_FAILED; return -1; }
+    /* frame the ClientHello as a plaintext handshake record (legacy 0x0301). */
+    if (5 + ch_len > sizeof c->out) { c->st = ST_FAILED; return -1; }
+    c->out[0] = WO_TLS_CT_HANDSHAKE;
+    c->out[1] = 0x03; c->out[2] = 0x01;
+    c->out[3] = (uint8_t)(ch_len >> 8); c->out[4] = (uint8_t)ch_len;
+    memcpy(c->out + 5, ch_msg, ch_len);
+    c->outn = 5 + ch_len;
+    c->st = ST_WANT_SH;
+    return 0;
+}
+
+size_t wo_tls_client_take_output(wo_tls_client *c, uint8_t *out, size_t outcap) {
+    size_t n = c->outn < outcap ? c->outn : 0;   /* all-or-nothing */
+    if (n) { memcpy(out, c->out, n); c->outn = 0; }
+    return n;
+}
+
+/* Process the ServerHello record. */
+static wo_tls_status on_server_hello(wo_tls_client *c, const uint8_t *rec,
+                                     size_t reclen) {
+    size_t bodylen = ((size_t)rec[3] << 8) | rec[4];
+    if (bodylen + 5 != reclen) return WO_TLS_FAILED;
+    const uint8_t *sh = rec + 5;
+    uint8_t server_pub[32];
+    if (wo_tls_parse_server_hello(sh, bodylen, &c->suite, server_pub) != 0)
+        return WO_TLS_FAILED;
+    c->keylen = c->suite == WO_TLS_AES_128_GCM_SHA256 ? 16 : 32;
+    if (tr_add(c, sh, bodylen) != 0) return WO_TLS_FAILED;
+
+    uint8_t ecdhe[32], th[32];
+    wo_x25519(ecdhe, c->client_priv, server_pub);
+    wo_sha256(c->transcript, c->tlen, th);            /* CH..SH */
+    wo_tls_derive_handshake(&c->ks, ecdhe, 32, th);
+    /* read = server handshake keys, write = client handshake keys */
+    wo_tls_traffic_keys(c->ks.server_hs_traffic, c->keylen, c->rd_key, c->rd_iv);
+    wo_tls_traffic_keys(c->ks.client_hs_traffic, c->keylen, c->wr_key, c->wr_iv);
+    c->rd_seq = c->wr_seq = 0;
+    c->st = ST_WANT_FLIGHT;
+    return WO_TLS_WANT_MORE;
+}
+
+/* Handle one decrypted handshake message from the server flight. Returns 1 if
+ * this message completed the handshake (server Finished), 0 to continue, -1 on
+ * failure. */
+static int on_flight_msg(wo_tls_client *c, const uint8_t *msg, size_t mlen) {
+    uint8_t type = msg[0];
+    if (type == 0x08) {                               /* EncryptedExtensions */
+        return tr_add(c, msg, mlen) == 0 ? 0 : -1;
+    }
+    if (type == 0x0b) {                               /* Certificate */
+        /* leaf = first CertificateEntry's cert_data */
+        if (mlen < 8) return -1;
+        size_t p = 4 + 1 + msg[4];                    /* skip ctx */
+        if (p + 3 > mlen) return -1;
+        p += 3;                                        /* cert_list length */
+        if (p + 3 > mlen) return -1;
+        size_t clen = ((size_t)msg[p] << 16) | ((size_t)msg[p+1] << 8) | msg[p+2];
+        p += 3;
+        if (p + clen > mlen || clen > sizeof c->leaf) return -1;
+        memcpy(c->leaf, msg + p, clen); c->leaflen = clen;
+        return tr_add(c, msg, mlen) == 0 ? 0 : -1;
+    }
+    if (type == 0x0f) {                               /* CertificateVerify */
+        if (c->leaflen == 0 || mlen < 8) return -1;
+        uint8_t th[32];
+        wo_sha256(c->transcript, c->tlen, th);        /* CH..Certificate */
+        uint16_t scheme = ((uint16_t)msg[4] << 8) | msg[5];
+        size_t siglen = ((size_t)msg[6] << 8) | msg[7];
+        if (8 + siglen > mlen) return -1;
+        if (!wo_tls_verify_cert_verify(c->leaf, c->leaflen, scheme, msg + 8, siglen, th))
+            return -1;
+        return tr_add(c, msg, mlen) == 0 ? 0 : -1;
+    }
+    if (type == 0x14) {                               /* Finished (server) */
+        if (mlen != 4 + 32) return -1;
+        uint8_t th[32], expect[32];
+        wo_sha256(c->transcript, c->tlen, th);        /* CH..CertificateVerify */
+        wo_tls_finished_verify(c->ks.server_hs_traffic, th, expect);
+        if (!ct_eq32(expect, msg + 4)) return -1;
+        if (tr_add(c, msg, mlen) != 0) return -1;
+
+        /* application keys need the transcript through server Finished. */
+        uint8_t th_sf[32];
+        wo_sha256(c->transcript, c->tlen, th_sf);     /* CH..server Finished */
+        wo_tls_derive_application(&c->ks, th_sf);
+
+        /* client Finished = HMAC over the same transcript with client hs key */
+        uint8_t vd[32];
+        wo_tls_finished_verify(c->ks.client_hs_traffic, th_sf, vd);
+        uint8_t cfin[36];
+        cfin[0] = 0x14; cfin[1] = 0; cfin[2] = 0; cfin[3] = 32;
+        memcpy(cfin + 4, vd, 32);
+        /* encrypt with the client HANDSHAKE keys, then switch to app keys. */
+        int n = wo_tls_record_seal(c->suite, c->wr_key, c->keylen, c->wr_iv,
+                                   c->wr_seq, WO_TLS_CT_HANDSHAKE, cfin, 36, c->out);
+        if (n < 0) return -1;
+        c->outn = (size_t)n; c->wr_seq++;
+
+        wo_tls_traffic_keys(c->ks.server_ap_traffic, c->keylen, c->rd_key, c->rd_iv);
+        wo_tls_traffic_keys(c->ks.client_ap_traffic, c->keylen, c->wr_key, c->wr_iv);
+        c->rd_seq = c->wr_seq = 0;
+        c->st = ST_ESTABLISHED;
+        return 1;
+    }
+    return -1;                                        /* unexpected message */
+}
+
+wo_tls_status wo_tls_client_push_record(wo_tls_client *c, const uint8_t *rec,
+                                        size_t reclen) {
+    if (c->st == ST_FAILED) return WO_TLS_FAILED;
+    if (reclen < 5) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+    uint8_t ct = rec[0];
+    if (ct == WO_TLS_CT_CHANGE_CIPHER_SPEC) return WO_TLS_WANT_MORE;  /* ignore */
+
+    if (c->st == ST_WANT_SH) {
+        if (ct != WO_TLS_CT_HANDSHAKE) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+        wo_tls_status s = on_server_hello(c, rec, reclen);
+        if (s == WO_TLS_FAILED) c->st = ST_FAILED;
+        return s;
+    }
+    if (c->st == ST_WANT_FLIGHT) {
+        if (ct != WO_TLS_CT_APPLICATION_DATA) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+        uint8_t pt[WO_TLS_BUF_MAX]; uint8_t inner = 0;
+        int n = wo_tls_record_open(c->suite, c->rd_key, c->keylen, c->rd_iv,
+                                   c->rd_seq, rec, reclen, pt, &inner);
+        if (n < 0) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+        c->rd_seq++;
+        if (inner != WO_TLS_CT_HANDSHAKE) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+        if (c->hsn + (size_t)n > sizeof c->hsbuf) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+        memcpy(c->hsbuf + c->hsn, pt, (size_t)n); c->hsn += (size_t)n;
+
+        /* process every complete handshake message now buffered */
+        size_t off = 0;
+        while (c->hsn - off >= 4) {
+            const uint8_t *m = c->hsbuf + off;
+            size_t mlen = 4 + (((size_t)m[1] << 16) | ((size_t)m[2] << 8) | m[3]);
+            if (c->hsn - off < mlen) break;           /* wait for more records */
+            int r = on_flight_msg(c, m, mlen);
+            if (r < 0) { c->st = ST_FAILED; return WO_TLS_FAILED; }
+            off += mlen;
+            if (r == 1) return WO_TLS_ESTABLISHED;    /* Finished processed */
+        }
+        /* keep the tail (a partial message) for the next record */
+        if (off > 0) { memmove(c->hsbuf, c->hsbuf + off, c->hsn - off); c->hsn -= off; }
+        return WO_TLS_WANT_MORE;
+    }
+    return WO_TLS_WANT_MORE;                           /* already established */
+}
+
+int wo_tls_client_encrypt(wo_tls_client *c, const uint8_t *data, size_t len,
+                          uint8_t *out, size_t outcap) {
+    if (c->st != ST_ESTABLISHED) return -1;
+    if (len + WO_TLS_RECORD_OVERHEAD > outcap) return -1;
+    int n = wo_tls_record_seal(c->suite, c->wr_key, c->keylen, c->wr_iv,
+                               c->wr_seq, WO_TLS_CT_APPLICATION_DATA, data, len, out);
+    if (n < 0) return -1;
+    c->wr_seq++;
+    return n;
+}
+
+int wo_tls_client_decrypt(wo_tls_client *c, const uint8_t *rec, size_t reclen,
+                          uint8_t *out, size_t outcap, uint8_t *content_type) {
+    if (c->st != ST_ESTABLISHED) return -1;
+    if (reclen > outcap + WO_TLS_RECORD_OVERHEAD) return -1;
+    int n = wo_tls_record_open(c->suite, c->rd_key, c->keylen, c->rd_iv,
+                               c->rd_seq, rec, reclen, out, content_type);
+    if (n < 0) return -1;
+    c->rd_seq++;
+    return n;
+}

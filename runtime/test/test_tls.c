@@ -9,6 +9,7 @@
 #include "t.h"
 #include "tls_record_vectors.h"
 #include "tls_hs_vectors.h"
+#include "tls_driver_vectors.h"
 
 /* RFC 8448 §3 recorded ServerHello handshake message (90 octets). */
 #define SH_MSG "\x02\x00\x00\x56\x03\x03\xa6\xaf\x06\xa4\x12\x18\x60\xdc\x5e\x6e\x60\x24\x9c\xd3\x4c\x95\x93\x0c\x8a\xc5\xcb\x14\x34\xda\xc1\x55\x77\x2e\xd3\xe2\x69\x28\x00\x13\x01\x00\x00\x2e\x00\x33\x00\x24\x00\x1d\x00\x20\xc9\x82\x88\x76\x11\x20\x95\xfe\x66\x76\x2b\xdb\xf7\xc6\x72\xe1\x56\xd6\xcc\x25\x3b\x83\x3d\xf1\xdd\x69\xb1\xb0\x4e\x75\x1f\x0f\x00\x2b\x00\x02\x03\x04"
@@ -233,6 +234,65 @@ int main(void) {
         /* client Finished we would send matches the recorded one. */
         wo_tls_finished_verify(hs_c_traffic, th_sf, vd);
         T_CHECK(memcmp(vd, hs_cfin + 4, 32) == 0);
+    }
+
+    /* Sans-io client driver (phase F3c): the whole handshake driven offline
+     * against the RFC 8448 record trace, then application data both ways. */
+    {
+        static wo_tls_client c;   /* ~40 KB — keep off the stack */
+        uint8_t priv[32], ch[256];
+        memcpy(priv, drv_client_priv, 32);
+        memcpy(ch, drv_ch_msg, sizeof drv_ch_msg);
+        T_CHECK(wo_tls_client_start_with(&c, ch, sizeof drv_ch_msg, priv) == 0);
+        /* it framed a ClientHello record to send */
+        uint8_t sent[512];
+        size_t sn = wo_tls_client_take_output(&c, sent, sizeof sent);
+        T_CHECK(sn == 5 + sizeof drv_ch_msg && sent[0] == 22);
+
+        uint8_t rsh[128]; memcpy(rsh, drv_rec_sh, sizeof drv_rec_sh);
+        T_CHECK(wo_tls_client_push_record(&c, rsh, sizeof drv_rec_sh) == WO_TLS_WANT_MORE);
+
+        uint8_t rfl[1024]; memcpy(rfl, drv_rec_flight, sizeof drv_rec_flight);
+        T_CHECK(wo_tls_client_push_record(&c, rfl, sizeof drv_rec_flight) == WO_TLS_ESTABLISHED);
+
+        /* the client Finished record we emit matches RFC 8448 byte-for-byte */
+        uint8_t fin[128];
+        size_t fn = wo_tls_client_take_output(&c, fin, sizeof fin);
+        T_CHECK(fn == sizeof drv_rec_cfin);
+        T_CHECK(memcmp(fin, drv_rec_cfin, sizeof drv_rec_cfin) == 0);
+
+        /* application encrypt: our first app record equals the recorded one */
+        uint8_t app[128];
+        int an = wo_tls_client_encrypt(&c, drv_capp_pt, sizeof drv_capp_pt, app, sizeof app);
+        T_CHECK(an == (int)sizeof drv_rec_capp);
+        T_CHECK(memcmp(app, drv_rec_capp, sizeof drv_rec_capp) == 0);
+
+        /* server sends NewSessionTicket first (server app seq 0) — decrypt it
+         * (a post-handshake handshake message), advancing the read seq. */
+        uint8_t nst[256]; uint8_t ct2 = 0;
+        memcpy(nst, drv_rec_nst, sizeof drv_rec_nst);
+        int nn = wo_tls_client_decrypt(&c, nst, sizeof drv_rec_nst, nst, sizeof nst, &ct2);
+        T_CHECK(nn > 0 && ct2 == 22);                  /* handshake (ticket) */
+
+        /* then the server's application data (seq 1) decrypts to the plaintext */
+        uint8_t sapp[128]; uint8_t ct3 = 0;
+        int dn = wo_tls_client_decrypt(&c, drv_rec_sapp, sizeof drv_rec_sapp,
+                                       sapp, sizeof sapp, &ct3);
+        T_CHECK(dn == (int)sizeof drv_sapp_pt && ct3 == 23);
+        T_CHECK(memcmp(sapp, drv_sapp_pt, sizeof drv_sapp_pt) == 0);
+    }
+
+    /* Driver rejects a tampered server flight (auth failure -> FAILED). */
+    {
+        static wo_tls_client c;
+        uint8_t priv[32], ch[256];
+        memcpy(priv, drv_client_priv, 32); memcpy(ch, drv_ch_msg, sizeof drv_ch_msg);
+        wo_tls_client_start_with(&c, ch, sizeof drv_ch_msg, priv);
+        uint8_t rsh[128]; memcpy(rsh, drv_rec_sh, sizeof drv_rec_sh);
+        wo_tls_client_push_record(&c, rsh, sizeof drv_rec_sh);
+        uint8_t rfl[1024]; memcpy(rfl, drv_rec_flight, sizeof drv_rec_flight);
+        rfl[100] ^= 0x01;                              /* corrupt the ciphertext */
+        T_CHECK(wo_tls_client_push_record(&c, rfl, sizeof drv_rec_flight) == WO_TLS_FAILED);
     }
 
     return t_report("test_tls");
