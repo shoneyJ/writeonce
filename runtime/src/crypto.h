@@ -53,6 +53,16 @@ int wo_hkdf_sha256_expand_label(const uint8_t secret[32], const char *label,
 void wo_x25519(uint8_t out[32], const uint8_t scalar[32],
                const uint8_t point[32]);
 
+/* RSA signature verification (rv2 9 phase D, SHA-256). Public-key only, so
+ * not constant-time by design. n/e/sig big-endian; hash is the 32-byte digest.
+ * Returns 1 on a valid signature, 0 otherwise. */
+int wo_rsa_pkcs1_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
+                               size_t elen, const uint8_t *sig, size_t siglen,
+                               const uint8_t hash[32]);
+int wo_rsa_pss_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
+                             size_t elen, const uint8_t *sig, size_t siglen,
+                             const uint8_t mhash[32], size_t saltlen);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif

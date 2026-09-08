@@ -325,5 +325,28 @@ int main(void) {
             "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51") == 0);
     }
 
+    /* RSA-2048 signature verification (rv2 9 phase D) — vectors from
+     * python cryptography (PKCS#1 v1.5 and PSS over SHA-256). */
+    {
+        static const char *N = "dacbb5ff5cc8c341b7027135cca2e76619abf23c4a043b25d1fe424eae008923a007836775669bf783683f6ef4ed4f25d492078a4557e737f7ec680131f7f5ab0bcc7e11554edeefbb2b5d2c8c2deb6af6e2054a3b75f580b2a1d16186b12fb5c1715991e9bb5d2646631b4bd14484157f5b300c61f902f74727813b5d0e5b872bbf7ea72e0f7b80d47bb5049f1f54cca186b9d1055767be79403a9e0796c45e17dd00de5cca8ee2e315525267f0369fdca6d18a0c06b651de59913d6a7d227400e12cd8e0b67121cf26dad92073bfa67b8d9b0016ae9dd2de058baa07f0bcde7bfa7786aafe7ff82046f71f48960ce81a68ff62bdd4658cca3837dfb1ed1b19";
+        static const char *E = "010001";
+        static const char *H = "1e1f1eb2f15f5ba5f16363e4c45d0e58ee171e7050bb088dd5125d1f536afe25";
+        static const char *S1 = "a7bfe20510abd104f6eae7c440a1851c6f7cbd15266f671eff6096fa22b5cd61bb45cdaa819b39a25a20d08e019391282f00dd4ad4d02dbfc3da6e12930dbced8e0cbd65004b8955ae8f7eb8bf9fed477f6502e2a0e523665295ceb212155499dac4f40cca9c5038920678afda12f8f0591be4c7a3167efa0e30566dc207bbde47ca52e061ed7c557d37899698d9c5947b4ddc90286e50ca2d57114371307b50bf603759fd592b8e815398889ab6664b898126d56171acee58b1cd3130b0f2dcc85d0f0ccdcf586914bdb8a53a2985095206cb5bed3712531438b5b9b2861ac25819549b6bc6a7f7b19557c7825563b38e302996d317d4e5f9c6dc6356460268";
+        static const char *SP = "9c66f584c7781cc0a599585a01ef2d892eba67005e353e51ff677e3e64b3d45543703118872d76bebf6e17a1b0b8a6a08186ef2bde6f4f9b264952c62cde8c1ea2ab2635fd022f5b0d358e98835871e4212112a47445796e87c0d7df4f674c9ed726a90f92bfe72c99b8015a786e08f3176b296c70c8bb815bfd32869a795a9d8b046416d145eb476ea6a02ecac046f7f8da4365e047cd2ea1e5da78fb76ca8c5f762db1136599e423beb864a24be7f6344aeb51e1973fe6885d2d1de378cc3ffa3e5a3cbcd95331397c4650c792f3003bffb5418d2df833298c6a6f2dcd86e07e5684a46ab25c3ba6cb712fecce77750a1a2e8baecf41455b837569423a3a71";
+        uint8_t n[256], e[8], h[32], s[256];
+        size_t nl = unhex(N, n), el = unhex(E, e);
+        unhex(H, h);
+        size_t sl = unhex(S1, s);
+        T_CHECK(wo_rsa_pkcs1_sha256_verify(n, nl, e, el, s, sl, h) == 1);
+        s[10] ^= 0x01; /* tamper */
+        T_CHECK(wo_rsa_pkcs1_sha256_verify(n, nl, e, el, s, sl, h) == 0);
+        sl = unhex(SP, s);
+        T_CHECK(wo_rsa_pss_sha256_verify(n, nl, e, el, s, sl, h, 32) == 1);
+        s[10] ^= 0x01;
+        T_CHECK(wo_rsa_pss_sha256_verify(n, nl, e, el, s, sl, h, 32) == 0);
+        unhex(H, h); h[0] ^= 0x01; sl = unhex(S1, s); /* wrong hash rejected */
+        T_CHECK(wo_rsa_pkcs1_sha256_verify(n, nl, e, el, s, sl, h) == 0);
+    }
+
     return t_report("test_crypto");
 }

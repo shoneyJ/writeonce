@@ -1062,6 +1062,177 @@ void wo_x25519(uint8_t out[32], const uint8_t scalar[32],
     fcontract(out, x);
 }
 
+/* ---- RSA signature verification (rv2 9 phase D, part 1) -----------------
+ * PKCS#1 v1.5 and PSS over SHA-256, for the server certificate chain and the
+ * TLS 1.3 CertificateVerify. Verification touches ONLY public data (public key
+ * + signature), so it needs no constant-time discipline — a plain bignum
+ * modexp with the small public exponent. Montgomery multiplication (CIOS,
+ * 64-bit limbs, 128-bit products). Internal C; consumer is the TLS handshake.
+ * Vectors: RSA-2048 PKCS1v15 + PSS in test_crypto.c. */
+#define RSA_MAXW 66 /* up to ~4224-bit modulus */
+
+static int bn_from_be(uint64_t *w, const uint8_t *b, size_t len) {
+    int k = (int)((len + 7) / 8);
+    if (k > RSA_MAXW || k == 0) return -1;
+    for (int i = 0; i < k; i++) w[i] = 0;
+    for (size_t i = 0; i < len; i++)
+        w[i / 8] |= (uint64_t)b[len - 1 - i] << (8 * (i % 8));
+    return k;
+}
+static void bn_to_be(uint8_t *b, size_t len, const uint64_t *w, int k) {
+    for (size_t i = 0; i < len; i++)
+        b[len - 1 - i] = (i / 8 < (size_t)k) ? (uint8_t)(w[i / 8] >> (8 * (i % 8))) : 0;
+}
+static int bn_ge(const uint64_t *a, const uint64_t *b, int k) {
+    for (int i = k - 1; i >= 0; i--) { if (a[i] > b[i]) return 1; if (a[i] < b[i]) return 0; }
+    return 1;
+}
+static void bn_sub(uint64_t *out, const uint64_t *a, const uint64_t *b, int k) {
+    u128 borrow = 0;
+    for (int i = 0; i < k; i++) {
+        u128 d = (u128)a[i] - b[i] - borrow;
+        out[i] = (uint64_t)d;
+        borrow = (uint64_t)(d >> 64) & 1;
+    }
+}
+static uint64_t bn_shl1(uint64_t *a, int k) {
+    uint64_t carry = 0;
+    for (int i = 0; i < k; i++) { uint64_t nc = a[i] >> 63; a[i] = (a[i] << 1) | carry; carry = nc; }
+    return carry;
+}
+static uint64_t inv64(uint64_t a) { /* a odd: a^-1 mod 2^64, Newton */
+    uint64_t x = a;
+    for (int i = 0; i < 5; i++) x *= 2 - a * x;
+    return x;
+}
+static void mont_mul(uint64_t *out, const uint64_t *a, const uint64_t *b,
+                     const uint64_t *m, uint64_t n0, int k) {
+    uint64_t t[RSA_MAXW + 2];
+    for (int i = 0; i < k + 2; i++) t[i] = 0;
+    for (int i = 0; i < k; i++) {
+        u128 carry = 0;
+        for (int j = 0; j < k; j++) {
+            u128 s = (u128)a[i] * b[j] + t[j] + carry;
+            t[j] = (uint64_t)s; carry = s >> 64;
+        }
+        u128 s = (u128)t[k] + carry; t[k] = (uint64_t)s; t[k + 1] += (uint64_t)(s >> 64);
+        uint64_t mp = (uint64_t)((u128)t[0] * n0);
+        carry = ((u128)mp * m[0] + t[0]) >> 64;
+        for (int j = 1; j < k; j++) {
+            u128 s2 = (u128)mp * m[j] + t[j] + carry;
+            t[j - 1] = (uint64_t)s2; carry = s2 >> 64;
+        }
+        u128 s3 = (u128)t[k] + carry; t[k - 1] = (uint64_t)s3; carry = s3 >> 64;
+        t[k] = t[k + 1] + (uint64_t)carry; t[k + 1] = 0;
+    }
+    if (t[k] || bn_ge(t, m, k)) bn_sub(t, t, m, k);
+    for (int i = 0; i < k; i++) out[i] = t[i];
+}
+/* out = base^e mod m (e big-endian bytes, public exponent). */
+static void bn_modexp(uint64_t *out, const uint64_t *base, const uint64_t *m,
+                      int k, const uint8_t *e, size_t elen) {
+    uint64_t n0 = 0 - inv64(m[0]);
+    uint64_t rsq[RSA_MAXW], aR[RSA_MAXW], x[RSA_MAXW], one[RSA_MAXW], tmp[RSA_MAXW];
+    for (int i = 0; i < k; i++) { rsq[i] = 0; one[i] = 0; }
+    rsq[0] = 1; one[0] = 1;
+    for (int i = 0; i < 128 * k; i++) { /* rsq = 2^(128k) mod m */
+        uint64_t of = bn_shl1(rsq, k);
+        if (of || bn_ge(rsq, m, k)) bn_sub(rsq, rsq, m, k);
+    }
+    mont_mul(aR, base, rsq, m, n0, k); /* base -> Montgomery */
+    mont_mul(x, one, rsq, m, n0, k);   /* x = R mod m (== 1 in Montgomery) */
+    for (size_t bi = 0; bi < elen * 8; bi++) {
+        uint8_t bit = (e[bi / 8] >> (7 - (bi % 8))) & 1;
+        mont_mul(tmp, x, x, m, n0, k);
+        for (int i = 0; i < k; i++) x[i] = tmp[i];
+        if (bit) { mont_mul(tmp, x, aR, m, n0, k); for (int i = 0; i < k; i++) x[i] = tmp[i]; }
+    }
+    mont_mul(out, x, one, m, n0, k); /* out of Montgomery */
+}
+
+static void mgf1_sha256(const uint8_t *seed, size_t seedlen, uint8_t *mask,
+                        size_t masklen) {
+    size_t done = 0;
+    uint32_t counter = 0;
+    uint8_t in[96];
+    while (done < masklen) {
+        memcpy(in, seed, seedlen);
+        in[seedlen] = (uint8_t)(counter >> 24); in[seedlen + 1] = (uint8_t)(counter >> 16);
+        in[seedlen + 2] = (uint8_t)(counter >> 8); in[seedlen + 3] = (uint8_t)counter;
+        uint8_t d[32];
+        wo_sha256(in, seedlen + 4, d);
+        size_t n = masklen - done < 32 ? masklen - done : 32;
+        memcpy(mask + done, d, n);
+        done += n; counter++;
+    }
+}
+
+/* Common front: s^e mod n into em[nlen]. 0 ok, -1 malformed. */
+static int rsa_recover(const uint8_t *n, size_t nlen, const uint8_t *e,
+                       size_t elen, const uint8_t *sig, size_t siglen,
+                       uint8_t *em) {
+    if (siglen != nlen) return -1;
+    uint64_t N[RSA_MAXW], S[RSA_MAXW], EM[RSA_MAXW];
+    int k = bn_from_be(N, n, nlen);
+    int ks = bn_from_be(S, sig, siglen);
+    if (k < 0 || ks < 0 || (N[0] & 1) == 0) return -1;
+    for (int i = ks; i < k; i++) S[i] = 0;
+    if (bn_ge(S, N, k)) return -1;
+    bn_modexp(EM, S, N, k, e, elen);
+    bn_to_be(em, nlen, EM, k);
+    return 0;
+}
+
+int wo_rsa_pkcs1_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
+                               size_t elen, const uint8_t *sig, size_t siglen,
+                               const uint8_t hash[32]) {
+    static const uint8_t di[] = { 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60,
+                                  0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                                  0x01, 0x05, 0x00, 0x04, 0x20 };
+    uint8_t em[RSA_MAXW * 8];
+    if (nlen > sizeof(em)) return 0;
+    if (rsa_recover(n, nlen, e, elen, sig, siglen, em) != 0) return 0;
+    size_t tlen = sizeof(di) + 32;
+    if (nlen < tlen + 11) return 0;
+    size_t pslen = nlen - tlen - 3;
+    if (em[0] != 0x00 || em[1] != 0x01) return 0;
+    for (size_t i = 0; i < pslen; i++) if (em[2 + i] != 0xff) return 0;
+    if (em[2 + pslen] != 0x00) return 0;
+    if (memcmp(em + 3 + pslen, di, sizeof(di)) != 0) return 0;
+    if (memcmp(em + 3 + pslen + sizeof(di), hash, 32) != 0) return 0;
+    return 1;
+}
+
+/* EMSA-PSS verify, SHA-256, assuming a full-length modulus (emBits =
+ * 8*nlen-1 — true for standard RSA-2048/3072/4096 keys). */
+int wo_rsa_pss_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
+                             size_t elen, const uint8_t *sig, size_t siglen,
+                             const uint8_t mhash[32], size_t saltlen) {
+    uint8_t em[RSA_MAXW * 8];
+    if (nlen > sizeof(em) || saltlen > 64) return 0;
+    if (rsa_recover(n, nlen, e, elen, sig, siglen, em) != 0) return 0;
+    size_t hLen = 32, emLen = nlen;
+    if (emLen < hLen + saltlen + 2) return 0;
+    if (em[emLen - 1] != 0xbc) return 0;
+    if (em[0] & 0x80) return 0; /* the one top bit (8*emLen-1 emBits) must be 0 */
+    size_t dbLen = emLen - hLen - 1;
+    const uint8_t *H = em + dbLen;
+    uint8_t db[RSA_MAXW * 8];
+    mgf1_sha256(H, hLen, db, dbLen);
+    for (size_t i = 0; i < dbLen; i++) db[i] ^= em[i];
+    db[0] &= 0x7f;
+    size_t i = 0;
+    while (i < dbLen - saltlen - 1 && db[i] == 0) i++;
+    if (i != dbLen - saltlen - 1 || db[i] != 0x01) return 0;
+    const uint8_t *salt = db + dbLen - saltlen;
+    uint8_t mp[8 + 32 + 64], hp[32];
+    memset(mp, 0, 8);
+    memcpy(mp + 8, mhash, 32);
+    memcpy(mp + 40, salt, saltlen);
+    wo_sha256(mp, 8 + 32 + saltlen, hp);
+    return memcmp(hp, H, 32) == 0 ? 1 : 0;
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {
