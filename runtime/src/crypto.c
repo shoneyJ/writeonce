@@ -1233,6 +1233,205 @@ int wo_rsa_pss_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
     return memcmp(hp, H, 32) == 0 ? 1 : 0;
 }
 
+/* ---- ECDSA-P256 verification (rv2 9 phase D, part 2) --------------------
+ * NIST P-256 (secp256r1). Verify-only (public data), so not constant-time;
+ * reuses the bignum Montgomery multiply and modexp (Fermat inverses). Jacobian
+ * point arithmetic with a=-3. Internal C; consumer is the TLS handshake and the
+ * X.509 chain. Vectors: python ECDSA-P256 in test_crypto.c. */
+
+/* All big-endian, 32 bytes. */
+static const uint8_t P256_P[32] = {
+    0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff };
+static const uint8_t P256_PM2[32] = {
+    0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfd };
+static const uint8_t P256_N[32] = {
+    0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xbc,0xe6,0xfa,0xad,0xa7,0x17,0x9e,0x84,0xf3,0xb9,0xca,0xc2,0xfc,0x63,0x25,0x51 };
+static const uint8_t P256_NM2[32] = {
+    0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xbc,0xe6,0xfa,0xad,0xa7,0x17,0x9e,0x84,0xf3,0xb9,0xca,0xc2,0xfc,0x63,0x25,0x4f };
+static const uint8_t P256_GX[32] = {
+    0x6b,0x17,0xd1,0xf2,0xe1,0x2c,0x42,0x47,0xf8,0xbc,0xe6,0xe5,0x63,0xa4,0x40,0xf2,
+    0x77,0x03,0x7d,0x81,0x2d,0xeb,0x33,0xa0,0xf4,0xa1,0x39,0x45,0xd8,0x98,0xc2,0x96 };
+static const uint8_t P256_GY[32] = {
+    0x4f,0xe3,0x42,0xe2,0xfe,0x1a,0x7f,0x9b,0x8e,0xe7,0xeb,0x4a,0x7c,0x0f,0x9e,0x16,
+    0x2b,0xce,0x33,0x57,0x6b,0x31,0x5e,0xce,0xcb,0xb6,0x40,0x68,0x37,0xbf,0x51,0xf5 };
+static const uint8_t P256_B[32] = {
+    0x5a,0xc6,0x35,0xd8,0xaa,0x3a,0x93,0xe7,0xb3,0xeb,0xbd,0x55,0x76,0x98,0x86,0xbc,
+    0x65,0x1d,0x06,0xb0,0xcc,0x53,0xb0,0xf6,0x3b,0xce,0x3c,0x3e,0x27,0xd2,0x60,0x4b };
+
+typedef uint64_t fp[4];
+
+static void compute_rsq(uint64_t *rsq, const uint64_t *m, int k) {
+    for (int i = 0; i < k; i++) rsq[i] = 0;
+    rsq[0] = 1;
+    for (int i = 0; i < 128 * k; i++) {
+        uint64_t of = bn_shl1(rsq, k);
+        if (of || bn_ge(rsq, m, k)) bn_sub(rsq, rsq, m, k);
+    }
+}
+static void modadd(uint64_t *o, const uint64_t *a, const uint64_t *b,
+                   const uint64_t *m, int k) {
+    u128 c = 0;
+    for (int i = 0; i < k; i++) { u128 s = (u128)a[i] + b[i] + c; o[i] = (uint64_t)s; c = s >> 64; }
+    if (c || bn_ge(o, m, k)) bn_sub(o, o, m, k);
+}
+static void modsub(uint64_t *o, const uint64_t *a, const uint64_t *b,
+                   const uint64_t *m, int k) {
+    if (bn_ge(a, b, k)) {
+        bn_sub(o, a, b, k);
+    } else { /* a < b: compute (a + m) - b, which fits in k limbs since result < m */
+        uint64_t t[4];
+        u128 c = 0;
+        for (int i = 0; i < k; i++) { u128 s = (u128)a[i] + m[i] + c; t[i] = (uint64_t)s; c = s >> 64; }
+        bn_sub(o, t, b, k);
+    }
+}
+
+/* Montgomery-domain field context for a modulus (p or n). */
+typedef struct { fp m; fp rsq; fp one_mont; uint64_t n0; } modctx;
+static void modctx_init(modctx *c, const uint8_t *mbe) {
+    bn_from_be(c->m, mbe, 32);
+    compute_rsq(c->rsq, c->m, 4);
+    c->n0 = 0 - inv64(c->m[0]);
+    fp one = { 1, 0, 0, 0 };
+    mont_mul(c->one_mont, one, c->rsq, c->m, c->n0, 4);
+}
+static void to_mont(const modctx *c, fp o, const fp a) { mont_mul(o, a, c->rsq, c->m, c->n0, 4); }
+static void from_mont(const modctx *c, fp o, const fp a) { fp one = {1,0,0,0}; mont_mul(o, a, one, c->m, c->n0, 4); }
+static void fpmul(const modctx *c, fp o, const fp a, const fp b) { mont_mul(o, a, b, c->m, c->n0, 4); }
+static int fp_eq(const fp a, const fp b) { for (int i=0;i<4;i++) if (a[i]!=b[i]) return 0; return 1; }
+static int fp_zero(const fp a) { return (a[0]|a[1]|a[2]|a[3]) == 0; }
+
+/* Jacobian point in Montgomery domain mod p. Z==0 is the point at infinity. */
+typedef struct { fp X, Y, Z; } jpt;
+
+static void jdouble(const modctx *P, jpt *o, const jpt *p) {
+    if (fp_zero(p->Z)) { *o = *p; return; }
+    fp delta, gamma, beta, alpha, t, u, x3, y3, z3, tmp;
+    fpmul(P, delta, p->Z, p->Z);
+    fpmul(P, gamma, p->Y, p->Y);
+    fpmul(P, beta, p->X, gamma);
+    modsub(t, p->X, delta, P->m, 4);
+    modadd(u, p->X, delta, P->m, 4);
+    fpmul(P, tmp, t, u);
+    modadd(alpha, tmp, tmp, P->m, 4); modadd(alpha, alpha, tmp, P->m, 4); /* 3*(X-d)(X+d) */
+    fpmul(P, x3, alpha, alpha);
+    fp b8; modadd(b8, beta, beta, P->m, 4); modadd(b8, b8, b8, P->m, 4); modadd(b8, b8, b8, P->m, 4); /* 8*beta */
+    modsub(x3, x3, b8, P->m, 4);
+    modadd(z3, p->Y, p->Z, P->m, 4); fpmul(P, z3, z3, z3);
+    modsub(z3, z3, gamma, P->m, 4); modsub(z3, z3, delta, P->m, 4);
+    fp b4; modadd(b4, beta, beta, P->m, 4); modadd(b4, b4, b4, P->m, 4); /* 4*beta */
+    modsub(b4, b4, x3, P->m, 4);
+    fpmul(P, y3, alpha, b4);
+    fp g2; fpmul(P, g2, gamma, gamma); /* gamma^2 */
+    modadd(g2, g2, g2, P->m, 4); modadd(g2, g2, g2, P->m, 4); modadd(g2, g2, g2, P->m, 4); /* 8*gamma^2 */
+    modsub(y3, y3, g2, P->m, 4);
+    for (int i=0;i<4;i++){ o->X[i]=x3[i]; o->Y[i]=y3[i]; o->Z[i]=z3[i]; }
+}
+
+static void jadd(const modctx *P, jpt *o, const jpt *a, const jpt *b) {
+    if (fp_zero(a->Z)) { *o = *b; return; }
+    if (fp_zero(b->Z)) { *o = *a; return; }
+    fp z1z1, z2z2, u1, u2, s1, s2, h, r, tmp;
+    fpmul(P, z1z1, a->Z, a->Z);
+    fpmul(P, z2z2, b->Z, b->Z);
+    fpmul(P, u1, a->X, z2z2);
+    fpmul(P, u2, b->X, z1z1);
+    fpmul(P, tmp, b->Z, z2z2); fpmul(P, s1, a->Y, tmp);
+    fpmul(P, tmp, a->Z, z1z1); fpmul(P, s2, b->Y, tmp);
+    modsub(h, u2, u1, P->m, 4);
+    modsub(r, s2, s1, P->m, 4);
+    if (fp_zero(h)) {
+        if (fp_zero(r)) { jdouble(P, o, a); return; }
+        for (int i=0;i<4;i++){ o->X[i]=0; o->Y[i]=0; o->Z[i]=0; } /* infinity */
+        return;
+    }
+    fp h2, h3, x3, y3, z3, u1h2;
+    fpmul(P, h2, h, h);
+    fpmul(P, h3, h2, h);
+    fpmul(P, u1h2, u1, h2);
+    fpmul(P, x3, r, r);
+    modsub(x3, x3, h3, P->m, 4);
+    modsub(x3, x3, u1h2, P->m, 4); modsub(x3, x3, u1h2, P->m, 4); /* - 2*u1h2 */
+    modsub(tmp, u1h2, x3, P->m, 4);
+    fpmul(P, y3, r, tmp);
+    fpmul(P, tmp, s1, h3);
+    modsub(y3, y3, tmp, P->m, 4);
+    fpmul(P, z3, a->Z, b->Z); fpmul(P, z3, z3, h);
+    for (int i=0;i<4;i++){ o->X[i]=x3[i]; o->Y[i]=y3[i]; o->Z[i]=z3[i]; }
+}
+
+/* R = k*Pt (double-and-add, MSB first; k big-endian 32 bytes). Not CT. */
+static void jmul(const modctx *P, jpt *o, const uint8_t k[32], const jpt *pt) {
+    jpt acc; for (int i=0;i<4;i++){ acc.X[i]=0; acc.Y[i]=0; acc.Z[i]=0; }
+    for (int bit = 255; bit >= 0; bit--) {
+        jdouble(P, &acc, &acc);
+        if ((k[(255 - bit) / 8] >> (7 - ((255 - bit) & 7))) & 1) jadd(P, &acc, &acc, pt);
+    }
+    *o = acc;
+}
+
+int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
+                                const uint8_t r[32], const uint8_t s[32],
+                                const uint8_t hash[32]) {
+    modctx P, N;
+    modctx_init(&P, P256_P);
+    modctx_init(&N, P256_N);
+    fp rv, sv;
+    bn_from_be(rv, r, 32); bn_from_be(sv, s, 32);
+    if (fp_zero(rv) || fp_zero(sv) || bn_ge(rv, N.m, 4) || bn_ge(sv, N.m, 4))
+        return 0; /* r,s in [1, n-1] */
+
+    /* Q on curve: y^2 == x^3 - 3x + b (mod p), in Montgomery domain */
+    fp qxm, qym, bm, lhs, rhs, x3, three_x;
+    fp qxr, qyr, br;
+    bn_from_be(qxr, qx, 32); bn_from_be(qyr, qy, 32);
+    if (bn_ge(qxr, P.m, 4) || bn_ge(qyr, P.m, 4)) return 0;
+    bn_from_be(br, P256_B, 32);
+    to_mont(&P, qxm, qxr); to_mont(&P, qym, qyr); to_mont(&P, bm, br);
+    fpmul(&P, lhs, qym, qym);
+    fpmul(&P, x3, qxm, qxm); fpmul(&P, x3, x3, qxm);
+    modadd(three_x, qxm, qxm, P.m, 4); modadd(three_x, three_x, qxm, P.m, 4);
+    modsub(rhs, x3, three_x, P.m, 4); modadd(rhs, rhs, bm, P.m, 4);
+    if (!fp_eq(lhs, rhs)) return 0;
+
+    /* z = hash mod n */
+    fp z; bn_from_be(z, hash, 32);
+    if (bn_ge(z, N.m, 4)) bn_sub(z, z, N.m, 4);
+
+    /* w = s^-1 mod n; u1 = z*w mod n; u2 = r*w mod n */
+    fp w, u1, u2, tm;
+    bn_modexp(w, sv, N.m, 4, P256_NM2, 32);
+    to_mont(&N, tm, z); fpmul(&N, u1, tm, w);   /* (z*Rn)*w*Rn^-1 = z*w mod n */
+    to_mont(&N, tm, rv); fpmul(&N, u2, tm, w);
+
+    /* R = u1*G + u2*Q  (Jacobian, mont domain mod p) */
+    jpt G, Q, A, B, Rp;
+    fp gx, gy;
+    bn_from_be(gx, P256_GX, 32); bn_from_be(gy, P256_GY, 32);
+    to_mont(&P, G.X, gx); to_mont(&P, G.Y, gy); for (int i=0;i<4;i++) G.Z[i]=P.one_mont[i];
+    for (int i=0;i<4;i++){ Q.X[i]=qxm[i]; Q.Y[i]=qym[i]; Q.Z[i]=P.one_mont[i]; }
+    uint8_t u1b[32], u2b[32];
+    bn_to_be(u1b, 32, u1, 4); bn_to_be(u2b, 32, u2, 4);
+    jmul(&P, &A, u1b, &G);
+    jmul(&P, &B, u2b, &Q);
+    jadd(&P, &Rp, &A, &B);
+    if (fp_zero(Rp.Z)) return 0;
+
+    /* affine x = X / Z^2 (mod p), then compare (x mod n) to r */
+    fp Xn, Zn, zinv, zinv2, xaff, xr;
+    from_mont(&P, Xn, Rp.X); from_mont(&P, Zn, Rp.Z);
+    bn_modexp(zinv, Zn, P.m, 4, P256_PM2, 32);
+    to_mont(&P, tm, zinv); fpmul(&P, zinv2, tm, zinv);   /* zinv^2 (normal domain) */
+    to_mont(&P, tm, Xn); fpmul(&P, xaff, tm, zinv2);      /* X * zinv^2 (normal) */
+    for (int i=0;i<4;i++) xr[i]=xaff[i];
+    if (bn_ge(xr, N.m, 4)) bn_sub(xr, xr, N.m, 4);
+    return fp_eq(xr, rv) ? 1 : 0;
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {

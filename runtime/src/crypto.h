@@ -63,6 +63,12 @@ int wo_rsa_pss_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
                              size_t elen, const uint8_t *sig, size_t siglen,
                              const uint8_t mhash[32], size_t saltlen);
 
+/* ECDSA-P256 verify (rv2 9 phase D). Public key (qx,qy) affine, signature
+ * (r,s), 32-byte SHA-256 hash; all big-endian. 1 valid, 0 otherwise. */
+int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
+                                const uint8_t r[32], const uint8_t s[32],
+                                const uint8_t hash[32]);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif

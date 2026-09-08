@@ -348,5 +348,20 @@ int main(void) {
         T_CHECK(wo_rsa_pkcs1_sha256_verify(n, nl, e, el, s, sl, h) == 0);
     }
 
+    /* ECDSA-P256 verification (rv2 9 phase D2) — python-generated vector. */
+    {
+        uint8_t qx[32], qy[32], r[32], s[32], h[32];
+        unhex("09815e7837d59e0cc38a82ceedde16e4af9bc59077f1d893574a480eb3a14922", qx);
+        unhex("34cdb6955cd312ee026f5578fed8a72a5e67dafba685a8397a7701ce62835495", qy);
+        unhex("4de58433951aca644eb8ebbd90362906e5af5c0ac54d7969191c93870f89a862", h);
+        unhex("06082fac083c1b99f9e201cdba621ba21dbb151416ad5d7d6420e06a50af1d39", r);
+        unhex("97ead970b0b46cf2f2873e8730c8bc3dad6b31d96d0fe057f35ca73400c0d43b", s);
+        T_CHECK(wo_ecdsa_p256_sha256_verify(qx, qy, r, s, h) == 1);
+        h[0] ^= 0x01; /* wrong hash */
+        T_CHECK(wo_ecdsa_p256_sha256_verify(qx, qy, r, s, h) == 0);
+        h[0] ^= 0x01; r[0] ^= 0x01; /* tampered r */
+        T_CHECK(wo_ecdsa_p256_sha256_verify(qx, qy, r, s, h) == 0);
+    }
+
     return t_report("test_crypto");
 }
