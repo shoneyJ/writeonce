@@ -109,6 +109,18 @@ int wo_tls_build_client_hello(const char *hostname, size_t hostlen,
                               const uint8_t session_id[32], uint8_t *out,
                               size_t outcap, size_t *outlen);
 
+/* Verify a server certificate chain (leaf-first DER): each cert signed by the
+ * next, the chain top trusted (equal to, or signed by, one of the anchors), the
+ * leaf SAN matching host (pass NULL to skip), and every cert within its
+ * validity window at now14 ("YYYYMMDDHHMMSS"). 1 fully valid & trusted, 0
+ * otherwise (no partial trust). The offline-testable security core of the
+ * F3c-net remainder; the CA-bundle load + socket glue that feed it are still to
+ * come. */
+int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
+                        size_t n_certs, const uint8_t *const *anchors,
+                        const size_t *anchor_lens, size_t n_anchors,
+                        const char *host, size_t hostlen, const char now14[14]);
+
 /* ---- sans-io client handshake driver (phase F3c) -------------------------
  * A pure state machine: no sockets. The caller frames TLS records (read the
  * 5-byte header, then that many bytes) and feeds whole records in; the driver

@@ -610,3 +610,41 @@ int wo_tls_client_decrypt(wo_tls_client *c, const uint8_t *rec, size_t reclen,
     c->rd_seq++;
     return n;
 }
+
+/* ---- certificate chain validation (phase F3c-net security core) ----------
+ * Verify a server certificate chain (leaf-first DER). Each cert must be signed
+ * by the next; the chain top must be trusted (equal to, or signed by, a trust
+ * anchor); the leaf SAN must match the host; and every cert must be inside its
+ * validity window. Any failure is a rejection — no partial trust. Pure over
+ * the public phase-D/E verifiers, so it is offline-testable; the CA-bundle load
+ * and socket glue that feed it are the live-gated remainder of F3c-net. */
+int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
+                        size_t n_certs, const uint8_t *const *anchors,
+                        const size_t *anchor_lens, size_t n_anchors,
+                        const char *host, size_t hostlen, const char now14[14]) {
+    if (n_certs == 0 || n_anchors == 0) return 0;
+
+    /* leaf hostname (SAN) must match. */
+    if (host && !wo_x509_check_host(certs[0], cert_lens[0], host, hostlen))
+        return 0;
+
+    /* every cert must be temporally valid. */
+    for (size_t i = 0; i < n_certs; i++)
+        if (!wo_x509_check_validity(certs[i], cert_lens[i], now14)) return 0;
+
+    /* each cert is signed by the next one the server sent. */
+    for (size_t i = 0; i + 1 < n_certs; i++)
+        if (!wo_x509_verify_one(certs[i], cert_lens[i], certs[i + 1], cert_lens[i + 1]))
+            return 0;
+
+    /* the chain top must chain to a trust anchor: either it is one verbatim, or
+     * an anchor signed it. */
+    const uint8_t *top = certs[n_certs - 1]; size_t toplen = cert_lens[n_certs - 1];
+    for (size_t a = 0; a < n_anchors; a++) {
+        if (toplen == anchor_lens[a] && memcmp(top, anchors[a], toplen) == 0)
+            return 1;                                   /* server sent the root */
+        if (wo_x509_verify_one(top, toplen, anchors[a], anchor_lens[a]))
+            return 1;                                   /* anchor signed the top */
+    }
+    return 0;                                            /* untrusted */
+}

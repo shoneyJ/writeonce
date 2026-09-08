@@ -10,6 +10,7 @@
 #include "tls_record_vectors.h"
 #include "tls_hs_vectors.h"
 #include "tls_driver_vectors.h"
+#include "x509_vectors.h"   /* phase-E RSA + EC chains, for chain validation */
 
 /* RFC 8448 §3 recorded ServerHello handshake message (90 octets). */
 #define SH_MSG "\x02\x00\x00\x56\x03\x03\xa6\xaf\x06\xa4\x12\x18\x60\xdc\x5e\x6e\x60\x24\x9c\xd3\x4c\x95\x93\x0c\x8a\xc5\xcb\x14\x34\xda\xc1\x55\x77\x2e\xd3\xe2\x69\x28\x00\x13\x01\x00\x00\x2e\x00\x33\x00\x24\x00\x1d\x00\x20\xc9\x82\x88\x76\x11\x20\x95\xfe\x66\x76\x2b\xdb\xf7\xc6\x72\xe1\x56\xd6\xcc\x25\x3b\x83\x3d\xf1\xdd\x69\xb1\xb0\x4e\x75\x1f\x0f\x00\x2b\x00\x02\x03\x04"
@@ -307,6 +308,56 @@ int main(void) {
         wo_tls_client_push_record(&c, rsh, sizeof drv_rec_sh);
         uint8_t rfl[1024]; memcpy(rfl, drv_rec_flight, sizeof drv_rec_flight);
         T_CHECK(wo_tls_client_push_record(&c, rfl, sizeof drv_rec_flight) == WO_TLS_FAILED);
+    }
+
+    /* Certificate chain validation (phase F3c-net security core) with the
+     * phase-E RSA + EC chains (kat_rsa_ca signs kat_rsa_leaf, SAN
+     * leaf.example.com; kat_ec_ca signs kat_ec_leaf, SAN leaf.example.org). */
+    {
+        const char *NOW = "20250101000000";            /* inside 2020..2030 */
+        const uint8_t *leaf1[] = { kat_rsa_leaf };
+        size_t leaf1n[] = { sizeof kat_rsa_leaf };
+        const uint8_t *rsa_anchor[] = { kat_rsa_ca };
+        size_t rsa_anchor_n[] = { sizeof kat_rsa_ca };
+        const uint8_t *ec_anchor[] = { kat_ec_ca };
+        size_t ec_anchor_n[] = { sizeof kat_ec_ca };
+
+        /* leaf trusted via its issuing CA anchor + host + validity */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 1);
+        /* wrong anchor (EC CA did not sign the RSA leaf) -> untrusted */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, ec_anchor, ec_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 0);
+        /* wrong host -> reject */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    "evil.example.com", 16, NOW) == 0);
+        /* expired (before validity) -> reject */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, "20190101000000") == 0);
+        /* NULL host skips the SAN check (still trusted) */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    NULL, 0, NOW) == 1);
+
+        /* two-cert chain [leaf, ca] with the CA also supplied as the anchor:
+         * links leaf->ca and the top (ca) equals the anchor verbatim. */
+        const uint8_t *chain2[] = { kat_rsa_leaf, kat_rsa_ca };
+        size_t chain2n[] = { sizeof kat_rsa_leaf, sizeof kat_rsa_ca };
+        T_CHECK(wo_tls_verify_chain(chain2, chain2n, 2, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 1);
+        /* a broken link (leaf not signed by an unrelated top) -> reject */
+        const uint8_t *badchain[] = { kat_rsa_leaf, kat_ec_ca };
+        size_t badchainn[] = { sizeof kat_rsa_leaf, sizeof kat_ec_ca };
+        T_CHECK(wo_tls_verify_chain(badchain, badchainn, 2, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 0);
+
+        /* EC chain trusts via its EC CA */
+        const uint8_t *ecleaf[] = { kat_ec_leaf };
+        size_t ecleafn[] = { sizeof kat_ec_leaf };
+        T_CHECK(wo_tls_verify_chain(ecleaf, ecleafn, 1, ec_anchor, ec_anchor_n, 1,
+                                    "leaf.example.org", 16, NOW) == 1);
+        /* no anchors -> never trusted */
+        T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, NULL, NULL, 0,
+                                    "leaf.example.com", 16, NOW) == 0);
     }
 
     return t_report("test_tls");
