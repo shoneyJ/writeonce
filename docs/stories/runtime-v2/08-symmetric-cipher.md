@@ -1,7 +1,7 @@
 ---
 track: runtime-v2
 iteration: "8"
-status: pending
+status: in-progress
 readiness: ready
 ---
 
@@ -78,7 +78,7 @@ work; TLS's ChaCha suite and the cookie consumer unblock at phase A.
 
 | Phase | Delivers |
 | --- | --- |
-| A — ChaCha20-Poly1305 | `chacha20poly1305_seal`/`open` (RFC 8439), the easy constant-time cipher; unblocks cookies and TLS's ChaCha suite |
+| A — ChaCha20-Poly1305 | ✅ **LANDED 2026-09-08** — `chacha20poly1305_seal`/`open` (ids 111/112, bare-name crypto family). Hand-rolled ChaCha20 + poly1305-donna-32 + the RFC 8439 §2.8 AEAD, caller-supplied 12-byte nonce, 32-byte key, constant-time tag compare, `open` returns nil on auth failure. Matches the RFC 8439 §2.8.2 vector byte-for-byte; gated in `test/test_crypto.c` (§2.5.2 Poly1305 + §2.8.2 seal/open/tamper), ASan/UBSan clean |
 | B — AES-GCM via hardware | `aes_gcm_seal`/`open` on AES-NI + CLMUL (x86-64) / ARMv8 crypto ext — constant-time by hardware; TLS's mandatory suite |
 | C — AES-GCM software fallback | bitsliced constant-time AES + constant-time GHASH for CPUs without the extension; same builtins, dispatched at runtime |
 | D — the cookie wrapper | an `encryptcookie`-equivalent on porch [2](../porch/02-randomness-and-cookies.md)'s cookie machinery: random nonce (from `random_bytes`) prepended to the ciphertext, default ChaCha |
