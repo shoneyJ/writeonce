@@ -3,6 +3,7 @@ track: runtime-v2
 iteration: "9"
 status: in-progress
 readiness: ready
+review_pending: "forks auto-approved 2026-09-08 for autonomous execution — developer second review before this ships; phase E defers SAN/hostname + system CA bundle to phase F where the target host is known"
 ---
 
 # runtime-v2 9 — in-process TLS: retiring the proxy-termination doctrine
@@ -77,7 +78,7 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | B — key schedule | ✅ **LANDED 2026-09-08** — `wo_hkdf_sha256_extract`/`expand` (RFC 5869) + `expand_label` (RFC 8446 §7.1), internal C over `hmac_sha256`; SHA-256 (the mandatory suites' hash; SHA-384 a later add). KAT-gated in `test_crypto.c` (RFC 5869 case 1 + Expand-Label vectors), ASan/UBSan clean. No builtin, no compiler change |
 | C — key exchange | ✅ **LANDED 2026-09-08** — `wo_x25519` (RFC 7748), constant-time Montgomery ladder + mask-based cswap, radix-2⁵¹ field arithmetic (curve25519-donna-c64, `__int128`). Internal C. KAT-gated in `test_crypto.c`: RFC 7748 §5.2 both direct vectors **and the 1000-iteration test**, ASan/UBSan clean |
 | D — signatures | ✅ **LANDED 2026-09-08** — **RSA** `wo_rsa_pkcs1_sha256_verify` + `wo_rsa_pss_sha256_verify` (bignum Montgomery modexp) and **ECDSA-P256** `wo_ecdsa_p256_sha256_verify` (Jacobian point arithmetic, a=-3, on-curve check, Fermat inverses reusing the bignum). Verification is public data so **not** constant-time by design. Both match python vectors (RSA-2048 PKCS1+PSS; P-256), tamper/wrong-hash rejected, KAT-gated, ASan/UBSan clean |
-| E — X.509 | ASN.1/DER parser, chain validation to a trust anchor, dates, hostname/SAN, system CA bundle | notoriously bug-prone; consumes D |
+| E — X.509 | 🔄 **CORE LANDED 2026-09-08** — a defensive ASN.1/DER reader (every length/bound checked, malformation is rejection not over-read) + certificate parse (tbsCertificate span, sig-alg OID, signature, SubjectPublicKeyInfo→RSA n/e or EC P-256 x/y, validity) + `wo_x509_verify_one` (one chain link's signature, dispatching to D's RSA-PKCS1/PSS + ECDSA-P256) + `wo_x509_parse_spki` + `wo_x509_check_validity` (caller supplies the time). KAT-gated in `test_crypto.c` against **real python-generated chains** — RSA CA+leaf (SHA256withRSA) and EC P-256 CA+leaf (ecdsa-with-SHA256): leaf-vs-CA, self-signed CA, wrong-issuer/tampered/truncated rejected, validity window, SPKI extraction — ASan/UBSan clean. **Deferred to F**: SAN/hostname match (needs the target host) and the multi-cert chain walk to a system CA bundle | notoriously bug-prone; consumes D |
 | F — record + handshake (client) | TLS record framing, the ClientHello→Finished FSM, transcript hash, wiring A–E; `net.connect_tls` outbound | jarvis's path; the reason the story exists |
 | G — server (inbound) | the server handshake half, cert+key loading, signing CertificateVerify; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs |
 
