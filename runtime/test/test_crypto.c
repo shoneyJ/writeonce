@@ -52,6 +52,8 @@ static void t_poly1305(const uint8_t key[32], const char *msg, size_t mlen,
     T_CHECK(strcmp(got, want) == 0);
 }
 
+static void t_x25519(const char *kh, const char *uh, const char *wanth);
+
 static size_t unhex(const char *h, uint8_t *out) {
     size_t n = strlen(h) / 2;
     for (size_t i = 0; i < n; i++) {
@@ -81,6 +83,15 @@ static void t_aesgcm(const char *kh, const char *ih, const char *ah,
     memcpy(bad, out + plen, 16);
     bad[0] ^= 0x01;
     T_CHECK(wo_aes_gcm_open(key, klen, iv, aad, alen, out, plen, bad, back) == 1);
+}
+
+static void t_x25519(const char *kh, const char *uh, const char *wanth) {
+    uint8_t k[32], u[32], out[32];
+    char got[65];
+    unhex(kh, k); unhex(uh, u);
+    wo_x25519(out, k, u);
+    hex(out, 32, got);
+    T_CHECK(strcmp(got, wanth) == 0);
 }
 
 int main(void) {
@@ -286,6 +297,32 @@ int main(void) {
         hex(out, 32, got);
         T_CHECK(strcmp(got,
             "a5b1caa258481fdf573ac069f281e534e4a2379ec9e457e0c8494c227efb40e6") == 0);
+    }
+
+    /* X25519 (rv2 9 phase C) — RFC 7748 §5.2 direct vectors */
+    t_x25519("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
+             "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c",
+             "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552");
+    t_x25519("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d",
+             "e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493",
+             "95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957");
+    /* RFC 7748 §5.2 iterated test: k=u=9, iterate; check after 1 and 1000. */
+    {
+        uint8_t k[32] = { 9 }, u[32] = { 9 }, r[32];
+        char got[65];
+        for (int it = 1; it <= 1000; it++) {
+            wo_x25519(r, k, u);
+            memcpy(u, k, 32);
+            memcpy(k, r, 32);
+            if (it == 1) {
+                hex(k, 32, got);
+                T_CHECK(strcmp(got,
+                    "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079") == 0);
+            }
+        }
+        hex(k, 32, got);
+        T_CHECK(strcmp(got,
+            "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51") == 0);
     }
 
     return t_report("test_crypto");

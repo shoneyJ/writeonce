@@ -892,6 +892,176 @@ int wo_aes_gcm_open(const uint8_t *key, size_t keylen, const uint8_t nonce[12],
                            tag);
 }
 
+/* ---- X25519 (rv2 9 phase C, RFC 7748) ----------------------------------
+ * Montgomery-ladder scalar multiplication over Curve25519, constant-time
+ * (mask-based conditional swap, no data-dependent branches). Field arithmetic
+ * is the radix-2^51 representation with 128-bit intermediate products
+ * (curve25519-donna-c64, public domain). Internal C; the consumer is the TLS
+ * ECDHE handshake. Vectors: RFC 7748 §5.2 in test_crypto.c. */
+typedef uint64_t felem[5];
+typedef unsigned __int128 u128;
+#define FE_MASK 0x7ffffffffffffULL
+
+static uint64_t ld64(const uint8_t *b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 8; i++) r |= (uint64_t)b[i] << (8 * i);
+    return r;
+}
+static void st64(uint8_t *b, uint64_t v) {
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (8 * i));
+}
+
+static void fexpand(felem out, const uint8_t *in) {
+    out[0] = ld64(in) & FE_MASK;
+    out[1] = (ld64(in + 6) >> 3) & FE_MASK;
+    out[2] = (ld64(in + 12) >> 6) & FE_MASK;
+    out[3] = (ld64(in + 19) >> 1) & FE_MASK;
+    out[4] = (ld64(in + 24) >> 12) & FE_MASK;
+}
+
+static void fcontract(uint8_t *out, const felem in) {
+    felem h;
+    for (int i = 0; i < 5; i++) h[i] = in[i];
+    for (int r = 0; r < 3; r++) { /* weak-reduce a few times */
+        uint64_t c;
+        c = h[0] >> 51; h[0] &= FE_MASK; h[1] += c;
+        c = h[1] >> 51; h[1] &= FE_MASK; h[2] += c;
+        c = h[2] >> 51; h[2] &= FE_MASK; h[3] += c;
+        c = h[3] >> 51; h[3] &= FE_MASK; h[4] += c;
+        c = h[4] >> 51; h[4] &= FE_MASK; h[0] += 19 * c;
+    }
+    /* q = 1 iff h >= p = 2^255-19 */
+    uint64_t q = (h[0] + 19) >> 51;
+    q = (h[1] + q) >> 51; q = (h[2] + q) >> 51;
+    q = (h[3] + q) >> 51; q = (h[4] + q) >> 51;
+    h[0] += 19 * q;
+    h[1] += h[0] >> 51; h[0] &= FE_MASK;
+    h[2] += h[1] >> 51; h[1] &= FE_MASK;
+    h[3] += h[2] >> 51; h[2] &= FE_MASK;
+    h[4] += h[3] >> 51; h[3] &= FE_MASK;
+    h[4] &= FE_MASK;
+    st64(out, h[0] | (h[1] << 51));
+    st64(out + 8, (h[1] >> 13) | (h[2] << 38));
+    st64(out + 16, (h[2] >> 26) | (h[3] << 25));
+    st64(out + 24, (h[3] >> 39) | (h[4] << 12));
+}
+
+static void fsum(felem out, const felem a, const felem b) {
+    for (int i = 0; i < 5; i++) out[i] = a[i] + b[i];
+}
+static void fdiff(felem out, const felem a, const felem b) { /* out = a - b */
+    static const uint64_t t54m152 = (1ULL << 54) - 152, t54m8 = (1ULL << 54) - 8;
+    out[0] = a[0] + t54m152 - b[0];
+    out[1] = a[1] + t54m8 - b[1];
+    out[2] = a[2] + t54m8 - b[2];
+    out[3] = a[3] + t54m8 - b[3];
+    out[4] = a[4] + t54m8 - b[4];
+}
+static void fscalar(felem out, const felem in) { /* * 121665 */
+    u128 a;
+    a = (u128)in[0] * 121665; out[0] = (uint64_t)a & FE_MASK;
+    a = (u128)in[1] * 121665 + (uint64_t)(a >> 51); out[1] = (uint64_t)a & FE_MASK;
+    a = (u128)in[2] * 121665 + (uint64_t)(a >> 51); out[2] = (uint64_t)a & FE_MASK;
+    a = (u128)in[3] * 121665 + (uint64_t)(a >> 51); out[3] = (uint64_t)a & FE_MASK;
+    a = (u128)in[4] * 121665 + (uint64_t)(a >> 51); out[4] = (uint64_t)a & FE_MASK;
+    out[0] += 19 * (uint64_t)(a >> 51);
+}
+static void fmul(felem out, const felem in2, const felem in) {
+    u128 t[5];
+    uint64_t r0 = in[0], r1 = in[1], r2 = in[2], r3 = in[3], r4 = in[4];
+    uint64_t s0 = in2[0], s1 = in2[1], s2 = in2[2], s3 = in2[3], s4 = in2[4], c;
+    t[0] = (u128)r0 * s0;
+    t[1] = (u128)r0 * s1 + (u128)r1 * s0;
+    t[2] = (u128)r0 * s2 + (u128)r2 * s0 + (u128)r1 * s1;
+    t[3] = (u128)r0 * s3 + (u128)r3 * s0 + (u128)r1 * s2 + (u128)r2 * s1;
+    t[4] = (u128)r0 * s4 + (u128)r4 * s0 + (u128)r3 * s1 + (u128)r1 * s3 +
+           (u128)r2 * s2;
+    r4 *= 19; r1 *= 19; r2 *= 19; r3 *= 19;
+    t[0] += (u128)r4 * s1 + (u128)r1 * s4 + (u128)r2 * s3 + (u128)r3 * s2;
+    t[1] += (u128)r4 * s2 + (u128)r2 * s4 + (u128)r3 * s3;
+    t[2] += (u128)r4 * s3 + (u128)r3 * s4;
+    t[3] += (u128)r4 * s4;
+    c = (uint64_t)(t[0] >> 51); r0 = (uint64_t)t[0] & FE_MASK;
+    t[1] += c; c = (uint64_t)(t[1] >> 51); r1 = (uint64_t)t[1] & FE_MASK;
+    t[2] += c; c = (uint64_t)(t[2] >> 51); r2 = (uint64_t)t[2] & FE_MASK;
+    t[3] += c; c = (uint64_t)(t[3] >> 51); r3 = (uint64_t)t[3] & FE_MASK;
+    t[4] += c; c = (uint64_t)(t[4] >> 51); r4 = (uint64_t)t[4] & FE_MASK;
+    r0 += c * 19; c = r0 >> 51; r0 &= FE_MASK;
+    r1 += c; c = r1 >> 51; r1 &= FE_MASK; r2 += c;
+    out[0] = r0; out[1] = r1; out[2] = r2; out[3] = r3; out[4] = r4;
+}
+static void fsquare(felem out, const felem in) { fmul(out, in, in); }
+
+static void fmontswap(felem a, felem b, uint64_t iswap) {
+    uint64_t m = (uint64_t)(-(int64_t)iswap);
+    for (int i = 0; i < 5; i++) {
+        uint64_t x = m & (a[i] ^ b[i]);
+        a[i] ^= x; b[i] ^= x;
+    }
+}
+
+/* out = x^(2^255-21) = x^(p-2), the field inverse (donna's addition chain). */
+static void crecip(felem out, const felem z) {
+    felem a, t0, b, c;
+    int i;
+    fsquare(a, z);                            /* 2 */
+    fsquare(t0, a); fsquare(t0, t0); fmul(b, t0, z);   /* 9 */
+    fmul(a, b, a);                            /* 11 */
+    fsquare(t0, a); fmul(b, t0, b);           /* 2^5 - 2^0 */
+    fsquare(t0, b); for (i = 1; i < 5; i++) fsquare(t0, t0); fmul(b, t0, b);
+    fsquare(t0, b); for (i = 1; i < 10; i++) fsquare(t0, t0); fmul(c, t0, b);
+    fsquare(t0, c); for (i = 1; i < 20; i++) fsquare(t0, t0); fmul(t0, t0, c);
+    fsquare(t0, t0); for (i = 1; i < 10; i++) fsquare(t0, t0); fmul(b, t0, b);
+    fsquare(t0, b); for (i = 1; i < 50; i++) fsquare(t0, t0); fmul(c, t0, b);
+    fsquare(t0, c); for (i = 1; i < 100; i++) fsquare(t0, t0); fmul(t0, t0, c);
+    fsquare(t0, t0); for (i = 1; i < 50; i++) fsquare(t0, t0); fmul(t0, t0, b);
+    /* z^(2^250-1) -> 5 squarings -> z^(2^255-32), * z^11 -> z^(2^255-21) = z^(p-2) */
+    for (i = 0; i < 5; i++) { fsquare(t0, t0); }
+    fmul(out, t0, a);
+}
+
+static void cmult(felem outx, felem outz, const uint8_t *scalar,
+                  const felem point) {
+    felem x1, x2, z2, x3, z3;
+    felem a, aa, b, bb, e, c, d, da, cb, t0, t1;
+    for (int i = 0; i < 5; i++) { x1[i] = point[i]; x3[i] = point[i]; }
+    for (int i = 0; i < 5; i++) { x2[i] = 0; z2[i] = 0; z3[i] = 0; }
+    x2[0] = 1; z3[0] = 1;
+    uint64_t swap = 0;
+    for (int t = 254; t >= 0; t--) {
+        uint64_t kt = (scalar[t >> 3] >> (t & 7)) & 1;
+        swap ^= kt;
+        fmontswap(x2, x3, swap);
+        fmontswap(z2, z3, swap);
+        swap = kt;
+        fsum(a, x2, z2); fdiff(b, x2, z2);
+        fsum(c, x3, z3); fdiff(d, x3, z3);
+        fmul(da, d, a); fmul(cb, c, b);
+        fsum(t0, da, cb); fdiff(t1, da, cb);
+        fsquare(x3, t0); fsquare(t1, t1); fmul(z3, x1, t1);
+        fsquare(aa, a); fsquare(bb, b);
+        fmul(x2, aa, bb); fdiff(e, aa, bb);
+        fscalar(t0, e); fsum(t0, aa, t0); fmul(z2, e, t0);
+    }
+    fmontswap(x2, x3, swap);
+    fmontswap(z2, z3, swap);
+    for (int i = 0; i < 5; i++) { outx[i] = x2[i]; outz[i] = z2[i]; }
+}
+
+/* RFC 7748 X25519(scalar, u-coordinate) -> shared u-coordinate. */
+void wo_x25519(uint8_t out[32], const uint8_t scalar[32],
+               const uint8_t point[32]) {
+    uint8_t e[32];
+    for (int i = 0; i < 32; i++) e[i] = scalar[i];
+    e[0] &= 248; e[31] &= 127; e[31] |= 64; /* clamp */
+    felem bp, x, z, zi;
+    fexpand(bp, point);
+    cmult(x, z, e, bp);
+    crecip(zi, z);
+    fmul(x, x, zi);
+    fcontract(out, x);
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {

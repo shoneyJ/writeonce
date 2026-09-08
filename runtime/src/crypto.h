@@ -48,6 +48,11 @@ int wo_hkdf_sha256_expand_label(const uint8_t secret[32], const char *label,
                                 size_t labellen, const uint8_t *ctx,
                                 size_t ctxlen, uint8_t *out, size_t outlen);
 
+/* X25519 (rv2 9 phase C, RFC 7748) — internal C, consumed by the TLS ECDHE
+ * handshake. out = X25519(scalar, u-coordinate). */
+void wo_x25519(uint8_t out[32], const uint8_t scalar[32],
+               const uint8_t point[32]);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif
