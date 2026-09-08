@@ -443,6 +443,10 @@ int wo_tls_client_start_with(wo_tls_client *c, const uint8_t *ch_msg,
     return 0;
 }
 
+void wo_tls_client_set_host(wo_tls_client *c, const char *host, size_t hostlen) {
+    c->host = host; c->hostlen = hostlen;
+}
+
 size_t wo_tls_client_take_output(wo_tls_client *c, uint8_t *out, size_t outcap) {
     size_t n = c->outn < outcap ? c->outn : 0;   /* all-or-nothing */
     if (n) { memcpy(out, c->out, n); c->outn = 0; }
@@ -492,6 +496,10 @@ static int on_flight_msg(wo_tls_client *c, const uint8_t *msg, size_t mlen) {
         p += 3;
         if (p + clen > mlen || clen > sizeof c->leaf) return -1;
         memcpy(c->leaf, msg + p, clen); c->leaflen = clen;
+        /* hostname check (when a host was set): a leaf whose SAN does not match
+         * the target host is a refused connection, not a warning. */
+        if (c->host && !wo_x509_check_host(c->leaf, c->leaflen, c->host, c->hostlen))
+            return -1;
         return tr_add(c, msg, mlen) == 0 ? 0 : -1;
     }
     if (type == 0x0f) {                               /* CertificateVerify */

@@ -420,5 +420,25 @@ int main(void) {
                                        "20250101000000") == 1);
     }
 
+    /* SAN / hostname verification (rv2 9 phase E completion, RFC 6125). */
+    {
+        #define HOST(cert, h) wo_x509_check_host(cert, sizeof cert, h, strlen(h))
+        /* leaf SANs: kat_rsa_leaf=leaf.example.com, kat_ec_leaf=leaf.example.org */
+        T_CHECK(HOST(kat_rsa_leaf, "leaf.example.com") == 1);
+        T_CHECK(HOST(kat_rsa_leaf, "LEAF.Example.CoM") == 1);   /* case-insensitive */
+        T_CHECK(HOST(kat_rsa_leaf, "other.example.com") == 0);
+        T_CHECK(HOST(kat_rsa_leaf, "leaf.example.org") == 0);
+        T_CHECK(HOST(kat_ec_leaf, "leaf.example.org") == 1);
+        /* a CA cert here has no SAN -> refused for any hostname */
+        T_CHECK(HOST(kat_rsa_ca, "wo-rsa-ca") == 0);
+        /* wildcard *.example.com matches one label, not zero or a sub-label */
+        T_CHECK(HOST(kat_wild_leaf, "api.example.com") == 1);
+        T_CHECK(HOST(kat_wild_leaf, "API.example.com") == 1);
+        T_CHECK(HOST(kat_wild_leaf, "example.com") == 0);       /* no label */
+        T_CHECK(HOST(kat_wild_leaf, "a.b.example.com") == 0);   /* extra label */
+        T_CHECK(HOST(kat_wild_leaf, "api.example.org") == 0);
+        #undef HOST
+    }
+
     return t_report("test_crypto");
 }

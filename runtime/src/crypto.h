@@ -80,6 +80,10 @@ int wo_x509_parse_spki(const uint8_t *cert_der, size_t cert_len, int *key_alg,
                        const uint8_t **ec_x, const uint8_t **ec_y);
 int wo_x509_check_validity(const uint8_t *cert_der, size_t cert_len,
                            const char now14[14]);
+/* Match hostname against the cert's subjectAltName dNSNames (RFC 6125, single
+ * left-most wildcard). 1 match, 0 otherwise (no SAN => 0; no CN fallback). */
+int wo_x509_check_host(const uint8_t *cert_der, size_t cert_len,
+                       const char *hostname, size_t hostlen);
 
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 

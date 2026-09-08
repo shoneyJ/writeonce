@@ -1485,6 +1485,9 @@ typedef struct {
     const uint8_t *ec_x, *ec_y;               /* 32 bytes each when EC P-256 */
     /* validity as YYYYMMDDHHMMSSZ-comparable 14-byte strings */
     char not_before[15], not_after[15];
+    /* the bytes of tbsCertificate after subjectPublicKeyInfo — optional
+     * uniqueIDs then the [3] extensions; walked lazily by the SAN check. */
+    const uint8_t *ext_area; size_t ext_area_len;
 } x509_cert;
 
 enum { WO_X509_SIG_RSA_PKCS1_SHA256 = 1, WO_X509_SIG_RSA_PSS_SHA256, WO_X509_SIG_ECDSA_P256_SHA256, WO_X509_SIG_UNKNOWN = 0 };
@@ -1596,10 +1599,90 @@ static int x509_parse(const uint8_t *der_buf, size_t len, x509_cert *c) {
     } else {
         return -1;
     }
-    /* extensions [3] (incl. SAN) are left for phase F, where the target
-     * hostname is known and can be matched. Chain signature, SPKI and
-     * validity are settled here. */
+    /* Remaining tbs bytes (optional uniqueIDs + [3] extensions). The chain
+     * signature, SPKI and validity are settled above; the SAN/hostname check
+     * walks this area on demand (wo_x509_check_host). */
+    c->ext_area = tbs.p; c->ext_area_len = (size_t)(tbs.end - tbs.p);
     return 0;
+}
+
+static const uint8_t OID_SAN[] = { 0x55, 0x1d, 0x11 };  /* 2.5.29.17 */
+
+/* Case-insensitive match of a presented dNSName pattern against a hostname,
+ * with a single left-most "*" wildcard (RFC 6125 §6.4.3): "*.example.com"
+ * matches one label, never a bare "example.com" or a dotted sub-label. */
+static int host_match(const char *pat, size_t patlen, const char *host,
+                      size_t hostlen) {
+    if (patlen == 0 || hostlen == 0) return 0;
+    if (pat[0] == '*') {
+        /* pattern is "*"+rest; rest must start with '.'. Match the suffix and
+         * require the wildcard to cover exactly one (non-empty, dot-free) label. */
+        if (patlen < 2 || pat[1] != '.') return 0;
+        const char *rest = pat + 1; size_t restlen = patlen - 1;
+        if (hostlen <= restlen) return 0;
+        size_t hlead = hostlen - restlen;          /* the part '*' must cover */
+        for (size_t i = 0; i < hlead; i++)
+            if (host[i] == '.') return 0;           /* no dot in the wildcard */
+        /* suffix compare, case-insensitive */
+        for (size_t i = 0; i < restlen; i++) {
+            char a = rest[i], b = host[hlead + i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            if (a != b) return 0;
+        }
+        return 1;
+    }
+    if (patlen != hostlen) return 0;
+    for (size_t i = 0; i < patlen; i++) {
+        char a = pat[i], b = host[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+/* Verify `hostname` against the certificate's subjectAltName dNSName entries
+ * (RFC 6125). Returns 1 if any SAN dNSName matches, 0 otherwise (including no
+ * SAN present — a cert without SAN is not accepted for a hostname). The legacy
+ * CN fallback is deliberately not implemented. */
+int wo_x509_check_host(const uint8_t *cert_der, size_t cert_len,
+                       const char *hostname, size_t hostlen) {
+    x509_cert c;
+    if (x509_parse(cert_der, cert_len, &c) != 0) return 0;
+    der r = { c.ext_area, c.ext_area + c.ext_area_len };
+    /* skip optional issuerUniqueID [1] (0x81) / subjectUniqueID [2] (0x82) */
+    while (r.p < r.end && (*r.p == 0x81 || *r.p == 0x82))
+        if (der_skip(&r) < 0) return 0;
+    der exp;
+    if (der_into(&r, 0xA3, &exp) < 0) return 0;    /* [3] EXPLICIT */
+    der exts;
+    if (der_into(&exp, 0x30, &exts) < 0) return 0; /* SEQUENCE OF Extension */
+    while (exts.p < exts.end) {
+        der ext;
+        if (der_into(&exts, 0x30, &ext) < 0) return 0;
+        const uint8_t *oid; size_t oidlen;
+        if (der_tlv(&ext, &oid, &oidlen) != 0x06) return 0;
+        /* optional critical BOOLEAN */
+        if (ext.p < ext.end && *ext.p == 0x01)
+            if (der_skip(&ext) < 0) return 0;
+        const uint8_t *val; size_t vallen;
+        if (der_tlv(&ext, &val, &vallen) != 0x04) return 0;  /* OCTET STRING */
+        if (!oid_eq(oid, oidlen, OID_SAN, sizeof OID_SAN)) continue;
+        /* val = SEQUENCE OF GeneralName; dNSName is [2] IMPLICIT IA5String. */
+        der names = { val, val + vallen }, seq;
+        if (der_into(&names, 0x30, &seq) < 0) return 0;
+        while (seq.p < seq.end) {
+            const uint8_t *gn; size_t gnlen;
+            int tag = der_tlv(&seq, &gn, &gnlen);
+            if (tag < 0) return 0;
+            if (tag == 0x82 &&                        /* dNSName */
+                host_match((const char *)gn, gnlen, hostname, hostlen))
+                return 1;
+        }
+        return 0;                                     /* SAN present, no match */
+    }
+    return 0;                                          /* no SAN extension */
 }
 
 /* Verify `c`'s signature over its tbsCertificate using an issuer public key

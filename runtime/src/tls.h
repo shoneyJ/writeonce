@@ -145,8 +145,16 @@ typedef struct {
     uint8_t leaf[WO_TLS_LEAF_MAX]; size_t leaflen;
     uint16_t cv_scheme;
     uint8_t out[1024]; size_t outn;              /* bytes for the caller to send */
+    const char *host; size_t hostlen;            /* if set, leaf SAN is enforced */
     int st;                                      /* internal FSM state */
 } wo_tls_client;
+
+/* Enforce the leaf certificate's SAN against `host` during the handshake — a
+ * connection whose certificate does not match is refused. MUST be called
+ * (after start) for a real connection; if left unset the driver skips the
+ * hostname check (offline testing only, and MITM-unsafe on the wire). The
+ * string must outlive the handshake (not copied). */
+void wo_tls_client_set_host(wo_tls_client *c, const char *host, size_t hostlen);
 
 /* Start a handshake from a caller-built ClientHello handshake message and a
  * fixed X25519 private key (production passes fresh randomness; the KAT injects

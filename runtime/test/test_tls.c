@@ -295,5 +295,19 @@ int main(void) {
         T_CHECK(wo_tls_client_push_record(&c, rfl, sizeof drv_rec_flight) == WO_TLS_FAILED);
     }
 
+    /* Hostname enforcement: with a host set, the RFC 8448 leaf (which carries
+     * no SAN) is refused at the Certificate step. */
+    {
+        static wo_tls_client c;
+        uint8_t priv[32], ch[256];
+        memcpy(priv, drv_client_priv, 32); memcpy(ch, drv_ch_msg, sizeof drv_ch_msg);
+        wo_tls_client_start_with(&c, ch, sizeof drv_ch_msg, priv);
+        wo_tls_client_set_host(&c, "api.anthropic.com", 17);
+        uint8_t rsh[128]; memcpy(rsh, drv_rec_sh, sizeof drv_rec_sh);
+        wo_tls_client_push_record(&c, rsh, sizeof drv_rec_sh);
+        uint8_t rfl[1024]; memcpy(rfl, drv_rec_flight, sizeof drv_rec_flight);
+        T_CHECK(wo_tls_client_push_record(&c, rfl, sizeof drv_rec_flight) == WO_TLS_FAILED);
+    }
+
     return t_report("test_tls");
 }
