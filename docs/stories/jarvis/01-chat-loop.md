@@ -20,8 +20,10 @@ review_pending: "forks auto-approved 2026-09-08 for autonomous execution — dev
 ## Blocked until the outbound seam lands
 
 This iteration cannot run until `net.connect` (✅ landed) and runtime-v2
-[9](../runtime-v2/09-in-process-tls.md) TLS reach **phase F** (`net.connect_tls`
-+ the handshake). Crypto A–D are landed; E (X.509) and F (handshake) remain.
+[9](../runtime-v2/09-in-process-tls.md) TLS expose **`net.connect_tls`**. The
+crypto + handshake engine is landed and RFC-8448-gated (A–E, F1–F3c-core, the
+sans-io client driver, SAN/hostname); what remains is **F3c-net** — the socket
+glue that drives the driver over a real fd, plus a system CA trust-anchor walk.
 Everything below is buildable `.wo` on top of that seam plus porch 2/3/6/7.
 
 ## Decisions locked (auto-approved, review pending)

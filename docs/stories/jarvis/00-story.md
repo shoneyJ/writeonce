@@ -30,12 +30,15 @@ runtime work, now **partly built**:
   `getaddrinfo` DNS + blocking connect; the outbound half language 38 named).
 - **An outbound TLS client** — HTTPS over that socket — owned by
   runtime-v2 [9](../runtime-v2/09-in-process-tls.md) (in-process TLS), which
-  **retires the standing "TLS is the proxy's job" doctrine**. In progress: its
-  crypto foundations are landed and vector-gated — **A AEAD** (ChaCha20-Poly1305
-  + AES-GCM, runtime-v2 [8](../runtime-v2/08-symmetric-cipher.md) A–C),
-  **B HKDF**, **C X25519**, **D signatures** (RSA PKCS1/PSS + ECDSA-P256) — and
-  the remaining rungs (**E** ASN.1/X.509 chain, **F** record layer + handshake
-  FSM, **G** server) are what jarvis still waits on.
+  **retires the standing "TLS is the proxy's job" doctrine**. In progress and
+  mostly landed: **A AEAD** (ChaCha20-Poly1305 + AES-GCM), **B HKDF**,
+  **C X25519**, **D signatures** (RSA PKCS1/PSS + ECDSA-P256), **E X.509** +
+  **SAN/hostname**, **F1** record layer, **F2** key schedule, **F3a** message
+  layer, **F3b** offline handshake verification, and the **F3c-core sans-io
+  handshake driver** — all vector-gated against RFC 8448 and real cert chains.
+  What jarvis still waits on is **F3c-net**: the `net.connect_tls` builtin (the
+  socket glue driving that driver over a real fd) plus a system CA trust-anchor
+  walk — and **G** (inbound server) for porch, not jarvis.
 
 A **local-gateway alternative was considered and set aside**: jarvis could speak
 to a small companion process over a unix socket (`net.connect_unix`, id 107) or
@@ -90,7 +93,7 @@ Blockers, which must land before iteration 1 starts:
 | Blocker | Owner | State |
 | --- | --- | --- |
 | outbound TCP (`net.connect`) | language [38](../language-runtime-database/38-content-platform-capabilities.md) | ✅ **landed 2026-09-07** (`wob.h` id 110) |
-| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅, D signatures ✅ (RSA + ECDSA-P256); **E–G remain** |
+| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅, D signatures ✅, E X.509 ✅, F1 record ✅, F2 key schedule ✅, F3a messages ✅, F3b offline verify ✅, F3c-core sans-io handshake driver ✅, SAN/hostname ✅ (all KAT'd vs RFC 8448 / real certs); **remaining F3c-net**: system CA trust-anchor walk + `net.connect_tls` VM plumbing (live-gated), then G server |
 
 ## What this track does NOT own
 
