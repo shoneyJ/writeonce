@@ -60,9 +60,9 @@ past it is worth building until that seam is proven.
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | the chat loop | a prompt sent to one LLM, tokens streamed back to the browser, the conversation persisted durably | the outbound seam (language 38 + TLS); porch 2/3/6/7; wo-html |
-| 2 | tool use / the agent loop | function-calling and multi-step orchestration through actors — where "assistant" becomes "agent" | 1 |
-| 3 | retrieval (RAG) | embeddings + vector search over a document set; carries its own sub-gap — an embeddings call over the same outbound path, plus a vector store (pure-`.wo` or a new primitive, decided in that story) | 1, and the embeddings/vector decision |
+| 1 | [the chat loop](01-chat-loop.md) — ✅ `ready` (forks auto-approved, `review_pending`) | a prompt sent to one LLM, tokens streamed back to the browser, the conversation persisted durably | the outbound seam (TLS phase F); porch 2/3/6/7; wo-html |
+| 2 | [tool use / the agent loop](02-tool-use.md) — `refine` | function-calling and multi-step orchestration through actors — where "assistant" becomes "agent" | 1 |
+| 3 | [retrieval (RAG)](03-retrieval.md) — `refine` | embeddings + vector search over a document set; carries its own sub-gap — an embeddings call over the same outbound path, plus a vector store (pure-`.wo` or a new primitive, decided in that story) | 1, and the embeddings/vector decision |
 
 Sketched, not committed — named so the shape is visible, not to schedule them:
 **model routing / multi-model** (choose a backend per request) and an **MCP
