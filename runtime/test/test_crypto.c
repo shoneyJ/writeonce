@@ -251,5 +251,42 @@ int main(void) {
              "76fc6ece0f4e1768cddf8853bb2d551b");
     wo_aes_force_software = 0;
 
+    /* HKDF-SHA256 (rv2 9 phase B): RFC 5869 Test Case 1 (Extract + Expand). */
+    {
+        uint8_t ikm[22], salt[13], info[10], prk[32], okm[42];
+        char got[85];
+        memset(ikm, 0x0b, 22);
+        for (int i = 0; i < 13; i++) salt[i] = (uint8_t)i;
+        for (int i = 0; i < 10; i++) info[i] = (uint8_t)(0xf0 + i);
+        wo_hkdf_sha256_extract(salt, 13, ikm, 22, prk);
+        hex(prk, 32, got);
+        T_CHECK(strcmp(got,
+            "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5") == 0);
+        T_CHECK(wo_hkdf_sha256_expand(prk, info, 10, okm, 42) == 0);
+        hex(okm, 42, got);
+        T_CHECK(strcmp(got,
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
+            "34007208d5b887185865") == 0);
+    }
+    /* HKDF-Expand-Label (RFC 8446 §7.1), reference values from a known-good
+     * HKDF-Expand over the tls13 label struct. secret = 0x00..0x1f. */
+    {
+        uint8_t secret[32], out[32], h[32];
+        char got[65];
+        for (int i = 0; i < 32; i++) secret[i] = (uint8_t)i;
+        T_CHECK(wo_hkdf_sha256_expand_label(secret, "key", 3, NULL, 0, out, 16) == 0);
+        hex(out, 16, got);
+        T_CHECK(strcmp(got, "9c9783cf77ea32d44f369da41f19f3cc") == 0);
+        T_CHECK(wo_hkdf_sha256_expand_label(secret, "iv", 2, NULL, 0, out, 12) == 0);
+        hex(out, 12, got);
+        T_CHECK(strcmp(got, "2f41c846a431a163814bcd71") == 0);
+        /* with a context = SHA-256("") (a Derive-Secret shape) */
+        wo_sha256((const uint8_t *)"", 0, h);
+        T_CHECK(wo_hkdf_sha256_expand_label(secret, "derived", 7, h, 32, out, 32) == 0);
+        hex(out, 32, got);
+        T_CHECK(strcmp(got,
+            "a5b1caa258481fdf573ac069f281e534e4a2379ec9e457e0c8494c227efb40e6") == 0);
+    }
+
     return t_report("test_crypto");
 }

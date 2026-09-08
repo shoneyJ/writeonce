@@ -199,6 +199,63 @@ void wo_hmac_sha256(const uint8_t *key, size_t klen, const uint8_t *msg,
     wo_sha256(outer, 96, out);
 }
 
+/* ---- HKDF-SHA256 (rv2 9 phase B: the TLS 1.3 key schedule) --------------
+ * RFC 5869 (Extract/Expand) + RFC 8446 §7.1 (Expand-Label), built on the
+ * existing HMAC-SHA256. Internal C consumed by the TLS handshake; no `.wo`
+ * builtin until a `.wo` consumer exists. SHA-256 only — the hash of the
+ * mandatory suites (TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256);
+ * SHA-384 is a later addition for the AES-256 suite. */
+
+void wo_hkdf_sha256_extract(const uint8_t *salt, size_t saltlen,
+                            const uint8_t *ikm, size_t ikmlen, uint8_t prk[32]) {
+    uint8_t zero[32] = { 0 };
+    if (!salt || saltlen == 0) { salt = zero; saltlen = 32; }
+    wo_hmac_sha256(salt, saltlen, ikm, ikmlen, prk);
+}
+
+/* OKM = T(1)||T(2)||…, T(i) = HMAC(PRK, T(i-1)||info||i). 0 ok, -1 on a
+ * too-long request (>255*32) or OOM. */
+int wo_hkdf_sha256_expand(const uint8_t prk[32], const uint8_t *info,
+                          size_t infolen, uint8_t *okm, size_t okmlen) {
+    if (okmlen > 255u * 32u) return -1;
+    uint8_t t[32];
+    size_t tlen = 0, done = 0;
+    uint8_t counter = 1;
+    while (done < okmlen) {
+        size_t mlen = tlen + infolen + 1;
+        uint8_t *m = (uint8_t *)malloc(mlen ? mlen : 1);
+        if (!m) return -1;
+        if (tlen) memcpy(m, t, tlen);
+        if (infolen) memcpy(m + tlen, info, infolen);
+        m[tlen + infolen] = counter;
+        wo_hmac_sha256(prk, 32, m, mlen, t);
+        free(m);
+        tlen = 32;
+        size_t n = okmlen - done < 32 ? okmlen - done : 32;
+        memcpy(okm + done, t, n);
+        done += n; counter++;
+    }
+    return 0;
+}
+
+/* RFC 8446 §7.1: HKDF-Expand-Label(secret, label, context, len) where
+ * HkdfLabel = uint16 len || opaque("tls13 "+label) || opaque(context). */
+int wo_hkdf_sha256_expand_label(const uint8_t secret[32], const char *label,
+                                size_t labellen, const uint8_t *ctx,
+                                size_t ctxlen, uint8_t *out, size_t outlen) {
+    if (labellen > 249 || ctxlen > 255 || outlen > 65535) return -1;
+    uint8_t info[2 + 1 + 255 + 1 + 255];
+    size_t p = 0;
+    info[p++] = (uint8_t)(outlen >> 8);
+    info[p++] = (uint8_t)outlen;
+    info[p++] = (uint8_t)(6 + labellen);
+    memcpy(info + p, "tls13 ", 6); p += 6;
+    memcpy(info + p, label, labellen); p += labellen;
+    info[p++] = (uint8_t)ctxlen;
+    if (ctxlen) { memcpy(info + p, ctx, ctxlen); p += ctxlen; }
+    return wo_hkdf_sha256_expand(secret, info, p, out, outlen);
+}
+
 /* ---- ChaCha20-Poly1305 AEAD (rv2 8 phase A, RFC 8439) ------------------
  * Hand-rolled, libc-only, constant-time by construction (add/xor/rotate and
  * limb arithmetic; no data-dependent branches, no table lookups). The
