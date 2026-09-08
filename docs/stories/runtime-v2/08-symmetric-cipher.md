@@ -79,8 +79,8 @@ work; TLS's ChaCha suite and the cookie consumer unblock at phase A.
 | Phase | Delivers |
 | --- | --- |
 | A — ChaCha20-Poly1305 | ✅ **LANDED 2026-09-08** — `chacha20poly1305_seal`/`open` (ids 111/112, bare-name crypto family). Hand-rolled ChaCha20 + poly1305-donna-32 + the RFC 8439 §2.8 AEAD, caller-supplied 12-byte nonce, 32-byte key, constant-time tag compare, `open` returns nil on auth failure. Matches the RFC 8439 §2.8.2 vector byte-for-byte; gated in `test/test_crypto.c` (§2.5.2 Poly1305 + §2.8.2 seal/open/tamper), ASan/UBSan clean |
-| B — AES-GCM via hardware | `aes_gcm_seal`/`open` on AES-NI + CLMUL (x86-64) / ARMv8 crypto ext — constant-time by hardware; TLS's mandatory suite |
-| C — AES-GCM software fallback | bitsliced constant-time AES + constant-time GHASH for CPUs without the extension; same builtins, dispatched at runtime |
+| B — AES-GCM via hardware | ✅ **LANDED 2026-09-08** (x86-64) — `aes_gcm_seal`/`open` (ids 113/114), AES-128/256 (by key length) on AES-NI + PCLMULQDQ, constant-time by hardware, CPUID-gated with target-attributed functions so the binary stays portable (no-AES-NI traps until phase C). Matches NIST SP 800-38D cases 4 & 16 byte-for-byte; KAT-gated in `test_crypto.c`, ASan/UBSan clean. **ARMv8 crypto-ext path deferred** (untestable on the x86-64 dev host) — folds into phase C |
+| C — AES-GCM portability | bitsliced constant-time AES + constant-time GHASH for CPUs without AES-NI, **and** the ARMv8 crypto-extension hardware path; same builtins, dispatched at runtime by CPUID/HWCAP |
 | D — the cookie wrapper | an `encryptcookie`-equivalent on porch [2](../porch/02-randomness-and-cookies.md)'s cookie machinery: random nonce (from `random_bytes`) prepended to the ciphertext, default ChaCha |
 | E — the gate | RFC 8439 + NIST GCM known-answer vectors, ASan/UBSan on both paths, and a reference cross-check (`openssl enc`/a scripted peer) |
 
