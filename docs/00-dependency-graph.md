@@ -342,7 +342,7 @@ flowchart LR
     classDef gap fill:#cf222e,color:#fff,stroke:none
 
     L29["language 29 @derive (⏸ hold)"]:::held
-    L38["language 38 net.connect (refine)"]:::refine
+    L38["language 38 net.connect ✅ landed (id 110); proxy middleware now buildable"]:::done
     L43["runtime-v2 8 symmetric cipher (refine, NEW 2026-09-06)"]:::refine
     L30["runtime-v2 7 observability (refine, moved from language 30, 2026-09-06)"]:::refine
     L18["language 18 TTL cache + transaction{} (⏸ hold)"]:::held
@@ -422,6 +422,62 @@ unicode width node) and its brainstorm's terminfo fork. Sibling reuse:
 the alacritty Wayland stage reuses GFDPASS + GVTE; the zen CDP driver
 now lacks only a WebSocket client; skillhost (28) has its stdin
 transport.
+
+## 7. jarvis — the AI-assistant track and everything it waits on
+
+The sixth track ([jarvis](stories/jarvis/00-story.md)): an AI assistant built in
+writeonce. Only **jarvis 1** (the chat loop) is close to startable; it sits on
+two chains — the **outbound HTTPS path** (the real blocker, mostly runtime-v2 9's
+TLS ladder) and the **framework path** (porch, all `ready`). Phase-level, because
+the TLS ladder is where the waiting actually happens.
+
+```mermaid
+flowchart TD
+    classDef done fill:#1a7f37,color:#fff,stroke:none
+    classDef ready fill:#0969da,color:#fff,stroke:none
+    classDef refine fill:#eac54f,color:#000,stroke:none
+    classDef held fill:#6e7781,color:#fff,stroke:none
+
+    NC["net.connect (id 110) ✅"]:::done
+    A["rv2 9 A — AEAD ✅ (= rv2 8 A–C: ChaCha20-Poly1305 + AES-GCM)"]:::done
+    B["rv2 9 B — HKDF ✅"]:::done
+    C["rv2 9 C — X25519 ✅"]:::done
+    D["rv2 9 D — signatures: RSA-PSS/PKCS1 + ECDSA-P256"]:::refine
+    E["rv2 9 E — ASN.1/DER + X.509 chain + trust store"]:::refine
+    F["rv2 9 F — record layer + handshake FSM (client), net.connect_tls"]:::refine
+    G["rv2 9 G — inbound server (porch TLS termination)"]:::refine
+
+    P2["porch 2 randomness+cookies (ready)"]:::ready
+    P3["porch 3 sessions (ready)"]:::ready
+    P6["porch 6 streaming (ready)"]:::ready
+    P7["porch 7 SSE (ready)"]:::ready
+    WOHTML["wo-html / writeonce-view ✅"]:::done
+
+    J1["jarvis 1 — the chat loop (unwritten)"]:::refine
+    J2["jarvis 2 — tool use / agent loop"]:::refine
+    J3["jarvis 3 — retrieval (RAG) + embeddings/vector sub-gap"]:::refine
+
+    NC --> F
+    A --> F
+    B --> F
+    C --> D
+    D --> E
+    E --> F
+    F --> J1
+    P2 --> P3
+    P6 --> P7
+    P2 --> J1
+    P3 --> J1
+    P7 --> J1
+    WOHTML --> J1
+    J1 --> J2
+    J1 --> J3
+```
+
+The outbound path is the critical one: **A/B/C landed, D→E→F remain** (G is
+inbound, not needed for jarvis dialling out). The framework path (porch 2/3/6/7)
+is entirely `ready` and unblocked — buildable in parallel with the TLS ladder.
+jarvis 1 itself is not yet written; jarvis 2/3 follow it.
 
 ## Maintenance rule
 

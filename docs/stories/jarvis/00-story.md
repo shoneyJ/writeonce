@@ -24,16 +24,18 @@ therefore does not begin until two things exist.
 
 The design chosen is **direct outbound HTTPS** — jarvis dials the LLM API
 itself, keeping the pure single-binary story. That gates the whole track on
-language work:
+runtime work, now **partly built**:
 
-- **`net.connect`** — outbound TCP —
-  [language 38](../language-runtime-database/38-content-platform-capabilities.md),
-  written but not yet built.
-- **An outbound TLS client** — HTTPS over that socket — now owned by
-  runtime-v2 [9](../runtime-v2/09-in-process-tls.md) (in-process TLS), created
-  2026-09-07 from this gap. It **retires the standing "TLS is the proxy's job"
-  doctrine**, giving the runtime TLS both directions — the load-bearing choice
-  jarvis's direct-HTTPS design forced into the open.
+- **`net.connect`** — outbound TCP — ✅ **landed 2026-09-07** (`wob.h` id 110,
+  `getaddrinfo` DNS + blocking connect; the outbound half language 38 named).
+- **An outbound TLS client** — HTTPS over that socket — owned by
+  runtime-v2 [9](../runtime-v2/09-in-process-tls.md) (in-process TLS), which
+  **retires the standing "TLS is the proxy's job" doctrine**. In progress: its
+  crypto foundations are landed and vector-gated — **A AEAD** (ChaCha20-Poly1305
+  + AES-GCM, runtime-v2 [8](../runtime-v2/08-symmetric-cipher.md) A–C),
+  **B HKDF**, **C X25519** — and the remaining rungs (**D** signatures + RSA/X.509,
+  **E** ASN.1/X.509 chain, **F** record layer + handshake FSM, **G** server) are
+  what jarvis still waits on.
 
 A **local-gateway alternative was considered and set aside**: jarvis could speak
 to a small companion process over a unix socket (`net.connect_unix`, id 107) or
@@ -44,7 +46,7 @@ owns its own connection rather than shipping a second executable.
 
 ## Architecture
 
-    browser  ⇄  jarvis (a porch app)  ⇄  [blocked seam: net.connect + TLS]  ⇄  LLM API
+    browser  ⇄  jarvis (a porch app)  ⇄  net.connect ✅ + TLS (rv2 9, in progress)  ⇄  LLM API
 
 Requests arrive at a porch web app; the answer streams the other way, token by
 token, LLM → jarvis → browser, over porch's SSE. Conversation state is durable
@@ -85,10 +87,10 @@ Consumed, and already `ready` or shipped:
 
 Blockers, which must land before iteration 1 starts:
 
-| Blocker | Owner |
-| --- | --- |
-| outbound TCP (`net.connect`) | language [38](../language-runtime-database/38-content-platform-capabilities.md) |
-| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS, created 2026-09-07 from this gap; **retires the proxy-termination doctrine** |
+| Blocker | Owner | State |
+| --- | --- | --- |
+| outbound TCP (`net.connect`) | language [38](../language-runtime-database/38-content-platform-capabilities.md) | ✅ **landed 2026-09-07** (`wob.h` id 110) |
+| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅; **D–G remain** |
 
 ## What this track does NOT own
 
