@@ -1,7 +1,7 @@
 ---
 track: runtime-v2
 iteration: "9"
-status: pending
+status: in-progress
 readiness: ready
 ---
 
@@ -74,7 +74,7 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | Phase | Delivers | Notes |
 | --- | --- | --- |
 | A — AEAD | AES-128/256-GCM (TLS 1.3 mandates AES-128-GCM) and ChaCha20-Poly1305 | **is runtime-v2 [8](08-symmetric-cipher.md)** — so 8 must include AES-GCM, not only ChaCha; this rung consumes it |
-| B — key schedule | HKDF-Extract/Expand on iteration 34's HMAC, HKDF-Expand-Label, the TLS 1.3 secret derivation | pure `.wo`-adjacent C over existing HMAC |
+| B — key schedule | ✅ **LANDED 2026-09-08** — `wo_hkdf_sha256_extract`/`expand` (RFC 5869) + `expand_label` (RFC 8446 §7.1), internal C over `hmac_sha256`; SHA-256 (the mandatory suites' hash; SHA-384 a later add). KAT-gated in `test_crypto.c` (RFC 5869 case 1 + Expand-Label vectors), ASan/UBSan clean. No builtin, no compiler change |
 | C — key exchange | X25519 (RFC 7748), constant-time | new primitive; the ECDHE shared secret feeding B |
 | D — signatures | RSA-PSS / RSA-PKCS#1v1.5 (bignum modexp) + ECDSA-P256, over the transcript and the chain | the hardest rung; RSA bignum + constant-time |
 | E — X.509 | ASN.1/DER parser, chain validation to a trust anchor, dates, hostname/SAN, system CA bundle | notoriously bug-prone; consumes D |
