@@ -7,6 +7,7 @@
 
 #include "crypto.h"
 #include "t.h"
+#include "x509_vectors.h"
 
 static void hex(const uint8_t *d, size_t n, char *out) {
     static const char *h = "0123456789abcdef";
@@ -361,6 +362,62 @@ int main(void) {
         T_CHECK(wo_ecdsa_p256_sha256_verify(qx, qy, r, s, h) == 0);
         h[0] ^= 0x01; r[0] ^= 0x01; /* tampered r */
         T_CHECK(wo_ecdsa_p256_sha256_verify(qx, qy, r, s, h) == 0);
+    }
+
+    /* X.509 chain verification (rv2 9 phase E) — real python-generated chains.
+     * RSA CA signs RSA leaf (SHA256withRSA); EC P-256 CA signs EC leaf
+     * (ecdsa-with-SHA256). Verifies leaf-against-CA, CA self-signature, SPKI
+     * extraction, and rejects a tampered leaf. */
+    {
+        /* RSA chain: leaf verifies against its CA, CA self-signs. */
+        T_CHECK(wo_x509_verify_one(kat_rsa_leaf, sizeof kat_rsa_leaf,
+                                   kat_rsa_ca, sizeof kat_rsa_ca) == 1);
+        T_CHECK(wo_x509_verify_one(kat_rsa_ca, sizeof kat_rsa_ca,
+                                   kat_rsa_ca, sizeof kat_rsa_ca) == 1);
+        /* wrong issuer (EC CA cannot have signed the RSA leaf) rejected */
+        T_CHECK(wo_x509_verify_one(kat_rsa_leaf, sizeof kat_rsa_leaf,
+                                   kat_ec_ca, sizeof kat_ec_ca) == 0);
+
+        /* EC chain: ECDSA signature path. */
+        T_CHECK(wo_x509_verify_one(kat_ec_leaf, sizeof kat_ec_leaf,
+                                   kat_ec_ca, sizeof kat_ec_ca) == 1);
+        T_CHECK(wo_x509_verify_one(kat_ec_ca, sizeof kat_ec_ca,
+                                   kat_ec_ca, sizeof kat_ec_ca) == 1);
+
+        /* SPKI extraction: RSA leaf yields an RSA key (alg 1), EC leaf an EC
+         * P-256 key (alg 2) with a 32-byte affine x. */
+        {
+            int ka; const uint8_t *n, *e, *x, *y; size_t nl, el;
+            T_CHECK(wo_x509_parse_spki(kat_rsa_leaf, sizeof kat_rsa_leaf, &ka,
+                                       &n, &nl, &e, &el, &x, &y) == 0);
+            T_CHECK(ka == 1 && nl >= 256 && el >= 1);
+            T_CHECK(wo_x509_parse_spki(kat_ec_leaf, sizeof kat_ec_leaf, &ka,
+                                       &n, &nl, &e, &el, &x, &y) == 0);
+            T_CHECK(ka == 2 && x != NULL && y != NULL);
+        }
+
+        /* Tampered leaf: flip a byte in the middle of the DER, expect reject.
+         * (Copy first — the KAT arrays are const.) */
+        {
+            static uint8_t bad[sizeof kat_rsa_leaf];
+            memcpy(bad, kat_rsa_leaf, sizeof bad);
+            bad[sizeof bad / 2] ^= 0x01;
+            T_CHECK(wo_x509_verify_one(bad, sizeof bad,
+                                       kat_rsa_ca, sizeof kat_rsa_ca) == 0);
+        }
+        /* Truncated DER never over-reads, always rejects. */
+        T_CHECK(wo_x509_verify_one(kat_rsa_leaf, 10,
+                                   kat_rsa_ca, sizeof kat_rsa_ca) == 0);
+
+        /* Validity window (certs are valid 2020-01-01 .. 2030-01-01). */
+        T_CHECK(wo_x509_check_validity(kat_rsa_leaf, sizeof kat_rsa_leaf,
+                                       "20250101000000") == 1);
+        T_CHECK(wo_x509_check_validity(kat_rsa_leaf, sizeof kat_rsa_leaf,
+                                       "20190101000000") == 0); /* before */
+        T_CHECK(wo_x509_check_validity(kat_rsa_leaf, sizeof kat_rsa_leaf,
+                                       "20310101000000") == 0); /* after */
+        T_CHECK(wo_x509_check_validity(kat_ec_leaf, sizeof kat_ec_leaf,
+                                       "20250101000000") == 1);
     }
 
     return t_report("test_crypto");

@@ -69,6 +69,18 @@ int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
                                 const uint8_t r[32], const uint8_t s[32],
                                 const uint8_t hash[32]);
 
+/* X.509 / ASN.1 DER (rv2 9 phase E, core). Internal C consumed by the TLS
+ * handshake. key_alg / return values use the WO_X509_* enums in crypto.c
+ * (RSA = 1, EC_P256 = 2). */
+int wo_x509_verify_one(const uint8_t *cert_der, size_t cert_len,
+                       const uint8_t *issuer_der, size_t issuer_len);
+int wo_x509_parse_spki(const uint8_t *cert_der, size_t cert_len, int *key_alg,
+                       const uint8_t **rsa_n, size_t *rsa_n_len,
+                       const uint8_t **rsa_e, size_t *rsa_e_len,
+                       const uint8_t **ec_x, const uint8_t **ec_y);
+int wo_x509_check_validity(const uint8_t *cert_der, size_t cert_len,
+                           const char now14[14]);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif

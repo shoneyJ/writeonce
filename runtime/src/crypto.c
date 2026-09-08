@@ -1432,6 +1432,256 @@ int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
     return fp_eq(xr, rv) ? 1 : 0;
 }
 
+/* ---- X.509 / ASN.1 DER (rv2 9 phase E, core) ----------------------------
+ * A defensive DER reader and the certificate-field extraction TLS needs:
+ * tbsCertificate (raw, for signature verification), the signature algorithm,
+ * the signature, the SubjectPublicKeyInfo (RSA n/e or EC point), validity, and
+ * the dNSName SANs. Single-cert signature verification dispatches to the
+ * phase-D verifiers. Every length and bound is checked; a malformed input is a
+ * rejection, never an over-read. Internal C; the consumer is the TLS handshake.
+ * Vectors: a python-generated cert in test_crypto.c. */
+
+typedef struct { const uint8_t *p, *end; } der;
+
+/* Read one TLV. On success advances d->p past the value and returns the tag,
+ * with vp/vl the value span; returns -1 on any malformation. */
+static int der_tlv(der *d, const uint8_t **vp, size_t *vl) {
+    if (d->p >= d->end) return -1;
+    uint8_t tag = *d->p++;
+    if (d->p >= d->end) return -1;
+    size_t len = *d->p++;
+    if (len & 0x80) {
+        int nb = len & 0x7f;
+        if (nb == 0 || nb > 4 || d->p + nb > d->end) return -1;
+        len = 0;
+        for (int i = 0; i < nb; i++) len = (len << 8) | *d->p++;
+    }
+    if (len > (size_t)(d->end - d->p)) return -1;
+    *vp = d->p; *vl = len; d->p += len;
+    return tag;
+}
+/* Expect a specific tag; return its value span as a sub-reader. */
+static int der_into(der *d, uint8_t want, der *out) {
+    const uint8_t *vp; size_t vl;
+    int tag = der_tlv(d, &vp, &vl);
+    if (tag != want) return -1;
+    out->p = vp; out->end = vp + vl;
+    return 0;
+}
+/* Skip one TLV of any tag. */
+static int der_skip(der *d) {
+    const uint8_t *vp; size_t vl;
+    return der_tlv(d, &vp, &vl) < 0 ? -1 : 0;
+}
+
+/* Parsed certificate. Spans point into the caller's DER buffer (no copy). */
+typedef struct {
+    const uint8_t *tbs; size_t tbs_len;       /* raw tbsCertificate (TLV) */
+    int sig_alg;                              /* WO_X509_SIG_* */
+    const uint8_t *sig; size_t sig_len;       /* signature bytes */
+    int key_alg;                              /* WO_X509_KEY_RSA / _EC_P256 */
+    const uint8_t *rsa_n; size_t rsa_n_len;
+    const uint8_t *rsa_e; size_t rsa_e_len;
+    const uint8_t *ec_x, *ec_y;               /* 32 bytes each when EC P-256 */
+    /* validity as YYYYMMDDHHMMSSZ-comparable 14-byte strings */
+    char not_before[15], not_after[15];
+} x509_cert;
+
+enum { WO_X509_SIG_RSA_PKCS1_SHA256 = 1, WO_X509_SIG_RSA_PSS_SHA256, WO_X509_SIG_ECDSA_P256_SHA256, WO_X509_SIG_UNKNOWN = 0 };
+enum { WO_X509_KEY_RSA = 1, WO_X509_KEY_EC_P256, WO_X509_KEY_UNKNOWN = 0 };
+
+static int oid_eq(const uint8_t *a, size_t al, const uint8_t *b, size_t bl) {
+    return al == bl && memcmp(a, b, al) == 0;
+}
+/* DER OID bodies (without the tag/len). */
+static const uint8_t OID_RSA_ENC[] = { 0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01 };
+static const uint8_t OID_SHA256_RSA[] = { 0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b };
+static const uint8_t OID_RSASSA_PSS[] = { 0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0a };
+static const uint8_t OID_EC_PUBKEY[] = { 0x2a,0x86,0x48,0xce,0x3d,0x02,0x01 };
+static const uint8_t OID_P256[] = { 0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07 };
+static const uint8_t OID_ECDSA_SHA256[] = { 0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x02 };
+
+static int alg_from_oid(const uint8_t *o, size_t l) {
+    if (oid_eq(o, l, OID_SHA256_RSA, sizeof OID_SHA256_RSA)) return WO_X509_SIG_RSA_PKCS1_SHA256;
+    if (oid_eq(o, l, OID_RSASSA_PSS, sizeof OID_RSASSA_PSS)) return WO_X509_SIG_RSA_PSS_SHA256;
+    if (oid_eq(o, l, OID_ECDSA_SHA256, sizeof OID_ECDSA_SHA256)) return WO_X509_SIG_ECDSA_P256_SHA256;
+    return WO_X509_SIG_UNKNOWN;
+}
+
+/* Parse an AlgorithmIdentifier SEQ { OID, params }, return the mapped sig alg. */
+static int parse_sigalg(der *d) {
+    der ai, oid;
+    const uint8_t *op; size_t ol;
+    if (der_into(d, 0x30, &ai) < 0) return WO_X509_SIG_UNKNOWN;
+    (void)oid;
+    if (der_tlv(&ai, &op, &ol) != 0x06) return WO_X509_SIG_UNKNOWN;
+    return alg_from_oid(op, ol);
+}
+
+/* Copy up to 14 chars of a UTCTime/GeneralizedTime into a YYYYMMDDHHMMSS
+ * buffer (UTCTime YY -> 20YY/19YY heuristic). */
+static void norm_time(const uint8_t *v, size_t l, int utc, char out[15]) {
+    char buf[16]; size_t n = 0;
+    if (utc) { /* YYMMDDHHMMSSZ */
+        int yy = (v[0]-'0')*10 + (v[1]-'0');
+        const char *cent = yy >= 50 ? "19" : "20";
+        buf[n++]=cent[0]; buf[n++]=cent[1];
+        for (size_t i=0;i<12 && i<l;i++) buf[n++]=(char)v[i];
+    } else { /* YYYYMMDDHHMMSSZ */
+        for (size_t i=0;i<14 && i<l;i++) buf[n++]=(char)v[i];
+    }
+    while (n < 14) buf[n++]='0';
+    memcpy(out, buf, 14); out[14]=0;
+}
+
+/* Parse a Certificate DER into c. 0 ok, -1 malformed/unsupported. */
+static int x509_parse(const uint8_t *der_buf, size_t len, x509_cert *c) {
+    memset(c, 0, sizeof *c);
+    der top, cert;
+    top.p = der_buf; top.end = der_buf + len;
+    if (der_into(&top, 0x30, &cert) < 0) return -1;      /* Certificate SEQ */
+    /* tbsCertificate: capture its full TLV span for signature verification */
+    const uint8_t *tbs_start = cert.p;
+    der tbs;
+    if (der_into(&cert, 0x30, &tbs) < 0) return -1;
+    c->tbs = tbs_start; c->tbs_len = (size_t)(cert.p - tbs_start);
+    /* signatureAlgorithm, signatureValue */
+    c->sig_alg = parse_sigalg(&cert);
+    const uint8_t *sp; size_t sl;
+    if (der_tlv(&cert, &sp, &sl) != 0x03 || sl < 1 || sp[0] != 0) return -1; /* BIT STRING, 0 unused */
+    c->sig = sp + 1; c->sig_len = sl - 1;
+
+    /* inside tbsCertificate */
+    const uint8_t *vp; size_t vl;
+    /* optional [0] version */
+    if (tbs.p < tbs.end && (uint8_t)*tbs.p == 0xa0) { if (der_skip(&tbs) < 0) return -1; }
+    if (der_tlv(&tbs, &vp, &vl) != 0x02) return -1;      /* serial INTEGER */
+    if (der_skip(&tbs) < 0) return -1;                    /* signature AlgId */
+    if (der_skip(&tbs) < 0) return -1;                    /* issuer Name */
+    /* validity SEQ { notBefore, notAfter } */
+    der val;
+    if (der_into(&tbs, 0x30, &val) < 0) return -1;
+    int t1 = der_tlv(&val, &vp, &vl); norm_time(vp, vl, t1 == 0x17, c->not_before);
+    int t2 = der_tlv(&val, &vp, &vl); norm_time(vp, vl, t2 == 0x17, c->not_after);
+    if (t1 < 0 || t2 < 0) return -1;
+    if (der_skip(&tbs) < 0) return -1;                    /* subject Name */
+    /* SubjectPublicKeyInfo SEQ { AlgId SEQ { OID, params }, BIT STRING } */
+    der spki, alg;
+    if (der_into(&tbs, 0x30, &spki) < 0) return -1;
+    if (der_into(&spki, 0x30, &alg) < 0) return -1;
+    const uint8_t *ko; size_t kol;
+    if (der_tlv(&alg, &ko, &kol) != 0x06) return -1;
+    const uint8_t *keybits; size_t keybitslen;
+    if (der_tlv(&spki, &keybits, &keybitslen) != 0x03 || keybitslen < 1 || keybits[0] != 0) return -1;
+    keybits++; keybitslen--;
+    if (oid_eq(ko, kol, OID_RSA_ENC, sizeof OID_RSA_ENC)) {
+        c->key_alg = WO_X509_KEY_RSA;
+        der rk; rk.p = keybits; rk.end = keybits + keybitslen;
+        der rseq;
+        if (der_into(&rk, 0x30, &rseq) < 0) return -1;   /* RSAPublicKey SEQ */
+        const uint8_t *np; size_t nl;
+        if (der_tlv(&rseq, &np, &nl) != 0x02) return -1; /* modulus */
+        while (nl > 0 && np[0] == 0) { np++; nl--; }      /* drop leading 0 */
+        c->rsa_n = np; c->rsa_n_len = nl;
+        const uint8_t *ep; size_t el;
+        if (der_tlv(&rseq, &ep, &el) != 0x02) return -1; /* exponent */
+        c->rsa_e = ep; c->rsa_e_len = el;
+    } else if (oid_eq(ko, kol, OID_EC_PUBKEY, sizeof OID_EC_PUBKEY)) {
+        /* params must be the P-256 OID */
+        const uint8_t *cp; size_t cl;
+        if (der_tlv(&alg, &cp, &cl) != 0x06 || !oid_eq(cp, cl, OID_P256, sizeof OID_P256)) return -1;
+        if (keybitslen != 65 || keybits[0] != 0x04) return -1; /* uncompressed point */
+        c->key_alg = WO_X509_KEY_EC_P256;
+        c->ec_x = keybits + 1; c->ec_y = keybits + 33;
+    } else {
+        return -1;
+    }
+    /* extensions [3] (incl. SAN) are left for phase F, where the target
+     * hostname is known and can be matched. Chain signature, SPKI and
+     * validity are settled here. */
+    return 0;
+}
+
+/* Verify `c`'s signature over its tbsCertificate using an issuer public key
+ * already parsed into `issuer`. 1 valid, 0 otherwise. */
+static int x509_verify_sig(const x509_cert *c, const x509_cert *issuer) {
+    uint8_t h[32];
+    wo_sha256(c->tbs, c->tbs_len, h);
+    if (c->sig_alg == WO_X509_SIG_RSA_PKCS1_SHA256) {
+        if (issuer->key_alg != WO_X509_KEY_RSA) return 0;
+        return wo_rsa_pkcs1_sha256_verify(issuer->rsa_n, issuer->rsa_n_len,
+                                          issuer->rsa_e, issuer->rsa_e_len,
+                                          c->sig, c->sig_len, h);
+    }
+    if (c->sig_alg == WO_X509_SIG_RSA_PSS_SHA256) {
+        if (issuer->key_alg != WO_X509_KEY_RSA) return 0;
+        return wo_rsa_pss_sha256_verify(issuer->rsa_n, issuer->rsa_n_len,
+                                        issuer->rsa_e, issuer->rsa_e_len,
+                                        c->sig, c->sig_len, h, 32);
+    }
+    if (c->sig_alg == WO_X509_SIG_ECDSA_P256_SHA256) {
+        if (issuer->key_alg != WO_X509_KEY_EC_P256) return 0;
+        /* ECDSA signature is SEQ { r INTEGER, s INTEGER } */
+        der s; s.p = c->sig; s.end = c->sig + c->sig_len;
+        der sq;
+        if (der_into(&s, 0x30, &sq) < 0) return 0;
+        const uint8_t *rp, *spp; size_t rl, spl;
+        if (der_tlv(&sq, &rp, &rl) != 0x02) return 0;
+        if (der_tlv(&sq, &spp, &spl) != 0x02) return 0;
+        uint8_t r32[32] = {0}, s32[32] = {0};
+        while (rl > 0 && rp[0] == 0) { rp++; rl--; }
+        while (spl > 0 && spp[0] == 0) { spp++; spl--; }
+        if (rl > 32 || spl > 32) return 0;
+        memcpy(r32 + (32 - rl), rp, rl);
+        memcpy(s32 + (32 - spl), spp, spl);
+        return wo_ecdsa_p256_sha256_verify(issuer->ec_x, issuer->ec_y, r32, s32, h);
+    }
+    return 0;
+}
+
+/* Public: verify one DER cert's signature against a DER issuer cert (or the
+ * same cert, for a self-signed root). Also returns the parsed leaf fields via
+ * out (may be NULL). 1 valid, 0 otherwise. */
+int wo_x509_verify_one(const uint8_t *cert_der, size_t cert_len,
+                       const uint8_t *issuer_der, size_t issuer_len) {
+    x509_cert c, iss;
+    if (x509_parse(cert_der, cert_len, &c) != 0) return 0;
+    if (x509_parse(issuer_der, issuer_len, &iss) != 0) return 0;
+    return x509_verify_sig(&c, &iss);
+}
+
+/* Check a cert's validity window against a caller-supplied current time, given
+ * as a 14-char "YYYYMMDDHHMMSS" string (the format norm_time produces, so the
+ * comparison is a plain lexicographic memcmp). The current time is the caller's
+ * to supply — TLS (phase F) passes wall-clock; the test passes a fixed instant.
+ * 1 if not_before <= now <= not_after, 0 otherwise (or on parse failure). */
+int wo_x509_check_validity(const uint8_t *cert_der, size_t cert_len,
+                           const char now14[14]) {
+    x509_cert c;
+    if (x509_parse(cert_der, cert_len, &c) != 0) return 0;
+    if (memcmp(now14, c.not_before, 14) < 0) return 0;
+    if (memcmp(now14, c.not_after, 14) > 0) return 0;
+    return 1;
+}
+
+/* Extract SPKI: returns key_alg (WO_X509_KEY_*) and fills the key spans via the
+ * out params (RSA n/e or EC x/y). 0 alg on parse failure. */
+int wo_x509_parse_spki(const uint8_t *cert_der, size_t cert_len, int *key_alg,
+                       const uint8_t **rsa_n, size_t *rsa_n_len,
+                       const uint8_t **rsa_e, size_t *rsa_e_len,
+                       const uint8_t **ec_x, const uint8_t **ec_y) {
+    x509_cert c;
+    if (x509_parse(cert_der, cert_len, &c) != 0) { *key_alg = 0; return -1; }
+    *key_alg = c.key_alg;
+    if (rsa_n) *rsa_n = c.rsa_n;
+    if (rsa_n_len) *rsa_n_len = c.rsa_n_len;
+    if (rsa_e) *rsa_e = c.rsa_e;
+    if (rsa_e_len) *rsa_e_len = c.rsa_e_len;
+    if (ec_x) *ec_x = c.ec_x;
+    if (ec_y) *ec_y = c.ec_y;
+    return 0;
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {
