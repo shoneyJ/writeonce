@@ -82,6 +82,42 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | F — record + handshake (client) | 🔄 **F1–F3b LANDED 2026-09-08** — new `tls.c`/`tls.h`. **F1 record layer** (`wo_tls_record_seal`/`open`, RFC 8446 §5.2, per-record nonce = iv XOR seq, both suites) KAT'd byte-for-byte vs python. **F2 key schedule** (`wo_tls_derive_handshake`/`_application`/`_traffic_keys`/`_finished_verify`, §7.1) KAT'd byte-for-byte vs **RFC 8448 §3**. **F3a message layer** (`wo_tls_parse_server_hello` — attacker input, bounded, rejects HRR/bad suite/truncation; `wo_tls_build_client_hello` — SNI, x25519, sig-algs) KAT'd vs RFC 8448 SH + validated by an independent parser. **F3b offline handshake verification** (`wo_tls_verify_cert_verify` over phase E+D; server + client Finished) — the whole handshake **crypto** proven end-to-end offline vs RFC 8448. **F3c-core sans-io driver** (`wo_tls_client` — pure FSM, caller frames records: CH→SH→flight→Finished, message reassembly, per-message transcript timing, constant-time Finished, application encrypt/decrypt) KAT'd against the **full RFC 8448 record trace** — client Finished + first app record byte-for-byte, NewSessionTicket + server app data decrypt, tampered flight refused. **SAN/hostname** (`wo_x509_check_host`, RFC 6125) + driver enforcement landed. **Remaining F3c-net**: random ephemeral for production start, the multi-cert chain walk to a **system CA trust anchor**, and the `net.connect_tls` builtin + `net.read_tls`/`net.write_tls` VM plumbing (record framing over a real fd), gated live against `openssl s_server` | jarvis's path; the reason the story exists |
 | G — server (inbound) | the server handshake half, cert+key loading, signing CertificateVerify; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs |
 
+## F3c-net — the remaining slice (decisions auto-approved 2026-09-08, review pending)
+
+Everything security-critical is landed and offline-KAT'd. What is left is I/O
+integration that can only be gated **live** (against a local `openssl s_server`
+/ python TLS server), so it is a single cohesive slice, not further split:
+
+1. **Random ephemeral.** A `getrandom(2)`-backed source for the per-connection
+   X25519 private key (and the ClientHello random / session id). No `.wo`
+   randomness builtin is assumed; this is internal to the connect path.
+2. **CA-bundle loader.** Parse the system PEM bundle
+   (`/etc/ssl/certs/ca-certificates.crt`, confirmed present on the dev box) into
+   DER trust anchors for `wo_tls_verify_chain`. Built **with** its consumer, not
+   ahead of it (its memory model is the connect path's to own).
+3. **`net.connect_tls(host, port)` builtin.** TCP-connects (reusing the
+   `net.connect` path), generates the ephemeral, runs the sans-io driver —
+   framing records off the socket (read the 5-byte header, then the body) and
+   flushing `take_output` — until ESTABLISHED, then validates the chain
+   (`wo_tls_verify_chain` with the loaded anchors + the host). Plus
+   `net.read_tls` / `net.write_tls` for application data.
+   - **Handle representation (default, auto-approved):** mirror `net.connect` —
+     the builtin returns the **TCP fd as an Int**, and the runtime keeps the
+     `wo_tls_client` state in a side table keyed by fd; `net.read_tls` /
+     `net.write_tls` / `net.close` look it up and free it on close. This is the
+     smallest change to the language surface (no new class) and matches the
+     existing fd-based net verbs. The alternative — a first-class `TlsConn`
+     language object — is heavier and deferred unless the developer prefers it.
+   - **Blocking model (default, auto-approved):** the handshake and app I/O
+     block, exactly as today's `net.connect` does; the park-plane async refit is
+     a later refinement, not a v1 requirement.
+   - VM wiring: new `WO_B_NET_CONNECT_TLS` / `_READ_TLS` / `_WRITE_TLS` ids in
+     `wob.h`, `emit.ml` / `types.ml` registration, `loader.c` arities,
+     `builtin.c` dispatch, `sysio.c` implementation.
+4. **Live gate.** A `just` recipe dialing a local TLS server: full handshake,
+   chain+host validation, a request/response round-trip, and the negative cases
+   (wrong host, untrusted chain, expired cert) each refused.
+
 ## Consumers
 
 Named, so this is not a capability shipped as decoration:

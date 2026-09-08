@@ -76,6 +76,34 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-08 — the TLS 1.3 client security engine (rv2 9, A–F3c minus the socket glue)
+
+**What happened this session (code + docs):** the entire security-critical logic
+of a hand-rolled TLS 1.3 client is implemented and gold-KAT'd, in `runtime/src/`
+`crypto.c` + new `tls.c`/`tls.h`. Landed and vector-gated (ASan/UBSan clean):
+**E** X.509 chain-link verify + SPKI + validity + **SAN/hostname** (RFC 6125);
+**F1** record layer (RFC 8446 §5.2, both suites, byte-for-byte vs python);
+**F2** key schedule (§7.1, byte-for-byte vs **RFC 8448**); **F3a** ClientHello
+builder + ServerHello parser; **F3b** offline CertificateVerify + Finished
+verify; **F3c-core** the **sans-io handshake driver** (`wo_tls_client`, whole
+handshake driven offline against the RFC 8448 record trace — client Finished +
+app records byte-for-byte, tampered flight refused); **F3c-net security core**
+`wo_tls_verify_chain` (chain-link + anchor + host + validity, no partial trust).
+Tests: `test_tls` 100/0, `test_crypto` 95/0, full runtime suite 0 fail. Forks
+auto-approved 2026-09-08, marked `review_pending` in the story frontmatter for a
+developer second review before this drives a live connection.
+
+**Next step — F3c-net (the only remaining rung before jarvis unblocks):** the I/O
+integration that must be gated **live** (a local `openssl s_server` / python TLS
+server), specified with auto-approved defaults in
+[rv2 9 §F3c-net](runtime-v2/09-in-process-tls.md): a `getrandom` ephemeral, the
+system CA-bundle PEM loader, and the **`net.connect_tls`** builtin (default:
+returns the TCP fd as an Int with `wo_tls_client` state in an fd-keyed side
+table, blocking model like `net.connect`) driving the sans-io driver over a real
+socket, then `wo_tls_verify_chain` against the loaded anchors. Then **G** (inbound
+server) for porch. After that, jarvis 1 is buildable. (Separately still open:
+language 41's marshal fix — below — unblocking porch 9.)
+
 ### Brainstormed 2026-09-06 — the porch track (2–8) and language 41's fix, both to `ready`
 
 **What happened this session (docs only, no code):** the whole
