@@ -442,7 +442,7 @@ flowchart TD
     A["rv2 9 A — AEAD ✅ (= rv2 8 A–C: ChaCha20-Poly1305 + AES-GCM)"]:::done
     B["rv2 9 B — HKDF ✅"]:::done
     C["rv2 9 C — X25519 ✅"]:::done
-    D["rv2 9 D — signatures: RSA-PSS/PKCS1 + ECDSA-P256"]:::refine
+    D["rv2 9 D — signatures: RSA-PSS/PKCS1 + ECDSA-P256 ✅"]:::done
     E["rv2 9 E — ASN.1/DER + X.509 chain + trust store"]:::refine
     F["rv2 9 F — record layer + handshake FSM (client), net.connect_tls"]:::refine
     G["rv2 9 G — inbound server (porch TLS termination)"]:::refine
@@ -474,7 +474,7 @@ flowchart TD
     J1 --> J3
 ```
 
-The outbound path is the critical one: **A/B/C landed, D→E→F remain** (G is
+The outbound path is the critical one: **A/B/C/D landed, E→F remain** (G is
 inbound, not needed for jarvis dialling out). The framework path (porch 2/3/6/7)
 is entirely `ready` and unblocked — buildable in parallel with the TLS ladder.
 jarvis 1 itself is not yet written; jarvis 2/3 follow it.

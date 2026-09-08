@@ -33,9 +33,9 @@ runtime work, now **partly built**:
   **retires the standing "TLS is the proxy's job" doctrine**. In progress: its
   crypto foundations are landed and vector-gated — **A AEAD** (ChaCha20-Poly1305
   + AES-GCM, runtime-v2 [8](../runtime-v2/08-symmetric-cipher.md) A–C),
-  **B HKDF**, **C X25519** — and the remaining rungs (**D** signatures + RSA/X.509,
-  **E** ASN.1/X.509 chain, **F** record layer + handshake FSM, **G** server) are
-  what jarvis still waits on.
+  **B HKDF**, **C X25519**, **D signatures** (RSA PKCS1/PSS + ECDSA-P256) — and
+  the remaining rungs (**E** ASN.1/X.509 chain, **F** record layer + handshake
+  FSM, **G** server) are what jarvis still waits on.
 
 A **local-gateway alternative was considered and set aside**: jarvis could speak
 to a small companion process over a unix socket (`net.connect_unix`, id 107) or
@@ -90,7 +90,7 @@ Blockers, which must land before iteration 1 starts:
 | Blocker | Owner | State |
 | --- | --- | --- |
 | outbound TCP (`net.connect`) | language [38](../language-runtime-database/38-content-platform-capabilities.md) | ✅ **landed 2026-09-07** (`wob.h` id 110) |
-| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅; **D–G remain** |
+| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅, D signatures ✅ (RSA + ECDSA-P256); **E–G remain** |
 
 ## What this track does NOT own
 
