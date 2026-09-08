@@ -167,3 +167,167 @@ void wo_tls_finished_verify(const uint8_t base_key[32],
     wo_hkdf_sha256_expand_label(base_key, "finished", 8, NULL, 0, finished_key, 32);
     wo_hmac_sha256(finished_key, 32, transcript_hash, 32, out);
 }
+
+/* ---- handshake messages (phase F3, RFC 8446 §4) --------------------------
+ * Serialization uses a bounds-checked writer; parsing a bounds-checked
+ * reader. Every malformation in a parsed message is a rejection — these bytes
+ * are attacker-controlled. TLS wire lengths are fixed-size big-endian. */
+
+/* handshake types + extension/wire constants we use. */
+enum { HS_CLIENT_HELLO = 1, HS_SERVER_HELLO = 2 };
+enum {
+    EXT_SERVER_NAME = 0x0000, EXT_SUPPORTED_GROUPS = 0x000a,
+    EXT_SIGNATURE_ALGORITHMS = 0x000d, EXT_SUPPORTED_VERSIONS = 0x002b,
+    EXT_KEY_SHARE = 0x0033,
+};
+enum { GROUP_X25519 = 0x001d };
+enum { CS_AES_128_GCM = 0x1301, CS_CHACHA20_POLY1305 = 0x1303 };
+
+/* HelloRetryRequest is a ServerHello carrying this fixed random (§4.1.3). We
+ * do not implement HRR; detect it and reject. */
+static const uint8_t HRR_RANDOM[32] = {
+  0xCF,0x21,0xAD,0x74,0xE5,0x9A,0x61,0x11,0xBE,0x1D,0x8C,0x02,0x1E,0x65,0xB8,0x91,
+  0xC2,0xA2,0x11,0x16,0x7A,0xBB,0x8C,0x5E,0x07,0x9E,0x09,0xE2,0xC8,0xA8,0x33,0x9C
+};
+
+/* ---- bounded reader (all malformation -> ok=0) ---- */
+typedef struct { const uint8_t *p; size_t n, i; int ok; } rbuf;
+static uint8_t r8(rbuf *r) { if (r->i >= r->n) { r->ok = 0; return 0; } return r->p[r->i++]; }
+static uint16_t r16(rbuf *r) { uint16_t v = (uint16_t)r8(r) << 8; return v | r8(r); }
+static uint32_t r24(rbuf *r) {
+    uint32_t v = (uint32_t)r8(r) << 16; v |= (uint32_t)r8(r) << 8; return v | r8(r);
+}
+static const uint8_t *rbytes(rbuf *r, size_t k) {
+    if (!r->ok || r->i + k > r->n) { r->ok = 0; return NULL; }
+    const uint8_t *p = r->p + r->i; r->i += k; return p;
+}
+
+/* ---- bounded writer (overflow -> ok=0) ---- */
+typedef struct { uint8_t *p; size_t cap, n; int ok; } wbuf;
+static void wbytes(wbuf *w, const uint8_t *b, size_t k) {
+    if (!w->ok || w->n + k > w->cap) { w->ok = 0; return; }
+    memcpy(w->p + w->n, b, k); w->n += k;
+}
+static void w8(wbuf *w, uint8_t v) { wbytes(w, &v, 1); }
+static void w16(wbuf *w, uint16_t v) { uint8_t b[2] = { (uint8_t)(v >> 8), (uint8_t)v }; wbytes(w, b, 2); }
+/* Reserve a 16-bit length placeholder; returns its offset for backpatch. */
+static size_t w16_stub(wbuf *w) { size_t at = w->n; w16(w, 0); return at; }
+static void w16_fill(wbuf *w, size_t at) {
+    if (!w->ok) return;
+    size_t len = w->n - at - 2;
+    w->p[at] = (uint8_t)(len >> 8); w->p[at + 1] = (uint8_t)len;
+}
+
+/* Parse a ServerHello handshake message. Extracts the negotiated suite (as a
+ * WO_TLS_* enum) and the server's X25519 key-share. 0 ok, -1 on any
+ * malformation, an unsupported suite/group, or a HelloRetryRequest. */
+int wo_tls_parse_server_hello(const uint8_t *msg, size_t len, int *suite,
+                              uint8_t server_pub[32]) {
+    rbuf r = { msg, len, 0, 1 };
+    if (r8(&r) != HS_SERVER_HELLO) return -1;
+    uint32_t body = r24(&r);
+    if (!r.ok || body != len - 4) return -1;
+    if (r16(&r) != 0x0303) return -1;                 /* legacy_version */
+    const uint8_t *random = rbytes(&r, 32);
+    if (!random || memcmp(random, HRR_RANDOM, 32) == 0) return -1;  /* no HRR */
+    uint8_t sidlen = r8(&r);
+    if (sidlen > 32 || !rbytes(&r, sidlen)) return -1;
+    uint16_t cs = r16(&r);
+    if (cs == CS_AES_128_GCM) *suite = WO_TLS_AES_128_GCM_SHA256;
+    else if (cs == CS_CHACHA20_POLY1305) *suite = WO_TLS_CHACHA20_POLY1305_SHA256;
+    else return -1;
+    if (r8(&r) != 0) return -1;                       /* legacy_compression */
+
+    uint16_t extlen = r16(&r);
+    const uint8_t *ext = rbytes(&r, extlen);
+    if (!ext) return -1;
+    rbuf e = { ext, extlen, 0, 1 };
+    int have_ks = 0, have_ver = 0;
+    while (e.ok && e.i < e.n) {
+        uint16_t type = r16(&e), elen = r16(&e);
+        const uint8_t *ed = rbytes(&e, elen);
+        if (!ed) return -1;
+        rbuf d = { ed, elen, 0, 1 };
+        if (type == EXT_KEY_SHARE) {
+            if (r16(&d) != GROUP_X25519) return -1;   /* group */
+            if (r16(&d) != 32) return -1;             /* key_exchange length */
+            const uint8_t *k = rbytes(&d, 32);
+            if (!k) return -1;
+            memcpy(server_pub, k, 32);
+            have_ks = 1;
+        } else if (type == EXT_SUPPORTED_VERSIONS) {
+            if (r16(&d) != 0x0304) return -1;         /* selected_version 1.3 */
+            have_ver = 1;
+        }
+    }
+    if (!e.ok || !have_ks || !have_ver) return -1;
+    return 0;
+}
+
+/* Build a ClientHello handshake message (offering TLS 1.3, x25519, and
+ * RSA-PSS/RSA-PKCS1/ECDSA-P256 signatures) for `hostname`. random32 and
+ * session_id are caller-supplied (fresh randomness / a 32-byte legacy id for
+ * middlebox compatibility). Writes the message into out; *outlen gets its
+ * length. Returns 0 ok, -1 if out is too small. */
+int wo_tls_build_client_hello(const char *hostname, size_t hostlen,
+                              const uint8_t client_pub[32],
+                              const uint8_t random32[32],
+                              const uint8_t session_id[32], uint8_t *out,
+                              size_t outcap, size_t *outlen) {
+    wbuf w = { out, outcap, 0, 1 };
+    w8(&w, HS_CLIENT_HELLO);
+    /* 3-byte handshake length placeholder, backpatched at the end */
+    size_t hlen_at = w.n; w8(&w, 0); w8(&w, 0); w8(&w, 0);
+
+    w16(&w, 0x0303);                                  /* legacy_version */
+    wbytes(&w, random32, 32);
+    w8(&w, 32); wbytes(&w, session_id, 32);           /* legacy_session_id */
+    /* cipher_suites: AES-128-GCM, ChaCha20-Poly1305 */
+    w16(&w, 4); w16(&w, CS_AES_128_GCM); w16(&w, CS_CHACHA20_POLY1305);
+    w8(&w, 1); w8(&w, 0);                             /* compression: null */
+
+    size_t exts_at = w16_stub(&w);                    /* extensions length */
+
+    /* server_name (SNI) */
+    w16(&w, EXT_SERVER_NAME);
+    size_t sni_at = w16_stub(&w);
+    w16(&w, (uint16_t)(hostlen + 3));                 /* server_name_list len */
+    w8(&w, 0);                                         /* name_type host_name */
+    w16(&w, (uint16_t)hostlen);
+    wbytes(&w, (const uint8_t *)hostname, hostlen);
+    w16_fill(&w, sni_at);
+
+    /* supported_groups: x25519 */
+    w16(&w, EXT_SUPPORTED_GROUPS);
+    w16(&w, 4); w16(&w, 2); w16(&w, GROUP_X25519);
+
+    /* signature_algorithms */
+    w16(&w, EXT_SIGNATURE_ALGORITHMS);
+    w16(&w, 8); w16(&w, 6);
+    w16(&w, 0x0804);                                  /* rsa_pss_rsae_sha256 */
+    w16(&w, 0x0401);                                  /* rsa_pkcs1_sha256 */
+    w16(&w, 0x0403);                                  /* ecdsa_secp256r1_sha256 */
+
+    /* supported_versions: TLS 1.3 */
+    w16(&w, EXT_SUPPORTED_VERSIONS);
+    w16(&w, 3); w8(&w, 2); w16(&w, 0x0304);
+
+    /* key_share: x25519 */
+    w16(&w, EXT_KEY_SHARE);
+    w16(&w, 38); w16(&w, 36);                         /* ext len, client_shares len */
+    w16(&w, GROUP_X25519); w16(&w, 32);
+    wbytes(&w, client_pub, 32);
+
+    w16_fill(&w, exts_at);
+
+    /* backpatch the 3-byte handshake length */
+    if (w.ok) {
+        size_t blen = w.n - hlen_at - 3;
+        w.p[hlen_at] = (uint8_t)(blen >> 16);
+        w.p[hlen_at + 1] = (uint8_t)(blen >> 8);
+        w.p[hlen_at + 2] = (uint8_t)blen;
+    }
+    if (!w.ok) return -1;
+    *outlen = w.n;
+    return 0;
+}

@@ -8,6 +8,18 @@
 #include "t.h"
 #include "tls_record_vectors.h"
 
+/* RFC 8448 §3 recorded ServerHello handshake message (90 octets). */
+#define SH_MSG "\x02\x00\x00\x56\x03\x03\xa6\xaf\x06\xa4\x12\x18\x60\xdc\x5e\x6e\x60\x24\x9c\xd3\x4c\x95\x93\x0c\x8a\xc5\xcb\x14\x34\xda\xc1\x55\x77\x2e\xd3\xe2\x69\x28\x00\x13\x01\x00\x00\x2e\x00\x33\x00\x24\x00\x1d\x00\x20\xc9\x82\x88\x76\x11\x20\x95\xfe\x66\x76\x2b\xdb\xf7\xc6\x72\xe1\x56\xd6\xcc\x25\x3b\x83\x3d\xf1\xdd\x69\xb1\xb0\x4e\x75\x1f\x0f\x00\x2b\x00\x02\x03\x04"
+#define SH_MSG_LEN 90
+
+/* naive subsequence search (test-only). */
+static int contains(const uint8_t *hay, size_t hn, const uint8_t *needle, size_t nn) {
+    if (nn > hn) return 0;
+    for (size_t i = 0; i + nn <= hn; i++)
+        if (memcmp(hay + i, needle, nn) == 0) return 1;
+    return 0;
+}
+
 /* hex string -> bytes; returns the byte count. */
 static size_t unhex(const char *h, uint8_t *out) {
     size_t n = 0;
@@ -131,6 +143,48 @@ int main(void) {
         wo_tls_traffic_keys(ks.server_hs_traffic, 16, k, vv);
         T_CHECK(memcmp(k, s_hs_key, 16) == 0);
         T_CHECK(memcmp(vv, s_hs_iv, 12) == 0);
+    }
+
+    /* ServerHello parser (phase F3) against the RFC 8448 recorded message. */
+    {
+        uint8_t sh[SH_MSG_LEN]; memcpy(sh, SH_MSG, SH_MSG_LEN);
+        int suite = 0; uint8_t spub[32];
+        T_CHECK(wo_tls_parse_server_hello(sh, SH_MSG_LEN, &suite, spub) == 0);
+        T_CHECK(suite == WO_TLS_AES_128_GCM_SHA256);   /* 0x1301 */
+        uint8_t want_spub[32];
+        unhex("c9828876112095fe66762bdbf7c672e156d6cc253b833df1dd69b1b04e751f0f", want_spub);
+        T_CHECK(memcmp(spub, want_spub, 32) == 0);
+
+        /* Malformed inputs are rejected, never over-read. */
+        T_CHECK(wo_tls_parse_server_hello(sh, 10, &suite, spub) == -1);   /* truncated */
+        uint8_t bad[SH_MSG_LEN]; memcpy(bad, SH_MSG, SH_MSG_LEN);
+        bad[0] = 0x01;                                  /* wrong handshake type */
+        T_CHECK(wo_tls_parse_server_hello(bad, SH_MSG_LEN, &suite, spub) == -1);
+        memcpy(bad, SH_MSG, SH_MSG_LEN);
+        bad[39] = 0x02;                                 /* cipher suite 0x1302 unsupported */
+        T_CHECK(wo_tls_parse_server_hello(bad, SH_MSG_LEN, &suite, spub) == -1);
+    }
+
+    /* ClientHello builder (phase F3): structural checks + SNI/keyshare present. */
+    {
+        uint8_t cpub[32], rnd[32], sid[32];
+        for (int j = 0; j < 32; j++) { cpub[j] = (uint8_t)j; rnd[j] = (uint8_t)(j + 1); sid[j] = (uint8_t)(j + 2); }
+        const char *host = "api.anthropic.com";
+        uint8_t ch[512]; size_t chl = 0;
+        T_CHECK(wo_tls_build_client_hello(host, strlen(host), cpub, rnd, sid,
+                                          ch, sizeof ch, &chl) == 0);
+        T_CHECK(ch[0] == 1);                            /* client_hello */
+        size_t declared = ((size_t)ch[1] << 16) | ((size_t)ch[2] << 8) | ch[3];
+        T_CHECK(declared == chl - 4);                   /* length field consistent */
+        T_CHECK(contains(ch, chl, (const uint8_t *)host, strlen(host)));  /* SNI */
+        T_CHECK(contains(ch, chl, cpub, 32));           /* x25519 key share */
+        /* Our ServerHello parser must not accept a ClientHello. */
+        int suite; uint8_t spub[32];
+        T_CHECK(wo_tls_parse_server_hello(ch, chl, &suite, spub) == -1);
+        /* Too-small buffer refuses cleanly. */
+        uint8_t tiny[32]; size_t tl;
+        T_CHECK(wo_tls_build_client_hello(host, strlen(host), cpub, rnd, sid,
+                                          tiny, sizeof tiny, &tl) == -1);
     }
 
     return t_report("test_tls");

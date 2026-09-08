@@ -80,4 +80,23 @@ void wo_tls_traffic_keys(const uint8_t traffic_secret[32], size_t key_len,
 void wo_tls_finished_verify(const uint8_t base_key[32],
                             const uint8_t transcript_hash[32], uint8_t out[32]);
 
+/* ---- handshake messages (phase F3, RFC 8446 §4) -------------------------- */
+
+/* Parse a ServerHello handshake message (bytes start at the handshake type
+ * 0x02). Fills *suite (a WO_TLS_* enum) and the server's 32-byte X25519 key
+ * share. Returns 0, or -1 on any malformation, an unsupported suite/group, or
+ * a HelloRetryRequest. */
+int wo_tls_parse_server_hello(const uint8_t *msg, size_t len, int *suite,
+                              uint8_t server_pub[32]);
+
+/* Build a ClientHello handshake message offering TLS 1.3 / x25519 /
+ * RSA-PSS+RSA-PKCS1+ECDSA-P256, for `hostname` (SNI). random32 and the 32-byte
+ * legacy session_id are caller-supplied. Writes into out (cap outcap); *outlen
+ * gets the length. Returns 0, or -1 if the buffer is too small. */
+int wo_tls_build_client_hello(const char *hostname, size_t hostlen,
+                              const uint8_t client_pub[32],
+                              const uint8_t random32[32],
+                              const uint8_t session_id[32], uint8_t *out,
+                              size_t outcap, size_t *outlen);
+
 #endif
