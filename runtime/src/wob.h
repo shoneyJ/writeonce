@@ -552,9 +552,15 @@ enum {
      * for the plane, mirroring WO_B_NET_CONNECT_UNIX. A _dl deadline/park
      * variant is the next slice. Underneath runtime-v2 9's outbound TLS. */
     WO_B_NET_CONNECT = 110,   /* (host, port) -> Int: outbound TCP client fd */
+    /* ---- runtime-v2 8 phase A: ChaCha20-Poly1305 AEAD (RFC 8439). Bare-name
+     * crypto-family builtins beside sha256/hmac; key 32B, nonce 12B, caller-
+     * supplied. seal -> ciphertext||tag (Bytes); open -> ?Bytes (nil on auth
+     * failure or a too-short input). */
+    WO_B_CHACHA20POLY1305_SEAL = 111, /* (key, nonce, aad, plaintext) -> Bytes */
+    WO_B_CHACHA20POLY1305_OPEN = 112, /* (key, nonce, aad, ct||tag) -> ?Bytes */
 };
 
-#define WO_B_MAX 110u
+#define WO_B_MAX 112u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

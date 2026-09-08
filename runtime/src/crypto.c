@@ -6,6 +6,7 @@
  * (Sec-WebSocket-Accept is SHA-1 by RFC 6455, not a choice). */
 #include "crypto.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "obj.h"
@@ -198,6 +199,200 @@ void wo_hmac_sha256(const uint8_t *key, size_t klen, const uint8_t *msg,
     wo_sha256(outer, 96, out);
 }
 
+/* ---- ChaCha20-Poly1305 AEAD (rv2 8 phase A, RFC 8439) ------------------
+ * Hand-rolled, libc-only, constant-time by construction (add/xor/rotate and
+ * limb arithmetic; no data-dependent branches, no table lookups). The
+ * reference is RFC 8439; the paper .dev/reference/cryptography-06-00030.pdf
+ * describes the same algorithm. Vectors pinned in test/test_crypto.c. */
+
+static uint32_t rd32le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+static void wr32le(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void wr64le(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+#define CHACHA_QR(x, a, b, c, d)                                            \
+    do {                                                                   \
+        x[a] += x[b]; x[d] ^= x[a]; x[d] = rotl32(x[d], 16);               \
+        x[c] += x[d]; x[b] ^= x[c]; x[b] = rotl32(x[b], 12);               \
+        x[a] += x[b]; x[d] ^= x[a]; x[d] = rotl32(x[d], 8);                \
+        x[c] += x[d]; x[b] ^= x[c]; x[b] = rotl32(x[b], 7);                \
+    } while (0)
+
+static void chacha20_block(const uint8_t key[32], uint32_t counter,
+                           const uint8_t nonce[12], uint8_t out[64]) {
+    uint32_t s[16], x[16];
+    s[0] = 0x61707865u; s[1] = 0x3320646eu;
+    s[2] = 0x79622d32u; s[3] = 0x6b206574u;
+    for (int i = 0; i < 8; i++) s[4 + i] = rd32le(key + 4 * i);
+    s[12] = counter;
+    s[13] = rd32le(nonce); s[14] = rd32le(nonce + 4); s[15] = rd32le(nonce + 8);
+    for (int i = 0; i < 16; i++) x[i] = s[i];
+    for (int i = 0; i < 10; i++) {
+        CHACHA_QR(x, 0, 4, 8, 12); CHACHA_QR(x, 1, 5, 9, 13);
+        CHACHA_QR(x, 2, 6, 10, 14); CHACHA_QR(x, 3, 7, 11, 15);
+        CHACHA_QR(x, 0, 5, 10, 15); CHACHA_QR(x, 1, 6, 11, 12);
+        CHACHA_QR(x, 2, 7, 8, 13); CHACHA_QR(x, 3, 4, 9, 14);
+    }
+    for (int i = 0; i < 16; i++) wr32le(out + 4 * i, x[i] + s[i]);
+}
+
+/* XOR the ChaCha20 keystream (from `counter`) over `len` bytes. in==out safe. */
+static void chacha20_xor(const uint8_t key[32], const uint8_t nonce[12],
+                         uint32_t counter, const uint8_t *in, size_t len,
+                         uint8_t *out) {
+    uint8_t blk[64];
+    size_t off = 0;
+    while (len > 0) {
+        chacha20_block(key, counter, nonce, blk);
+        size_t n = len < 64 ? len : 64;
+        for (size_t i = 0; i < n; i++) out[off + i] = in[off + i] ^ blk[i];
+        off += n; len -= n; counter++;
+    }
+}
+
+/* Poly1305 one-shot (poly1305-donna 32-bit, RFC 8439 §2.5). key = r||s. */
+void wo_poly1305(const uint8_t key[32], const uint8_t *m, size_t bytes,
+                 uint8_t mac[16]) {
+    uint32_t t0 = rd32le(key), t1 = rd32le(key + 4),
+             t2 = rd32le(key + 8), t3 = rd32le(key + 12);
+    uint32_t r0 = t0 & 0x3ffffffu;
+    uint32_t r1 = ((t0 >> 26) | (t1 << 6)) & 0x3ffff03u;
+    uint32_t r2 = ((t1 >> 20) | (t2 << 12)) & 0x3ffc0ffu;
+    uint32_t r3 = ((t2 >> 14) | (t3 << 18)) & 0x3f03fffu;
+    uint32_t r4 = (t3 >> 8) & 0x00fffffu;
+    uint32_t s1 = r1 * 5, s2 = r2 * 5, s3 = r3 * 5, s4 = r4 * 5;
+    uint32_t h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0, c;
+
+    while (bytes > 0) {
+        uint8_t block[16];
+        size_t n = bytes < 16 ? bytes : 16;
+        uint32_t hibit;
+        if (n < 16) {
+            memset(block, 0, 16);
+            memcpy(block, m, n);
+            block[n] = 1;
+            hibit = 0;
+        } else {
+            memcpy(block, m, 16);
+            hibit = 1u << 24;
+        }
+        t0 = rd32le(block); t1 = rd32le(block + 4);
+        t2 = rd32le(block + 8); t3 = rd32le(block + 12);
+        h0 += t0 & 0x3ffffffu;
+        h1 += ((t0 >> 26) | (t1 << 6)) & 0x3ffffffu;
+        h2 += ((t1 >> 20) | (t2 << 12)) & 0x3ffffffu;
+        h3 += ((t2 >> 14) | (t3 << 18)) & 0x3ffffffu;
+        h4 += (t3 >> 8) | hibit;
+
+        uint64_t d0 = (uint64_t)h0 * r0 + (uint64_t)h1 * s4 + (uint64_t)h2 * s3 +
+                      (uint64_t)h3 * s2 + (uint64_t)h4 * s1;
+        uint64_t d1 = (uint64_t)h0 * r1 + (uint64_t)h1 * r0 + (uint64_t)h2 * s4 +
+                      (uint64_t)h3 * s3 + (uint64_t)h4 * s2;
+        uint64_t d2 = (uint64_t)h0 * r2 + (uint64_t)h1 * r1 + (uint64_t)h2 * r0 +
+                      (uint64_t)h3 * s4 + (uint64_t)h4 * s3;
+        uint64_t d3 = (uint64_t)h0 * r3 + (uint64_t)h1 * r2 + (uint64_t)h2 * r1 +
+                      (uint64_t)h3 * r0 + (uint64_t)h4 * s4;
+        uint64_t d4 = (uint64_t)h0 * r4 + (uint64_t)h1 * r3 + (uint64_t)h2 * r2 +
+                      (uint64_t)h3 * r1 + (uint64_t)h4 * r0;
+
+        c = (uint32_t)(d0 >> 26); h0 = (uint32_t)d0 & 0x3ffffffu;
+        d1 += c; c = (uint32_t)(d1 >> 26); h1 = (uint32_t)d1 & 0x3ffffffu;
+        d2 += c; c = (uint32_t)(d2 >> 26); h2 = (uint32_t)d2 & 0x3ffffffu;
+        d3 += c; c = (uint32_t)(d3 >> 26); h3 = (uint32_t)d3 & 0x3ffffffu;
+        d4 += c; c = (uint32_t)(d4 >> 26); h4 = (uint32_t)d4 & 0x3ffffffu;
+        h0 += c * 5; c = h0 >> 26; h0 &= 0x3ffffffu; h1 += c;
+
+        m += n; bytes -= n;
+    }
+
+    c = h1 >> 26; h1 &= 0x3ffffffu; h2 += c;
+    c = h2 >> 26; h2 &= 0x3ffffffu; h3 += c;
+    c = h3 >> 26; h3 &= 0x3ffffffu; h4 += c;
+    c = h4 >> 26; h4 &= 0x3ffffffu; h0 += c * 5;
+    c = h0 >> 26; h0 &= 0x3ffffffu; h1 += c;
+
+    uint32_t g0 = h0 + 5; c = g0 >> 26; g0 &= 0x3ffffffu;
+    uint32_t g1 = h1 + c; c = g1 >> 26; g1 &= 0x3ffffffu;
+    uint32_t g2 = h2 + c; c = g2 >> 26; g2 &= 0x3ffffffu;
+    uint32_t g3 = h3 + c; c = g3 >> 26; g3 &= 0x3ffffffu;
+    uint32_t g4 = h4 + c - (1u << 26);
+
+    uint32_t mask = (g4 >> 31) - 1;
+    g0 &= mask; g1 &= mask; g2 &= mask; g3 &= mask; g4 &= mask;
+    mask = ~mask;
+    h0 = (h0 & mask) | g0; h1 = (h1 & mask) | g1; h2 = (h2 & mask) | g2;
+    h3 = (h3 & mask) | g3; h4 = (h4 & mask) | g4;
+
+    h0 = (h0 | (h1 << 26));
+    h1 = ((h1 >> 6) | (h2 << 20));
+    h2 = ((h2 >> 12) | (h3 << 14));
+    h3 = ((h3 >> 18) | (h4 << 8));
+
+    uint64_t f = (uint64_t)h0 + rd32le(key + 16); h0 = (uint32_t)f;
+    f = (uint64_t)h1 + rd32le(key + 20) + (f >> 32); h1 = (uint32_t)f;
+    f = (uint64_t)h2 + rd32le(key + 24) + (f >> 32); h2 = (uint32_t)f;
+    f = (uint64_t)h3 + rd32le(key + 28) + (f >> 32); h3 = (uint32_t)f;
+
+    wr32le(mac, h0); wr32le(mac + 4, h1); wr32le(mac + 8, h2); wr32le(mac + 12, h3);
+}
+
+static int ct_memeq(const uint8_t *a, const uint8_t *b, size_t n) {
+    uint8_t d = 0;
+    for (size_t i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
+    return d == 0;
+}
+
+/* The AEAD MAC: Poly1305 over aad || pad16 || ct || pad16 || le64(aadlen) ||
+ * le64(ctlen). Returns 0, or -1 on OOM building the (16-aligned) buffer. */
+static int aead_tag(const uint8_t polykey[32], const uint8_t *aad, size_t aadlen,
+                    const uint8_t *ct, size_t ctlen, uint8_t tag[16]) {
+    size_t apad = (aadlen + 15u) & ~(size_t)15u;
+    size_t cpad = (ctlen + 15u) & ~(size_t)15u;
+    size_t mlen = apad + cpad + 16u;
+    uint8_t *mb = (uint8_t *)calloc(1, mlen);
+    if (!mb) return -1;
+    if (aadlen) memcpy(mb, aad, aadlen);
+    if (ctlen) memcpy(mb + apad, ct, ctlen);
+    wr64le(mb + apad + cpad, (uint64_t)aadlen);
+    wr64le(mb + apad + cpad + 8, (uint64_t)ctlen);
+    wo_poly1305(polykey, mb, mlen, tag);
+    free(mb);
+    return 0;
+}
+
+/* RFC 8439 §2.8 seal: out = ciphertext || 16-byte tag (out must hold
+ * ptlen+16). Returns 0, or -1 on OOM. */
+int wo_chacha20poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
+                             const uint8_t *aad, size_t aadlen,
+                             const uint8_t *pt, size_t ptlen, uint8_t *out) {
+    uint8_t polyblock[64];
+    chacha20_block(key, 0, nonce, polyblock); /* Poly1305 key = counter-0 block */
+    chacha20_xor(key, nonce, 1, pt, ptlen, out);
+    return aead_tag(polyblock, aad, aadlen, out, ptlen, out + ptlen);
+}
+
+/* Open: verify the tag over `ct` (ctlen, the ciphertext WITHOUT the tag) and
+ * `tag`, then decrypt into `out` (ctlen bytes). 0 = ok, 1 = auth failure,
+ * -1 = OOM. Constant-time tag compare; on failure `out` is not written. */
+int wo_chacha20poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
+                             const uint8_t *aad, size_t aadlen,
+                             const uint8_t *ct, size_t ctlen,
+                             const uint8_t tag[16], uint8_t *out) {
+    uint8_t polyblock[64], want[16];
+    chacha20_block(key, 0, nonce, polyblock);
+    if (aead_tag(polyblock, aad, aadlen, ct, ctlen, want) != 0) return -1;
+    if (!ct_memeq(want, tag, 16)) return 1;
+    chacha20_xor(key, nonce, 1, ct, ctlen, out);
+    return 0;
+}
+
 /* The VM half: Bytes in, fresh Bytes out. Wrong class id traps
  * WO_T_BOUNDS with the Bytes builtins' message shape. */
 static const wo_str *arg_bytes(uint64_t r, const char **msg) {
@@ -237,6 +432,59 @@ int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
                        (const uint8_t *)m->data, m->len, digest);
         dlen = 32;
         break;
+    }
+    case WO_B_CHACHA20POLY1305_SEAL: {
+        const wo_str *k = arg_bytes(R[B], msg);
+        const wo_str *n = k ? arg_bytes(R[B + 1], msg) : NULL;
+        const wo_str *a = n ? arg_bytes(R[B + 2], msg) : NULL;
+        const wo_str *p = a ? arg_bytes(R[B + 3], msg) : NULL;
+        if (!p) return WO_T_BOUNDS;
+        if (k->len != 32 || n->len != 12) {
+            *msg = "chacha20poly1305: key must be 32 bytes, nonce 12";
+            return WO_T_BOUNDS;
+        }
+        uint8_t *buf = (uint8_t *)malloc(p->len + 16u);
+        if (!buf) { *msg = "out of memory"; return WO_T_OOM; }
+        if (wo_chacha20poly1305_seal((const uint8_t *)k->data,
+                                     (const uint8_t *)n->data,
+                                     (const uint8_t *)a->data, a->len,
+                                     (const uint8_t *)p->data, p->len, buf) != 0) {
+            free(buf);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
+        wo_str *o = wo_bytes_new(rt, (const char *)buf, (uint32_t)(p->len + 16u));
+        free(buf);
+        if (!o) { *msg = "out of memory"; return WO_T_OOM; }
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
+    }
+    case WO_B_CHACHA20POLY1305_OPEN: {
+        const wo_str *k = arg_bytes(R[B], msg);
+        const wo_str *n = k ? arg_bytes(R[B + 1], msg) : NULL;
+        const wo_str *a = n ? arg_bytes(R[B + 2], msg) : NULL;
+        const wo_str *ctag = a ? arg_bytes(R[B + 3], msg) : NULL;
+        if (!ctag) return WO_T_BOUNDS;
+        if (k->len != 32 || n->len != 12) {
+            *msg = "chacha20poly1305: key must be 32 bytes, nonce 12";
+            return WO_T_BOUNDS;
+        }
+        if (ctag->len < 16) { R[A] = 0; return 0; } /* no room for a tag: reject */
+        uint32_t bodylen = ctag->len - 16u;
+        uint8_t *buf = (uint8_t *)malloc(bodylen ? bodylen : 1u);
+        if (!buf) { *msg = "out of memory"; return WO_T_OOM; }
+        int rc = wo_chacha20poly1305_open(
+            (const uint8_t *)k->data, (const uint8_t *)n->data,
+            (const uint8_t *)a->data, a->len,
+            (const uint8_t *)ctag->data, bodylen,
+            (const uint8_t *)ctag->data + bodylen, buf);
+        if (rc == -1) { free(buf); *msg = "out of memory"; return WO_T_OOM; }
+        if (rc != 0) { free(buf); R[A] = 0; return 0; } /* auth failure -> nil */
+        wo_str *o = wo_bytes_new(rt, (const char *)buf, bodylen);
+        free(buf);
+        if (!o) { *msg = "out of memory"; return WO_T_OOM; }
+        R[A] = (uint64_t)(uintptr_t)o;
+        return 0;
     }
     default:
         *msg = "unknown crypto builtin";

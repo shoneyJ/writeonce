@@ -42,6 +42,16 @@ static void t_hmac(const uint8_t *key, size_t klen, const char *msg,
     T_CHECK(strcmp(got, want) == 0);
 }
 
+/* rv2 8 phase A: ChaCha20-Poly1305 (RFC 8439 §2.5.2 Poly1305 + §2.8.2 AEAD) */
+static void t_poly1305(const uint8_t key[32], const char *msg, size_t mlen,
+                       const char *want) {
+    uint8_t tag[16];
+    char got[33];
+    wo_poly1305(key, (const uint8_t *)msg, mlen, tag);
+    hex(tag, 16, got);
+    T_CHECK(strcmp(got, want) == 0);
+}
+
 int main(void) {
     /* RFC 3174 */
     t_sha1("abc", 3, "a9993e364706816aba3e25717850c26c9cd0d89d");
@@ -106,6 +116,62 @@ int main(void) {
         t_hmac(k6, 131, "Test Using Larger Than Block-Size Key - Hash Key First",
                54,
                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+    }
+
+    /* RFC 8439 §2.5.2 — Poly1305 */
+    {
+        uint8_t pk[32];
+        for (int i = 0; i < 32; i++) pk[i] = 0;
+        static const uint8_t pkv[32] = {
+            0x85, 0xd6, 0xbe, 0x78, 0x57, 0x55, 0x6d, 0x33, 0x7f, 0x44, 0x52,
+            0xfe, 0x42, 0xd5, 0x06, 0xa8, 0x01, 0x03, 0x80, 0x8a, 0xfb, 0x0d,
+            0xb2, 0xfd, 0x4a, 0xbf, 0xf6, 0xaf, 0x41, 0x49, 0xf5, 0x1b };
+        memcpy(pk, pkv, 32);
+        t_poly1305(pk, "Cryptographic Forum Research Group", 34,
+                   "a8061dc1305136c6c22b8baf0c0127a9");
+    }
+
+    /* RFC 8439 §2.8.2 — ChaCha20-Poly1305 AEAD: seal matches the vector,
+     * open round-trips, and a tampered tag is rejected. */
+    {
+        uint8_t key[32], nonce[12], aad[12];
+        for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0x80 + i);
+        static const uint8_t nv[12] = { 0x07, 0x00, 0x00, 0x00, 0x40, 0x41,
+                                        0x42, 0x43, 0x44, 0x45, 0x46, 0x47 };
+        static const uint8_t av[12] = { 0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1,
+                                        0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7 };
+        memcpy(nonce, nv, 12);
+        memcpy(aad, av, 12);
+        const char *pt =
+            "Ladies and Gentlemen of the class of '99: If I could offer you "
+            "only one tip for the future, sunscreen would be it.";
+        size_t ptlen = strlen(pt);
+        uint8_t out[114 + 16];
+        int rc = wo_chacha20poly1305_seal(key, nonce, aad, 12,
+                                          (const uint8_t *)pt, ptlen, out);
+        T_CHECK(rc == 0);
+        char got[(114 + 16) * 2 + 1];
+        hex(out, ptlen + 16, got);
+        T_CHECK(strcmp(got,
+            "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6"
+            "3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36"
+            "92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc"
+            "3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd060"
+            "0691") == 0);
+
+        uint8_t back[114];
+        rc = wo_chacha20poly1305_open(key, nonce, aad, 12, out, ptlen,
+                                      out + ptlen, back);
+        T_CHECK(rc == 0);
+        T_CHECK(memcmp(back, pt, ptlen) == 0);
+
+        /* flip one tag bit — must be rejected (rc == 1), not decrypted */
+        uint8_t tampered[16];
+        memcpy(tampered, out + ptlen, 16);
+        tampered[0] ^= 0x01;
+        rc = wo_chacha20poly1305_open(key, nonce, aad, 12, out, ptlen,
+                                      tampered, back);
+        T_CHECK(rc == 1);
     }
 
     return t_report("test_crypto");

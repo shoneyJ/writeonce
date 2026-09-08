@@ -14,6 +14,18 @@ void wo_sha256(const uint8_t *msg, size_t len, uint8_t out[32]);
 void wo_hmac_sha256(const uint8_t *key, size_t klen, const uint8_t *msg,
                     size_t mlen, uint8_t out[32]);
 
+/* ChaCha20-Poly1305 AEAD (rv2 8 phase A, RFC 8439). Raw cores exposed for
+ * the unit test; the VM enters through wo_builtin_crypto. */
+void wo_poly1305(const uint8_t key[32], const uint8_t *m, size_t bytes,
+                 uint8_t mac[16]);
+int wo_chacha20poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
+                             const uint8_t *aad, size_t aadlen,
+                             const uint8_t *pt, size_t ptlen, uint8_t *out);
+int wo_chacha20poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
+                             const uint8_t *aad, size_t aadlen,
+                             const uint8_t *ct, size_t ctlen,
+                             const uint8_t tag[16], uint8_t *out);
+
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
 #endif
