@@ -13,6 +13,7 @@
  * The AEAD itself is phase A (crypto.h): AES-128-GCM or ChaCha20-Poly1305,
  * selected by the negotiated cipher suite. This file adds only the framing. */
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -216,6 +217,75 @@ static void w16_fill(wbuf *w, size_t at) {
     if (!w->ok) return;
     size_t len = w->n - at - 2;
     w->p[at] = (uint8_t)(len >> 8); w->p[at + 1] = (uint8_t)len;
+}
+
+/* signature_scheme wire values ClientHello offers. */
+enum {
+    SIG_RSA_PKCS1_SHA256 = 0x0401,
+    SIG_ECDSA_P256_SHA256 = 0x0403,
+    SIG_RSA_PSS_SHA256 = 0x0804,
+};
+
+/* Pull r/s (each padded to 32 bytes) out of a DER ECDSA-Sig-Value
+ * SEQ { INTEGER r, INTEGER s }. 0 ok, -1 malformed. */
+static int ecdsa_sig_rs(const uint8_t *sig, size_t len, uint8_t r32[32],
+                        uint8_t s32[32]) {
+    rbuf r = { sig, len, 0, 1 };
+    if (r8(&r) != 0x30) return -1;
+    size_t seqlen = r8(&r);
+    if (seqlen & 0x80) return -1;                     /* short-form only here */
+    for (int part = 0; part < 2; part++) {
+        if (r8(&r) != 0x02) return -1;                /* INTEGER */
+        size_t il = r8(&r);
+        const uint8_t *iv = rbytes(&r, il);
+        if (!iv) return -1;
+        while (il > 0 && iv[0] == 0) { iv++; il--; }   /* drop sign byte(s) */
+        if (il > 32) return -1;
+        uint8_t *dst = part == 0 ? r32 : s32;
+        memset(dst, 0, 32);
+        memcpy(dst + (32 - il), iv, il);
+    }
+    return r.ok ? 0 : -1;
+}
+
+/* Verify a server CertificateVerify (RFC 8446 §4.4.3). The signed content is
+ * 64*0x20 || "TLS 1.3, server CertificateVerify" || 0x00 || transcript_hash,
+ * and the signature is over that content under the leaf certificate's key.
+ * Only the three schemes ClientHello offered are accepted; the scheme must
+ * match the leaf key type. 1 valid, 0 otherwise. */
+int wo_tls_verify_cert_verify(const uint8_t *leaf_der, size_t leaf_len,
+                              uint16_t sig_scheme, const uint8_t *sig,
+                              size_t sig_len, const uint8_t transcript_hash[32]) {
+    int key_alg;
+    const uint8_t *n, *e, *x, *y; size_t nl, el;
+    if (wo_x509_parse_spki(leaf_der, leaf_len, &key_alg, &n, &nl, &e, &el, &x, &y) != 0)
+        return 0;
+
+    /* content = 64 spaces || context-string || 0x00 || transcript_hash */
+    static const char CTX[] = "TLS 1.3, server CertificateVerify";
+    uint8_t content[64 + 33 + 1 + 32];
+    memset(content, 0x20, 64);
+    memcpy(content + 64, CTX, 33);
+    content[64 + 33] = 0x00;
+    memcpy(content + 64 + 34, transcript_hash, 32);
+    uint8_t mhash[32];
+    wo_sha256(content, sizeof content, mhash);
+
+    switch (sig_scheme) {
+    case SIG_RSA_PSS_SHA256:
+        return key_alg == 1 &&
+               wo_rsa_pss_sha256_verify(n, nl, e, el, sig, sig_len, mhash, 32);
+    case SIG_RSA_PKCS1_SHA256:
+        return key_alg == 1 &&
+               wo_rsa_pkcs1_sha256_verify(n, nl, e, el, sig, sig_len, mhash);
+    case SIG_ECDSA_P256_SHA256: {
+        uint8_t r32[32], s32[32];
+        if (key_alg != 2 || ecdsa_sig_rs(sig, sig_len, r32, s32) != 0) return 0;
+        return wo_ecdsa_p256_sha256_verify(x, y, r32, s32, mhash);
+    }
+    default:
+        return 0;
+    }
 }
 
 /* Parse a ServerHello handshake message. Extracts the negotiated suite (as a

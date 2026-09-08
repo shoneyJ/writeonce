@@ -5,8 +5,10 @@
 #include <string.h>
 
 #include "tls.h"
+#include "crypto.h"
 #include "t.h"
 #include "tls_record_vectors.h"
+#include "tls_hs_vectors.h"
 
 /* RFC 8448 §3 recorded ServerHello handshake message (90 octets). */
 #define SH_MSG "\x02\x00\x00\x56\x03\x03\xa6\xaf\x06\xa4\x12\x18\x60\xdc\x5e\x6e\x60\x24\x9c\xd3\x4c\x95\x93\x0c\x8a\xc5\xcb\x14\x34\xda\xc1\x55\x77\x2e\xd3\xe2\x69\x28\x00\x13\x01\x00\x00\x2e\x00\x33\x00\x24\x00\x1d\x00\x20\xc9\x82\x88\x76\x11\x20\x95\xfe\x66\x76\x2b\xdb\xf7\xc6\x72\xe1\x56\xd6\xcc\x25\x3b\x83\x3d\xf1\xdd\x69\xb1\xb0\x4e\x75\x1f\x0f\x00\x2b\x00\x02\x03\x04"
@@ -185,6 +187,52 @@ int main(void) {
         uint8_t tiny[32]; size_t tl;
         T_CHECK(wo_tls_build_client_hello(host, strlen(host), cpub, rnd, sid,
                                           tiny, sizeof tiny, &tl) == -1);
+    }
+
+    /* Full offline handshake verification (phase F3b) against RFC 8448 §3:
+     * CertificateVerify (RSA-PSS), server Finished, and the client Finished we
+     * would send — driven from the recorded handshake messages. */
+    {
+        /* running transcripts over the recorded handshake messages */
+        uint8_t buf[2048]; size_t n = 0;
+        #define ADD(a) do { memcpy(buf + n, a, sizeof a); n += sizeof a; } while (0)
+        uint8_t th_cert[32], th_cv[32], th_sf[32];
+        n = 0; ADD(hs_ch); ADD(hs_sh); ADD(hs_ee); ADD(hs_cert);
+        wo_sha256(buf, n, th_cert);                    /* CH..Certificate */
+        memcpy(buf + n, hs_cv, sizeof hs_cv); n += sizeof hs_cv;
+        wo_sha256(buf, n, th_cv);                      /* CH..CertificateVerify */
+        memcpy(buf + n, hs_sfin, sizeof hs_sfin); n += sizeof hs_sfin;
+        wo_sha256(buf, n, th_sf);                      /* CH..server Finished */
+        #undef ADD
+
+        /* leaf cert out of the Certificate message; sig out of CertificateVerify */
+        size_t p = 4; p += 1 + hs_cert[4];             /* skip ctx (len 0) */
+        p += 3;                                         /* cert_list length */
+        size_t clen = ((size_t)hs_cert[p] << 16) | ((size_t)hs_cert[p+1] << 8) | hs_cert[p+2];
+        p += 3;
+        const uint8_t *leaf = hs_cert + p;
+        uint16_t scheme = ((uint16_t)hs_cv[4] << 8) | hs_cv[5];
+        size_t siglen = ((size_t)hs_cv[6] << 8) | hs_cv[7];
+        const uint8_t *sig = hs_cv + 8;
+        T_CHECK(scheme == 0x0804);                     /* rsa_pss_rsae_sha256 */
+
+        T_CHECK(wo_tls_verify_cert_verify(leaf, clen, scheme, sig, siglen, th_cert) == 1);
+        /* wrong transcript hash and tampered signature both reject */
+        uint8_t bad_th[32]; memcpy(bad_th, th_cert, 32); bad_th[0] ^= 1;
+        T_CHECK(wo_tls_verify_cert_verify(leaf, clen, scheme, sig, siglen, bad_th) == 0);
+        uint8_t bad_sig[256]; memcpy(bad_sig, sig, siglen); bad_sig[5] ^= 1;
+        T_CHECK(wo_tls_verify_cert_verify(leaf, clen, scheme, bad_sig, siglen, th_cert) == 0);
+        /* a scheme that mismatches the RSA leaf key is refused */
+        T_CHECK(wo_tls_verify_cert_verify(leaf, clen, 0x0403, sig, siglen, th_cert) == 0);
+
+        /* server Finished: recompute verify_data, compare to the recorded value
+         * (skip the 4-byte handshake header). */
+        uint8_t vd[32];
+        wo_tls_finished_verify(hs_s_traffic, th_cv, vd);
+        T_CHECK(memcmp(vd, hs_sfin + 4, 32) == 0);
+        /* client Finished we would send matches the recorded one. */
+        wo_tls_finished_verify(hs_c_traffic, th_sf, vd);
+        T_CHECK(memcmp(vd, hs_cfin + 4, 32) == 0);
     }
 
     return t_report("test_tls");

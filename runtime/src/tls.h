@@ -89,6 +89,16 @@ void wo_tls_finished_verify(const uint8_t base_key[32],
 int wo_tls_parse_server_hello(const uint8_t *msg, size_t len, int *suite,
                               uint8_t server_pub[32]);
 
+/* Verify a server CertificateVerify (RFC 8446 §4.4.3) against the leaf
+ * certificate DER, given the negotiated signature_scheme wire value, the
+ * signature, and the running transcript hash (ClientHello..Certificate). Only
+ * rsa_pss_rsae_sha256 (0x0804), rsa_pkcs1_sha256 (0x0401) and
+ * ecdsa_secp256r1_sha256 (0x0403) are accepted, and the scheme must match the
+ * leaf key type. Returns 1 valid, 0 otherwise. */
+int wo_tls_verify_cert_verify(const uint8_t *leaf_der, size_t leaf_len,
+                              uint16_t sig_scheme, const uint8_t *sig,
+                              size_t sig_len, const uint8_t transcript_hash[32]);
+
 /* Build a ClientHello handshake message offering TLS 1.3 / x25519 /
  * RSA-PSS+RSA-PKCS1+ECDSA-P256, for `hostname` (SNI). random32 and the 32-byte
  * legacy session_id are caller-supplied. Writes into out (cap outcap); *outlen
