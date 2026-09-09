@@ -14,13 +14,14 @@ frontmatter is the only place state lives, no directory encodes it.
 
 ## The problem, stated once
 
-An assistant's whole job is to reach a model, and the runtime cannot reach
-anything outbound. It learned to *listen* — sockets in 8/11/35, unix sockets and
-peer address in 35 and runtime-v2 — but it has never learned to *dial*: there is
-no `net.connect` (outbound TCP), confirmed against `runtime/src/wob.h` (the net
-builtins stop at listen/accept/read/write plus the unix-socket client), and no
-outbound TLS client anywhere. An LLM API is HTTPS on a remote host. jarvis
-therefore does not begin until two things exist.
+An assistant's whole job is to reach a model. When this track was written
+(2026-09-07) the runtime could not reach anything outbound — it had learned to
+*listen* (sockets in 8/11/35, unix sockets and peer address in 35 and runtime-v2)
+but never to *dial*: no `net.connect`, no outbound TLS. **Both gaps are now
+closed** (confirmed against `runtime/src/wob.h`): `net.connect` (id 110, TCP) and
+the full TLS 1.3 client `net.connect_tls`/`net.read_tls`/`net.write_tls` (ids
+115–117, runtime-v2 9, live-gated) — plus inbound `net.accept_tls` (118) for porch.
+An LLM API is HTTPS on a remote host, and the runtime can now dial it directly.
 
 The design chosen is **direct outbound HTTPS** — jarvis dials the LLM API
 itself, keeping the pure single-binary story. That gates the whole track on
@@ -49,7 +50,7 @@ owns its own connection rather than shipping a second executable.
 
 ## Architecture
 
-    browser  ⇄  jarvis (a porch app)  ⇄  net.connect ✅ + TLS (rv2 9, in progress)  ⇄  LLM API
+    browser  ⇄  jarvis (a porch app)  ⇄  net.connect_tls ✅ (rv2 9, done)  ⇄  LLM API
 
 Requests arrive at a porch web app; the answer streams the other way, token by
 token, LLM → jarvis → browser, over porch's SSE. Conversation state is durable
@@ -108,7 +109,7 @@ Blockers, which must land before iteration 1 starts:
 | local, in-process model inference | needs an ML runtime and heavy FFI — against the no-external-dependency doctrine |
 | the local-gateway companion process | considered and rejected (above) in favour of the single-binary story |
 | voice / audio in or out | a separate surface with its own capture and codec story; no rung asks for it |
-| starting before the blockers land | like [porch 9](../porch/09-idempotent-replay.md) waiting on language 41, jarvis waits on the outbound seam — documented, not worked around |
+| starting before porch is complete | the runtime blockers (`net.connect`, TLS, language 41) have all landed; what jarvis now waits on is the **framework** — the developer set jarvis to follow porch completion (see Sequencing) — documented, not worked around |
 
 ## Review protocol
 

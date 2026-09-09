@@ -5,11 +5,21 @@ status: done
 readiness: ready
 ---
 
-# porch 1 — store-backed middleware: rate limiting and idempotency
+# porch 1 — store-backed middleware: rate limiting
 
 > Part of [Story — `porch`, the writeonce web framework](00-story.md).
 > Source: [the Fiber parity study](../../plan/exploration/fiber/00-fiber-parity.md) §2.
 > Spec: [`2026-08-29-porch-store-backed-middleware-design.md`](../../superpowers/specs/2026-08-29-porch-store-backed-middleware-design.md).
+>
+> **Re-scoped 2026-08-30 — this iteration is now RATE LIMITING ONLY.**
+> Idempotency was built, reviewed and reverted; it moved to
+> [porch 9](09-idempotent-replay.md); the C-runtime crash that blocked it
+> ([language 41](../language-runtime-database/41-actor-arena-crash.md)) was
+> fixed 2026-09-09, so porch 9 is now buildable.
+> The split was made because the limiter is provably stable (five consecutive
+> gate runs, 56 checks, 0 failures) while idempotency's gate flaked on a
+> runtime defect — and a feature whose test passes some of the time is not
+> shipped. Detail in History.
 >
 > **Rewritten 2026-08-29** after the brainstorm settled every fork. The
 > iteration's premise changed: it was scoped as the cheapest slice because it
@@ -63,14 +73,15 @@ globally.
 
 | Phase | State |
 | --- | --- |
-| A — store convention | ✅ `519d411` two purpose-shaped tables; `3a9bddc` added the digest column the refusal criterion needs |
-| B — rate limiter | ✅ `676e651` the shared key-pool actor (also C's foundation), `153fd29` its `reset_at` unit fix; `a653dd0` the limiter delegates all counting to the pool, `831e9d8` `trust_proxy`'s absent-XFF fallback fix |
-| C — idempotency | ✅ `eae1b06` rebuilt on the same pool actor (the actor runs the route's `Handler` itself); three fix rounds: `e61015f` never replay a transient 5xx, `464147a` close the ephemeral-row race, `9ad5947` delete the ephemeral row after one read |
-| D — gate and ledger | ✅ + this commit — the pool-saturation gate leg (§19, `scripts/web-app-accept.sh`), README ledger rows to ✅, pool-size capacity docs, `make_pool`'s mod-by-zero guard |
+| A — store convention | ✅ `519d411`, `3a9bddc` — two purpose-shaped tables plus the digest column. `IdempotencyKey` is retained but unused; the file says why |
+| B — rate limiter | ✅ `676e651`, `153fd29` (the pool), `a653dd0`, `831e9d8` (the limiter). Exact counting under 30 parallel clients, restart-durable, `trust_proxy` off by default |
+| C — idempotency | ⏸ **moved to [porch 9](09-idempotent-replay.md).** Built and reviewed (`eae1b06`…`9ad5947`, plus the final wave), then reverted — see History |
+| D — gate and ledger | ✅ `21934b1`, `2ac1b8b`, and the re-scope commit. 56 checks, 0 failures, stable across five consecutive runs |
 
-Superseded pre-rewrite commits (`5b1e82a`, `aee7926`, `5c3544d`) are kept in
-History below rather than deleted — the reasoning for the rebuild survives
-there.
+**What the split bought.** Before it the suite reported anywhere from 0 to 6
+failures run to run; after it, five consecutive runs at 56/0. The limiter was
+finished either way — it was being held hostage by a defect in code it does not
+call.
 
 ## Phases
 

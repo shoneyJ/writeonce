@@ -418,9 +418,12 @@ need SHA-256, and that is the whole of the demand so far.
 
 Correctness is pinned to the published vectors rather than to itself:
 RFC 3174 for SHA-1, the FIPS/RFC 6234 vectors for SHA-256, RFC 4231 for HMAC,
-in `runtime/test/test_crypto.c` (18 checks). **There is still no RNG anywhere
-in the runtime** — HMAC authenticates a token but cannot mint one, which is why
-iteration 39 leads with a random-bytes builtin.
+in `runtime/test/test_crypto.c` (18 checks). ~~There is still no RNG anywhere in
+the runtime~~ — **corrected 2026-09-09:** the runtime now has a `getrandom(2)`
+source (`tls_rand` in `sysio.c`, used for TLS ephemeral keys, ClientHello
+randomness and RSA-PSS salts), but nothing exposes it to `.wo` yet — HMAC still
+cannot mint a token from the language, which is why iteration 39 / porch 2 lead
+with a `random_bytes` builtin that surfaces this source.
 
 ## Hand-rolled TLS 1.3 client (runtime-v2 9, ids 115–117)
 

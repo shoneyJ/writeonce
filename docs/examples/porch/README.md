@@ -72,9 +72,13 @@ porch     = { git = "https://github.com/shoneyj/porch", rev = "v0.1.0" }
   cannot live in the library). Parallel requests, stalled-client
   eviction and parked idle keep-alive are gate-proven. The plain
   `serve()` stays single-threaded for simple apps.
-- **TLS: none, anywhere.** Deploy behind nginx/caddy; the proxy terminates
-  TLS+ALPN and gives browsers HTTP/2 while this backend speaks HTTP/1.1
-  keep-alive. See the web-app sample's README for the nginx sketch.
+- **TLS: available in the runtime, not used by this sample yet.** Since
+  runtime-v2 9 (2026-09-09) the runtime terminates TLS 1.3 itself —
+  `net.accept_tls(listener, cert, key)` (see `docs/examples/tls-server`) — so a
+  front proxy is no longer mandatory. This sample still runs plaintext
+  HTTP/1.1 keep-alive behind nginx/caddy (which also supplies ALPN/HTTP/2);
+  see the web-app sample's README for the nginx sketch. HTTP/2 itself is a
+  separate future slice.
 - `Content-Length` bodies only (no chunked encoding); **WebSockets ARE
   supported since 2026-08-27** — `ws_accept` (`http/ws.wo`) performs the RFC
   6455 handshake and hands back the hijacked `net.Conn`, and `http/wsframe.wo`
@@ -211,7 +215,7 @@ needs to know, found in the course of building them ([porch 1](../../stories/por
 | --- | --- |
 | Constant-time comparison · Authorization parsing · Basic auth · principal | ✅ `http/auth.wo`, `req.principal` |
 | CORS | ✅ `Cors { allow_origin }` — preflight 204 (before) + origin stamp on every response (after) — slice 2 |
-| Security headers | ✅ `SecurityHeaders` after-middleware (nosniff, DENY, referrer-policy); HSTS stays at the TLS proxy by design — slice 2 |
+| Security headers | ✅ `SecurityHeaders` after-middleware (nosniff, DENY, referrer-policy); HSTS is set wherever TLS terminates — the front proxy today, or the runtime itself once a sample adopts `net.accept_tls` (runtime-v2 9) — slice 2 |
 | Host validation | ✅ `HostAllow { host }` answers 421 before any route — slice 2 |
 | Strict parsing | ✅ same item as Transport's row: duplicate Content-Length is a 400 |
 

@@ -63,9 +63,10 @@ GC pauses) live in the C runtime, not in `.wo`.
    an `expvar`-style JSON blob, or both. The format decides who can consume it
    without a translator.
 3. **Pull endpoint or push.** A mounted `/metrics` endpoint (pull) fits the
-   proxy-fronted, single-binary model; a push to a collector needs
-   `net.connect`, which does not exist (iteration 38) — so pull is almost
-   certainly the answer, but say so.
+   single-binary model; a push to a collector needs `net.connect` — which now
+   exists (id 110, landed 2026-09-07; `net.connect_tls` for an HTTPS collector,
+   runtime-v2 9) — so push is possible, but pull is still the simpler default;
+   say which.
 4. **Is stack-trace-on-trap in this iteration at all?** It is separable, it is
    the highest debugging value per line, and it touches the trap path rather than
    the metrics path — a candidate to land first and alone.

@@ -26,9 +26,12 @@ the token comes from the `WA_TOKEN` env var.
 
 ## TLS / HTTP2
 
-None here, deliberately: deploy behind nginx/caddy — the proxy terminates
-TLS+ALPN and speaks h2 to browsers while this backend serves HTTP/1.1
-keep-alive. Sketch:
+This sample runs plaintext behind nginx/caddy — the proxy terminates TLS+ALPN
+and speaks h2 to browsers while this backend serves HTTP/1.1 keep-alive. The
+runtime itself can now terminate TLS 1.3 (`net.accept_tls`, runtime-v2 9,
+2026-09-09; see `docs/examples/tls-server`), so the proxy is a deployment
+choice here, not a requirement — HTTP/2 is the remaining reason to keep it.
+Sketch:
 
     server {
       listen 443 ssl;

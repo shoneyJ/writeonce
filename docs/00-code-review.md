@@ -131,3 +131,28 @@ Two capability gaps this re-run named that the original critique did not, now
 `fs` has six builtins (ids 40–45) and can create, grow and read a file but never
 replace, truncate, delete or rename one; and there is no `net.connect` anywhere
 in `runtime/src/`, so no program can open an outbound connection.
+
+## Re-verification 2026-09-09
+
+Code is the source of truth; the standing critique's production-plumbing row and
+the 2026-08-26 re-verification have been overtaken by shipped work. Kept as
+written above; corrected here:
+
+- **"No TLS anywhere (proxy-mandated forever)"** — false since 2026-09-09.
+  Runtime-v2 9 landed hand-rolled TLS 1.3 in-process, both directions:
+  `net.connect_tls`/`net.read_tls`/`net.write_tls` (ids 115–117) and
+  `net.accept_tls` (118), live-gated (`just tls`, `just tls-server`). The
+  proxy-termination doctrine is retired.
+- **"no crypto primitives"** — false. `crypto.c` holds SHA-1/SHA-256/HMAC (iteration
+  34), ChaCha20-Poly1305, AES-GCM, HKDF, X25519, RSA-PSS/PKCS1 + ECDSA-P256 verify
+  *and* constant-time sign (RFC 6979), and an X.509 layer — all RFC/NIST-vector
+  gated.
+- **"there is no `net.connect` anywhere in `runtime/src/`"** — false since
+  2026-09-07 (`WO_B_NET_CONNECT` = 110; the id ceiling is now `WO_B_MAX` 118).
+- **"send is one-way — no reply/request-response"** — overtaken by iteration 24's
+  `call`; **"no supervision, links, or actor death"** — overtaken by iteration 24's
+  monitors/death notices; the cross-shard message double free that shadowed the
+  actor path (language 41) is fixed (`63065ff`, marshal on the crossing).
+- Still true: no HTTP/2, no debugger/LSP, git-rev-only deps, and — precisely —
+  **no RNG exposed to `.wo`** (the runtime has a `getrandom` source since rv2 9,
+  unsurfaced until porch 2's `random_bytes`).

@@ -30,8 +30,11 @@ randomness and cookies maps onto primitives writeonce already has.
 - **Randomness is the one gap.** fiber's `SecureToken` is
   `base64.RawURLEncoding` over 32 `crypto/rand` bytes; `UUIDv4` is the same
   entropy behind a format; `encryptcookie.GenerateKey` is a raw `rand.Read`.
-  All three **panic** if the source fails. writeonce has no RNG at all. This is
-  phase A, and it is the whole of the language work.
+  All three **panic** if the source fails. writeonce exposes no RNG to `.wo`
+  yet — the runtime does have a `getrandom(2)` source internally (runtime-v2 9's
+  TLS uses it for ephemeral keys), so phase A is surfacing that as a
+  `random_bytes` builtin, not inventing entropy. It is the whole of the language
+  work.
 - **Repeated `Set-Cookie` is not language work.** fiber gets multiple lines from
   fasthttp appending them; porch expresses the same with a `multi SetCookie`
   field, and `multi <Class>` is an existing language feature.

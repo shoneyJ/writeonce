@@ -27,7 +27,9 @@ readiness: ready
 > from `.wo`. This unblocked chain position 4: the WebSocket handshake needs
 > SHA-1, and `just chat` verifies the accept-key independently.
 >
-> **The gap it did NOT close:** there is still no RNG in the runtime. HMAC
+> **The gap it did NOT close:** no RNG reaches `.wo` (the runtime gained an
+> internal `getrandom(2)` source with runtime-v2 9's TLS, but no builtin exposes
+> it — porch 2 / iteration 39's `random_bytes` does that). HMAC
 > authenticates a token and cannot mint one, so CSRF and sessions stay blocked
 > — which is why [39](39-web-framework-parity.md) leads with a random-bytes
 > builtin rather than treating them as unblocked.

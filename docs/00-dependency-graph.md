@@ -302,8 +302,8 @@ flowchart TD
     P6["porch 6 streaming core"]:::ready
     P7["porch 7 SSE + compression"]:::ready
     P8["porch 8 static files + lifecycle"]:::ready
-    P9["porch 9 idempotent replay (⏸ hold; readiness: ready)"]:::held
-    L41["language 41 actor-arena hang (in-progress)"]:::held
+    P9["porch 9 idempotent replay (ready — unblocked 2026-09-09)"]:::ready
+    L41["language 41 actor-arena double free ✅ fixed 63065ff (cross-shard marshal)"]:::done
 
     RB --> P2
     P2 --> P3
@@ -315,7 +315,7 @@ flowchart TD
     P5 --> P8
     DFL --> P7
     TU --> P8
-    L41 -.blocks.-> P9
+    L41 -.fixed 2026-09-09 — no longer blocks.-> P9
     P1 -.re-scope 79e6da4: replay-on-retry split out of 1.-> P9
 ```
 
@@ -426,58 +426,78 @@ transport.
 ## 7. jarvis — the AI-assistant track and everything it waits on
 
 The sixth track ([jarvis](stories/jarvis/00-story.md)): an AI assistant built in
-writeonce. Only **jarvis 1** (the chat loop) is close to startable; it sits on
-two chains — the **outbound HTTPS path** (the real blocker, mostly runtime-v2 9's
-TLS ladder) and the **framework path** (porch, all `ready`). Phase-level, because
-the TLS ladder is where the waiting actually happens.
+writeonce. **The runtime side is done** — the whole outbound HTTPS path landed
+2026-09-09 (runtime-v2 9, both directions, live-gated) and language 41 is fixed.
+What jarvis 1 waits on now is purely the **framework**: the developer set the
+order *porch first, then jarvis*. So this graph is the porch→jarvis chain.
 
 ```mermaid
 flowchart TD
     classDef done fill:#1a7f37,color:#fff,stroke:none
     classDef ready fill:#0969da,color:#fff,stroke:none
     classDef refine fill:#eac54f,color:#000,stroke:none
-    classDef held fill:#6e7781,color:#fff,stroke:none
 
     NC["net.connect (id 110) ✅"]:::done
-    A["rv2 9 A — AEAD ✅ (= rv2 8 A–C: ChaCha20-Poly1305 + AES-GCM)"]:::done
-    B["rv2 9 B — HKDF ✅"]:::done
-    C["rv2 9 C — X25519 ✅"]:::done
-    D["rv2 9 D — signatures: RSA-PSS/PKCS1 + ECDSA-P256 ✅"]:::done
-    E["rv2 9 E — ASN.1/DER + X.509 chain + trust store"]:::refine
-    F["rv2 9 F — record layer + handshake FSM (client), net.connect_tls"]:::refine
-    G["rv2 9 G — inbound server (porch TLS termination)"]:::refine
-
-    P2["porch 2 randomness+cookies (ready)"]:::ready
-    P3["porch 3 sessions (ready)"]:::ready
-    P6["porch 6 streaming (ready)"]:::ready
-    P7["porch 7 SSE (ready)"]:::ready
+    TLS["rv2 9 in-process TLS 1.3 ✅ — net.connect_tls / read_tls / write_tls (115–117), net.accept_tls (118)"]:::done
+    L41["language 41 cross-shard marshal ✅"]:::done
     WOHTML["wo-html / writeonce-view ✅"]:::done
 
-    J1["jarvis 1 — the chat loop (unwritten)"]:::refine
-    J2["jarvis 2 — tool use / agent loop"]:::refine
-    J3["jarvis 3 — retrieval (RAG) + embeddings/vector sub-gap"]:::refine
+    RB["random_bytes builtin (porch 2 phase A / lang 39) — surfaces the runtime's getrandom"]:::ready
+    P2["porch 2 randomness + cookies (ready)"]:::ready
+    P3["porch 3 sessions (ready)"]:::ready
+    P4["porch 4 CSRF (ready)"]:::ready
+    P5["porch 5 routing + response ergonomics (ready, zero deps)"]:::ready
+    P6["porch 6 streaming core (ready)"]:::ready
+    P7["porch 7 SSE + compression (ready)"]:::ready
+    P8["porch 8 static + lifecycle (ready)"]:::ready
+    P9["porch 9 idempotent replay (ready — unblocked by L41)"]:::ready
 
-    NC --> F
-    A --> F
-    B --> F
-    C --> D
-    D --> E
-    E --> F
-    F --> J1
+    J1["jarvis 1 — the chat loop (ready; forks auto-approved, review_pending)"]:::ready
+    J2["jarvis 2 — tool use / agent loop (refine)"]:::refine
+    J3["jarvis 3 — retrieval (RAG) (refine)"]:::refine
+
+    NC --> TLS
+    RB --> P2
     P2 --> P3
+    P2 --> P4
+    P3 --> P4
+    P5 --> P7
+    P5 --> P8
     P6 --> P7
+    P6 --> P8
+    L41 --> P9
+
+    TLS --> J1
     P2 --> J1
     P3 --> J1
+    P4 -. CSRF-protects the POST once built .-> J1
+    P6 --> J1
     P7 --> J1
     WOHTML --> J1
     J1 --> J2
     J1 --> J3
 ```
 
-The outbound path is the critical one: **A/B/C/D landed, E→F remain** (G is
-inbound, not needed for jarvis dialling out). The framework path (porch 2/3/6/7)
-is entirely `ready` and unblocked — buildable in parallel with the TLS ladder.
-jarvis 1 itself is not yet written; jarvis 2/3 follow it.
+**jarvis 1's dependency list, from the code and the stories (2026-09-09):**
+
+| jarvis 1 needs | for | state |
+| --- | --- | --- |
+| `net.connect_tls` / `net.read_tls` / `net.write_tls` (runtime-v2 9) | dialing the LLM API over HTTPS, streaming its SSE reply | ✅ landed, live-gated |
+| `net.connect` (id 110) | the TCP under it | ✅ landed |
+| language 41 fix | actors carrying messages across shards without the double free | ✅ landed |
+| `@table` | durable `Conversation` / `Message` history | ✅ exists |
+| wo-html / writeonce-view | the chat page | ✅ exists |
+| **porch 2** randomness + cookies (needs the `random_bytes` builtin first) | session id + signed cookie | ready, **unbuilt** |
+| **porch 3** sessions | the session principal history is keyed to | ready, unbuilt (after 2) |
+| **porch 6** streaming core | incremental response writes | ready, unbuilt |
+| **porch 7** SSE + compression | token streaming to the browser | ready, unbuilt (after 5 + 6) |
+| porch 4 CSRF | protecting `POST /message` (bearer-gated until then) | ready, unbuilt (after 2 + 3) |
+| porch 5 routing + response ergonomics | the route surface | ready, unbuilt, zero deps |
+
+**Build order that satisfies it** (the porch critical path to jarvis): the
+`random_bytes` builtin → porch 2 → porch 3 → porch 5 → porch 6 → porch 7 (→ porch
+4, 8, 9 to complete porch) → **jarvis 1**. Nothing on the runtime side is
+outstanding; every remaining edge into jarvis 1 is a porch iteration.
 
 ## Maintenance rule
 
