@@ -76,6 +76,12 @@ Only iteration 1's scope is settled by this overview; every iteration file is
 written and refined to `ready` before its code lands, per the repo's story
 discipline.
 
+**Sequencing (set 2026-09-09):** the outbound TLS seam is done (runtime-v2 9),
+so jarvis is no longer blocked on the runtime. The developer set the build order:
+**jarvis is implemented once [porch](../porch/00-story.md) is complete and ready
+for all future jarvis iterations** — jarvis's chat loop is a porch app, so porch
+lands first, then jarvis 1–3.
+
 ## Dependencies
 
 Consumed, and already `ready` or shipped:

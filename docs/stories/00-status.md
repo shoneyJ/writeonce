@@ -76,7 +76,23 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
-### Landed 2026-09-09 — the outbound TLS 1.3 client is COMPLETE (rv2 9 A–F3c), live-gated; jarvis unblocked
+### Landed 2026-09-09 — rv2 9 in-process TLS 1.3 is COMPLETE, both directions, live-gated
+
+**rv2 9 DONE.** In-process TLS 1.3 both directions, hand-rolled, RFC-8448/real-cert
+gated, retiring the proxy-termination doctrine (34/38/porch corrected). **Outbound**
+`net.connect_tls`/`read_tls`/`write_tls` (ids 115–117) — `just tls` 5/0.
+**Inbound** `net.accept_tls` (id 118) — `just tls-server` 4/0 (openssl s_client,
+EC + RSA). Signing is the runtime's first private-key crypto: constant-time
+RSA-PSS + ECDSA-P256 with an RFC 6979 nonce, plus `wo_pkey_parse`
+(PKCS#8/PKCS#1/SEC1). `test_tls` 123/0, `test_crypto` 130/0, full suite 0 fail.
+Deferred (named follow-ups, none blocking): park-based handshake, `TlsConn`
+language object, connection pooling, close_notify on shutdown, complete-formula
+EC ladder. **Next: porch** (then jarvis — the developer set jarvis to follow
+porch completion). Separately open: language 41's marshal fix (unblocks porch 9).
+
+<details><summary>outbound client detail (F-phases)</summary>
+
+### Landed 2026-09-09 — the outbound TLS 1.3 client (rv2 9 A–F3c), live-gated; jarvis unblocked
 
 **What happened (code + docs):** a whole hand-rolled TLS 1.3 client, in
 `runtime/src/crypto.c` + new `tls.c`/`tls.h` + the `net.*_tls` builtins, gated
@@ -100,12 +116,19 @@ trap `WO_T_IO`; per-shard lazy read-only CA bundle `WO_CA_BUNDLE`; handshake
 deadline `WO_TLS_HANDSHAKE_MS`; basicConstraints+EKU hardening). Forks
 auto-approved 2026-09-08/09, `review_pending` for a developer second review.
 
-**Next step — jarvis 1 (the chat loop) is now buildable** (its outbound seam is
-open); or rv2 9 **G** (inbound TLS server) for porch, which also lets the
-proxy-termination doctrine docs (34/38/porch) be corrected. Deferred rv2 9
-follow-ups: a park-based handshake, a first-class `TlsConn` object, connection
-pooling. (Separately still open: language 41's marshal fix — below — unblocking
-porch 9.)
+(This F-phase detail is superseded by the rv2-9-DONE summary above.)
+
+</details>
+
+### Sequencing set 2026-09-09 — jarvis follows porch
+
+The developer set the order: **jarvis is implemented once porch is complete and
+ready for all future jarvis iterations**. So with rv2 9 (the outbound seam) done,
+the path is **porch first** — the framework the jarvis chat loop is written on —
+then jarvis 1–3. porch's own blocker is language 41's marshal fix (unblocks
+[porch 9](porch/09-idempotent-replay.md)); the porch track (2–8) is brainstormed
+to `ready`, its language bill three small builtins (`random_bytes`,
+`deflate`/`crc32`, `time.utc`).
 
 ### Brainstormed 2026-09-06 — the porch track (2–8) and language 41's fix, both to `ready`
 
@@ -1574,7 +1597,7 @@ starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 | 6 | [term.size + term.width](runtime-v2/06-term-size-width.md) | ✅ **DONE 2026-09-02** — TIOCGWINSZ read twin (nil = not a tty) and libc wcwidth under C.UTF-8; the only runtime work the whole wmux parity ladder needs |
 | 7 | [observability](runtime-v2/07-observability.md) | ⬜ `refine` — **moved here 2026-09-06** from language iteration 30 (`was_language_iteration: 30`). Runtime metrics/gauges, a `pprof`-equivalent profile, stack-trace-on-trap; consumers named (porch [8](porch/08-static-and-lifecycle.md)/[39](language-runtime-database/39-web-framework-parity.md), databasev2 [5](databasev2/05-bounded-tables-eviction.md), the limiter's lazy expiry). Forks: counters-only vs profiling, exposition format, pull vs push, trace-on-trap as a separable first slice. Stretches the track's charter (instrumentation, not processes/terminals/signals) — noted in the story |
 | 8 | [symmetric cipher (AEAD)](runtime-v2/08-symmetric-cipher.md) | 🔄 **in-progress** — the **first rung of the TLS ladder** (gates rv2 9). **Phases A + B + C LANDED 2026-09-08**: A ChaCha20-Poly1305 (ids 111/112, RFC 8439 §2.8.2); B AES-128/256-GCM (ids 113/114) via AES-NI+PCLMULQDQ; C portable constant-time software AES-GCM fallback (S-box via GF-inverse ladder, bit-by-bit GHASH) — AES-GCM now on any CPU, dispatched hw-or-sw. All hand-rolled, constant-time, both AES paths NIST cases 4 & 16 byte-exact, KAT-gated in test_crypto (**48/0**), ASan/UBSan clean. Remaining: D cookie wrapper → E gate (ARMv8 hw path deferred). Consumers: rv2 9 TLS + porch encrypted cookies |
-| 9 | [in-process TLS](runtime-v2/09-in-process-tls.md) | 🔄 **in-progress** — **outbound client COMPLETE 2026-09-09**, **retiring the "TLS is the proxy's job" doctrine** (34/38/porch). Locked: **hand-roll TLS 1.3**, **1.3-only**, **RSA+ECDSA+full X.509**. Ladder (KAT'd vs **RFC 8448** / real certs, ASan/UBSan clean): **A AEAD ✅ → B HKDF ✅ → C X25519 ✅ → D signatures ✅ → E X.509 + SAN/hostname + basicConstraints/EKU ✅ → F1 record ✅ → F2 key schedule ✅ → F3a messages ✅ → F3b offline verify ✅ → F3c-core sans-io driver ✅ → F3c-net `net.connect_tls`/`read_tls`/`write_tls` ✅** (ids 115–117; deadline-bounded blocking handshake then parked data plane; per-shard fd-keyed no-lock slots; CA bundle via `WO_CA_BUNDLE`). **Live-gated** `just tls` (5/0) from `.wo` incl. untrusted-chain + hostname-mismatch negatives. `tls.c`/`tls.h`; test_tls 107/0, test_crypto 104/0, full suite 0 fail. **Remaining: G inbound server** (porch) + deferred park-handshake/`TlsConn`/pooling. Forks auto-approved 2026-09-08/09, `review_pending`. The project's **highest-risk** work; mandatory reference-tested/constant-time/negative-test gates |
+| 9 | [in-process TLS](runtime-v2/09-in-process-tls.md) | ✅ **DONE 2026-09-09** — in-process TLS 1.3 **both directions**, **retired the "TLS is the proxy's job" doctrine** (34/38/porch corrected). Hand-rolled, 1.3-only, RSA+ECDSA+full X.509; KAT'd vs **RFC 8448** / real certs, ASan/UBSan clean. **A–E crypto** (AEAD, HKDF, X25519, sign/verify, X.509 + SAN + basicConstraints/EKU) → **F client** (`net.connect_tls`/`read_tls`/`write_tls`, ids 115–117) → **G server** (constant-time RSA-PSS + ECDSA-P256 signing w/ RFC 6979, server FSM, `net.accept_tls` id 118, `wo_pkey_parse`). Live-gated: `just tls` 5/0 (outbound) + `just tls-server` 4/0 (inbound, openssl s_client EC+RSA). test_tls 123/0, test_crypto 130/0, full suite 0 fail. Deferred follow-ups (non-blocking): park-based handshake, `TlsConn` object, connection pooling, close_notify, complete-formula EC ladder. Forks auto-approved 2026-09-08/09, `review_pending`. The project's **highest-risk** work — done |
 
 ### ▸ wmux — the terminal multiplexer track
 

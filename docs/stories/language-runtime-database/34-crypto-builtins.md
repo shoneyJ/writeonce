@@ -80,7 +80,11 @@ only the digests are missing.
 - Asymmetric crypto (ed25519 signatures/keypairs) — held iteration 21's
   spec decides what it needs when it unholds; this iteration lays the
   digest floor it will stand on.
-- TLS — permanently the proxy's job (framework doctrine).
+- TLS — ~~permanently the proxy's job (framework doctrine)~~ **RETIRED
+  2026-09-09.** The runtime now speaks TLS 1.3 in-process, both directions
+  (hand-rolled, RFC-8448-gated) — see [runtime-v2 9](../runtime-v2/09-in-process-tls.md).
+  This iteration's digests are a rung of that ladder, not a floor beneath a
+  proxy boundary.
 - CRC32 — the ledger lists it, but no consumer is blocked on it; it
   joins only if 24's spec finds a real need (rejecting speculative
   surface).

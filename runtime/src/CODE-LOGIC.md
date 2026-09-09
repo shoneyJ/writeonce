@@ -470,5 +470,17 @@ Any failure — DNS, connect, handshake, chain, or hostname — **traps `WO_T_IO
 loudly**, never a silent downgrade. The live gate is `just tls`
 (`scripts/tls-accept.sh`, `docs/examples/tls-client`): a `.wo` client against a
 local TLS 1.3 stub, happy path plus untrusted-chain and hostname-mismatch
-negatives. The inbound server (phase G) and a park-based handshake are not built
-yet.
+negatives.
+
+The **inbound server** (phase G) mirrors the client: `wo_tls_server` (the
+server FSM in `tls.c`), the runtime's first **private-key** ops in `crypto.c`
+(constant-time RSA-PSS + ECDSA-P256 signing with an RFC 6979 nonce, and
+`wo_pkey_parse` for PKCS#8/PKCS#1/SEC1 keys), and `net.accept_tls` (id 118) in
+`sysio.c`. A connection slot (`wo_tls_conn`) stores the negotiated application
+keys — not a driver — so `net.read_tls`/`net.write_tls` serve both directions
+over the record layer; the handshake drivers are transient. `net.close` drains a
+TLS conn before closing so the reply is never lost to an RST. Gate: `just
+tls-server` (`docs/examples/tls-server`) — `openssl s_client` validates the
+hand-rolled server (EC + RSA certs). Named follow-ups (not built): a park-based
+handshake, a `TlsConn` language object, connection pooling, and sending a TLS
+close_notify on shutdown.

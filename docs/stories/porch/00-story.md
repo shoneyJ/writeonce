@@ -74,7 +74,8 @@ risky work starts.
 | TTL cache, `transaction { }`, durable job queue | language: [iteration 18](../language-runtime-database/18-memory-db-features.md) |
 | a `proxy` middleware | language: [iteration 38](../language-runtime-database/38-content-platform-capabilities.md) — needs `net.connect`, which does not exist |
 | metrics, profiling, per-change CI, fuzzing | [runtime-v2 7](../runtime-v2/07-observability.md) — observability (was language iteration 30; metrics/profiling/trace-on-trap; CI + fuzz are tooling, split out) |
-| TLS, HTTP/2 | nobody — proxy-terminated by doctrine |
+| TLS | ✅ [runtime-v2 9](../runtime-v2/09-in-process-tls.md) — in-process TLS 1.3 both directions (2026-09-09); porch can terminate inbound TLS with `net.accept_tls`, no front proxy required. The proxy-termination doctrine is retired |
+| HTTP/2 | nobody yet — a separate protocol slice; TLS is its prerequisite, now met |
 | a runtime template engine | nobody — rejected; markup is a compile-time literal (`writeonce-view`) |
 | a radix-tree router | nobody yet — waiting on a *measurement*, not a decision |
 

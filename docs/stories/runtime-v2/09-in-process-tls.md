@@ -1,9 +1,9 @@
 ---
 track: runtime-v2
 iteration: "9"
-status: in-progress
+status: done
 readiness: ready
-review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. OUTBOUND CLIENT COMPLETE + live-gated (just tls, 5/0): A–E crypto, F1 record, F2 key schedule, F3a messages, F3b offline verify, F3c-core sans-io driver, SAN/hostname, F3c-net chain validation + basicConstraints/EKU, and the net.connect_tls/read_tls/write_tls builtins (ids 115-117). Six integration forks implemented as locked. REMAINING: G inbound server (porch); deferred park-based handshake + TlsConn object + connection pooling; correcting the doctrine docs (34/38/porch)"
+review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. COMPLETE BOTH DIRECTIONS, live-gated (just tls 5/0 outbound, just tls-server 4/0 inbound EC+RSA). Outbound: A–E crypto, F1–F3c client (net.connect_tls/read_tls/write_tls, ids 115-117). Inbound: G1 constant-time RSA-PSS + ECDSA-P256 signing (RFC 6979), G2 server FSM, G3 net.accept_tls (id 118) + private-key parse. Deferred (named follow-ups, not blockers): park-based handshake, TlsConn language object, connection pooling, TLS close_notify on shutdown, complete-formula EC ladder. Doctrine docs (34/38/porch) corrected as part of this landing"
 ---
 
 # runtime-v2 9 — in-process TLS: retiring the proxy-termination doctrine
@@ -80,7 +80,7 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | D — signatures | ✅ **LANDED 2026-09-08** — **RSA** `wo_rsa_pkcs1_sha256_verify` + `wo_rsa_pss_sha256_verify` (bignum Montgomery modexp) and **ECDSA-P256** `wo_ecdsa_p256_sha256_verify` (Jacobian point arithmetic, a=-3, on-curve check, Fermat inverses reusing the bignum). Verification is public data so **not** constant-time by design. Both match python vectors (RSA-2048 PKCS1+PSS; P-256), tamper/wrong-hash rejected, KAT-gated, ASan/UBSan clean |
 | E — X.509 | 🔄 **CORE LANDED 2026-09-08** — a defensive ASN.1/DER reader (every length/bound checked, malformation is rejection not over-read) + certificate parse (tbsCertificate span, sig-alg OID, signature, SubjectPublicKeyInfo→RSA n/e or EC P-256 x/y, validity) + `wo_x509_verify_one` (one chain link's signature, dispatching to D's RSA-PKCS1/PSS + ECDSA-P256) + `wo_x509_parse_spki` + `wo_x509_check_validity` (caller supplies the time). KAT-gated in `test_crypto.c` against **real python-generated chains** — RSA CA+leaf (SHA256withRSA) and EC P-256 CA+leaf (ecdsa-with-SHA256): leaf-vs-CA, self-signed CA, wrong-issuer/tampered/truncated rejected, validity window, SPKI extraction — ASan/UBSan clean. **Deferred to F**: SAN/hostname match (needs the target host) and the multi-cert chain walk to a system CA bundle | notoriously bug-prone; consumes D |
 | F — record + handshake (client) | ✅ **COMPLETE 2026-09-08/09** (client). F1–F3b LANDED 2026-09-08 — new `tls.c`/`tls.h`. **F1 record layer** (`wo_tls_record_seal`/`open`, RFC 8446 §5.2, per-record nonce = iv XOR seq, both suites) KAT'd byte-for-byte vs python. **F2 key schedule** (`wo_tls_derive_handshake`/`_application`/`_traffic_keys`/`_finished_verify`, §7.1) KAT'd byte-for-byte vs **RFC 8448 §3**. **F3a message layer** (`wo_tls_parse_server_hello` — attacker input, bounded, rejects HRR/bad suite/truncation; `wo_tls_build_client_hello` — SNI, x25519, sig-algs) KAT'd vs RFC 8448 SH + validated by an independent parser. **F3b offline handshake verification** (`wo_tls_verify_cert_verify` over phase E+D; server + client Finished) — the whole handshake **crypto** proven end-to-end offline vs RFC 8448. **F3c-core sans-io driver** (`wo_tls_client` — pure FSM, caller frames records: CH→SH→flight→Finished, message reassembly, per-message transcript timing, constant-time Finished, application encrypt/decrypt) KAT'd against the **full RFC 8448 record trace** — client Finished + first app record byte-for-byte, NewSessionTicket + server app data decrypt, tampered flight refused. **SAN/hostname** (`wo_x509_check_host`, RFC 6125) + driver enforcement landed. **F3c-net chain validation** (`wo_tls_verify_chain`) + **basicConstraints/EKU** hardening KAT'd offline. **F3c-net socket/VM ✅ LANDED 2026-09-09**: `getrandom` ephemeral, per-shard lazy CA-bundle loader (`WO_CA_BUNDLE`), and the `net.connect_tls` / `net.read_tls` / `net.write_tls` builtins (ids 115–117; blocking deadline-bounded connect+handshake then a parked data plane; per-shard fd-keyed slot table, no locks). **Live-gated** (`just tls`, 5/0) from `.wo` against a local TLS 1.3 stub incl. untrusted-chain + hostname-mismatch negatives. Client side complete | jarvis's path; the reason the story exists |
-| G — server (inbound) | 📋 **READY 2026-09-09** (see §G below) — the server handshake FSM, constant-time RSA-PSS + ECDSA-P256 **signing** (the first private-key ops), private-key parsing, `net.accept_tls`; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs; may become its own iteration |
+| G — server (inbound) | ✅ **COMPLETE 2026-09-09** — the server handshake FSM (loopback-KAT'd), constant-time RSA-PSS + ECDSA-P256 **signing** (RFC 6979), private-key parse, `net.accept_tls` (id 118); live-gated by `openssl s_client` (EC + RSA), `just tls-server` 4/0 | retires the inbound proxy requirement; doctrine docs corrected |
 
 ## F3c-net — the socket/VM slice (✅ **LANDED 2026-09-09**; decisions locked, forks auto-approved, `review_pending`)
 
@@ -292,10 +292,15 @@ when picked up.
   the G1 primitives (RSA-PSS or ECDSA + a DER SEQ{r,s} encoder). **KAT by
   loopback** — our client driver against our server driver, EC then RSA server
   identity, ESTABLISHED with an app round-trip both ways. test_tls 123, ASan clean.
-- **G3 — `net.accept_tls` + the live gate.** The VM builtin (id 118,
-  `WO_B_MAX`→118) + the shard identity cache, gated live by **`openssl s_client`**
-  completing a handshake against our server and exchanging data — real-world
-  interop, the mirror of §F3c-net's `openssl s_server` gate.
+- **G3 — `net.accept_tls` + the live gate.** ✅ **LANDED 2026-09-09** — the VM
+  builtin (id 118, `WO_B_MAX`→118), private-key PEM/DER parse (`wo_pkey_parse`,
+  PKCS#8/PKCS#1/SEC1), the per-shard identity cache, and the `wo_tls_conn`
+  refactor (negotiated app keys, not an embedded driver — read/write serve both
+  directions). **Live-gated** `just tls-server` (`docs/examples/tls-server`):
+  **`openssl s_client` validates our hand-rolled server (EC + RSA certs) and gets
+  the reply — 4/0**, and the outbound `just tls` stays 5/0. Interop fix: the
+  server loops past the client's change_cipher_spec, and `net.close` drains a TLS
+  conn before FIN so the reply is never lost to an RST.
 
 ### Acceptance criteria
 

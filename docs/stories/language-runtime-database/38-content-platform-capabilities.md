@@ -111,9 +111,12 @@ readiness: refine
 - **Full-text search.** The engine indexes equality probes on declared
   columns; there is no prefix scan or FTS. Query-grammar growth is
   [databasev2 8](../databasev2/08-query-grammar-corpus.md)'s.
-- **TLS** — proxy-terminated, by doctrine, unchanged. The outbound half
-  therefore speaks plaintext to a local sidecar or a trusted-network peer,
-  and the story says so out loud rather than implying HTTPS clients.
+- **TLS** — ~~proxy-terminated, by doctrine~~ **RETIRED 2026-09-09.** The
+  runtime now speaks TLS 1.3 in-process both directions — this iteration's
+  `net.connect` gained an HTTPS sibling `net.connect_tls`, and porch can
+  terminate inbound TLS with `net.accept_tls`, all in
+  [runtime-v2 9](../runtime-v2/09-in-process-tls.md). The plaintext-to-a-sidecar
+  framing above no longer holds.
 - **A plugin/app ecosystem.** In-runtime recompile is
   [iteration 26](26-blue-green-deploy.md)'s; nothing here loads
   code at run time.
