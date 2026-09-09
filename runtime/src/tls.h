@@ -210,4 +210,51 @@ int wo_tls_client_encrypt(wo_tls_client *c, const uint8_t *data, size_t len,
 int wo_tls_client_decrypt(wo_tls_client *c, const uint8_t *rec, size_t reclen,
                           uint8_t *out, size_t outcap, uint8_t *content_type);
 
+/* ---- sans-io server handshake driver (phase G2) --------------------------
+ * The mirror of the client driver: the caller frames records, feeds the
+ * ClientHello, drains the whole server flight (ServerHello + EncryptedExtensions
+ * + Certificate + a signed CertificateVerify + Finished), then feeds the client
+ * Finished. Server-auth only — no client certs, resumption, or HRR. */
+
+enum { WO_TLS_KEY_RSA = 1, WO_TLS_KEY_EC_P256 = 2 };
+
+typedef struct {
+    int suite; size_t keylen;
+    uint8_t eph_priv[32];                     /* server ephemeral X25519 scalar */
+    int key_alg;                              /* WO_TLS_KEY_* */
+    const uint8_t *rsa_n, *rsa_d; size_t rsa_nlen, rsa_dlen;  /* RSA identity */
+    const uint8_t *ec_d;                      /* EC identity (32-byte scalar) */
+    const uint8_t *pss_salt; size_t pss_saltlen;  /* RSA-PSS salt (caller-supplied) */
+    uint8_t certmsg[WO_TLS_BUF_MAX]; size_t certmsg_len;   /* built Certificate msg */
+    wo_tls_key_schedule ks;
+    uint8_t rd_key[32], rd_iv[12], wr_key[32], wr_iv[12];
+    uint64_t rd_seq, wr_seq;
+    uint8_t transcript[WO_TLS_BUF_MAX]; size_t tlen;
+    uint8_t hsbuf[WO_TLS_BUF_MAX]; size_t hsn;
+    uint8_t out[WO_TLS_BUF_MAX]; size_t outn;
+    int st;
+} wo_tls_server;
+
+/* Start a server with its certificate chain (leaf-first DER), a private key
+ * (RSA: n+d; EC P-256: the 32-byte scalar in ec_d), an X25519 ephemeral scalar,
+ * and — for an RSA identity — the RSA-PSS salt to use (production: fresh random;
+ * KAT: fixed). Returns 0, or -1 if the chain does not fit. */
+int wo_tls_server_start(wo_tls_server *s, const uint8_t *const *chain,
+                        const size_t *chain_lens, size_t nchain, int key_alg,
+                        const uint8_t *rsa_n, size_t rsa_nlen,
+                        const uint8_t *rsa_d, size_t rsa_dlen,
+                        const uint8_t *ec_d, const uint8_t eph_priv[32],
+                        const uint8_t *pss_salt, size_t pss_saltlen);
+
+/* Feed one record. On the ClientHello it produces the whole server flight in
+ * out (drain with take_output); on the client Finished it reaches ESTABLISHED.
+ * Returns WANT_MORE / ESTABLISHED / FAILED (the wo_tls_status enum). */
+wo_tls_status wo_tls_server_push_record(wo_tls_server *s, const uint8_t *rec,
+                                        size_t reclen);
+size_t wo_tls_server_take_output(wo_tls_server *s, uint8_t *out, size_t outcap);
+int wo_tls_server_encrypt(wo_tls_server *s, const uint8_t *data, size_t len,
+                          uint8_t *out, size_t outcap);
+int wo_tls_server_decrypt(wo_tls_server *s, const uint8_t *rec, size_t reclen,
+                          uint8_t *out, size_t outcap, uint8_t *content_type);
+
 #endif

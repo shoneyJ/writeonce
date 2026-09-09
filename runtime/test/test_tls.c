@@ -12,6 +12,7 @@
 #include "tls_record_vectors.h"
 #include "tls_hs_vectors.h"
 #include "tls_driver_vectors.h"
+#include "tls_server_vectors.h"   /* phase-G2 loopback server identities */
 #include "x509_vectors.h"   /* phase-E RSA + EC chains, for chain validation */
 
 /* RFC 8448 §3 recorded ServerHello handshake message (90 octets). */
@@ -409,6 +410,61 @@ int main(void) {
             free(pem); free(arena); free((void *)certs); free(lens);
         } else {
             t_pass++;   /* bundle absent on this host — decoder still exercised above */
+        }
+    }
+
+    /* Server handshake FSM (phase G2) — loopback: our client driver against
+     * our server driver, EC then RSA server identity, then an app round-trip. */
+    {
+        static wo_tls_server srv; static wo_tls_client cli;
+        for (int variant = 0; variant < 2; variant++) {
+            uint8_t cpub[32], b9[32] = { 9 };
+            wo_x25519(cpub, cli_eph, b9);
+            uint8_t ch[512]; size_t chl = 0;
+            wo_tls_build_client_hello("loopback.test", 13, cpub, cli_rand, cli_sid,
+                                      ch, sizeof ch, &chl);
+            wo_tls_client_start_with(&cli, ch, chl, cli_eph);
+            wo_tls_client_set_host(&cli, "loopback.test", 13);
+
+            int rc;
+            if (variant == 0) {   /* EC identity */
+                const uint8_t *chain[] = { srv_ec_leaf }; size_t cl[] = { sizeof srv_ec_leaf };
+                rc = wo_tls_server_start(&srv, chain, cl, 1, WO_TLS_KEY_EC_P256,
+                                         NULL, 0, NULL, 0, srv_ec_d, srv_eph, NULL, 0);
+            } else {              /* RSA identity */
+                const uint8_t *chain[] = { srv_rsa_leaf }; size_t cl[] = { sizeof srv_rsa_leaf };
+                rc = wo_tls_server_start(&srv, chain, cl, 1, WO_TLS_KEY_RSA,
+                                         srv_rsa_n, sizeof srv_rsa_n, srv_rsa_d,
+                                         sizeof srv_rsa_d, NULL, srv_eph,
+                                         srv_pss_salt, sizeof srv_pss_salt);
+            }
+            T_CHECK(rc == 0);
+
+            uint8_t buf[WO_TLS_BUF_MAX], sbuf[WO_TLS_BUF_MAX];
+            size_t n = wo_tls_client_take_output(&cli, buf, sizeof buf);   /* CH */
+            T_CHECK(wo_tls_server_push_record(&srv, buf, n) == WO_TLS_WANT_MORE);
+            size_t sn = wo_tls_server_take_output(&srv, sbuf, sizeof sbuf); /* SH+flight */
+            T_CHECK(sn > 0);
+            /* push each server record to the client */
+            wo_tls_status cs = WO_TLS_WANT_MORE; size_t off = 0;
+            while (off + 5 <= sn) {
+                size_t rl = 5 + (((size_t)sbuf[off + 3] << 8) | sbuf[off + 4]);
+                cs = wo_tls_client_push_record(&cli, sbuf + off, rl);
+                off += rl;
+            }
+            T_CHECK(cs == WO_TLS_ESTABLISHED);
+            size_t cf = wo_tls_client_take_output(&cli, buf, sizeof buf);   /* client Finished */
+            T_CHECK(cf > 0);
+            T_CHECK(wo_tls_server_push_record(&srv, buf, cf) == WO_TLS_ESTABLISHED);
+
+            /* application data both directions */
+            uint8_t rec[256], pt[256]; uint8_t ctype = 0;
+            int e = wo_tls_client_encrypt(&cli, (const uint8_t *)"ping", 4, rec, sizeof rec);
+            int d = wo_tls_server_decrypt(&srv, rec, (size_t)e, pt, sizeof pt, &ctype);
+            T_CHECK(d == 4 && ctype == 23 && memcmp(pt, "ping", 4) == 0);
+            e = wo_tls_server_encrypt(&srv, (const uint8_t *)"pong!", 5, rec, sizeof rec);
+            d = wo_tls_client_decrypt(&cli, rec, (size_t)e, pt, sizeof pt, &ctype);
+            T_CHECK(d == 5 && ctype == 23 && memcmp(pt, "pong!", 5) == 0);
         }
     }
 

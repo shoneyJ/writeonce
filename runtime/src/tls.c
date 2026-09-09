@@ -765,3 +765,311 @@ size_t wo_tls_client_chain(const wo_tls_client *c, const uint8_t **certs,
     }
     return n;
 }
+
+/* ---- sans-io server handshake driver (phase G2) --------------------------
+ * The mirror of the client driver. Reuses the record layer, the (role-
+ * symmetric) key schedule, and the wire reader/writer above; the server signs
+ * its CertificateVerify with the phase-G1 private-key primitives. */
+
+enum { SST_WANT_CH = 0, SST_WANT_FIN, SST_ESTABLISHED, SST_FAILED };
+
+/* generic transcript append (the client's tr_add is client-typed). */
+static int tbuf_add(uint8_t *buf, size_t *len, size_t cap, const uint8_t *p, size_t n) {
+    if (*len + n > cap) return -1;
+    memcpy(buf + *len, p, n); *len += n;
+    return 0;
+}
+
+/* Encode a big-endian value as a DER INTEGER (minimal, with a sign byte when
+ * the top bit is set). Returns bytes written. */
+static size_t der_int(uint8_t *out, const uint8_t *v, size_t n) {
+    while (n > 1 && v[0] == 0) { v++; n--; }          /* strip leading zeros */
+    int lead0 = (v[0] & 0x80) != 0;
+    out[0] = 0x02; out[1] = (uint8_t)(n + lead0);
+    size_t o = 2;
+    if (lead0) out[o++] = 0x00;
+    memcpy(out + o, v, n);
+    return o + n;
+}
+
+/* Parse a ClientHello: pick a suite from the client's list, extract its x25519
+ * key share, echo its session id. 0 ok, -1 malformed / no x25519 / no 1.3. */
+static int parse_client_hello(const uint8_t *msg, size_t len, int *suite,
+                              uint8_t client_pub[32], uint8_t sid[32],
+                              size_t *sidlen) {
+    rbuf r = { msg, len, 0, 1 };
+    if (r8(&r) != HS_CLIENT_HELLO) return -1;
+    uint32_t body = r24(&r);
+    if (!r.ok || body != len - 4) return -1;
+    if (r16(&r) != 0x0303) return -1;                 /* legacy_version */
+    if (!rbytes(&r, 32)) return -1;                   /* random */
+    uint8_t sl = r8(&r);
+    if (sl > 32) return -1;
+    const uint8_t *sp = rbytes(&r, sl);
+    if (!sp) return -1;
+    memcpy(sid, sp, sl); *sidlen = sl;
+    uint16_t cslen = r16(&r);
+    const uint8_t *cs = rbytes(&r, cslen);
+    if (!cs || (cslen & 1)) return -1;
+    int pick = 0;                                     /* prefer AES-128-GCM */
+    for (size_t i = 0; i + 1 < cslen; i += 2) {
+        uint16_t v = ((uint16_t)cs[i] << 8) | cs[i + 1];
+        if (v == CS_AES_128_GCM) { pick = WO_TLS_AES_128_GCM_SHA256; break; }
+        if (v == CS_CHACHA20_POLY1305 && !pick) pick = WO_TLS_CHACHA20_POLY1305_SHA256;
+    }
+    if (!pick) return -1;
+    *suite = pick;
+    uint8_t cml = r8(&r);                              /* compression methods */
+    if (!rbytes(&r, cml)) return -1;
+    uint16_t extlen = r16(&r);
+    const uint8_t *ext = rbytes(&r, extlen);
+    if (!ext) return -1;
+    rbuf e = { ext, extlen, 0, 1 };
+    int have_ks = 0, have_ver = 0;
+    while (e.ok && e.i < e.n) {
+        uint16_t type = r16(&e), el = r16(&e);
+        const uint8_t *ed = rbytes(&e, el);
+        if (!ed) return -1;
+        rbuf d = { ed, el, 0, 1 };
+        if (type == EXT_KEY_SHARE) {
+            uint16_t total = r16(&d);                  /* client_shares length */
+            (void)total;
+            while (d.ok && d.i < d.n) {
+                uint16_t grp = r16(&d), klen = r16(&d);
+                const uint8_t *k = rbytes(&d, klen);
+                if (!k) return -1;
+                if (grp == GROUP_X25519 && klen == 32) { memcpy(client_pub, k, 32); have_ks = 1; }
+            }
+        } else if (type == EXT_SUPPORTED_VERSIONS) {
+            uint8_t n = r8(&d);
+            for (uint8_t i = 0; i + 1 < n; i += 2)
+                if (r16(&d) == 0x0304) have_ver = 1;
+        }
+    }
+    return (have_ks && have_ver) ? 0 : -1;
+}
+
+int wo_tls_server_start(wo_tls_server *s, const uint8_t *const *chain,
+                        const size_t *chain_lens, size_t nchain, int key_alg,
+                        const uint8_t *rsa_n, size_t rsa_nlen,
+                        const uint8_t *rsa_d, size_t rsa_dlen,
+                        const uint8_t *ec_d, const uint8_t eph_priv[32],
+                        const uint8_t *pss_salt, size_t pss_saltlen) {
+    memset(s, 0, sizeof *s);
+    s->key_alg = key_alg;
+    s->rsa_n = rsa_n; s->rsa_nlen = rsa_nlen; s->rsa_d = rsa_d; s->rsa_dlen = rsa_dlen;
+    s->ec_d = ec_d; s->pss_salt = pss_salt; s->pss_saltlen = pss_saltlen;
+    memcpy(s->eph_priv, eph_priv, 32);
+    /* build the Certificate message: 0b, len, ctx_len(0), cert_list */
+    wbuf w = { s->certmsg, sizeof s->certmsg, 0, 1 };
+    w8(&w, 0x0b);
+    size_t hlen_at = w.n; w8(&w, 0); w8(&w, 0); w8(&w, 0);
+    w8(&w, 0);                                          /* request context len */
+    size_t list_at = w.n; w8(&w, 0); w8(&w, 0); w8(&w, 0);
+    for (size_t i = 0; i < nchain; i++) {
+        w8(&w, (uint8_t)(chain_lens[i] >> 16));
+        w8(&w, (uint8_t)(chain_lens[i] >> 8));
+        w8(&w, (uint8_t)chain_lens[i]);
+        wbytes(&w, chain[i], chain_lens[i]);
+        w16(&w, 0);                                     /* per-cert extensions */
+    }
+    if (!w.ok) { s->st = SST_FAILED; return -1; }
+    size_t listlen = w.n - list_at - 3;
+    s->certmsg[list_at] = (uint8_t)(listlen >> 16);
+    s->certmsg[list_at + 1] = (uint8_t)(listlen >> 8);
+    s->certmsg[list_at + 2] = (uint8_t)listlen;
+    size_t blen = w.n - hlen_at - 3;
+    s->certmsg[hlen_at] = (uint8_t)(blen >> 16);
+    s->certmsg[hlen_at + 1] = (uint8_t)(blen >> 8);
+    s->certmsg[hlen_at + 2] = (uint8_t)blen;
+    s->certmsg_len = w.n;
+    s->st = SST_WANT_CH;
+    return 0;
+}
+
+size_t wo_tls_server_take_output(wo_tls_server *s, uint8_t *out, size_t outcap) {
+    size_t n = s->outn <= outcap ? s->outn : 0;
+    if (n) { memcpy(out, s->out, n); s->outn = 0; }
+    return n;
+}
+
+/* Sign the CertificateVerify content over the running transcript. Writes the
+ * signature and its scheme; returns siglen or -1. */
+static int server_sign_cv(wo_tls_server *s, uint8_t *sig, uint16_t *scheme) {
+    static const char CTX[] = "TLS 1.3, server CertificateVerify";
+    uint8_t th[32], content[64 + 33 + 1 + 32], mhash[32];
+    wo_sha256(s->transcript, s->tlen, th);            /* CH..Certificate */
+    memset(content, 0x20, 64);
+    memcpy(content + 64, CTX, 33);
+    content[97] = 0x00;
+    memcpy(content + 98, th, 32);
+    wo_sha256(content, sizeof content, mhash);
+    if (s->key_alg == WO_TLS_KEY_RSA) {
+        *scheme = 0x0804;                             /* rsa_pss_rsae_sha256 */
+        if (wo_rsa_pss_sha256_sign(s->rsa_n, s->rsa_nlen, s->rsa_d, s->rsa_dlen,
+                                   mhash, s->pss_salt, s->pss_saltlen, sig) != 0)
+            return -1;
+        return (int)s->rsa_nlen;
+    }
+    *scheme = 0x0403;                                 /* ecdsa_secp256r1_sha256 */
+    uint8_t r[32], ss[32];
+    if (wo_ecdsa_p256_sha256_sign(s->ec_d, mhash, r, ss) != 0) return -1;
+    uint8_t seq[80]; size_t o = 0;
+    o += der_int(seq + o, r, 32);
+    o += der_int(seq + o, ss, 32);
+    sig[0] = 0x30; sig[1] = (uint8_t)o;
+    memcpy(sig + 2, seq, o);
+    return (int)(o + 2);
+}
+
+/* Build + encrypt the whole server flight after the ClientHello. 0 ok, -1. */
+static int server_emit_flight(wo_tls_server *s, const uint8_t *client_pub,
+                              const uint8_t *sid, size_t sidlen) {
+    uint8_t server_pub[32], base9[32] = { 9 }, ecdhe[32];
+    wo_x25519(server_pub, s->eph_priv, base9);
+
+    /* ServerHello */
+    uint8_t sh[256]; wbuf w = { sh, sizeof sh, 0, 1 };
+    w8(&w, HS_SERVER_HELLO);
+    size_t at = w.n; w8(&w, 0); w8(&w, 0); w8(&w, 0);
+    w16(&w, 0x0303);
+    uint8_t rnd[32];
+    for (int i = 0; i < 32; i++) rnd[i] = (uint8_t)(0x70 ^ i);   /* deterministic; not secret */
+    wbytes(&w, rnd, 32);
+    w8(&w, (uint8_t)sidlen); wbytes(&w, sid, sidlen);
+    w16(&w, s->suite == WO_TLS_AES_128_GCM_SHA256 ? CS_AES_128_GCM : CS_CHACHA20_POLY1305);
+    w8(&w, 0);                                          /* compression */
+    size_t exts = w16_stub(&w);
+    w16(&w, EXT_SUPPORTED_VERSIONS); w16(&w, 2); w16(&w, 0x0304);
+    w16(&w, EXT_KEY_SHARE); w16(&w, 36); w16(&w, GROUP_X25519); w16(&w, 32);
+    wbytes(&w, server_pub, 32);
+    w16_fill(&w, exts);
+    if (!w.ok) return -1;
+    size_t blen = w.n - at - 3;
+    sh[at] = (uint8_t)(blen >> 16); sh[at + 1] = (uint8_t)(blen >> 8); sh[at + 2] = (uint8_t)blen;
+
+    if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, sh, w.n) != 0) return -1;
+
+    /* keys from ECDHE + transcript(CH..SH) */
+    uint8_t th[32];
+    wo_x25519(ecdhe, s->eph_priv, client_pub);
+    wo_sha256(s->transcript, s->tlen, th);
+    wo_tls_derive_handshake(&s->ks, ecdhe, 32, th);
+    wo_tls_traffic_keys(s->ks.client_hs_traffic, s->keylen, s->rd_key, s->rd_iv);
+    wo_tls_traffic_keys(s->ks.server_hs_traffic, s->keylen, s->wr_key, s->wr_iv);
+    s->rd_seq = s->wr_seq = 0;
+
+    /* the encrypted flight: EE || Certificate || CertificateVerify || Finished */
+    static const uint8_t EE[] = { 0x08, 0x00, 0x00, 0x02, 0x00, 0x00 };
+    uint8_t flight[WO_TLS_BUF_MAX]; size_t fl = 0;
+    if (tbuf_add(flight, &fl, sizeof flight, EE, sizeof EE) != 0) return -1;
+    if (tbuf_add(flight, &fl, sizeof flight, s->certmsg, s->certmsg_len) != 0) return -1;
+    if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, EE, sizeof EE) != 0) return -1;
+    if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, s->certmsg, s->certmsg_len) != 0) return -1;
+
+    uint8_t sig[300]; uint16_t scheme;
+    int siglen = server_sign_cv(s, sig, &scheme);
+    if (siglen < 0) return -1;
+    uint8_t cv[320]; wbuf cw = { cv, sizeof cv, 0, 1 };
+    cw.p[0] = 0x0f; cw.n = 1; size_t cvat = cw.n; w8(&cw, 0); w8(&cw, 0); w8(&cw, 0);
+    w16(&cw, scheme); w16(&cw, (uint16_t)siglen); wbytes(&cw, sig, (size_t)siglen);
+    if (!cw.ok) return -1;
+    size_t cvb = cw.n - cvat - 3;
+    cv[cvat] = (uint8_t)(cvb >> 16); cv[cvat + 1] = (uint8_t)(cvb >> 8); cv[cvat + 2] = (uint8_t)cvb;
+    if (tbuf_add(flight, &fl, sizeof flight, cv, cw.n) != 0) return -1;
+    if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, cv, cw.n) != 0) return -1;
+
+    /* server Finished over transcript(CH..CertVerify) */
+    uint8_t vd[32];
+    wo_sha256(s->transcript, s->tlen, th);
+    wo_tls_finished_verify(s->ks.server_hs_traffic, th, vd);
+    uint8_t fin[36]; fin[0] = 0x14; fin[1] = 0; fin[2] = 0; fin[3] = 32;
+    memcpy(fin + 4, vd, 32);
+    if (tbuf_add(flight, &fl, sizeof flight, fin, 36) != 0) return -1;
+    if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, fin, 36) != 0) return -1;
+
+    /* application keys need transcript(CH..server Finished) */
+    wo_sha256(s->transcript, s->tlen, th);
+    wo_tls_derive_application(&s->ks, th);
+
+    /* out = SH plaintext record (ct 22) || encrypted flight record (ct 23) */
+    wbuf ow = { s->out, sizeof s->out, 0, 1 };
+    w8(&ow, WO_TLS_CT_HANDSHAKE); w8(&ow, 0x03); w8(&ow, 0x03);
+    w16(&ow, (uint16_t)w.n); wbytes(&ow, sh, w.n);
+    if (!ow.ok) return -1;
+    int rn = wo_tls_record_seal(s->suite, s->wr_key, s->keylen, s->wr_iv, s->wr_seq,
+                                WO_TLS_CT_HANDSHAKE, flight, fl, s->out + ow.n);
+    if (rn < 0) return -1;
+    s->wr_seq++;
+    s->outn = ow.n + (size_t)rn;
+    return 0;
+}
+
+wo_tls_status wo_tls_server_push_record(wo_tls_server *s, const uint8_t *rec,
+                                        size_t reclen) {
+    if (s->st == SST_FAILED) return WO_TLS_FAILED;
+    if (reclen < 5) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+    uint8_t ct = rec[0];
+    if (ct == WO_TLS_CT_CHANGE_CIPHER_SPEC) return WO_TLS_WANT_MORE;
+
+    if (s->st == SST_WANT_CH) {
+        if (ct != WO_TLS_CT_HANDSHAKE) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+        size_t bl = ((size_t)rec[3] << 8) | rec[4];
+        if (bl + 5 != reclen) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+        const uint8_t *ch = rec + 5;
+        uint8_t client_pub[32], sid[32]; size_t sidlen = 0;
+        if (parse_client_hello(ch, bl, &s->suite, client_pub, sid, &sidlen) != 0) {
+            s->st = SST_FAILED; return WO_TLS_FAILED;
+        }
+        s->keylen = s->suite == WO_TLS_AES_128_GCM_SHA256 ? 16 : 32;
+        if (tbuf_add(s->transcript, &s->tlen, sizeof s->transcript, ch, bl) != 0) {
+            s->st = SST_FAILED; return WO_TLS_FAILED;
+        }
+        if (server_emit_flight(s, client_pub, sid, sidlen) != 0) {
+            s->st = SST_FAILED; return WO_TLS_FAILED;
+        }
+        s->st = SST_WANT_FIN;
+        return WO_TLS_WANT_MORE;
+    }
+    if (s->st == SST_WANT_FIN) {
+        if (ct != WO_TLS_CT_APPLICATION_DATA) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+        uint8_t pt[WO_TLS_BUF_MAX], inner = 0;
+        int n = wo_tls_record_open(s->suite, s->rd_key, s->keylen, s->rd_iv,
+                                   s->rd_seq, rec, reclen, pt, &inner);
+        if (n < 0) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+        s->rd_seq++;
+        if (inner != WO_TLS_CT_HANDSHAKE || n != 36 || pt[0] != 0x14) {
+            s->st = SST_FAILED; return WO_TLS_FAILED;
+        }
+        uint8_t th[32], expect[32];
+        wo_sha256(s->transcript, s->tlen, th);       /* CH..server Finished */
+        wo_tls_finished_verify(s->ks.client_hs_traffic, th, expect);
+        if (!ct_eq32(expect, pt + 4)) { s->st = SST_FAILED; return WO_TLS_FAILED; }
+        /* switch to application keys */
+        wo_tls_traffic_keys(s->ks.client_ap_traffic, s->keylen, s->rd_key, s->rd_iv);
+        wo_tls_traffic_keys(s->ks.server_ap_traffic, s->keylen, s->wr_key, s->wr_iv);
+        s->rd_seq = s->wr_seq = 0;
+        s->st = SST_ESTABLISHED;
+        return WO_TLS_ESTABLISHED;
+    }
+    return WO_TLS_WANT_MORE;
+}
+
+int wo_tls_server_encrypt(wo_tls_server *s, const uint8_t *data, size_t len,
+                          uint8_t *out, size_t outcap) {
+    if (s->st != SST_ESTABLISHED || len + WO_TLS_RECORD_OVERHEAD > outcap) return -1;
+    int n = wo_tls_record_seal(s->suite, s->wr_key, s->keylen, s->wr_iv, s->wr_seq,
+                               WO_TLS_CT_APPLICATION_DATA, data, len, out);
+    if (n < 0) return -1;
+    s->wr_seq++;
+    return n;
+}
+int wo_tls_server_decrypt(wo_tls_server *s, const uint8_t *rec, size_t reclen,
+                          uint8_t *out, size_t outcap, uint8_t *content_type) {
+    if (s->st != SST_ESTABLISHED || reclen > outcap + WO_TLS_RECORD_OVERHEAD) return -1;
+    int n = wo_tls_record_open(s->suite, s->rd_key, s->keylen, s->rd_iv, s->rd_seq,
+                               rec, reclen, out, content_type);
+    if (n < 0) return -1;
+    s->rd_seq++;
+    return n;
+}
