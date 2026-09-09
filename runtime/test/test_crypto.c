@@ -10,6 +10,7 @@
 #include "x509_vectors.h"
 #include "rsa_sign_vectors.h"
 #include "ecdsa_sign_vectors.h"
+#include "pkey_vectors.h"
 
 static void hex(const uint8_t *d, size_t n, char *out) {
     static const char *h = "0123456789abcdef";
@@ -490,6 +491,37 @@ int main(void) {
         wo_ecdsa_p256_sha256_sign(ecs_d, ecs_sample_mhash, r2, s2);
         wo_ecdsa_p256_sha256_sign(ecs_d, ecs_sample_mhash, r, s);
         T_CHECK(memcmp(r, r2, 32) == 0 && memcmp(s, s2, 32) == 0);
+    }
+
+    /* Private-key parsing (rv2 9 phase G3) — all three DER formats parse, and
+     * the extracted key signs a hash our verify accepts. */
+    {
+        int ka; const uint8_t *n, *d, *ecd; size_t nl, dl;
+        uint8_t sig[256], r[32], s[32];
+        /* RSA PKCS#8 */
+        T_CHECK(wo_pkey_parse(pk_rsa_pk8, sizeof pk_rsa_pk8, &ka, &n, &nl, &d, &dl, &ecd) == 0);
+        T_CHECK(ka == 1);
+        T_CHECK(wo_rsa_pss_sha256_sign(pk_rsa_n, sizeof pk_rsa_n, d, dl, pk_hash,
+                                       pk_salt, sizeof pk_salt, sig) == 0);
+        T_CHECK(wo_rsa_pss_sha256_verify(pk_rsa_n, sizeof pk_rsa_n, pk_rsa_e,
+                    sizeof pk_rsa_e, sig, 256, pk_hash, 32) == 1);
+        /* RSA PKCS#1 (bare) yields the same modulus + a working d */
+        const uint8_t *n1, *d1; size_t nl1, dl1;
+        T_CHECK(wo_pkey_parse(pk_rsa_pk1, sizeof pk_rsa_pk1, &ka, &n1, &nl1, &d1, &dl1, &ecd) == 0);
+        T_CHECK(ka == 1 && nl1 == sizeof pk_rsa_n && memcmp(n1, pk_rsa_n, nl1) == 0);
+        /* EC PKCS#8 */
+        T_CHECK(wo_pkey_parse(pk_ec_pk8, sizeof pk_ec_pk8, &ka, &n, &nl, &d, &dl, &ecd) == 0);
+        T_CHECK(ka == 2);
+        T_CHECK(wo_ecdsa_p256_sha256_sign(ecd, pk_hash, r, s) == 0);
+        T_CHECK(wo_ecdsa_p256_sha256_verify(pk_ec_qx, pk_ec_qy, r, s, pk_hash) == 1);
+        /* EC SEC1 (bare) parses to the same working scalar */
+        const uint8_t *ecd2;
+        T_CHECK(wo_pkey_parse(pk_ec_sec1, sizeof pk_ec_sec1, &ka, &n, &nl, &d, &dl, &ecd2) == 0);
+        T_CHECK(ka == 2);
+        T_CHECK(wo_ecdsa_p256_sha256_sign(ecd2, pk_hash, r, s) == 0);
+        T_CHECK(wo_ecdsa_p256_sha256_verify(pk_ec_qx, pk_ec_qy, r, s, pk_hash) == 1);
+        /* garbage rejected */
+        T_CHECK(wo_pkey_parse(pk_hash, sizeof pk_hash, &ka, &n, &nl, &d, &dl, &ecd) == -1);
     }
 
     return t_report("test_crypto");

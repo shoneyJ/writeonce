@@ -1864,6 +1864,76 @@ int wo_x509_eku_serverauth_ok(const uint8_t *cert_der, size_t cert_len) {
     return 0;                                         /* present, no serverAuth */
 }
 
+/* ---- private-key parsing (rv2 9 phase G3) --------------------------------
+ * Parse a DER private key — PKCS#8 (PrivateKeyInfo wrapping PKCS#1/SEC1),
+ * bare PKCS#1 RSAPrivateKey, or bare SEC1 ECPrivateKey — into the material the
+ * signers need: RSA (n, d) or the EC P-256 32-byte scalar. Spans point into
+ * der_buf (the caller keeps it). */
+
+/* Read RSAPrivateKey fields after its version: modulus, publicExponent (skip),
+ * privateExponent. Leading zero sign-bytes are stripped. */
+static int pkey_rsa_after_version(der *s, const uint8_t **n, size_t *nlen,
+                                  const uint8_t **d, size_t *dlen) {
+    const uint8_t *np, *ep, *dp; size_t nl, el, dl;
+    if (der_tlv(s, &np, &nl) != 0x02) return -1;      /* modulus */
+    if (der_tlv(s, &ep, &el) != 0x02) return -1;      /* publicExponent */
+    if (der_tlv(s, &dp, &dl) != 0x02) return -1;      /* privateExponent */
+    (void)ep; (void)el;
+    while (nl > 1 && np[0] == 0) { np++; nl--; }
+    while (dl > 1 && dp[0] == 0) { dp++; dl--; }
+    *n = np; *nlen = nl; *d = dp; *dlen = dl;
+    return 0;
+}
+/* Read the SEC1 ECPrivateKey 32-byte scalar (the OCTET STRING after version). */
+static int pkey_ec_after_version(der *s, const uint8_t **ec_d) {
+    const uint8_t *p; size_t l;
+    if (der_tlv(s, &p, &l) != 0x04 || l != 32) return -1;
+    *ec_d = p;
+    return 0;
+}
+
+int wo_pkey_parse(const uint8_t *der_buf, size_t len, int *key_alg,
+                  const uint8_t **rsa_n, size_t *rsa_nlen,
+                  const uint8_t **rsa_d, size_t *rsa_dlen, const uint8_t **ec_d) {
+    *key_alg = 0;
+    der top = { der_buf, der_buf + len }, seq;
+    if (der_into(&top, 0x30, &seq) < 0) return -1;
+    const uint8_t *vp; size_t vl;
+    if (der_tlv(&seq, &vp, &vl) != 0x02) return -1;   /* version INTEGER */
+    if (seq.p >= seq.end) return -1;
+    uint8_t next = *seq.p;
+    if (next == 0x30) {                               /* PKCS#8 PrivateKeyInfo */
+        der alg;
+        if (der_into(&seq, 0x30, &alg) < 0) return -1;
+        const uint8_t *oid; size_t oidl;
+        if (der_tlv(&alg, &oid, &oidl) != 0x06) return -1;
+        const uint8_t *pk; size_t pkl;
+        if (der_tlv(&seq, &pk, &pkl) != 0x04) return -1;   /* privateKey OCTET STRING */
+        der inner = { pk, pk + pkl }, iseq;
+        if (der_into(&inner, 0x30, &iseq) < 0) return -1;
+        const uint8_t *iv2; size_t il2;
+        if (der_tlv(&iseq, &iv2, &il2) != 0x02) return -1; /* inner version */
+        if (oid_eq(oid, oidl, OID_RSA_ENC, sizeof OID_RSA_ENC)) {
+            if (pkey_rsa_after_version(&iseq, rsa_n, rsa_nlen, rsa_d, rsa_dlen) != 0) return -1;
+            *key_alg = WO_X509_KEY_RSA; return 0;
+        }
+        if (oid_eq(oid, oidl, OID_EC_PUBKEY, sizeof OID_EC_PUBKEY)) {
+            if (pkey_ec_after_version(&iseq, ec_d) != 0) return -1;
+            *key_alg = WO_X509_KEY_EC_P256; return 0;
+        }
+        return -1;
+    }
+    if (next == 0x02) {                               /* bare PKCS#1 RSAPrivateKey */
+        if (pkey_rsa_after_version(&seq, rsa_n, rsa_nlen, rsa_d, rsa_dlen) != 0) return -1;
+        *key_alg = WO_X509_KEY_RSA; return 0;
+    }
+    if (next == 0x04) {                               /* bare SEC1 ECPrivateKey */
+        if (pkey_ec_after_version(&seq, ec_d) != 0) return -1;
+        *key_alg = WO_X509_KEY_EC_P256; return 0;
+    }
+    return -1;
+}
+
 /* Case-insensitive match of a presented dNSName pattern against a hostname,
  * with a single left-most "*" wildcard (RFC 6125 §6.4.3): "*.example.com"
  * matches one label, never a bare "example.com" or a dotted sub-label. */

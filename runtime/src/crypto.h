@@ -106,6 +106,12 @@ int wo_x509_basic_constraints(const uint8_t *cert_der, size_t cert_len,
 /* Extended Key Usage: 1 if usable as a TLS server cert (EKU absent, or lists
  * serverAuth / anyExtendedKeyUsage), 0 otherwise. (rv2 9 F3c decision 6) */
 int wo_x509_eku_serverauth_ok(const uint8_t *cert_der, size_t cert_len);
+/* Parse a DER private key (PKCS#8 / PKCS#1 RSAPrivateKey / SEC1 ECPrivateKey)
+ * into RSA (n,d) or an EC P-256 32-byte scalar. Spans point into der_buf.
+ * *key_alg gets 1 (RSA) or 2 (EC P-256). 0 ok, -1 malformed/unsupported. */
+int wo_pkey_parse(const uint8_t *der_buf, size_t len, int *key_alg,
+                  const uint8_t **rsa_n, size_t *rsa_nlen,
+                  const uint8_t **rsa_d, size_t *rsa_dlen, const uint8_t **ec_d);
 
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
