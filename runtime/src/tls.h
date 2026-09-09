@@ -121,6 +121,15 @@ int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
                         const size_t *anchor_lens, size_t n_anchors,
                         const char *host, size_t hostlen, const char now14[14]);
 
+/* Decode a PEM bundle (concatenated CERTIFICATE blocks) into DER trust anchors.
+ * base64-decodes each block into `arena` (appended) and records its span in
+ * certs[]/cert_lens[]; returns the count (0..max_certs) or -1 on arena overflow
+ * or a malformed block. Pure — the caller reads the file and owns the arena, so
+ * this is offline-testable. (rv2 9 F3c-net decision 4) */
+long wo_tls_pem_to_ders(const char *pem, size_t pemlen, uint8_t *arena,
+                        size_t arena_cap, const uint8_t **certs,
+                        size_t *cert_lens, size_t max_certs);
+
 /* ---- sans-io client handshake driver (phase F3c) -------------------------
  * A pure state machine: no sockets. The caller frames TLS records (read the
  * 5-byte header, then that many bytes) and feeds whole records in; the driver

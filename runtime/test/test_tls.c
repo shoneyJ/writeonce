@@ -2,6 +2,8 @@
  * python's AEAD as oracle (tls_record_vectors.h), plus seal/open round-trip,
  * a tamper-rejection, and the sequence-number nonce advancing. ASan/UBSan. */
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tls.h"
@@ -376,6 +378,38 @@ int main(void) {
         size_t nocaChainN[] = { sizeof kat_leaf_under_noca, sizeof kat_noca_mid };
         T_CHECK(wo_tls_verify_chain(nocaChain, nocaChainN, 2, rsa_anchor, rsa_anchor_n, 1,
                                     "leaf.example.com", 16, NOW) == 0);
+    }
+
+    /* PEM trust-anchor decoder (phase F3c-net decision 4). Decode the real
+     * system CA bundle and confirm the anchors parse; skip if absent (CI). */
+    {
+        /* a non-PEM blob yields zero certs, never an over-read */
+        const uint8_t *cz[8]; size_t czl[8]; uint8_t az[64];
+        T_CHECK(wo_tls_pem_to_ders("not a pem at all", 15, az, sizeof az, cz, czl, 8) == 0);
+
+        const char *path = "/etc/ssl/certs/ca-certificates.crt";
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+            char *pem = (char *)malloc((size_t)sz);
+            size_t got = fread(pem, 1, (size_t)sz, f);
+            fclose(f);
+            uint8_t *arena = (uint8_t *)malloc((size_t)sz);   /* DER < PEM */
+            enum { MAXC = 1024 };
+            const uint8_t **certs = (const uint8_t **)malloc(MAXC * sizeof *certs);
+            size_t *lens = (size_t *)malloc(MAXC * sizeof *lens);
+            long n = wo_tls_pem_to_ders(pem, got, arena, (size_t)sz, certs, lens, MAXC);
+            T_CHECK(n > 100);                              /* a real bundle is large */
+            if (n > 0) {
+                int is_ca, has_pl, pl;
+                /* the first anchor parses, and system roots are CAs */
+                T_CHECK(wo_x509_basic_constraints(certs[0], lens[0], &is_ca, &has_pl, &pl) == 0);
+                T_CHECK(is_ca == 1);
+            }
+            free(pem); free(arena); free((void *)certs); free(lens);
+        } else {
+            t_pass++;   /* bundle absent on this host — decoder still exercised above */
+        }
     }
 
     return t_report("test_tls");

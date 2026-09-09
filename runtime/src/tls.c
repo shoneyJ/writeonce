@@ -670,3 +670,72 @@ int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
     }
     return 0;                                            /* untrusted */
 }
+
+/* ---- PEM trust-anchor decoding (phase F3c-net) ---------------------------
+ * Decode a PEM bundle (e.g. /etc/ssl/certs/ca-certificates.crt) into DER trust
+ * anchors for wo_tls_verify_chain. Pure: the caller reads the file and owns the
+ * arena the DERs are copied into; only the base64 + block framing lives here,
+ * so it is offline-testable. */
+
+/* Standard base64 value, or -1 for a non-alphabet byte (whitespace included). */
+static int b64v(uint8_t c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/* Decode base64 (ignoring whitespace/newlines) into out; returns bytes written
+ * or -1 on overflow / bad length. Stops at '=' padding. */
+static long b64_decode(const uint8_t *in, size_t inlen, uint8_t *out, size_t outcap) {
+    uint32_t acc = 0; int bits = 0; size_t n = 0;
+    for (size_t i = 0; i < inlen; i++) {
+        if (in[i] == '=') break;
+        int v = b64v(in[i]);
+        if (v < 0) continue;                          /* skip newlines etc. */
+        acc = (acc << 6) | (uint32_t)v; bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (n >= outcap) return -1;
+            out[n++] = (uint8_t)(acc >> bits);
+        }
+    }
+    return (long)n;
+}
+
+/* Parse `pem` for CERTIFICATE blocks; base64-decode each into `arena` (appended)
+ * and record its span in certs[]/cert_lens[]. Returns the count (0..max_certs),
+ * or -1 on arena overflow or a malformed block. Extra certs past max_certs are
+ * silently ignored — the caller sizes max_certs to the bundle. */
+long wo_tls_pem_to_ders(const char *pem, size_t pemlen, uint8_t *arena,
+                        size_t arena_cap, const uint8_t **certs,
+                        size_t *cert_lens, size_t max_certs) {
+    static const char BEGIN[] = "-----BEGIN CERTIFICATE-----";
+    static const char END[] = "-----END CERTIFICATE-----";
+    size_t used = 0, count = 0, i = 0;
+    while (i < pemlen && count < max_certs) {
+        /* find BEGIN */
+        const char *b = NULL;
+        for (; i + sizeof BEGIN - 1 <= pemlen; i++)
+            if (memcmp(pem + i, BEGIN, sizeof BEGIN - 1) == 0) { b = pem + i; break; }
+        if (!b) break;
+        i += sizeof BEGIN - 1;
+        /* find END */
+        size_t body = i;
+        const char *e = NULL;
+        for (; i + sizeof END - 1 <= pemlen; i++)
+            if (memcmp(pem + i, END, sizeof END - 1) == 0) { e = pem + i; break; }
+        if (!e) return -1;                            /* BEGIN without END */
+        long dl = b64_decode((const uint8_t *)pem + body, (size_t)(e - (pem + body)),
+                             arena + used, arena_cap - used);
+        if (dl <= 0) return -1;
+        certs[count] = arena + used;
+        cert_lens[count] = (size_t)dl;
+        used += (size_t)dl;
+        count++;
+        i += sizeof END - 1;
+    }
+    return (long)count;
+}
