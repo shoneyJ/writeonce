@@ -93,16 +93,19 @@ Tests: `test_tls` 100/0, `test_crypto` 95/0, full runtime suite 0 fail. Forks
 auto-approved 2026-09-08, marked `review_pending` in the story frontmatter for a
 developer second review before this drives a live connection.
 
-**Next step — F3c-net (the only remaining rung before jarvis unblocks):** the I/O
-integration that must be gated **live** (a local `openssl s_server` / python TLS
-server), specified with auto-approved defaults in
-[rv2 9 §F3c-net](runtime-v2/09-in-process-tls.md): a `getrandom` ephemeral, the
-system CA-bundle PEM loader, and the **`net.connect_tls`** builtin (default:
-returns the TCP fd as an Int with `wo_tls_client` state in an fd-keyed side
-table, blocking model like `net.connect`) driving the sans-io driver over a real
-socket, then `wo_tls_verify_chain` against the loaded anchors. Then **G** (inbound
-server) for porch. After that, jarvis 1 is buildable. (Separately still open:
-language 41's marshal fix — below — unblocking porch 9.)
+**Next step — BUILD F3c-net (the only remaining rung before jarvis unblocks).**
+Its spec is now `ready`: [rv2 9 §F3c-net](runtime-v2/09-in-process-tls.md)
+brainstormed 2026-09-09 with the four integration forks **locked** (grounded in
+the runtime, not assumed): (1) blocking connect+handshake then park the data
+plane, mirroring `net.connect` — park-based handshake a named follow-up; (2) a
+per-shard fd-keyed `wo_tls_conn` slot table, no locks (the `wo_child` pattern);
+(3) failures trap `WO_T_IO` loudly incl. chain/hostname; (4) per-shard lazy
+read-only CA bundle (`/etc/ssl/certs/…`, `WO_CA_BUNDLE` override). Builtins:
+`net.connect_tls`/`read_tls`/`write_tls` (ids 115–117, `WO_B_MAX`→117), wiring
+across `wob.h`/`emit.ml`/`types.ml`/`loader.c`/`builtin.c`/`sysio.c`, live-gated
+against a local TLS server. Then **G** (inbound server) for porch; after that
+jarvis 1 is buildable. (Separately still open: language 41's marshal fix — below
+— unblocking porch 9.)
 
 ### Brainstormed 2026-09-06 — the porch track (2–8) and language 41's fix, both to `ready`
 

@@ -3,7 +3,7 @@ track: runtime-v2
 iteration: "9"
 status: in-progress
 readiness: ready
-review_pending: "forks auto-approved 2026-09-08 for autonomous execution — developer second review before this ships. Landed: A–E crypto, F1 record layer, F2 key schedule, F3a message layer, F3b offline handshake verification, F3c-core sans-io client driver, SAN/hostname (all KAT'd vs RFC 8448 / real certs). Remaining F3c-net: random ephemeral for production, system CA trust-anchor chain walk, net.connect_tls VM plumbing (live-gated). Then G inbound server"
+review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. Landed + KAT'd (RFC 8448 / real certs): A–E crypto, F1 record, F2 key schedule, F3a messages, F3b offline verify, F3c-core sans-io driver, SAN/hostname, F3c-net chain validation. §F3c-net (socket/VM slice) brainstormed to READY 2026-09-09 with the four integration forks locked (blocking connect+handshake then park data I/O; per-shard fd-keyed slot table no-locks; failures trap WO_T_IO; per-shard lazy read-only CA bundle). Remaining to BUILD: F3c-net (net.connect_tls/read_tls/write_tls, ids 115-117, live-gated), then G inbound server"
 ---
 
 # runtime-v2 9 — in-process TLS: retiring the proxy-termination doctrine
@@ -79,44 +79,107 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | C — key exchange | ✅ **LANDED 2026-09-08** — `wo_x25519` (RFC 7748), constant-time Montgomery ladder + mask-based cswap, radix-2⁵¹ field arithmetic (curve25519-donna-c64, `__int128`). Internal C. KAT-gated in `test_crypto.c`: RFC 7748 §5.2 both direct vectors **and the 1000-iteration test**, ASan/UBSan clean |
 | D — signatures | ✅ **LANDED 2026-09-08** — **RSA** `wo_rsa_pkcs1_sha256_verify` + `wo_rsa_pss_sha256_verify` (bignum Montgomery modexp) and **ECDSA-P256** `wo_ecdsa_p256_sha256_verify` (Jacobian point arithmetic, a=-3, on-curve check, Fermat inverses reusing the bignum). Verification is public data so **not** constant-time by design. Both match python vectors (RSA-2048 PKCS1+PSS; P-256), tamper/wrong-hash rejected, KAT-gated, ASan/UBSan clean |
 | E — X.509 | 🔄 **CORE LANDED 2026-09-08** — a defensive ASN.1/DER reader (every length/bound checked, malformation is rejection not over-read) + certificate parse (tbsCertificate span, sig-alg OID, signature, SubjectPublicKeyInfo→RSA n/e or EC P-256 x/y, validity) + `wo_x509_verify_one` (one chain link's signature, dispatching to D's RSA-PKCS1/PSS + ECDSA-P256) + `wo_x509_parse_spki` + `wo_x509_check_validity` (caller supplies the time). KAT-gated in `test_crypto.c` against **real python-generated chains** — RSA CA+leaf (SHA256withRSA) and EC P-256 CA+leaf (ecdsa-with-SHA256): leaf-vs-CA, self-signed CA, wrong-issuer/tampered/truncated rejected, validity window, SPKI extraction — ASan/UBSan clean. **Deferred to F**: SAN/hostname match (needs the target host) and the multi-cert chain walk to a system CA bundle | notoriously bug-prone; consumes D |
-| F — record + handshake (client) | 🔄 **F1–F3b LANDED 2026-09-08** — new `tls.c`/`tls.h`. **F1 record layer** (`wo_tls_record_seal`/`open`, RFC 8446 §5.2, per-record nonce = iv XOR seq, both suites) KAT'd byte-for-byte vs python. **F2 key schedule** (`wo_tls_derive_handshake`/`_application`/`_traffic_keys`/`_finished_verify`, §7.1) KAT'd byte-for-byte vs **RFC 8448 §3**. **F3a message layer** (`wo_tls_parse_server_hello` — attacker input, bounded, rejects HRR/bad suite/truncation; `wo_tls_build_client_hello` — SNI, x25519, sig-algs) KAT'd vs RFC 8448 SH + validated by an independent parser. **F3b offline handshake verification** (`wo_tls_verify_cert_verify` over phase E+D; server + client Finished) — the whole handshake **crypto** proven end-to-end offline vs RFC 8448. **F3c-core sans-io driver** (`wo_tls_client` — pure FSM, caller frames records: CH→SH→flight→Finished, message reassembly, per-message transcript timing, constant-time Finished, application encrypt/decrypt) KAT'd against the **full RFC 8448 record trace** — client Finished + first app record byte-for-byte, NewSessionTicket + server app data decrypt, tampered flight refused. **SAN/hostname** (`wo_x509_check_host`, RFC 6125) + driver enforcement landed. **Remaining F3c-net**: random ephemeral for production start, the multi-cert chain walk to a **system CA trust anchor**, and the `net.connect_tls` builtin + `net.read_tls`/`net.write_tls` VM plumbing (record framing over a real fd), gated live against `openssl s_server` | jarvis's path; the reason the story exists |
+| F — record + handshake (client) | 🔄 **F1–F3b LANDED 2026-09-08** — new `tls.c`/`tls.h`. **F1 record layer** (`wo_tls_record_seal`/`open`, RFC 8446 §5.2, per-record nonce = iv XOR seq, both suites) KAT'd byte-for-byte vs python. **F2 key schedule** (`wo_tls_derive_handshake`/`_application`/`_traffic_keys`/`_finished_verify`, §7.1) KAT'd byte-for-byte vs **RFC 8448 §3**. **F3a message layer** (`wo_tls_parse_server_hello` — attacker input, bounded, rejects HRR/bad suite/truncation; `wo_tls_build_client_hello` — SNI, x25519, sig-algs) KAT'd vs RFC 8448 SH + validated by an independent parser. **F3b offline handshake verification** (`wo_tls_verify_cert_verify` over phase E+D; server + client Finished) — the whole handshake **crypto** proven end-to-end offline vs RFC 8448. **F3c-core sans-io driver** (`wo_tls_client` — pure FSM, caller frames records: CH→SH→flight→Finished, message reassembly, per-message transcript timing, constant-time Finished, application encrypt/decrypt) KAT'd against the **full RFC 8448 record trace** — client Finished + first app record byte-for-byte, NewSessionTicket + server app data decrypt, tampered flight refused. **SAN/hostname** (`wo_x509_check_host`, RFC 6125) + driver enforcement landed. **F3c-net chain validation** (`wo_tls_verify_chain` — chain-link + trust anchor + host + validity, no partial trust) KAT'd offline vs the phase-E RSA + EC chains. **Remaining to build (F3c-net, spec now `ready` — see §F3c-net below)**: `getrandom` ephemeral, per-shard lazy CA-bundle loader, and the `net.connect_tls` / `net.read_tls` / `net.write_tls` builtins (ids 115–117, blocking connect+handshake then park the data plane, per-shard fd-keyed slot table), gated live against `openssl s_server` | jarvis's path; the reason the story exists |
 | G — server (inbound) | the server handshake half, cert+key loading, signing CertificateVerify; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs |
 
-## F3c-net — the remaining slice (decisions auto-approved 2026-09-08, review pending)
+## F3c-net — the socket/VM slice (READY — decisions locked 2026-09-09; forks auto-approved, `review_pending`)
 
 Everything security-critical is landed and offline-KAT'd. What is left is I/O
-integration that can only be gated **live** (against a local `openssl s_server`
-/ python TLS server), so it is a single cohesive slice, not further split:
+integration that can only be gated **live** (a local `openssl s_server` / python
+TLS server), so it is one cohesive slice, not further split. The four
+integration forks are settled below, each grounded in the existing runtime, not
+assumed. This section is `ready`: the decisions are locked, the acceptance
+criteria are stated, and code may start once a developer signs off the
+`review_pending` marker.
 
-1. **Random ephemeral.** A `getrandom(2)`-backed source for the per-connection
-   X25519 private key (and the ClientHello random / session id). No `.wo`
-   randomness builtin is assumed; this is internal to the connect path.
-2. **CA-bundle loader.** Parse the system PEM bundle
-   (`/etc/ssl/certs/ca-certificates.crt`, confirmed present on the dev box) into
-   DER trust anchors for `wo_tls_verify_chain`. Built **with** its consumer, not
-   ahead of it (its memory model is the connect path's to own).
-3. **`net.connect_tls(host, port)` builtin.** TCP-connects (reusing the
-   `net.connect` path), generates the ephemeral, runs the sans-io driver —
-   framing records off the socket (read the 5-byte header, then the body) and
-   flushing `take_output` — until ESTABLISHED, then validates the chain
-   (`wo_tls_verify_chain` with the loaded anchors + the host). Plus
-   `net.read_tls` / `net.write_tls` for application data.
-   - **Handle representation (default, auto-approved):** mirror `net.connect` —
-     the builtin returns the **TCP fd as an Int**, and the runtime keeps the
-     `wo_tls_client` state in a side table keyed by fd; `net.read_tls` /
-     `net.write_tls` / `net.close` look it up and free it on close. This is the
-     smallest change to the language surface (no new class) and matches the
-     existing fd-based net verbs. The alternative — a first-class `TlsConn`
-     language object — is heavier and deferred unless the developer prefers it.
-   - **Blocking model (default, auto-approved):** the handshake and app I/O
-     block, exactly as today's `net.connect` does; the park-plane async refit is
-     a later refinement, not a v1 requirement.
-   - VM wiring: new `WO_B_NET_CONNECT_TLS` / `_READ_TLS` / `_WRITE_TLS` ids in
-     `wob.h`, `emit.ml` / `types.ml` registration, `loader.c` arities,
-     `builtin.c` dispatch, `sysio.c` implementation.
-4. **Live gate.** A `just` recipe dialing a local TLS server: full handshake,
-   chain+host validation, a request/response round-trip, and the negative cases
-   (wrong host, untrusted chain, expired cert) each refused.
+### The four decisions, locked
+
+1. **Blocking connect + blocking handshake, then park the data plane.** This
+   mirrors `net.connect` exactly (`sysio.c` `WO_B_NET_CONNECT`): the socket is
+   **blocking** through TCP connect and the whole TLS handshake, then switched to
+   `O_NONBLOCK` once ESTABLISHED. `net.connect`'s own comment already accepts a
+   blocking connect ("can stall the shard during the handshake, tolerable while
+   connect is rare"); a TLS connection is likewise rare and long-lived (jarvis
+   streams a whole conversation over one), so the extra few handshake round-trips
+   are the same tolerable stall. Application I/O then **parks the fiber** exactly
+   like `net.read`/`net.write` (`O_NONBLOCK` + `park_fd` on POLLIN/POLLOUT +
+   retry). A **park-based handshake** is a named follow-up — the same deferral
+   `net.connect` made for its `_dl`/park variant, not a v1 requirement.
+2. **Per-shard fd-keyed slot table, no locks.** TLS connection state lives in a
+   `wo_tls_conn` slot array **in the shard's own vm**, keyed by fd — the exact
+   pattern of `wo_child children[WO_PROC_MAX]` (`vm.h`: "live in the owning
+   shard's vm — no locks, one thread"). One pinned OS thread per shard and fds
+   that never migrate cross-shard make this thread-safe by construction, with no
+   new locking. Each slot holds the `wo_tls_client` (keys, seqs, driver state), a
+   **partial-record read buffer** (a record may arrive in fragments over a
+   non-blocking socket), and a **leftover-plaintext buffer** (a decrypted record
+   larger than the caller's `max`). Capped like `WO_PROC_MAX`.
+3. **Failures trap `WO_T_IO`, loudly.** Every failure of a secure connect —
+   DNS, TCP connect, the handshake, and critically the **certificate chain and
+   hostname** checks (and any later record auth failure) — returns a `WO_T_IO`
+   trap with a descriptive message, mirroring `net.connect`. A secure-connection
+   failure is never a silent `nil`; this is the "refuse loudly / no partial
+   trust" rule made concrete. `net.read_tls`/`net.write_tls` otherwise mirror
+   `net.read`/`net.write` (EOF is the empty Bytes; a partial write resumes via a
+   `park_wr_at`-style cursor; a decrypt/auth failure traps).
+4. **Per-shard, lazy, read-only CA bundle.** On the first `net.connect_tls` a
+   shard loads the system PEM bundle into its own vm (read-only thereafter) and
+   reuses it for every later dial — no cross-shard sharing, no locks, consistent
+   with (2). Path: `/etc/ssl/certs/ca-certificates.crt` (confirmed present on the
+   dev box), overridable by the `WO_CA_BUNDLE` environment variable — which is
+   also how the live gate points the client at its self-signed test CA.
+
+### The builtin surface
+
+Three new builtins on the `net` module (one numeric id space; `WO_B_MAX` moves
+114 → 117):
+
+- `net.connect_tls(host, port) -> Int` — id **115**, arity 2. Blocking TCP
+  connect (reusing the `net.connect` DNS/connect path), `getrandom(2)` ephemeral
+  X25519 key + ClientHello random/session-id, run the sans-io driver over the
+  blocking socket (frame each record: read the 5-byte header, then the body;
+  flush `take_output`) to ESTABLISHED, set the host on the driver so the leaf
+  SAN is enforced, then `wo_tls_verify_chain` against the lazily-loaded anchors.
+  Returns the fd (a slot is claimed for it); traps on any failure.
+- `net.read_tls(fd, max) -> Bytes` — id **116**, arity 2. Reads/decrypts one
+  application record via the slot, returning up to `max` plaintext bytes (EOF is
+  the empty Bytes), buffering a partial record and parking on POLLIN, and
+  draining any leftover plaintext first.
+- `net.write_tls(fd, bytes) -> Int` — id **117**, arity 2. Seals `bytes` into an
+  application record and writes it, parking on POLLOUT for a partial write.
+
+`net.close` (existing) additionally frees any `wo_tls_conn` slot for the fd.
+VM wiring touches `wob.h` (ids + `WO_B_MAX`), `emit.ml`/`types.ml`
+(registration + return types), `loader.c` (arities), `builtin.c` (sysio dispatch
+range), and `sysio.c` (the implementations + the slot/bundle helpers). No `.wob`
+consumer change beyond the id additions.
+
+### Acceptance criteria
+
+- **Given** a reachable TLS 1.3 server with a chain to a trusted anchor, **when**
+  a `.wo` program calls `net.connect_tls` for its hostname, **then** the
+  handshake completes, the chain + hostname validate, and an fd is returned.
+- **Given** that fd, **when** the program `net.write_tls`es a request and
+  `net.read_tls`es, **then** it exchanges application data, and `net.close`
+  frees the socket and the slot.
+- **Given** a server whose certificate does not chain to a trusted anchor, whose
+  SAN does not match the host, or is expired, **when** `net.connect_tls` runs,
+  **then** it traps `WO_T_IO` — no connection is returned.
+- **Given** two shards each dialing TLS, **when** they run concurrently, **then**
+  neither reads the other's slot or bundle (per-shard, no locks), proven under
+  ASan/TSan.
+- **Given** the live gate, **when** it runs, **then** it dials a local TLS
+  server (trusting a test CA via `WO_CA_BUNDLE`), does a request/response
+  round-trip, and refuses each negative (wrong host, untrusted chain, expired).
+
+### Out of scope (named, deferred)
+
+- **A park-based handshake** — the async refit of decision (1); a first-class
+  `TlsConn` language object over the fd — both later, only if measured need or
+  the developer prefers them.
+- **The HTTP layer.** `net.connect_tls` is a TLS byte pipe; HTTP/1.1 framing
+  over it is the caller's (jarvis 1's `.wo`), not this slice's.
+- **Inbound TLS (server).** Phase **G**, a separate slice for porch.
 
 ## Consumers
 
