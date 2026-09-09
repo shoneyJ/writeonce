@@ -25,7 +25,8 @@ the first: constants there and prose there must never disagree.
 | `sysio.c` | the OS half: `fs`, `time`, `env`, `net`, `proc` |
 | `json.c` | `json.encode` / `json.decode`, driven by class metadata |
 | `park.c/.h` | the park plane (iteration 11 + 35, added after this doc was first written): the raw io_uring ABI mirrored from uapi with no liburing, the epoll fallback, fiber parking and unparking, and the per-call deadlines the `_dl` net members lower to. This is where a blocking builtin becomes "the shard runs someone else" |
-| `crypto.c/.h` | SHA-1, SHA-256, HMAC-SHA256 (iteration 34, builtin ids 85–87): hand-rolled per the no-dependency doctrine, accepted against FIPS 180 / RFC 2202 / RFC 4231 vectors in `test/test_crypto.c` |
+| `crypto.c/.h` | the hand-rolled crypto ladder (no-dependency doctrine): digests (iteration 34, ids 85–87), then the TLS primitives — AEAD, HKDF, X25519, RSA/ECDSA verify, and the X.509 layer (runtime-v2 9). Pinned to RFC/NIST vectors in `test/test_crypto.c` |
+| `tls.c/.h` | hand-rolled TLS 1.3 over `crypto.c` (runtime-v2 9): the record layer, key schedule, handshake messages, the sans-io client driver, chain validation, and the PEM CA-bundle decoder. Consumed by the `net.*_tls` builtins in `sysio.c`; vector-gated in `test/test_tls.c` (RFC 8448) |
 | `main.c` | the CLI: find an image (argument or embedded trailer), build argv, call the entry, map its result to an exit code; post-exit gc pump (a rootless cycle frees everything unreachable, in budgeted slices) |
 
 `builtin.c`'s `wo_builtin` is the single entry point the interpreter calls; it
@@ -420,3 +421,54 @@ RFC 3174 for SHA-1, the FIPS/RFC 6234 vectors for SHA-256, RFC 4231 for HMAC,
 in `runtime/test/test_crypto.c` (18 checks). **There is still no RNG anywhere
 in the runtime** — HMAC authenticates a token but cannot mint one, which is why
 iteration 39 leads with a random-bytes builtin.
+
+## Hand-rolled TLS 1.3 client (runtime-v2 9, ids 115–117)
+
+The crypto ladder and the whole outbound TLS 1.3 client live in `crypto.c`
+(grown well past the digests) and a new `tls.c`/`tls.h`. Everything is
+hand-rolled — no vendored library — and every rung is pinned to published
+vectors (RFC 8439/8446/5869/7748/8448, NIST, and real cert chains) in
+`runtime/test/test_crypto.c` and `runtime/test/test_tls.c`.
+
+`crypto.c` adds, on top of the digests: ChaCha20-Poly1305 and AES-GCM (AES-NI
++ PCLMULQDQ, with a constant-time software fallback), HKDF-SHA256, X25519,
+RSA-PKCS1/PSS and ECDSA-P256 **verification** (public data, so deliberately not
+constant-time), and an X.509 layer — a defensive DER reader, cert-field
+extraction (`wo_x509_parse_spki`, `_check_validity`), single-link signature
+verify (`wo_x509_verify_one`), SAN/hostname matching (`wo_x509_check_host`,
+RFC 6125), and `basicConstraints`/EKU checks (`wo_x509_basic_constraints`,
+`_eku_serverauth_ok`) so a leaf cannot masquerade as a CA.
+
+`tls.c` is the protocol on top of those primitives, in layers: the record layer
+(`wo_tls_record_seal`/`_open`, §5.2, nonce = iv XOR seq); the key schedule
+(`wo_tls_derive_handshake`/`_application`, `_traffic_keys`, `_finished_verify`,
+§7.1); the handshake messages (`wo_tls_build_client_hello`,
+`wo_tls_parse_server_hello`); `wo_tls_verify_cert_verify`; and a **sans-io**
+driver (`wo_tls_client`) — a pure state machine the caller feeds whole records
+and drains bytes-to-send from, so the security-critical FSM is testable offline
+against the RFC 8448 record trace. `wo_tls_verify_chain` walks a leaf-first chain
+to a trust anchor (each link signed by the next, the top anchored, host + dates +
+basicConstraints/EKU), and `wo_tls_pem_to_ders` decodes a PEM CA bundle into DER
+anchors.
+
+The VM entry is three `net` builtins in `sysio.c`: `net.connect_tls` (115),
+`net.read_tls` (116), `net.write_tls` (117). Per-connection state
+(`wo_tls_conn`: the driver plus socket-side record-reassembly, leftover-plaintext
+and in-flight-record buffers) lives in `vm->tls[]`, a per-shard fd-keyed slot
+table with **no locks** — one thread per shard, fds never cross, exactly the
+`wo_child` pattern; `net.close` frees the slot and `wo_vm_destroy` calls
+`wo_tls_reap_all`. The handshake is **blocking and deadline-bounded**
+(non-blocking `connect`+`poll`, then `SO_RCVTIMEO`/`SNDTIMEO` from
+`WO_TLS_HANDSHAKE_MS`, default 10s) so a stalled server cannot hang the shard;
+once ESTABLISHED the socket goes non-blocking and the data plane **parks the
+fiber** exactly like `net.read`/`net.write` (the sealed/partial record survives a
+park in the slot, so a retry never re-seals or loses progress). The ephemeral
+X25519 key comes from `getrandom(2)` — the runtime's first RNG use, superseding
+the digests section's "no RNG anywhere" note. Trust anchors are the shard's
+lazily-loaded, read-only system CA bundle (`WO_CA_BUNDLE` overrides the path).
+Any failure — DNS, connect, handshake, chain, or hostname — **traps `WO_T_IO`
+loudly**, never a silent downgrade. The live gate is `just tls`
+(`scripts/tls-accept.sh`, `docs/examples/tls-client`): a `.wo` client against a
+local TLS 1.3 stub, happy path plus untrusted-chain and hostname-mismatch
+negatives. The inbound server (phase G) and a park-based handshake are not built
+yet.
