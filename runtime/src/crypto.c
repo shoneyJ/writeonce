@@ -1183,6 +1183,85 @@ static int rsa_recover(const uint8_t *n, size_t nlen, const uint8_t *e,
     return 0;
 }
 
+/* ---- RSA private-key ops (rv2 9 phase G1: signing) -----------------------
+ * Signing touches the SECRET exponent, so the modexp must be constant-time.
+ * bn_modexp above branches on the exponent bit (fine for the public e); this
+ * one squares AND multiplies every bit and selects the result with a mask, so
+ * the operation sequence is independent of d. */
+
+/* Constant-time conditional move: dst = mask ? src : dst (mask all-ones/zero). */
+static void bn_cmov(uint64_t *dst, const uint64_t *src, uint64_t mask, int k) {
+    for (int i = 0; i < k; i++) dst[i] = (dst[i] & ~mask) | (src[i] & mask);
+}
+/* out = base^e mod m, constant-time in e (the secret exponent). */
+static void bn_modexp_ct(uint64_t *out, const uint64_t *base, const uint64_t *m,
+                         int k, const uint8_t *e, size_t elen) {
+    uint64_t n0 = 0 - inv64(m[0]);
+    uint64_t rsq[RSA_MAXW], aR[RSA_MAXW], x[RSA_MAXW], one[RSA_MAXW];
+    uint64_t sq[RSA_MAXW], prod[RSA_MAXW];
+    for (int i = 0; i < k; i++) { rsq[i] = 0; one[i] = 0; }
+    rsq[0] = 1; one[0] = 1;
+    for (int i = 0; i < 128 * k; i++) {
+        uint64_t of = bn_shl1(rsq, k);
+        if (of || bn_ge(rsq, m, k)) bn_sub(rsq, rsq, m, k);
+    }
+    mont_mul(aR, base, rsq, m, n0, k);
+    mont_mul(x, one, rsq, m, n0, k);           /* x = R (Montgomery 1) */
+    for (size_t bi = 0; bi < elen * 8; bi++) {
+        uint8_t bit = (e[bi / 8] >> (7 - (bi % 8))) & 1;
+        mont_mul(sq, x, x, m, n0, k);          /* x = x^2 */
+        for (int i = 0; i < k; i++) x[i] = sq[i];
+        mont_mul(prod, x, aR, m, n0, k);       /* always compute x*base ... */
+        bn_cmov(x, prod, (uint64_t)0 - (uint64_t)bit, k); /* ... select on bit */
+    }
+    mont_mul(out, x, one, m, n0, k);
+}
+
+/* RSA-PSS sign over SHA-256 (RFC 8017 §9.1.1 / §8.1.1). The 32-byte message
+ * hash and the salt are inputs — the caller supplies fresh salt (a fixed salt
+ * makes the KAT deterministic). Private key is (n, d), both big-endian. Writes
+ * nlen signature bytes. Requires a top-bit-set (full-length) modulus. 0 ok,
+ * -1 on a bad size. */
+int wo_rsa_pss_sha256_sign(const uint8_t *n, size_t nlen, const uint8_t *d,
+                           size_t dlen, const uint8_t mhash[32],
+                           const uint8_t *salt, size_t saltlen, uint8_t *out) {
+    const size_t hLen = 32, emLen = nlen;
+    if (nlen == 0 || (n[0] & 0x80) == 0) return -1;      /* need modBits = 8*nlen */
+    if (saltlen + hLen + 2 > emLen) return -1;
+
+    /* H = SHA256(0x00*8 || mHash || salt) */
+    uint8_t mp[8 + 32 + 64];
+    if (saltlen > 64) return -1;
+    memset(mp, 0, 8);
+    memcpy(mp + 8, mhash, 32);
+    memcpy(mp + 40, salt, saltlen);
+    uint8_t H[32];
+    wo_sha256(mp, 8 + 32 + saltlen, H);
+
+    /* EM = maskedDB || H || 0xbc, DB = PS || 0x01 || salt */
+    uint8_t em[RSA_MAXW * 8];
+    size_t dblen = emLen - hLen - 1;
+    memset(em, 0, dblen);
+    em[dblen - saltlen - 1] = 0x01;
+    memcpy(em + dblen - saltlen, salt, saltlen);
+    uint8_t dbmask[RSA_MAXW * 8];
+    mgf1_sha256(H, hLen, dbmask, dblen);
+    for (size_t i = 0; i < dblen; i++) em[i] ^= dbmask[i];
+    em[0] &= 0x7f;                                        /* clear the top bit */
+    memcpy(em + dblen, H, hLen);
+    em[emLen - 1] = 0xbc;
+
+    /* signature = EM^d mod n */
+    uint64_t N[RSA_MAXW], M[RSA_MAXW], SIG[RSA_MAXW];
+    int k = bn_from_be(N, n, nlen);
+    if (k < 0 || (N[0] & 1) == 0) return -1;
+    if (bn_from_be(M, em, emLen) < 0) return -1;
+    if (bn_ge(M, N, k)) return -1;
+    bn_modexp_ct(SIG, M, N, k, d, dlen);
+    bn_to_be(out, nlen, SIG, k);
+    return 0;
+}
+
 int wo_rsa_pkcs1_sha256_verify(const uint8_t *n, size_t nlen, const uint8_t *e,
                                size_t elen, const uint8_t *sig, size_t siglen,
                                const uint8_t hash[32]) {

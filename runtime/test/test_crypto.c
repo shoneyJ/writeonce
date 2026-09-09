@@ -8,6 +8,7 @@
 #include "crypto.h"
 #include "t.h"
 #include "x509_vectors.h"
+#include "rsa_sign_vectors.h"
 
 static void hex(const uint8_t *d, size_t n, char *out) {
     static const char *h = "0123456789abcdef";
@@ -453,6 +454,22 @@ int main(void) {
         T_CHECK(wo_x509_eku_serverauth_ok(kat_rsa_leaf, sizeof kat_rsa_leaf) == 1);       /* no EKU -> ok */
         T_CHECK(wo_x509_eku_serverauth_ok(kat_leaf_eku_server, sizeof kat_leaf_eku_server) == 1);
         T_CHECK(wo_x509_eku_serverauth_ok(kat_leaf_eku_client, sizeof kat_leaf_eku_client) == 0); /* clientAuth only */
+    }
+
+    /* RSA-PSS SIGN (rv2 9 phase G1) — deterministic (fixed salt) vs python
+     * from-spec, and our sign round-trips through our verify. */
+    {
+        uint8_t sig[256];
+        int rc = wo_rsa_pss_sha256_sign(rsasig_n, sizeof rsasig_n, rsasig_d,
+                                        sizeof rsasig_d, rsasig_mhash, rsasig_salt,
+                                        sizeof rsasig_salt, sig);
+        T_CHECK(rc == 0);
+        T_CHECK(memcmp(sig, rsasig_expect, 256) == 0);        /* byte-for-byte */
+        T_CHECK(wo_rsa_pss_sha256_verify(rsasig_n, sizeof rsasig_n, rsasig_e,
+                    sizeof rsasig_e, sig, 256, rsasig_mhash, 32) == 1);
+        sig[100] ^= 1;                                         /* tamper */
+        T_CHECK(wo_rsa_pss_sha256_verify(rsasig_n, sizeof rsasig_n, rsasig_e,
+                    sizeof rsasig_e, sig, 256, rsasig_mhash, 32) == 0);
     }
 
     return t_report("test_crypto");
