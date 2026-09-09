@@ -93,7 +93,7 @@ Blockers, which must land before iteration 1 starts:
 | Blocker | Owner | State |
 | --- | --- | --- |
 | outbound TCP (`net.connect`) | language [38](../language-runtime-database/38-content-platform-capabilities.md) | ✅ **landed 2026-09-07** (`wob.h` id 110) |
-| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | 🔄 in progress — A AEAD ✅, B HKDF ✅, C X25519 ✅, D signatures ✅, E X.509 ✅, F1 record ✅, F2 key schedule ✅, F3a messages ✅, F3b offline verify ✅, F3c-core sans-io handshake driver ✅, SAN/hostname ✅ (all KAT'd vs RFC 8448 / real certs); **remaining F3c-net**: system CA trust-anchor walk + `net.connect_tls` VM plumbing (live-gated), then G server |
+| outbound TLS client | runtime-v2 [9](../runtime-v2/09-in-process-tls.md) — in-process TLS; **retires the proxy-termination doctrine** | ✅ **LANDED 2026-09-09** — the full client: A–E crypto, F1–F3c handshake, SAN/hostname + basicConstraints/EKU chain validation, and **`net.connect_tls` / `net.read_tls` / `net.write_tls`** (ids 115–117), live-gated (`just tls`, 5/0) from `.wo` incl. untrusted-chain + hostname-mismatch negatives. **jarvis's outbound seam is open** (G inbound server is porch's, not jarvis's) |
 
 ## What this track does NOT own
 

@@ -17,14 +17,15 @@ review_pending: "forks auto-approved 2026-09-08 for autonomous execution — dev
 > `review_pending` for the developer's second review** — the defaults below are
 > reasonable but were not individually confirmed.
 
-## Blocked until the outbound seam lands
+## The outbound seam has landed
 
-This iteration cannot run until `net.connect` (✅ landed) and runtime-v2
-[9](../runtime-v2/09-in-process-tls.md) TLS expose **`net.connect_tls`**. The
-crypto + handshake engine is landed and RFC-8448-gated (A–E, F1–F3c-core, the
-sans-io client driver, SAN/hostname); what remains is **F3c-net** — the socket
-glue that drives the driver over a real fd, plus a system CA trust-anchor walk.
-Everything below is buildable `.wo` on top of that seam plus porch 2/3/6/7.
+The blockers are cleared: `net.connect` (✅) and runtime-v2
+[9](../runtime-v2/09-in-process-tls.md)'s **`net.connect_tls` / `net.read_tls` /
+`net.write_tls`** (✅ landed 2026-09-09, live-gated `just tls`) expose outbound
+HTTPS from `.wo`, with the full hand-rolled TLS 1.3 handshake + chain/hostname
+validation. Everything below is now buildable `.wo` on top of that seam plus
+porch 2/3/6/7. (Note: the TLS builtins return the connection as an `Int` fd, per
+the F3c-net object-model decision — the chat loop dials with them directly.)
 
 ## Decisions locked (auto-approved, review pending)
 

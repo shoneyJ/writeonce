@@ -76,40 +76,36 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
-### Landed 2026-09-08 — the TLS 1.3 client security engine (rv2 9, A–F3c minus the socket glue)
+### Landed 2026-09-09 — the outbound TLS 1.3 client is COMPLETE (rv2 9 A–F3c), live-gated; jarvis unblocked
 
-**What happened this session (code + docs):** the entire security-critical logic
-of a hand-rolled TLS 1.3 client is implemented and gold-KAT'd, in `runtime/src/`
-`crypto.c` + new `tls.c`/`tls.h`. Landed and vector-gated (ASan/UBSan clean):
-**E** X.509 chain-link verify + SPKI + validity + **SAN/hostname** (RFC 6125);
-**F1** record layer (RFC 8446 §5.2, both suites, byte-for-byte vs python);
-**F2** key schedule (§7.1, byte-for-byte vs **RFC 8448**); **F3a** ClientHello
-builder + ServerHello parser; **F3b** offline CertificateVerify + Finished
-verify; **F3c-core** the **sans-io handshake driver** (`wo_tls_client`, whole
-handshake driven offline against the RFC 8448 record trace — client Finished +
-app records byte-for-byte, tampered flight refused); **F3c-net security core**
-`wo_tls_verify_chain` (chain-link + anchor + host + validity, no partial trust).
-Tests: `test_tls` 100/0, `test_crypto` 95/0, full runtime suite 0 fail. Forks
-auto-approved 2026-09-08, marked `review_pending` in the story frontmatter for a
-developer second review before this drives a live connection.
+**What happened (code + docs):** a whole hand-rolled TLS 1.3 client, in
+`runtime/src/crypto.c` + new `tls.c`/`tls.h` + the `net.*_tls` builtins, gated
+end to end. All vector-gated against **RFC 8448** / real certs, ASan/UBSan clean:
+**E** X.509 (chain-link verify, SPKI, validity, **SAN/hostname** RFC 6125,
+**basicConstraints/EKU**); **F1** record layer; **F2** key schedule (byte-for-byte
+vs RFC 8448); **F3a** ClientHello builder + ServerHello parser; **F3b** offline
+CertificateVerify + Finished; **F3c-core** the sans-io handshake driver (whole
+handshake driven offline vs the RFC 8448 record trace); **F3c-net** the socket/VM
+slice — `wo_tls_verify_chain`, the PEM CA-bundle loader, and
+**`net.connect_tls` / `net.read_tls` / `net.write_tls`** (ids 115–117,
+`WO_B_MAX`→117) with a per-shard fd-keyed no-lock slot table, a deadline-bounded
+handshake, and a parked data plane. **Live gate** `just tls`
+(`scripts/tls-accept.sh`, `docs/examples/tls-client`): dials a local TLS 1.3 stub
+from `.wo`, validates the chain + host, round-trips app data, and refuses the
+untrusted-chain + hostname-mismatch negatives — **5 checks, 0 failures**, no live
+network. Tests: `test_tls` 107/0, `test_crypto` 104/0, full runtime suite 0 fail.
+Six integration forks implemented as locked (blocking deadline-bounded
+connect+handshake then parked data plane; per-shard slot table no-locks; failures
+trap `WO_T_IO`; per-shard lazy read-only CA bundle `WO_CA_BUNDLE`; handshake
+deadline `WO_TLS_HANDSHAKE_MS`; basicConstraints+EKU hardening). Forks
+auto-approved 2026-09-08/09, `review_pending` for a developer second review.
 
-**Next step — BUILD F3c-net (the only remaining rung before jarvis unblocks).**
-Its spec is now `ready`: [rv2 9 §F3c-net](runtime-v2/09-in-process-tls.md)
-brainstormed 2026-09-09 with **six** integration forks **locked** (four grounded
-in the runtime, two from a gofiber/Go `crypto/x509` comparison): (1) blocking
-connect+handshake then park the data plane, mirroring `net.connect` — park-based
-handshake a named follow-up; (2) a per-shard fd-keyed `wo_tls_conn` slot table,
-no locks (the `wo_child` pattern); (3) failures trap `WO_T_IO` loudly incl.
-chain/hostname; (4) per-shard lazy read-only CA bundle (`/etc/ssl/certs/…`,
-`WO_CA_BUNDLE` override); (5) a **bounded handshake deadline**
-(`WO_TLS_HANDSHAKE_MS`, non-blocking connect+poll + `SO_RCVTIMEO/SNDTIMEO`) so a
-stalled server can't hang the shard; (6) **chain hardening** — basicConstraints
-CA:TRUE + pathLen + leaf EKU `serverAuth`, not just signatures. Builtins:
-`net.connect_tls`/`read_tls`/`write_tls` (ids 115–117, `WO_B_MAX`→117), wiring
-across `wob.h`/`emit.ml`/`types.ml`/`loader.c`/`builtin.c`/`sysio.c`, live-gated
-against a local TLS server. Then **G** (inbound server) for porch; after that
-jarvis 1 is buildable. (Separately still open: language 41's marshal fix — below
-— unblocking porch 9.)
+**Next step — jarvis 1 (the chat loop) is now buildable** (its outbound seam is
+open); or rv2 9 **G** (inbound TLS server) for porch, which also lets the
+proxy-termination doctrine docs (34/38/porch) be corrected. Deferred rv2 9
+follow-ups: a park-based handshake, a first-class `TlsConn` object, connection
+pooling. (Separately still open: language 41's marshal fix — below — unblocking
+porch 9.)
 
 ### Brainstormed 2026-09-06 — the porch track (2–8) and language 41's fix, both to `ready`
 
@@ -1578,7 +1574,7 @@ starts. Edges in [dependency graph section 6](../00-dependency-graph.md).
 | 6 | [term.size + term.width](runtime-v2/06-term-size-width.md) | ✅ **DONE 2026-09-02** — TIOCGWINSZ read twin (nil = not a tty) and libc wcwidth under C.UTF-8; the only runtime work the whole wmux parity ladder needs |
 | 7 | [observability](runtime-v2/07-observability.md) | ⬜ `refine` — **moved here 2026-09-06** from language iteration 30 (`was_language_iteration: 30`). Runtime metrics/gauges, a `pprof`-equivalent profile, stack-trace-on-trap; consumers named (porch [8](porch/08-static-and-lifecycle.md)/[39](language-runtime-database/39-web-framework-parity.md), databasev2 [5](databasev2/05-bounded-tables-eviction.md), the limiter's lazy expiry). Forks: counters-only vs profiling, exposition format, pull vs push, trace-on-trap as a separable first slice. Stretches the track's charter (instrumentation, not processes/terminals/signals) — noted in the story |
 | 8 | [symmetric cipher (AEAD)](runtime-v2/08-symmetric-cipher.md) | 🔄 **in-progress** — the **first rung of the TLS ladder** (gates rv2 9). **Phases A + B + C LANDED 2026-09-08**: A ChaCha20-Poly1305 (ids 111/112, RFC 8439 §2.8.2); B AES-128/256-GCM (ids 113/114) via AES-NI+PCLMULQDQ; C portable constant-time software AES-GCM fallback (S-box via GF-inverse ladder, bit-by-bit GHASH) — AES-GCM now on any CPU, dispatched hw-or-sw. All hand-rolled, constant-time, both AES paths NIST cases 4 & 16 byte-exact, KAT-gated in test_crypto (**48/0**), ASan/UBSan clean. Remaining: D cookie wrapper → E gate (ARMv8 hw path deferred). Consumers: rv2 9 TLS + porch encrypted cookies |
-| 9 | [in-process TLS](runtime-v2/09-in-process-tls.md) | 🔄 **in-progress** (`ready` 2026-09-07) — TLS **both directions**, **retiring the "TLS is the proxy's job" doctrine** (34/38/porch). Locked: **hand-roll TLS 1.3**, **1.3-only**, **RSA+ECDSA+full X.509**. Ladder (all KAT'd vs **RFC 8448** / real certs, ASan/UBSan clean, 2026-09-08): **A AEAD ✅ → B HKDF ✅ → C X25519 ✅ → D signatures ✅ → E X.509 ✅ + SAN/hostname ✅ → F1 record ✅ → F2 key schedule ✅ → F3a messages ✅ → F3b offline handshake verify ✅ → F3c-core sans-io handshake driver ✅** (whole handshake driven offline vs the RFC 8448 record trace: client Finished + app records byte-for-byte, tampered flight refused). New `tls.c`/`tls.h`; test_tls 91/0, test_crypto 95/0. **Remaining F3c-net**: random ephemeral for production, system CA trust-anchor walk, `net.connect_tls` VM plumbing (live-gated) → then **G** server. `net.connect` (110) landed. Forks auto-approved 2026-09-08, marked `review_pending`. The project's **highest-risk** work; mandatory reference-tested/constant-time/negative-test gates |
+| 9 | [in-process TLS](runtime-v2/09-in-process-tls.md) | 🔄 **in-progress** — **outbound client COMPLETE 2026-09-09**, **retiring the "TLS is the proxy's job" doctrine** (34/38/porch). Locked: **hand-roll TLS 1.3**, **1.3-only**, **RSA+ECDSA+full X.509**. Ladder (KAT'd vs **RFC 8448** / real certs, ASan/UBSan clean): **A AEAD ✅ → B HKDF ✅ → C X25519 ✅ → D signatures ✅ → E X.509 + SAN/hostname + basicConstraints/EKU ✅ → F1 record ✅ → F2 key schedule ✅ → F3a messages ✅ → F3b offline verify ✅ → F3c-core sans-io driver ✅ → F3c-net `net.connect_tls`/`read_tls`/`write_tls` ✅** (ids 115–117; deadline-bounded blocking handshake then parked data plane; per-shard fd-keyed no-lock slots; CA bundle via `WO_CA_BUNDLE`). **Live-gated** `just tls` (5/0) from `.wo` incl. untrusted-chain + hostname-mismatch negatives. `tls.c`/`tls.h`; test_tls 107/0, test_crypto 104/0, full suite 0 fail. **Remaining: G inbound server** (porch) + deferred park-handshake/`TlsConn`/pooling. Forks auto-approved 2026-09-08/09, `review_pending`. The project's **highest-risk** work; mandatory reference-tested/constant-time/negative-test gates |
 
 ### ▸ wmux — the terminal multiplexer track
 
