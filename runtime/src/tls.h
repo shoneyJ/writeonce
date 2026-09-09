@@ -164,6 +164,7 @@ typedef struct {
     uint8_t transcript[WO_TLS_BUF_MAX]; size_t tlen;
     uint8_t hsbuf[WO_TLS_BUF_MAX]; size_t hsn;   /* reassembled handshake bytes */
     uint8_t leaf[WO_TLS_LEAF_MAX]; size_t leaflen;
+    uint8_t certmsg[WO_TLS_BUF_MAX]; size_t certmsg_len;  /* whole Certificate msg */
     uint16_t cv_scheme;
     uint8_t out[1024]; size_t outn;              /* bytes for the caller to send */
     const char *host; size_t hostlen;            /* if set, leaf SAN is enforced */
@@ -176,6 +177,13 @@ typedef struct {
  * hostname check (offline testing only, and MITM-unsafe on the wire). The
  * string must outlive the handshake (not copied). */
 void wo_tls_client_set_host(wo_tls_client *c, const char *host, size_t hostlen);
+
+/* After the handshake, parse the server's Certificate message into leaf-first
+ * DER cert spans (pointers into the driver's own buffer, valid for the client's
+ * lifetime). Returns the count (0 if none / more than max), for
+ * wo_tls_verify_chain. */
+size_t wo_tls_client_chain(const wo_tls_client *c, const uint8_t **certs,
+                           size_t *lens, size_t max);
 
 /* Start a handshake from a caller-built ClientHello handshake message and a
  * fixed X25519 private key (production passes fresh randomness; the KAT injects

@@ -193,6 +193,10 @@ typedef struct wo_child {
     struct wo_actor *owner_actor; /* NULL = the program owns it */
 } wo_child;
 #define WO_PROC_MAX 32u
+/* runtime-v2 9 F3c-net: this shard's live TLS connections (net.connect_tls),
+ * capped like the child slots. sysio.c owns struct wo_tls_conn. */
+#define WO_TLS_MAX 64u
+struct wo_tls_conn;
 
 /* sysio.c: kill+reap the fiber's in-flight child, if any (fib_reap), and
  * every live child on the shard (wo_vm_destroy / engine stop).
@@ -202,6 +206,9 @@ struct wo_vm;
 void wo_proc_abandon(struct wo_vm *vm, wo_fiber *fb);
 void wo_proc_abandon_actor(struct wo_vm *vm, struct wo_actor *a);
 void wo_proc_reap_all(struct wo_vm *vm);
+/* runtime-v2 9 F3c-net: close every live TLS connection + free the CA bundle
+ * on shard teardown (sysio.c owns it; wo_vm_destroy calls it). */
+void wo_tls_reap_all(struct wo_vm *vm);
 
 /* runtime-v2 3 (sysio.c): turn latched signals into Signal-record sends.
  * Cheap when nothing arrived; called from wo_io_wait and the inbox
@@ -301,6 +308,16 @@ typedef struct wo_vm {
      * submits landed at garbage offsets and parked fibers lost their
      * wakes. Per-vm storage ends the race by construction. */
     unsigned char io_params[256];
+    /* runtime-v2 9 F3c-net: live TLS connections keyed by fd, and the shard's
+     * lazily-loaded read-only CA trust anchors — per-shard, no locks (one
+     * thread), mirroring `children` above. sysio.c owns the lifecycle. */
+    struct wo_tls_conn *tls[WO_TLS_MAX];
+    uint32_t ntls;
+    int ca_loaded;
+    uint8_t *ca_arena;
+    const uint8_t **ca_certs;
+    size_t *ca_lens;
+    size_t ca_count;
 } wo_vm;
 
 /* arc: the spawn/send builtins' runtime halves (vm.c owns the scheduler). */

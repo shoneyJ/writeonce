@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -42,7 +43,9 @@
 
 #include "builtin.h"
 #include "cont.h"
+#include "crypto.h"
 #include "gc.h"
+#include "tls.h"
 
 /* ---- shared helpers -------------------------------------------------- */
 
@@ -372,6 +375,176 @@ static int proc_drain_fd(int *fd, char **buf, size_t *len, size_t *alloc,
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
         return -3;
+    }
+    return 0;
+}
+
+/* ---- runtime-v2 9 F3c-net: outbound TLS client ---------------------------
+ * Per-shard, one thread: no locks. A connection's state — the sans-io driver
+ * (tls.c) plus the socket-side record-reassembly and in-flight buffers — lives
+ * in a malloc'd wo_tls_conn kept in vm->tls[], keyed by fd. The handshake is
+ * blocking and deadline-bounded (decision 5); application read/write park the
+ * fiber (decision 1). The trust anchors are the shard's lazily-loaded, read-only
+ * CA bundle (decision 4). */
+
+#define WO_TLS_REC_MAX (5u + 16384u + 256u)   /* max TLSCiphertext on the wire */
+
+typedef struct wo_tls_conn {
+    int fd;
+    wo_tls_client cli;
+    char host[256];
+    uint8_t rbuf[WO_TLS_REC_MAX]; size_t rbn;          /* partial inbound record */
+    uint8_t pbuf[WO_TLS_BUF_MAX]; size_t pboff, pbn;   /* decrypted, unconsumed */
+    uint8_t wbuf[WO_TLS_REC_MAX]; size_t wblen, wboff; /* outbound record in flight */
+} wo_tls_conn;
+
+static wo_tls_conn *tls_find(wo_vm *vm, int fd) {
+    for (uint32_t i = 0; i < WO_TLS_MAX; i++)
+        if (vm->tls[i] && vm->tls[i]->fd == fd) return vm->tls[i];
+    return NULL;
+}
+static wo_tls_conn *tls_claim(wo_vm *vm, int fd) {
+    for (uint32_t i = 0; i < WO_TLS_MAX; i++)
+        if (!vm->tls[i]) {
+            wo_tls_conn *c = calloc(1, sizeof *c);
+            if (!c) return NULL;
+            c->fd = fd; vm->tls[i] = c; vm->ntls++;
+            return c;
+        }
+    return NULL;                                        /* full = the ceiling */
+}
+static void tls_free(wo_vm *vm, int fd) {
+    for (uint32_t i = 0; i < WO_TLS_MAX; i++)
+        if (vm->tls[i] && vm->tls[i]->fd == fd) {
+            free(vm->tls[i]); vm->tls[i] = NULL; vm->ntls--;
+            return;
+        }
+}
+/* Shard teardown: close every live TLS fd, free the slots and the CA bundle. */
+void wo_tls_reap_all(wo_vm *vm) {
+    for (uint32_t i = 0; i < WO_TLS_MAX; i++)
+        if (vm->tls[i]) { close(vm->tls[i]->fd); free(vm->tls[i]); vm->tls[i] = NULL; }
+    vm->ntls = 0;
+    free(vm->ca_arena); vm->ca_arena = NULL;
+    free((void *)vm->ca_certs); vm->ca_certs = NULL;
+    free(vm->ca_lens); vm->ca_lens = NULL;
+    vm->ca_count = 0; vm->ca_loaded = 0;
+}
+
+static int tls_rand(uint8_t *buf, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t r = getrandom(buf + off, n - off, 0);
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        off += (size_t)r;
+    }
+    return 0;
+}
+
+static void tls_now14(char out[15]) {
+    time_t t = time(NULL);
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    strftime(out, 15, "%Y%m%d%H%M%S", &tmv);
+}
+
+/* Lazily load the shard's read-only CA anchors from the system PEM bundle
+ * (WO_CA_BUNDLE overrides the path). 0 ok, -1 on failure (cached either way). */
+static int tls_ca_ensure(wo_vm *vm) {
+    if (vm->ca_loaded) return vm->ca_count > 0 ? 0 : -1;
+    vm->ca_loaded = 1;
+    const char *path = getenv("WO_CA_BUNDLE");
+    if (!path) path = "/etc/ssl/certs/ca-certificates.crt";
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return -1; }
+    char *pem = malloc((size_t)sz);
+    size_t got = pem ? fread(pem, 1, (size_t)sz, f) : 0;
+    fclose(f);
+    if (!pem) return -1;
+    enum { MAXC = 1024 };
+    uint8_t *arena = malloc((size_t)sz);               /* DER < PEM */
+    const uint8_t **certs = malloc(MAXC * sizeof *certs);
+    size_t *lens = malloc(MAXC * sizeof *lens);
+    long n = (arena && certs && lens)
+        ? wo_tls_pem_to_ders(pem, got, arena, (size_t)sz, certs, lens, MAXC) : -1;
+    free(pem);
+    if (n <= 0) { free(arena); free((void *)certs); free(lens); return -1; }
+    vm->ca_arena = arena; vm->ca_certs = certs; vm->ca_lens = lens;
+    vm->ca_count = (size_t)n;
+    return 0;
+}
+
+/* Blocking whole-buffer send (handshake path; the socket carries SO_SNDTIMEO). */
+static int tls_send_all(int fd, const uint8_t *b, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = send(fd, b + off, n - off, MSG_NOSIGNAL);
+        if (w < 0) { if (errno == EINTR) continue; return -1; }
+        off += (size_t)w;
+    }
+    return 0;
+}
+static int tls_recv_exact(int fd, uint8_t *b, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t r = recv(fd, b + off, n - off, 0);
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r == 0) return -1;                          /* EOF mid-handshake */
+        off += (size_t)r;
+    }
+    return 0;
+}
+/* Read one whole TLS record (blocking) into buf; returns its length or -1. */
+static int tls_recv_record(int fd, uint8_t *buf, size_t cap) {
+    if (tls_recv_exact(fd, buf, 5) != 0) return -1;
+    size_t body = ((size_t)buf[3] << 8) | buf[4];
+    if (5 + body > cap) return -1;
+    if (tls_recv_exact(fd, buf + 5, body) != 0) return -1;
+    return (int)(5 + body);
+}
+
+/* Drive the blocking handshake on conn->fd to ESTABLISHED, then validate the
+ * chain against the shard anchors. 0 ok, -1 on any failure (*msg set). */
+static int tls_handshake(wo_vm *vm, wo_tls_conn *conn, size_t hostlen,
+                         const char **msg) {
+    uint8_t priv[32], pub[32], rnd[32], sid[32], base9[32] = { 9 };
+    uint8_t ch[512]; size_t chlen = 0;
+    if (tls_rand(priv, 32) || tls_rand(rnd, 32) || tls_rand(sid, 32)) {
+        *msg = "tls: getrandom failed"; return -1;
+    }
+    wo_x25519(pub, priv, base9);
+    if (wo_tls_build_client_hello(conn->host, hostlen, pub, rnd, sid, ch, sizeof ch, &chlen) != 0
+        || wo_tls_client_start_with(&conn->cli, ch, chlen, priv) != 0) {
+        *msg = "tls: ClientHello build failed"; return -1;
+    }
+    wo_tls_client_set_host(&conn->cli, conn->host, hostlen);
+
+    uint8_t rec[WO_TLS_REC_MAX]; size_t rn;
+    rn = wo_tls_client_take_output(&conn->cli, rec, sizeof rec);
+    if (rn == 0 || tls_send_all(conn->fd, rec, rn) != 0) {
+        *msg = "tls: sending ClientHello failed"; return -1;
+    }
+    for (;;) {
+        int rl = tls_recv_record(conn->fd, rec, sizeof rec);
+        if (rl < 0) { *msg = "tls: handshake read failed or timed out"; return -1; }
+        wo_tls_status st = wo_tls_client_push_record(&conn->cli, rec, (size_t)rl);
+        if (st == WO_TLS_FAILED) { *msg = "tls: handshake verification failed"; return -1; }
+        rn = wo_tls_client_take_output(&conn->cli, rec, sizeof rec);
+        if (rn > 0 && tls_send_all(conn->fd, rec, rn) != 0) {
+            *msg = "tls: handshake write failed"; return -1;
+        }
+        if (st == WO_TLS_ESTABLISHED) break;
+    }
+    /* trust: full chain + host + validity + basicConstraints/EKU vs anchors */
+    const uint8_t *chain[16]; size_t clens[16];
+    size_t nchain = wo_tls_client_chain(&conn->cli, chain, clens, 16);
+    char now[15]; tls_now14(now);
+    if (nchain == 0 ||
+        !wo_tls_verify_chain(chain, clens, nchain, vm->ca_certs, vm->ca_lens,
+                             vm->ca_count, conn->host, hostlen, now)) {
+        *msg = "tls: certificate chain not trusted"; return -1;
     }
     return 0;
 }
@@ -727,6 +900,7 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         return 0;
     }
     case WO_B_NET_CLOSE: {
+        tls_free(vm, (int)R[B]); /* frees the TLS slot if this was one (else no-op) */
         close((int)R[B]);
         R[A] = 0;
         return 0;
@@ -1604,6 +1778,165 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
         R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_CONNECT_TLS: { /* (host, port) -> Int: TLS client fd */
+        char host[256];
+        if (cstr_of(R[B], host, sizeof host, msg)) return WO_T_BOUNDS;
+        int64_t port = (int64_t)R[B + 1];
+        if (port < 0 || port > 65535) { *msg = "port out of range"; return WO_T_BOUNDS; }
+        if (tls_ca_ensure(vm) != 0) { *msg = "tls: cannot load CA trust store"; return WO_T_IO; }
+
+        long dl_ms = 10000;
+        const char *denv = getenv("WO_TLS_HANDSHAKE_MS");
+        if (denv) { long v = atol(denv); if (v > 0) dl_ms = v; }
+
+        char portstr[8]; snprintf(portstr, sizeof portstr, "%u", (unsigned)port);
+        struct addrinfo hints, *res = NULL, *ai;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, portstr, &hints, &res) != 0) { *msg = "tls: DNS failure"; return WO_T_IO; }
+
+        /* non-blocking connect + poll, bounded by the deadline (decision 5) */
+        int fd = -1;
+        for (ai = res; ai; ai = ai->ai_next) {
+            fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            if (fd < 0) continue;
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+            int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+            if (rc == 0) break;
+            if (errno != EINPROGRESS) { close(fd); fd = -1; continue; }
+            struct pollfd pfd = { fd, POLLOUT, 0 };
+            int pr = poll(&pfd, 1, (int)dl_ms);
+            if (pr == 1) {
+                int soe = 0; socklen_t sl = sizeof soe;
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soe, &sl) == 0 && soe == 0) break;
+            }
+            close(fd); fd = -1;
+        }
+        freeaddrinfo(res);
+        if (fd < 0) { *msg = "tls: connect failed"; return WO_T_IO; }
+
+        /* handshake runs blocking, each syscall bounded by SO_*TIMEO */
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+        struct timeval tv = { dl_ms / 1000, (dl_ms % 1000) * 1000 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+        wo_tls_conn *conn = tls_claim(vm, fd);
+        if (!conn) { close(fd); *msg = "tls: too many connections"; return WO_T_IO; }
+        size_t hl = strlen(host);
+        if (hl >= sizeof conn->host) hl = sizeof conn->host - 1;
+        memcpy(conn->host, host, hl); conn->host[hl] = 0;
+
+        if (tls_handshake(vm, conn, hl, msg) != 0) {
+            tls_free(vm, fd); close(fd); return WO_T_IO;
+        }
+        /* established: the data plane is non-blocking + parked (decision 1) */
+        struct timeval z = { 0, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &z, sizeof z);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &z, sizeof z);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        R[A] = (uint64_t)fd;
+        return 0;
+    }
+    case WO_B_NET_READ_TLS: { /* (fd, max) -> Text; empty = EOF */
+        wo_tls_conn *conn = tls_find(vm, (int)R[B]);
+        if (!conn) { *msg = "tls: not a TLS connection"; return WO_T_IO; }
+        int64_t max = (int64_t)R[B + 1];
+        if (max < 0) max = 0;
+        for (;;) {
+            /* serve leftover decrypted plaintext first */
+            if (conn->pbn > conn->pboff) {
+                size_t avail = conn->pbn - conn->pboff;
+                size_t give = (size_t)max < avail ? (size_t)max : avail;
+                wo_str *s = wo_str_new(rt, (const char *)conn->pbuf + conn->pboff, (uint32_t)give);
+                if (!s) { *msg = "out of memory"; return WO_T_OOM; }
+                conn->pboff += give;
+                if (conn->pboff >= conn->pbn) conn->pboff = conn->pbn = 0;
+                R[A] = (uint64_t)(uintptr_t)s;
+                return 0;
+            }
+            /* fill rbuf until a full record; park on EAGAIN */
+            for (;;) {
+                size_t need = conn->rbn < 5 ? 5
+                    : 5 + (((size_t)conn->rbuf[3] << 8) | conn->rbuf[4]);
+                if (conn->rbn >= 5 && need > sizeof conn->rbuf) {
+                    *msg = "tls: oversize record"; return WO_T_IO;
+                }
+                if (conn->rbn >= need) break;             /* full record buffered */
+                ssize_t n = recv((int)R[B], conn->rbuf + conn->rbn,
+                                 need - conn->rbn, 0);
+                if (n < 0 && errno == EINTR) {
+                    if (stop_pending()) return WO_SYS_STOPPED;
+                    continue;
+                }
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    if (stop_pending()) return WO_SYS_STOPPED;
+                    vm->cur->park_fd = (int)R[B]; vm->cur->park_deadline = 0;
+                    vm->cur->park_events = POLLIN; vm->cur->park_done = 0;
+                    return WO_SYS_PARKED;
+                }
+                if (n == 0) {                             /* EOF -> empty Text */
+                    wo_str *e = wo_str_new(rt, "", 0);
+                    if (!e) { *msg = "out of memory"; return WO_T_OOM; }
+                    R[A] = (uint64_t)(uintptr_t)e; return 0;
+                }
+                if (n < 0) { *msg = strerror(errno); return WO_T_IO; }
+                conn->rbn += (size_t)n;
+            }
+            size_t rlen = 5 + (((size_t)conn->rbuf[3] << 8) | conn->rbuf[4]);
+            uint8_t ct = 0;
+            int dn = wo_tls_client_decrypt(&conn->cli, conn->rbuf, rlen,
+                                           conn->pbuf, sizeof conn->pbuf, &ct);
+            memmove(conn->rbuf, conn->rbuf + rlen, conn->rbn - rlen);
+            conn->rbn -= rlen;
+            if (dn < 0) { *msg = "tls: bad record (auth failure)"; return WO_T_IO; }
+            if (ct == WO_TLS_CT_ALERT) {                  /* close_notify etc -> EOF */
+                wo_str *e = wo_str_new(rt, "", 0);
+                if (!e) { *msg = "out of memory"; return WO_T_OOM; }
+                R[A] = (uint64_t)(uintptr_t)e; return 0;
+            }
+            if (ct != WO_TLS_CT_APPLICATION_DATA)          /* NewSessionTicket etc */
+                continue;                                  /* ignore, read the next */
+            conn->pbn = (size_t)dn; conn->pboff = 0;       /* serve on next loop */
+        }
+    }
+    case WO_B_NET_WRITE_TLS: { /* (fd, text) -> 0 */
+        wo_tls_conn *conn = tls_find(vm, (int)R[B]);
+        if (!conn) { *msg = "tls: not a TLS connection"; return WO_T_IO; }
+        const wo_str *body = (const wo_str *)(uintptr_t)R[B + 1];
+        if (!body || body->h.class_id != WO_CLS_STR) {
+            *msg = "not a text value"; return WO_T_BOUNDS;
+        }
+        if (body->len > 16384) { *msg = "tls: write too large (max 16384/record)"; return WO_T_BOUNDS; }
+        /* seal once; the sealed record survives parks in conn->wbuf so a retry
+         * neither re-seals (which would advance the record seq twice) nor loses
+         * a partial write's progress. */
+        if (conn->wblen == 0) {
+            int sn = wo_tls_client_encrypt(&conn->cli, (const uint8_t *)body->data,
+                                           body->len, conn->wbuf, sizeof conn->wbuf);
+            if (sn < 0) { *msg = "tls: encrypt failed"; return WO_T_IO; }
+            conn->wblen = (size_t)sn; conn->wboff = 0;
+        }
+        while (conn->wboff < conn->wblen) {
+            ssize_t n = send((int)R[B], conn->wbuf + conn->wboff,
+                             conn->wblen - conn->wboff, MSG_NOSIGNAL);
+            if (n < 0 && errno == EINTR) {
+                if (stop_pending()) return WO_SYS_STOPPED;
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (stop_pending()) return WO_SYS_STOPPED;
+                vm->cur->park_fd = (int)R[B]; vm->cur->park_deadline = 0;
+                vm->cur->park_events = POLLOUT; vm->cur->park_done = 0;
+                return WO_SYS_PARKED;
+            }
+            if (n < 0) { *msg = strerror(errno); return WO_T_IO; }
+            conn->wboff += (size_t)n;
+        }
+        conn->wblen = 0; conn->wboff = 0;
+        R[A] = 0;
         return 0;
     }
     case WO_B_NET_SEND_FD: { /* (conn, fd) -> Bool: SCM_RIGHTS, one fd */

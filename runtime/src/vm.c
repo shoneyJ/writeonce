@@ -769,6 +769,7 @@ int wo_vm_init(wo_vm *vm, const wo_module *mod, size_t heap_cap) {
 
 void wo_vm_destroy(wo_vm *vm) {
     wo_proc_reap_all(vm); /* iteration 42: no child outlives its shard */
+    wo_tls_reap_all(vm);  /* runtime-v2 9: no TLS fd/bundle outlives it either */
     wo_term_restore_all(vm); /* runtime-v2 4: no wrecked tty either */
     /* iteration 35: the fiber pool dies with the vm */
     while (vm->fib_pool) {

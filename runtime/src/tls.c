@@ -496,6 +496,10 @@ static int on_flight_msg(wo_tls_client *c, const uint8_t *msg, size_t mlen) {
         p += 3;
         if (p + clen > mlen || clen > sizeof c->leaf) return -1;
         memcpy(c->leaf, msg + p, clen); c->leaflen = clen;
+        if (mlen <= sizeof c->certmsg) {              /* keep the whole msg for */
+            memcpy(c->certmsg, msg, mlen);            /* the trust-chain walk   */
+            c->certmsg_len = mlen;
+        }
         /* hostname check (when a host was set): a leaf whose SAN does not match
          * the target host is a refused connection, not a warning. */
         if (c->host && !wo_x509_check_host(c->leaf, c->leaflen, c->host, c->hostlen))
@@ -738,4 +742,26 @@ long wo_tls_pem_to_ders(const char *pem, size_t pemlen, uint8_t *arena,
         i += sizeof END - 1;
     }
     return (long)count;
+}
+
+/* Parse the stored Certificate message into leaf-first DER cert spans. */
+size_t wo_tls_client_chain(const wo_tls_client *c, const uint8_t **certs,
+                           size_t *lens, size_t max) {
+    if (c->certmsg_len < 8) return 0;
+    const uint8_t *m = c->certmsg; size_t mlen = c->certmsg_len;
+    size_t p = 4 + 1 + m[4];                      /* skip hdr + ctx */
+    if (p + 3 > mlen) return 0;
+    p += 3;                                        /* cert_list length */
+    size_t n = 0;
+    while (p + 3 <= mlen && n < max) {
+        size_t clen = ((size_t)m[p] << 16) | ((size_t)m[p + 1] << 8) | m[p + 2];
+        p += 3;
+        if (p + clen > mlen) return 0;             /* malformed */
+        certs[n] = m + p; lens[n] = clen; n++;
+        p += clen;
+        if (p + 2 > mlen) break;                   /* per-entry extensions len */
+        size_t extl = ((size_t)m[p] << 8) | m[p + 1];
+        p += 2 + extl;
+    }
+    return n;
 }

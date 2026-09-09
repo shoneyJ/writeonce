@@ -561,9 +561,16 @@ enum {
     /* rv2 8 phase B: AES-GCM (AES-128/256 by key length), AES-NI hardware. */
     WO_B_AES_GCM_SEAL = 113,          /* (key, nonce, aad, plaintext) -> Bytes */
     WO_B_AES_GCM_OPEN = 114,          /* (key, nonce, aad, ct||tag) -> ?Bytes */
+
+    /* runtime-v2 9 F3c-net: outbound TLS 1.3 client. connect_tls dials + runs
+     * the handshake (blocking, deadline-bounded) and validates the chain;
+     * read_tls/write_tls carry application data over the parked data plane. */
+    WO_B_NET_CONNECT_TLS = 115, /* (host, port) -> Int: TLS client fd */
+    WO_B_NET_READ_TLS = 116,    /* (fd, max) -> Text; empty = EOF */
+    WO_B_NET_WRITE_TLS = 117,   /* (fd, text) -> 0 (all bytes sealed + sent) */
 };
 
-#define WO_B_MAX 114u
+#define WO_B_MAX 117u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

@@ -79,6 +79,7 @@ static const uint8_t b_arity[WO_B_MAX + 1] = {
     [WO_B_SIGNAL_ON] = 3,    [WO_B_TERM_RAW] = 1,     [WO_B_TERM_RESTORE] = 1,
     [WO_B_NET_SEND_FD] = 2,  [WO_B_NET_RECV_FD] = 1,  [WO_B_NET_CONNECT_UNIX] = 1,
     [WO_B_TERM_SIZE] = 2,    [WO_B_TERM_WIDTH] = 1,   [WO_B_NET_CONNECT] = 2,
+    [WO_B_NET_CONNECT_TLS] = 2, [WO_B_NET_READ_TLS] = 2, [WO_B_NET_WRITE_TLS] = 2,
     [WO_B_CHACHA20POLY1305_SEAL] = 4, [WO_B_CHACHA20POLY1305_OPEN] = 4,
     [WO_B_AES_GCM_SEAL] = 4, [WO_B_AES_GCM_OPEN] = 4,
     /* json (json.c): encode takes the value's static kind, decode the class
