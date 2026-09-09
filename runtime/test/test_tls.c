@@ -358,6 +358,24 @@ int main(void) {
         /* no anchors -> never trusted */
         T_CHECK(wo_tls_verify_chain(leaf1, leaf1n, 1, NULL, NULL, 0,
                                     "leaf.example.com", 16, NOW) == 0);
+
+        /* decision 6 — EKU: a leaf with EKU serverAuth is accepted; one with
+         * clientAuth-only is rejected even though its signature is valid. */
+        const uint8_t *ekuS[] = { kat_leaf_eku_server };
+        size_t ekuSn[] = { sizeof kat_leaf_eku_server };
+        T_CHECK(wo_tls_verify_chain(ekuS, ekuSn, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 1);
+        const uint8_t *ekuC[] = { kat_leaf_eku_client };
+        size_t ekuCn[] = { sizeof kat_leaf_eku_client };
+        T_CHECK(wo_tls_verify_chain(ekuC, ekuCn, 1, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 0);
+
+        /* decision 6 — basicConstraints: a leaf issued under a non-CA
+         * intermediate is rejected, though every signature verifies. */
+        const uint8_t *nocaChain[] = { kat_leaf_under_noca, kat_noca_mid };
+        size_t nocaChainN[] = { sizeof kat_leaf_under_noca, sizeof kat_noca_mid };
+        T_CHECK(wo_tls_verify_chain(nocaChain, nocaChainN, 2, rsa_anchor, rsa_anchor_n, 1,
+                                    "leaf.example.com", 16, NOW) == 0);
     }
 
     return t_report("test_tls");

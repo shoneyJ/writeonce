@@ -1607,6 +1607,86 @@ static int x509_parse(const uint8_t *der_buf, size_t len, x509_cert *c) {
 }
 
 static const uint8_t OID_SAN[] = { 0x55, 0x1d, 0x11 };  /* 2.5.29.17 */
+static const uint8_t OID_BASIC_CONSTRAINTS[] = { 0x55, 0x1d, 0x13 }; /* 2.5.29.19 */
+static const uint8_t OID_EKU[] = { 0x55, 0x1d, 0x25 };  /* 2.5.29.37 */
+static const uint8_t OID_EKU_SERVER_AUTH[] = { 0x2b,0x06,0x01,0x05,0x05,0x07,0x03,0x01 };
+static const uint8_t OID_EKU_ANY[] = { 0x55, 0x1d, 0x25, 0x00 }; /* anyExtendedKeyUsage */
+
+/* Find the extension with OID `oid` in a parsed cert's extension area; fills
+ * val/vallen with its extnValue (the OCTET STRING contents). Returns 1 found,
+ * 0 not present, -1 malformed. */
+static int x509_find_ext(const x509_cert *c, const uint8_t *oid, size_t oidn,
+                         const uint8_t **val, size_t *vallen) {
+    der r = { c->ext_area, c->ext_area + c->ext_area_len };
+    while (r.p < r.end && (*r.p == 0x81 || *r.p == 0x82))
+        if (der_skip(&r) < 0) return -1;
+    der exp, exts;
+    if (der_into(&r, 0xA3, &exp) < 0) return 0;    /* no [3] extensions */
+    if (der_into(&exp, 0x30, &exts) < 0) return -1;
+    while (exts.p < exts.end) {
+        der ext;
+        if (der_into(&exts, 0x30, &ext) < 0) return -1;
+        const uint8_t *eo; size_t eol;
+        if (der_tlv(&ext, &eo, &eol) != 0x06) return -1;
+        if (ext.p < ext.end && *ext.p == 0x01)     /* optional critical */
+            if (der_skip(&ext) < 0) return -1;
+        const uint8_t *ev; size_t evl;
+        if (der_tlv(&ext, &ev, &evl) != 0x04) return -1;
+        if (oid_eq(eo, eol, oid, oidn)) { *val = ev; *vallen = evl; return 1; }
+    }
+    return 0;
+}
+
+/* basicConstraints (RFC 5280 §4.2.1.9): SEQUENCE { cA BOOLEAN DEFAULT FALSE,
+ * pathLenConstraint INTEGER OPTIONAL }. Fills *is_ca and, when present,
+ * *has_pathlen + *pathlen. Absent extension => not a CA. 0 ok, -1 malformed. */
+int wo_x509_basic_constraints(const uint8_t *cert_der, size_t cert_len,
+                              int *is_ca, int *has_pathlen, int *pathlen) {
+    *is_ca = 0; *has_pathlen = 0; *pathlen = 0;
+    x509_cert c;
+    if (x509_parse(cert_der, cert_len, &c) != 0) return -1;
+    const uint8_t *v; size_t vl;
+    int f = x509_find_ext(&c, OID_BASIC_CONSTRAINTS, sizeof OID_BASIC_CONSTRAINTS, &v, &vl);
+    if (f < 0) return -1;
+    if (f == 0) return 0;                            /* absent -> not a CA */
+    der bc; der d = { v, v + vl };
+    if (der_into(&d, 0x30, &bc) < 0) return -1;      /* SEQUENCE */
+    if (bc.p < bc.end && *bc.p == 0x01) {            /* cA BOOLEAN */
+        const uint8_t *bv; size_t bvl;
+        if (der_tlv(&bc, &bv, &bvl) != 0x01 || bvl != 1) return -1;
+        *is_ca = bv[0] != 0;
+    }
+    if (bc.p < bc.end && *bc.p == 0x02) {            /* pathLenConstraint */
+        const uint8_t *pv; size_t pvl;
+        if (der_tlv(&bc, &pv, &pvl) != 0x02 || pvl == 0 || pvl > 2) return -1;
+        int n = 0;
+        for (size_t i = 0; i < pvl; i++) n = (n << 8) | pv[i];
+        *has_pathlen = 1; *pathlen = n;
+    }
+    return 0;
+}
+
+/* Extended Key Usage (RFC 5280 §4.2.1.12). Server-usable if EKU is absent, or
+ * present and lists id-kp-serverAuth or anyExtendedKeyUsage. Returns 1 if
+ * usable as a TLS server cert, 0 otherwise. */
+int wo_x509_eku_serverauth_ok(const uint8_t *cert_der, size_t cert_len) {
+    x509_cert c;
+    if (x509_parse(cert_der, cert_len, &c) != 0) return 0;
+    const uint8_t *v; size_t vl;
+    int f = x509_find_ext(&c, OID_EKU, sizeof OID_EKU, &v, &vl);
+    if (f < 0) return 0;
+    if (f == 0) return 1;                            /* absent -> allowed */
+    der seq, d = { v, v + vl };
+    if (der_into(&d, 0x30, &seq) < 0) return 0;      /* SEQUENCE OF OID */
+    while (seq.p < seq.end) {
+        const uint8_t *ko; size_t kol;
+        if (der_tlv(&seq, &ko, &kol) != 0x06) return 0;
+        if (oid_eq(ko, kol, OID_EKU_SERVER_AUTH, sizeof OID_EKU_SERVER_AUTH) ||
+            oid_eq(ko, kol, OID_EKU_ANY, sizeof OID_EKU_ANY))
+            return 1;
+    }
+    return 0;                                         /* present, no serverAuth */
+}
 
 /* Case-insensitive match of a presented dNSName pattern against a hostname,
  * with a single left-most "*" wildcard (RFC 6125 §6.4.3): "*.example.com"

@@ -440,5 +440,20 @@ int main(void) {
         #undef HOST
     }
 
+    /* basicConstraints + EKU extractors (rv2 9 F3c decision 6). */
+    {
+        int is_ca, has_pl, pl;
+        T_CHECK(wo_x509_basic_constraints(kat_rsa_ca, sizeof kat_rsa_ca, &is_ca, &has_pl, &pl) == 0);
+        T_CHECK(is_ca == 1);                                   /* CA:TRUE */
+        T_CHECK(wo_x509_basic_constraints(kat_rsa_leaf, sizeof kat_rsa_leaf, &is_ca, &has_pl, &pl) == 0);
+        T_CHECK(is_ca == 0);                                   /* leaf: not a CA */
+        T_CHECK(wo_x509_basic_constraints(kat_noca_mid, sizeof kat_noca_mid, &is_ca, &has_pl, &pl) == 0);
+        T_CHECK(is_ca == 0);                                   /* CA:FALSE intermediate */
+
+        T_CHECK(wo_x509_eku_serverauth_ok(kat_rsa_leaf, sizeof kat_rsa_leaf) == 1);       /* no EKU -> ok */
+        T_CHECK(wo_x509_eku_serverauth_ok(kat_leaf_eku_server, sizeof kat_leaf_eku_server) == 1);
+        T_CHECK(wo_x509_eku_serverauth_ok(kat_leaf_eku_client, sizeof kat_leaf_eku_client) == 0); /* clientAuth only */
+    }
+
     return t_report("test_crypto");
 }

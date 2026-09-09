@@ -624,13 +624,29 @@ int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
                         const char *host, size_t hostlen, const char now14[14]) {
     if (n_certs == 0 || n_anchors == 0) return 0;
 
-    /* leaf hostname (SAN) must match. */
+    /* leaf hostname (SAN) must match, and the leaf must be usable as a server
+     * cert (decision 6: EKU serverAuth, or no EKU). */
     if (host && !wo_x509_check_host(certs[0], cert_lens[0], host, hostlen))
+        return 0;
+    if (!wo_x509_eku_serverauth_ok(certs[0], cert_lens[0]))
         return 0;
 
     /* every cert must be temporally valid. */
     for (size_t i = 0; i < n_certs; i++)
         if (!wo_x509_check_validity(certs[i], cert_lens[i], now14)) return 0;
+
+    /* every issuer the server sent (certs[1..]) must be a CA (decision 6:
+     * basicConstraints CA:TRUE, and its pathLenConstraint must cover the number
+     * of intermediates below it). This is what stops a leaf masquerading as a
+     * CA. Index i issues cert i-1; the intermediates strictly below it (above
+     * the leaf) are indices 1..i-1, i.e. (i-1) of them. */
+    for (size_t i = 1; i < n_certs; i++) {
+        int is_ca, has_pl, pl;
+        if (wo_x509_basic_constraints(certs[i], cert_lens[i], &is_ca, &has_pl, &pl) != 0)
+            return 0;
+        if (!is_ca) return 0;
+        if (has_pl && pl < (int)(i - 1)) return 0;
+    }
 
     /* each cert is signed by the next one the server sent. */
     for (size_t i = 0; i + 1 < n_certs; i++)
@@ -638,11 +654,17 @@ int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
             return 0;
 
     /* the chain top must chain to a trust anchor: either it is one verbatim, or
-     * an anchor signed it. */
+     * an anchor (which must itself be a CA) signed it. When an anchor signs the
+     * top, its pathLenConstraint must cover all (n_certs-1) intermediates. */
     const uint8_t *top = certs[n_certs - 1]; size_t toplen = cert_lens[n_certs - 1];
     for (size_t a = 0; a < n_anchors; a++) {
         if (toplen == anchor_lens[a] && memcmp(top, anchors[a], toplen) == 0)
             return 1;                                   /* server sent the root */
+        int is_ca, has_pl, pl;
+        if (wo_x509_basic_constraints(anchors[a], anchor_lens[a], &is_ca, &has_pl, &pl) != 0)
+            continue;
+        if (!is_ca) continue;                            /* anchor not a CA */
+        if (has_pl && pl < (int)(n_certs - 1)) continue; /* pathLen too short */
         if (wo_x509_verify_one(top, toplen, anchors[a], anchor_lens[a]))
             return 1;                                   /* anchor signed the top */
     }

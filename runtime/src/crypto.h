@@ -84,6 +84,14 @@ int wo_x509_check_validity(const uint8_t *cert_der, size_t cert_len,
  * left-most wildcard). 1 match, 0 otherwise (no SAN => 0; no CN fallback). */
 int wo_x509_check_host(const uint8_t *cert_der, size_t cert_len,
                        const char *hostname, size_t hostlen);
+/* basicConstraints: *is_ca set from cA (absent extension => 0); when a
+ * pathLenConstraint is present, *has_pathlen=1 and *pathlen its value. 0 ok,
+ * -1 malformed. (rv2 9 F3c decision 6) */
+int wo_x509_basic_constraints(const uint8_t *cert_der, size_t cert_len,
+                              int *is_ca, int *has_pathlen, int *pathlen);
+/* Extended Key Usage: 1 if usable as a TLS server cert (EKU absent, or lists
+ * serverAuth / anyExtendedKeyUsage), 0 otherwise. (rv2 9 F3c decision 6) */
+int wo_x509_eku_serverauth_ok(const uint8_t *cert_der, size_t cert_len);
 
 int wo_builtin_crypto(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg);
 
