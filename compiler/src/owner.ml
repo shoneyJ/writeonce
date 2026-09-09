@@ -69,7 +69,8 @@
    a place where this pass is wrong-by-accident:
 
      - No partial moves. A move site must name a whole local (`x`), never
-       a projection (`x.f`, `x[0]`); see the `let` case above.
+       a projection (`x.f`, `x[0]`); see the `let` case above. A projection
+       at a transfer site is WO-E305, not a silent alias (transfer).
      - Alias provability is syntactic *after canonicalization*: a place
        written through a borrow binding is first rewritten to the storage
        that borrow names (see canon), then two places overlap only if they
@@ -130,6 +131,15 @@ let conflicting_borrow_code = Diag.ownership_prefix ^ "03"
    or moved out to a `take` parameter (spec rule 3). Primary site: the
    escape. Related: where the borrow was created. *)
 let borrow_escape_code = Diag.ownership_prefix ^ "04"
+
+(* WO-E305 — an owned value is moved out of a field or element (`x.f`,
+   `x[i]`) while its record/container still owns it: stored into a record,
+   pushed into a container, passed to a `take` parameter, or returned.
+   Milestone 1 has no partial moves, and silently allowing the store put one
+   owned value under two owners — a double free at the second drop (the
+   lang-41 side defect). Heap scalars are exempt: every store site copies
+   them (stores_by_copy). Primary site: the move. Related: the owner. *)
+let partial_move_code = Diag.ownership_prefix ^ "05"
 
 (* ============================================================
    Ownership classes and places
@@ -1112,7 +1122,22 @@ let transfer (ctx : ctx) (p : place) ~(what : string) : bool =
         | Moved _ -> false (* already reported at the read *)
         | Borrowed _ -> false (* unreachable: is_borrow_root covered it *)
         | Live ->
-          if p.projs <> [] then false (* no partial moves in milestone 1 *)
+          if p.projs <> [] then begin
+            (* no partial moves in milestone 1 — and no silent alias either:
+               the record/container still owns this place, so the transfer
+               would give one owned value two owners (WO-E305) *)
+            if not (stores_by_copy ctx p) then
+              report ctx ~code:partial_move_code ~pos:p.ppos
+                ~message:
+                  (Printf.sprintf
+                     "`%s` %s — it is part of `%s`, and an owned value cannot be moved out of a \
+                      field or element (no partial moves): move `%s` whole, or build a fresh \
+                      container from its elements"
+                     (place_text p) what l.l_name l.l_name)
+                ~rel:l.l_pos
+                ~label:(Printf.sprintf "`%s` owns it" l.l_name);
+            false
+          end
           else begin
             check_against_borrows ctx ~node:p.pnode ~pos:p.ppos p AMove;
             l.l_state <- Moved p.ppos;

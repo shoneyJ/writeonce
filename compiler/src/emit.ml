@@ -1177,6 +1177,12 @@ let query_elem_scalar (p : pctx) (q : Ast.query) ~(src : string) : string =
     | None -> "Int")
   | _ -> "Int"
 
+(* `try … catch (e) nil`: the catch arm's value is the literal nil *)
+let try_handler_is_nil (handler : Ast.stmt list) : bool =
+  match List.rev handler with
+  | { Ast.s_kind = Ast.ExprStmt { Ast.kind = Ast.NilLit; _ }; _ } :: _ -> true
+  | _ -> false
+
 let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option =
   match e.kind with
   | IntLit _ -> Some (Scalar "Int")
@@ -1192,8 +1198,14 @@ let rec ty_of_expr (p : pctx) (f : fstate) (e : Ast.expr) : Ast.field_ty option 
   | NilLit -> None
   | As (_, ty) -> Some (Nullable ty)
   (* haxe-parity Task 5: a `try` yields its try arm's type — types.ml has
-     already required the catch arm to agree. *)
-  | Try t -> ty_of_expr p f t.body
+     already required the catch arm to agree. A `catch (e) nil` arm makes it
+     `?T`, so a `?scalar`'s nil is the sentinel and an Int body's 0 stays 0
+     (lang-41 side defect). *)
+  | Try t -> (
+    match ty_of_expr p f t.body with
+    | Some (Nullable _) as n -> n
+    | Some bt when try_handler_is_nil t.handler -> Some (Nullable bt)
+    | other -> other)
   | Ident n -> (
     match List.assoc_opt n f.f_env with
     | Some (_, t) -> Some t
@@ -2665,7 +2677,13 @@ and emit_try (p : pctx) (f : fstate) (v : views) ~(dst : int) ?expected (e : Ast
       f.f_cur_line <- last.Ast.s_pos.line;
       (match expected with
       | Some t -> emit_expr p f v ~dst ~expected:t ve
-      | None -> emit_expr p f v ~dst ve);
+      | None -> (
+        (* a `nil` arm takes the try's own type as its destination: `?Int`
+           selects the scalar sentinel, so an `Int` body's legitimate 0 is
+           never read as nil (lang-41 side defect; see ty_of_expr's Try) *)
+        match (if is_nil_lit ve then ty_of_expr p f e else None) with
+        | Some t -> emit_expr p f v ~dst ~expected:t ve
+        | None -> emit_expr p f v ~dst ve));
       (* iteration 24 fix (the catch half of the arm-copy rule): a bare
          `e.msg` arm aliases the Error record's field, and the record is
          dropped at CATCH scope end below — ASan-confirmed use-after-free

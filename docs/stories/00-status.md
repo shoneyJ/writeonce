@@ -659,7 +659,12 @@ localises it: every failure belonged to the path with 5x the allocation inside
 sequential insert+delete volume on one key (N=4/5 crashed, N=1-3 clean over 12+
 trials). Two smaller runtime defects came with it — `try/catch` cannot tell a
 literal `Int 0` reply from a trap, and a `json.decode` value is corrupted when
-embedded in a struct crossing a function-return boundary.
+embedded in a struct crossing a function-return boundary. **Both fixed
+2026-09-09**: a nil-armed `try` is `?T` (its nil is the scalar sentinel, so 0
+stays 0), and the "corruption" was a silent alias — an owned container field
+stored into another record with both records dropping it — now **WO-E305** at
+compile time (corpus: `try-nil-int-zero`, `no-partial-move`,
+`decode-record-crosses-return`).
 
 **Corrections to our own record:** the earlier claim that `Pool` being traced
 forces a one-slot re-wrap was WRONG — WO-E222 fires on the class, not on

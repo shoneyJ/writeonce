@@ -1,0 +1,32 @@
+-- lang-41 side defect 2, the sanctioned shapes: a Text read off a decoded
+-- record into another record's ctor is COPIED (SETF's rule), and the decoded
+-- record itself moves whole across a return. Neither needs the archived
+-- porch code's `.. ""` workaround; a container field must move with its
+-- record (see compile-fail/no-partial-move).
+use json
+class D {
+  name: Text
+  n: Int
+}
+class Out {
+  label: Text
+  n: Int
+}
+fn build(t: Text) -> Out {
+  let d = json.decode(t) as D
+  if d != nil { return Out { label: d.name, n: d.n } }
+  return Out { label: "none", n: 0 }
+}
+fn build2(t: Text) -> ?D {
+  let d = json.decode(t) as D
+  return d
+}
+fn main() {
+  let o = build("{\"name\":\"alpha\",\"n\":7}")
+  let junk = "z" .. "y" .. "x"
+  print(o.label)
+  print_int(o.n)
+  let d2 = build2("{\"name\":\"beta\",\"n\":8}")
+  let junk2 = "a" .. "s" .. "d"
+  if d2 != nil { print(d2.name) }
+}

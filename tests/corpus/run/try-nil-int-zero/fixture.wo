@@ -1,0 +1,18 @@
+-- lang-41 side defect 1: `try EXPR catch (e) nil` over an Int body used to
+-- spell its nil as the zero word, so a legitimate 0 reply read as a trap.
+-- The try is `?Int`: nil is the scalar sentinel, 0 stays 0, in a void fn
+-- and in one whose own return type is Int (the archived porch shape).
+fn zero() -> Int { return 0 }
+fn boom() -> Int { let d = 0; return 1 / d }
+fn probe() -> Int {
+  let z = try zero() catch (e) nil
+  if z == nil { print("ZERO-READ-AS-NIL-IN-INT-FN") } else { print("zero-kept-in-int-fn") }
+  return 1
+}
+fn main() {
+  let z = try zero() catch (e) nil
+  if z == nil { print("ZERO-READ-AS-NIL") } else { print_int(z) }
+  let t = try boom() catch (e) nil
+  if t == nil { print("trap-is-nil") } else { print("TRAP-READ-AS-VALUE") }
+  probe()
+}

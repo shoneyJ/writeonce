@@ -378,7 +378,21 @@ fixed.
   dropping, run 5× under `WO_SHARDS=4` + ASan by `scripts/db-actor-accept.sh`
   (`just db-actor`). It lives in `tests/regress` rather than the corpus because
   the corpus runner pins `WO_SHARDS=1`.
-- **The two smaller runtime defects found alongside** (above): the
-  `try EXPR catch (e) nil` Int-0-vs-trap ambiguity and the `json.decode ... as T`
-  cross-return-boundary corruption. Both worked around in the archived code;
-  each deserves its own minimal fixture and fix, neither blocks this.
+- ~~**The two smaller runtime defects found alongside** (above)~~ ✅ **both
+  fixed 2026-09-09**, each with its corpus fixture:
+  - `try EXPR catch (e) nil` over an `Int` body spelled its nil as the zero
+    word (the try took the body's type, `Int`, so `nil_const_for` chose 0 and
+    `x == nil` compared against 0). The emitter now types a nil-armed try as
+    `?T` and the nil arm takes that destination, so a `?Int` nil is the
+    `WO_NIL_SCALAR` sentinel and a legitimate 0 stays 0 —
+    `tests/corpus/run/try-nil-int-zero`.
+  - the "`json.decode … as T` corruption" was not json's: storing a record's
+    owned **container** field into another record (`Out { tags: d.tags }`)
+    compiled to a silent alias — `transfer` returned false for any projection
+    ("no partial moves") without reporting, so `d` and `Out` both dropped the
+    multi (a double free, which language 44's poisoned header now aborts on).
+    A projection at a transfer site is **WO-E305** (heap scalars exempt: those
+    sites copy) — `tests/corpus/compile-fail/no-partial-move`; the sanctioned
+    shapes (Text copied, record moved whole) —
+    `tests/corpus/run/decode-record-crosses-return`. The archived `.. ""`
+    workaround is unnecessary.

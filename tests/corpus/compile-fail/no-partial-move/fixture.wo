@@ -1,0 +1,21 @@
+-- lang-41 side defect 2: storing `d.tags` into another record used to
+-- compile to a silent alias — `d` still owned the multi, so both records
+-- dropped it (a double free the poisoned header now aborts on). A
+-- projection at a transfer site is WO-E305; the Text field is exempt
+-- because SETF copies it.
+class D {
+  name: Text
+  tags: multi Text
+}
+class Out {
+  label: Text
+  tags: multi Text
+}
+fn build() -> Out {
+  let d = D { name: "alpha", tags: ["t1", "t2"] }
+  return Out { label: d.name, tags: d.tags }
+}
+fn main() {
+  let o = build()
+  print(o.label)
+}

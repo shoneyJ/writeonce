@@ -139,6 +139,7 @@ renders indented beneath it.
 | WO-E302 | a place is moved while a live borrow of it, or of an overlapping place, still exists. | `cannot move \`bag.items\` while \`r\` is borrowed` |
 | WO-E303 | two exclusive (`mut`) accesses of the same place, or two accesses the analysis can *prove* overlap, conflict in one region (e.g. two `mut` element accesses through the same provable index, or the same place borrowed and then mutated). Cases the analysis can't prove either way become a residual site for the VM to guard at runtime, not this diagnostic. | `cannot borrow \`bag.items[i]\` as \`mut\` twice in the same call` |
 | WO-E304 | a borrow is returned or stored somewhere that outlives the scope it borrowed from. `@gc`-typed values are exempt (freely aliased by design). | `borrow of \`x\` returned — borrows cannot outlive their scope` |
+| WO-E305 | an owned value is moved out of a field or element (`x.f`, `x[i]`) — stored into a record, pushed into a container, passed to a `take` parameter, or returned — while its record/container still owns it (no partial moves; before this diagnostic the store silently aliased, a double free at the second drop). Heap scalars (`Text`, `Bytes`) are exempt: those sites copy. Move the whole owner, or build a fresh container from its elements. | `\`d.tags\` cannot be stored in \`Out.tags\` — it is part of \`d\`, and an owned value cannot be moved out of a field or element (no partial moves): move \`d\` whole, or build a fresh container from its elements` |
 
 ## WO-E4xx — emitter (plan 3 Task 1, `compiler/src/emit.ml`)
 
