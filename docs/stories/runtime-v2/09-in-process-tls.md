@@ -277,9 +277,13 @@ when picked up.
 
 ### The sub-phases
 
-- **G1 — signing + key parsing.** Constant-time RSA-PSS sign + ECDSA-P256 sign
-  (RFC 6979), and private-key PEM/DER parsing (PKCS#8, PKCS#1, SEC1). Offline
-  KATs: sign→verify round-trip, RFC 6979 vectors, and a python cross-check.
+- **G1 — signing + key parsing.** 🔄 **signing LANDED 2026-09-09** —
+  constant-time **RSA-PSS sign** (`wo_rsa_pss_sha256_sign`, `bn_modexp_ct`) and
+  **ECDSA-P256 sign** (`wo_ecdsa_p256_sha256_sign`, RFC 6979 nonce, `jmul_ct`),
+  KAT'd byte-for-byte (RSA vs a python from-spec oracle with a fixed salt; ECDSA
+  vs the RFC 6979 A.2.5 vectors) + sign→verify round-trip, ASan/UBSan clean.
+  **Remaining G1c**: private-key PEM/DER parsing (PKCS#8, PKCS#1, SEC1) — lands
+  with G3, which is what reads key files (the FSM takes raw key material).
 - **G2 — the server handshake FSM.** `wo_tls_server`: parse ClientHello, select
   the suite, generate the ephemeral, send ServerHello + EncryptedExtensions +
   Certificate + a signed CertificateVerify + Finished, then verify the client
