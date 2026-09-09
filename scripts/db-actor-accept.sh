@@ -101,6 +101,30 @@ else
   bad "lang-41 shard settle" "fixture did not compile"
 fi
 
+# lang-41 phase C: a cross-shard message carrying an OWNED SUBTREE (multi<Text>)
+# sent + called into an actor on another shard. Pre-marshal-fix this pointer-
+# shared the subtree across arenas -> a double free (ASan abort or settle hang);
+# the marshal fix copies it per crossing. Run repeatedly — the failure was
+# intermittent (~1 in 6).
+L41_CSM="$ROOT/tests/regress/lang-41/cross-shard-marshal.wo"
+if [[ -x "$L41_VM" ]] && "$L41_WOC" --emit "$L41_CSM" -o "$L41_W/csm.wob" >/dev/null 2>&1; then
+  mkdir -p "$L41_W/csmdata"
+  csm_bad=""
+  for _ in 1 2 3 4 5; do
+    csm_out="$(WO_DATA="$L41_W/csmdata" WO_SHARDS=4 timeout 60 "$L41_VM" "$L41_W/csm.wob" 2>&1)"
+    if grep -q 'SEGV\|AddressSanitizer\|FATAL' <<<"$csm_out" || ! grep -q 'dispatched' <<<"$csm_out"; then
+      csm_bad="$(grep -m1 'ERROR\|FATAL' <<<"$csm_out"); ${csm_bad}"
+    fi
+  done
+  if [[ -z "$csm_bad" ]]; then
+    ok "lang-41: cross-shard owned-subtree message marshals (no double free, 5x)"
+  else
+    bad "lang-41 cross-shard marshal" "$csm_bad"
+  fi
+else
+  bad "lang-41 cross-shard marshal" "fixture did not build (need wovm-asan)"
+fi
+
 echo
 echo "db-actor-accept: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]] || exit 1

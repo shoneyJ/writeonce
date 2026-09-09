@@ -1,9 +1,22 @@
 ---
 track: language-runtime-database
 iteration: "41"
-status: in-progress
+status: done
 readiness: ready
 ---
+
+> ✅ **LANDED 2026-09-09.** The marshal fix (decision 1) + the modulo/bounds
+> guard (decision 2) shipped. Cross-shard `send`/`call`/monitor now copy the
+> message into a neutral form on the sender (`wo_db_val_encode`) and the receiver
+> rebuilds it in its own arena (`wo_val_decode_vm`) — no pointer crosses an arena
+> boundary, so the double free is gone by construction; `wo_route_free` traps a
+> `shard_id >= nshards` header instead of self-routing it into the settle
+> livelock. Proven with a new fixture `tests/regress/lang-41/cross-shard-marshal.wo`
+> (a `multi<Text>` sent + called cross-shard, both sides drop) — 12×/5× clean
+> under `WO_SHARDS=4` + ASan, the shard-settle repro still clean, full runtime
+> suite 0 fail (same-shard paths unchanged). Unblocks
+> [porch 9](../porch/09-idempotent-replay.md). Follow-ups (decisions 3/4):
+> poison-on-free and a deterministic corpus fixture.
 
 # 41 — the actor arena crash: a SIGSEGV under concurrent parked callers
 

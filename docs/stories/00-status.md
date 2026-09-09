@@ -76,6 +76,20 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-09 — language 41 fixed (cross-shard message marshal); porch 9 unblocked
+
+The actor-arena double-free/hang is fixed. Cross-shard `send`/`call`/monitor now
+**marshal** the message (encode to a neutral form on the sender via
+`wo_db_val_encode`, rebuild in the receiver's arena via `wo_val_decode_vm`) —
+no pointer crosses an arena boundary, so the double free is gone by construction
+(decision 1). `wo_route_free` now traps a `shard_id >= nshards` header instead of
+self-routing it into the settle livelock (decision 2). Proven: new fixture
+`tests/regress/lang-41/cross-shard-marshal.wo` (a `multi<Text>` sent + called
+cross-shard, both drop) clean 12×/5× under `WO_SHARDS=4` + ASan, the shard-settle
+repro still clean, full suite 0 fail (`just db-actor` gate extended). Follow-ups:
+poison-on-free (decision 3), a corpus fixture (decision 4). **[porch 9](porch/09-idempotent-replay.md)
+is unblocked** — the porch track (2–8 `ready`) is now clear to build.
+
 ### Landed 2026-09-09 — rv2 9 in-process TLS 1.3 is COMPLETE, both directions, live-gated
 
 **rv2 9 DONE.** In-process TLS 1.3 both directions, hand-rolled, RFC-8448/real-cert

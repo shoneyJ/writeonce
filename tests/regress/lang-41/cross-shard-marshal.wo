@@ -1,0 +1,48 @@
+-- lang-41 phase C: a cross-shard message carrying an OWNED SUBTREE (a multi of
+-- Text) sent AND called into an actor that lands on another shard. Pre-fix, the
+-- payload's pointer was shared across arenas: the receiver and the sender's
+-- graph both dropped the same multi/Text blocks -> a double free (ASan abort or
+-- the settle livelock/hang). With the marshal fix each arena frees its own copy.
+-- Needs WO_SHARDS>1 + the ASan build (scripts/db-actor-accept.sh drives it).
+
+class Msg { tags: multi Text }
+
+-- reads the owned subtree (forces the receiver to touch the crossed blocks),
+-- then the message is dropped on the receiver's shard.
+class Sink {
+  fn receive(msg: Msg) -> Int {
+    let n = len(msg.tags);
+    let i = 0;
+    let acc = 0;
+    while i < n { acc = acc + len(msg.tags[i]); i = i + 1; }
+    return acc;
+  }
+}
+
+-- churns cross-shard send + call, each carrying a fresh multi<Text> subtree.
+class Client {
+  target: actor Msg
+  fn receive(msg: Msg) -> Int {
+    let j = 0;
+    while j < 8 {
+      let r = call(self.target, Msg { tags: ["a-${j}", "bb-${j}", "ccc-${j}"] });
+      send(self.target, Msg { tags: ["x-${j}", "yy-${j}"] });
+      j = j + 1;
+    }
+    return 0;
+  }
+}
+
+fn main() -> Int {
+  let sink: actor Msg = spawn Sink {};
+  let c1: actor Msg = spawn Client { target: sink };
+  let c2: actor Msg = spawn Client { target: sink };
+  let c3: actor Msg = spawn Client { target: sink };
+  let c4: actor Msg = spawn Client { target: sink };
+  send(c1, Msg { tags: ["go"] });
+  send(c2, Msg { tags: ["go"] });
+  send(c3, Msg { tags: ["go"] });
+  send(c4, Msg { tags: ["go"] });
+  print("dispatched");
+  return 0;
+}

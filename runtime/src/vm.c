@@ -82,6 +82,8 @@ static void actor_drop_payload(wo_vm *vm, uint64_t payload);
 static void monitors_fire(wo_vm *vm, wo_actor *a);
 static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
                            const char *what);
+static uint64_t actor_marshal(wo_vm *vm, uint64_t msg_val, int *ok); /* lang-41 */
+static uint64_t actor_unmarshal(wo_vm *vm, uint64_t neutral);        /* lang-41 */
 
 /* the owning thread drains its inbox: adopt actors, deliver sends,
  * execute home-routed frees. Returns how many envelopes were handled. */
@@ -109,16 +111,17 @@ static int wo_vm_adopt(wo_vm *vm) {
                    push (OOM) must hand it back or the slot leaks forever.
                    A dead target drops the moved message silently (the
                    send-to-dead rule) and frees the slot. */
+            uint64_t obj0 = actor_unmarshal(vm, e->payload); /* rebuild in our arena */
             if (e->actor->dead) {
-                actor_drop_payload(vm, e->payload);
+                actor_drop_payload(vm, obj0);
                 wo_mbox_release(e->actor);
                 break;
             }
-            wo_msg m0 = { e->payload, NULL, 0 };
+            wo_msg m0 = { obj0, NULL, 0 };
             if (actor_push(e->actor, m0) == 0) {
                 if (!e->actor->active) (void)actor_activate(vm, e->actor);
             } else {
-                actor_drop_payload(vm, e->payload);
+                actor_drop_payload(vm, obj0);
                 wo_mbox_release(e->actor);
             }
             break;
@@ -126,17 +129,18 @@ static int wo_vm_adopt(wo_vm *vm) {
         case 5: { /* iteration 24: a cross-shard call — same enqueue as a
                    send, but the slot remembers the parked caller. A dead
                    target answers the error reply instead. */
+            uint64_t objc = actor_unmarshal(vm, e->payload); /* rebuild in our arena */
             if (e->actor->dead) {
-                actor_drop_payload(vm, e->payload);
+                actor_drop_payload(vm, objc);
                 wo_mbox_release(e->actor);
                 call_reply_to(vm, e->from_fiber, e->from_shard, 0, WO_T_ACTOR);
                 break;
             }
-            wo_msg mc = { e->payload, e->from_fiber, e->from_shard };
+            wo_msg mc = { objc, e->from_fiber, e->from_shard };
             if (actor_push(e->actor, mc) == 0) {
                 if (!e->actor->active) (void)actor_activate(vm, e->actor);
             } else {
-                actor_drop_payload(vm, e->payload);
+                actor_drop_payload(vm, objc);
                 wo_mbox_release(e->actor);
                 call_reply_to(vm, e->from_fiber, e->from_shard, 0, WO_T_ACTOR);
             }
@@ -146,17 +150,18 @@ static int wo_vm_adopt(wo_vm *vm) {
                    WE are the watched actor's home. Dead already = the
                    notice fires now; else it joins the list. */
             wo_actor *ob = (wo_actor *)(uintptr_t)e->from_fiber;
+            uint64_t objm = actor_unmarshal(vm, e->payload); /* rebuild in our arena */
             if (e->actor->dead) {
-                runtime_notify(vm, ob, e->payload, "death notice");
+                runtime_notify(vm, ob, objm, "death notice");
                 break;
             }
             wo_monitor *mn = calloc(1, sizeof *mn);
             if (!mn) {
-                actor_drop_payload(vm, e->payload);
+                actor_drop_payload(vm, objm);
                 break;
             }
             mn->observer = ob;
-            mn->msg = e->payload;
+            mn->msg = objm;
             mn->next = e->actor->monitors;
             e->actor->monitors = mn;
             break;
@@ -268,6 +273,19 @@ static int wo_vm_adopt(wo_vm *vm) {
  * the header's shard id is not the current thread's) */
 void wo_route_free(wo_hdr *h) {
     if (eng_teardown) return; /* arenas are torn down wholesale */
+    /* lang-41 decision 2: a live object's shard_id is always < nshards. An
+     * out-of-range id is a corrupt or already-freed header (a freelist link
+     * forged into the header's first bytes) — and inbox_push_to would mask it by
+     * WO_ENG_MAX_SHARDS into a live inbox that judges it foreign and routes it
+     * forever (the settle livelock). Trap loudly instead of self-routing. With
+     * the marshal fix (decision 1) this is unreachable; it is the guard that
+     * turns any future header corruption into an immediate diagnostic. */
+    if (h->shard_id >= wo_eng.nshards) {
+        fprintf(stderr, "wovm: FATAL corrupt or freed object on the free path "
+                "(shard_id=%u >= nshards=%u, class_id=%u) — not routing\n",
+                (unsigned)h->shard_id, wo_eng.nshards, (unsigned)h->class_id);
+        abort();
+    }
     wo_envelope *e = calloc(1, sizeof *e);
     if (!e) return; /* OOM on the free path: leak rather than crash */
     e->kind = 2;
@@ -619,9 +637,11 @@ static int eng_settle_inboxes(void) {
                 break;
             case 0:
             case 5:
-            case 7: /* in-flight payloads: drop (may route -> next pass) */
+            case 7: /* lang-41: in-flight send/call/monitor payloads are the
+                       MARSHALED neutral form (an arena-independent db_rec), not
+                       a VM object — free them as such, never via wo_drop_obj. */
                 if (e->payload)
-                    wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)e->payload);
+                    wo_db_val_free(NULL, WO_K_OWNED, e->payload);
                 break;
             case 1: /* an unadopted actor shell */
                 if (e->actor) {
@@ -961,6 +981,33 @@ static void actor_drop_payload(wo_vm *vm, uint64_t payload) {
     if (payload) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)payload);
 }
 
+/* lang-41: marshal a cross-shard message. VM heaps are never read cross-shard
+ * (the wo_db_rpc invariant), so a cross-shard send/call/monitor encodes the
+ * message into an arena-independent neutral form on the SENDER (a deep copy,
+ * mirroring wo_db_rpc's arg marshaling) and drops its own original — the pointer
+ * never crosses an arena boundary, so the double-free class is gone by
+ * construction. Returns the neutral payload; *ok=0 on OOM (original NOT dropped).
+ * A nil message (0) marshals to 0. */
+static uint64_t actor_marshal(wo_vm *vm, uint64_t msg_val, int *ok) {
+    *ok = 1;
+    if (!msg_val) return 0;
+    const char *m = NULL;
+    uint64_t neutral = wo_db_val_encode(vm->mod->classes, WO_K_OWNED, msg_val, ok, &m);
+    if (*ok) wo_drop_obj(&vm->rt, (wo_hdr *)(uintptr_t)msg_val); /* move: drop original */
+    return neutral;
+}
+
+/* lang-41: the receiver half — rebuild a marshaled message in THIS shard's
+ * arena and free the neutral form. Returns the VM object (0 on nil or OOM). */
+static uint64_t actor_unmarshal(wo_vm *vm, uint64_t neutral) {
+    if (!neutral) return 0;
+    int ok = 1;
+    const char *m = NULL;
+    uint64_t obj = wo_val_decode_vm(NULL, &vm->rt, WO_K_OWNED, neutral, &ok, &m);
+    wo_db_val_free(NULL, WO_K_OWNED, neutral);
+    return ok ? obj : 0;
+}
+
 /* iteration 24: answer one parked caller. Same-shard callers unpark
  * directly; remote ones get a kind-6 envelope. status 0 delivers the
  * scalar reply; WO_T_ACTOR makes the caller's re-executed builtin trap. */
@@ -1105,9 +1152,16 @@ int wo_vm_actor_send(wo_vm *vm, uint64_t addr, uint64_t msg_val, const char **ms
             *msg = "out of memory";
             return WO_T_OOM;
         }
+        int mok;
+        e->payload = actor_marshal(vm, msg_val, &mok); /* copy into a neutral form */
+        if (!mok) {
+            free(e);
+            wo_mbox_release(a);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
         e->kind = 0;
         e->actor = a;
-        e->payload = msg_val;
         inbox_push_to(a->home, e);
         return 0;
     }
@@ -1147,9 +1201,16 @@ static void runtime_notify(wo_vm *vm, wo_actor *target, uint64_t msg_val,
             actor_drop_payload(vm, msg_val);
             return;
         }
+        int mok;
+        e->payload = actor_marshal(vm, msg_val, &mok);
+        if (!mok) {
+            free(e);
+            wo_mbox_release(target);
+            actor_drop_payload(vm, msg_val); /* marshal failed: original still ours */
+            return;
+        }
         e->kind = 0;
         e->actor = target;
-        e->payload = msg_val;
         inbox_push_to(target->home, e);
         return;
     }
@@ -1220,9 +1281,16 @@ int wo_vm_actor_call(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             *msg = "out of memory";
             return WO_T_OOM;
         }
+        int mok;
+        e->payload = actor_marshal(vm, msg_val, &mok);
+        if (!mok) {
+            free(e);
+            wo_mbox_release(a);
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
         e->kind = 5;
         e->actor = a;
-        e->payload = msg_val;
         e->from_shard = vm->shard_id;
         e->from_fiber = fb;
         inbox_push_to(a->home, e);
@@ -1264,9 +1332,16 @@ int wo_vm_actor_monitor(wo_vm *vm, uint64_t watched, uint64_t observer,
             *msg = "out of memory";
             return WO_T_OOM;
         }
+        int mok;
+        e->payload = actor_marshal(vm, msg_val, &mok);
+        if (!mok) {
+            free(e);
+            actor_drop_payload(vm, msg_val); /* marshal failed: original still ours */
+            *msg = "out of memory";
+            return WO_T_OOM;
+        }
         e->kind = 7;
         e->actor = w;
-        e->payload = msg_val;
         e->from_fiber = (wo_fiber *)o; /* reused slot: the observer */
         inbox_push_to(w->home, e);
         return 0;
