@@ -391,12 +391,26 @@ static int proc_drain_fd(int *fd, char **buf, size_t *len, size_t *alloc,
 
 typedef struct wo_tls_conn {
     int fd;
-    wo_tls_client cli;
     char host[256];
+    /* negotiated application-phase state (populated by the client OR server
+     * handshake; the data plane below is direction-agnostic). */
+    int suite; size_t keylen;
+    uint8_t rd_key[32], rd_iv[12]; uint64_t rd_seq;
+    uint8_t wr_key[32], wr_iv[12]; uint64_t wr_seq;
     uint8_t rbuf[WO_TLS_REC_MAX]; size_t rbn;          /* partial inbound record */
     uint8_t pbuf[WO_TLS_BUF_MAX]; size_t pboff, pbn;   /* decrypted, unconsumed */
     uint8_t wbuf[WO_TLS_REC_MAX]; size_t wblen, wboff; /* outbound record in flight */
 } wo_tls_conn;
+
+/* A server's loaded identity (cert chain + private key), cached per shard. */
+struct wo_tls_id {
+    char cert[512], key[512];
+    uint8_t *arena;                              /* cert DERs + key DER */
+    const uint8_t *chain[8]; size_t clen[8]; size_t nchain;
+    int alg;                                     /* WO_X509_KEY_RSA / _EC_P256 */
+    const uint8_t *n, *d; size_t nlen, dlen;     /* RSA */
+    const uint8_t *ec_d; int has_ec;             /* EC (32-byte scalar) */
+};
 
 static wo_tls_conn *tls_find(wo_vm *vm, int fd) {
     for (uint32_t i = 0; i < WO_TLS_MAX; i++)
@@ -429,6 +443,10 @@ void wo_tls_reap_all(wo_vm *vm) {
     free((void *)vm->ca_certs); vm->ca_certs = NULL;
     free(vm->ca_lens); vm->ca_lens = NULL;
     vm->ca_count = 0; vm->ca_loaded = 0;
+    if (vm->tls_id) {
+        struct wo_tls_id *id = vm->tls_id;
+        free(id->arena); free(id); vm->tls_id = NULL;
+    }
 }
 
 static int tls_rand(uint8_t *buf, size_t n) {
@@ -505,8 +523,20 @@ static int tls_recv_record(int fd, uint8_t *buf, size_t cap) {
     return (int)(5 + body);
 }
 
-/* Drive the blocking handshake on conn->fd to ESTABLISHED, then validate the
- * chain against the shard anchors. 0 ok, -1 on any failure (*msg set). */
+/* Copy a finished driver's application-phase keys into the connection slot;
+ * after this the data plane runs off the slot alone. rd/wr are the driver's
+ * post-ESTABLISHED read/write keys (already the app keys, seqs reset). */
+static void tls_conn_keys(wo_tls_conn *conn, int suite, size_t keylen,
+                          const uint8_t rd_key[32], const uint8_t rd_iv[12],
+                          const uint8_t wr_key[32], const uint8_t wr_iv[12]) {
+    conn->suite = suite; conn->keylen = keylen;
+    memcpy(conn->rd_key, rd_key, 32); memcpy(conn->rd_iv, rd_iv, 12); conn->rd_seq = 0;
+    memcpy(conn->wr_key, wr_key, 32); memcpy(conn->wr_iv, wr_iv, 12); conn->wr_seq = 0;
+}
+
+/* Drive the blocking client handshake on conn->fd to ESTABLISHED, validate the
+ * chain against the shard anchors, and copy the app keys into conn. The driver
+ * is ~100KB, so it lives on the heap for the handshake only. 0 ok, -1 (*msg). */
 static int tls_handshake(wo_vm *vm, wo_tls_conn *conn, size_t hostlen,
                          const char **msg) {
     uint8_t priv[32], pub[32], rnd[32], sid[32], base9[32] = { 9 };
@@ -515,38 +545,136 @@ static int tls_handshake(wo_vm *vm, wo_tls_conn *conn, size_t hostlen,
         *msg = "tls: getrandom failed"; return -1;
     }
     wo_x25519(pub, priv, base9);
+    wo_tls_client *c = calloc(1, sizeof *c);
+    if (!c) { *msg = "tls: out of memory"; return -1; }
+    int rv = -1;
     if (wo_tls_build_client_hello(conn->host, hostlen, pub, rnd, sid, ch, sizeof ch, &chlen) != 0
-        || wo_tls_client_start_with(&conn->cli, ch, chlen, priv) != 0) {
-        *msg = "tls: ClientHello build failed"; return -1;
+        || wo_tls_client_start_with(c, ch, chlen, priv) != 0) {
+        *msg = "tls: ClientHello build failed"; goto done;
     }
-    wo_tls_client_set_host(&conn->cli, conn->host, hostlen);
+    wo_tls_client_set_host(c, conn->host, hostlen);
 
     uint8_t rec[WO_TLS_REC_MAX]; size_t rn;
-    rn = wo_tls_client_take_output(&conn->cli, rec, sizeof rec);
+    rn = wo_tls_client_take_output(c, rec, sizeof rec);
     if (rn == 0 || tls_send_all(conn->fd, rec, rn) != 0) {
-        *msg = "tls: sending ClientHello failed"; return -1;
+        *msg = "tls: sending ClientHello failed"; goto done;
     }
     for (;;) {
         int rl = tls_recv_record(conn->fd, rec, sizeof rec);
-        if (rl < 0) { *msg = "tls: handshake read failed or timed out"; return -1; }
-        wo_tls_status st = wo_tls_client_push_record(&conn->cli, rec, (size_t)rl);
-        if (st == WO_TLS_FAILED) { *msg = "tls: handshake verification failed"; return -1; }
-        rn = wo_tls_client_take_output(&conn->cli, rec, sizeof rec);
+        if (rl < 0) { *msg = "tls: handshake read failed or timed out"; goto done; }
+        wo_tls_status st = wo_tls_client_push_record(c, rec, (size_t)rl);
+        if (st == WO_TLS_FAILED) { *msg = "tls: handshake verification failed"; goto done; }
+        rn = wo_tls_client_take_output(c, rec, sizeof rec);
         if (rn > 0 && tls_send_all(conn->fd, rec, rn) != 0) {
-            *msg = "tls: handshake write failed"; return -1;
+            *msg = "tls: handshake write failed"; goto done;
         }
         if (st == WO_TLS_ESTABLISHED) break;
     }
     /* trust: full chain + host + validity + basicConstraints/EKU vs anchors */
     const uint8_t *chain[16]; size_t clens[16];
-    size_t nchain = wo_tls_client_chain(&conn->cli, chain, clens, 16);
+    size_t nchain = wo_tls_client_chain(c, chain, clens, 16);
     char now[15]; tls_now14(now);
     if (nchain == 0 ||
         !wo_tls_verify_chain(chain, clens, nchain, vm->ca_certs, vm->ca_lens,
                              vm->ca_count, conn->host, hostlen, now)) {
-        *msg = "tls: certificate chain not trusted"; return -1;
+        *msg = "tls: certificate chain not trusted"; goto done;
     }
-    return 0;
+    tls_conn_keys(conn, c->suite, c->keylen, c->rd_key, c->rd_iv, c->wr_key, c->wr_iv);
+    rv = 0;
+done:
+    free(c);
+    return rv;
+}
+
+/* ---- server side: identity cache + handshake (phase G3) ---- */
+static char *read_file(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return NULL; }
+    char *b = malloc((size_t)sz);
+    size_t got = b ? fread(b, 1, (size_t)sz, f) : 0;
+    fclose(f);
+    if (!b) return NULL;
+    *len = got; return b;
+}
+
+/* Load (or reuse) the shard's server identity for (certfile, keyfile). A single
+ * entry — the common one-identity server; a different path reloads. */
+static struct wo_tls_id *tls_id_load(wo_vm *vm, const char *certfile,
+                                     const char *keyfile, const char **msg) {
+    struct wo_tls_id *id = vm->tls_id;
+    if (id && strcmp(id->cert, certfile) == 0 && strcmp(id->key, keyfile) == 0)
+        return id;
+    if (!id) { id = calloc(1, sizeof *id); if (!id) { *msg = "tls: oom"; return NULL; } vm->tls_id = id; }
+    else { free(id->arena); memset(id, 0, sizeof *id); }
+
+    size_t certlen = 0, keylen = 0;
+    char *certpem = read_file(certfile, &certlen);
+    if (!certpem) { *msg = "tls: cannot read certfile"; return NULL; }
+    char *keypem = read_file(keyfile, &keylen);
+    if (!keypem) { free(certpem); *msg = "tls: cannot read keyfile"; return NULL; }
+
+    id->arena = malloc(certlen + keylen);        /* DER < PEM */
+    if (!id->arena) { free(certpem); free(keypem); *msg = "tls: oom"; return NULL; }
+    long nc = wo_tls_pem_to_ders(certpem, certlen, id->arena, certlen,
+                                 id->chain, id->clen, 8);
+    long kd = nc > 0 ? wo_tls_pem_one(keypem, keylen, id->arena + certlen, keylen) : -1;
+    free(certpem); free(keypem);
+    if (nc <= 0 || kd <= 0) { *msg = "tls: bad cert/key PEM"; return NULL; }
+    id->nchain = (size_t)nc;
+
+    if (wo_pkey_parse(id->arena + certlen, (size_t)kd, &id->alg, &id->n, &id->nlen,
+                      &id->d, &id->dlen, &id->ec_d) != 0) {
+        *msg = "tls: bad private key"; return NULL;
+    }
+    id->has_ec = (id->alg == 2);
+    snprintf(id->cert, sizeof id->cert, "%s", certfile);
+    snprintf(id->key, sizeof id->key, "%s", keyfile);
+    return id;
+}
+
+/* Drive the blocking server handshake on conn->fd to ESTABLISHED, then copy the
+ * app keys into conn. 0 ok, -1 (*msg). */
+static int tls_server_handshake(wo_tls_conn *conn, struct wo_tls_id *id,
+                                const char **msg) {
+    uint8_t eph[32], salt[32];
+    if (tls_rand(eph, 32) || tls_rand(salt, 32)) { *msg = "tls: getrandom failed"; return -1; }
+    wo_tls_server *s = calloc(1, sizeof *s);
+    if (!s) { *msg = "tls: out of memory"; return -1; }
+    int rv = -1;
+    if (wo_tls_server_start(s, id->chain, id->clen, id->nchain, id->alg,
+                            id->n, id->nlen, id->d, id->dlen,
+                            id->has_ec ? id->ec_d : NULL, eph,
+                            id->alg == 1 ? salt : NULL, id->alg == 1 ? 32u : 0u) != 0) {
+        *msg = "tls: server init failed"; goto done;
+    }
+    uint8_t rec[WO_TLS_REC_MAX], out[WO_TLS_BUF_MAX + 256];
+    int rl = tls_recv_record(conn->fd, rec, sizeof rec);
+    if (rl < 0) { *msg = "tls: reading ClientHello failed/timeout"; goto done; }
+    if (wo_tls_server_push_record(s, rec, (size_t)rl) == WO_TLS_FAILED) {
+        *msg = "tls: ClientHello rejected"; goto done;
+    }
+    size_t on = wo_tls_server_take_output(s, out, sizeof out);
+    if (on == 0 || tls_send_all(conn->fd, out, on) != 0) {
+        *msg = "tls: sending server flight failed"; goto done;
+    }
+    /* Read post-flight client records until ESTABLISHED — a TLS 1.3 client
+     * (openssl, browsers) sends a change_cipher_spec before its Finished, which
+     * the driver skips (WANT_MORE); loop past it rather than mistaking it for
+     * failure. */
+    for (;;) {
+        rl = tls_recv_record(conn->fd, rec, sizeof rec);
+        if (rl < 0) { *msg = "tls: reading client Finished failed"; goto done; }
+        wo_tls_status st = wo_tls_server_push_record(s, rec, (size_t)rl);
+        if (st == WO_TLS_FAILED) { *msg = "tls: client Finished failed"; goto done; }
+        if (st == WO_TLS_ESTABLISHED) break;
+    }
+    tls_conn_keys(conn, s->suite, s->keylen, s->rd_key, s->rd_iv, s->wr_key, s->wr_iv);
+    rv = 0;
+done:
+    free(s);
+    return rv;
 }
 
 int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
@@ -900,8 +1028,19 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         return 0;
     }
     case WO_B_NET_CLOSE: {
-        tls_free(vm, (int)R[B]); /* frees the TLS slot if this was one (else no-op) */
-        close((int)R[B]);
+        int cfd = (int)R[B];
+        if (tls_find(vm, cfd)) {
+            /* Drain any unread inbound (typically the peer's close_notify) so
+             * close() sends FIN, not RST — otherwise the RST discards the
+             * response we just wrote (openssl and browsers send close_notify). */
+            uint8_t d[512]; int guard = 64;
+            while (guard-- > 0) {
+                ssize_t r = recv(cfd, d, sizeof d, MSG_DONTWAIT);
+                if (r <= 0) break;
+            }
+            tls_free(vm, cfd);
+        }
+        close(cfd);
         R[A] = 0;
         return 0;
     }
@@ -1887,8 +2026,10 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
             }
             size_t rlen = 5 + (((size_t)conn->rbuf[3] << 8) | conn->rbuf[4]);
             uint8_t ct = 0;
-            int dn = wo_tls_client_decrypt(&conn->cli, conn->rbuf, rlen,
-                                           conn->pbuf, sizeof conn->pbuf, &ct);
+            int dn = wo_tls_record_open(conn->suite, conn->rd_key, conn->keylen,
+                                        conn->rd_iv, conn->rd_seq, conn->rbuf, rlen,
+                                        conn->pbuf, &ct);
+            conn->rd_seq++;
             memmove(conn->rbuf, conn->rbuf + rlen, conn->rbn - rlen);
             conn->rbn -= rlen;
             if (dn < 0) { *msg = "tls: bad record (auth failure)"; return WO_T_IO; }
@@ -1914,9 +2055,13 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
          * neither re-seals (which would advance the record seq twice) nor loses
          * a partial write's progress. */
         if (conn->wblen == 0) {
-            int sn = wo_tls_client_encrypt(&conn->cli, (const uint8_t *)body->data,
-                                           body->len, conn->wbuf, sizeof conn->wbuf);
+            int sn = wo_tls_record_seal(conn->suite, conn->wr_key, conn->keylen,
+                                        conn->wr_iv, conn->wr_seq,
+                                        WO_TLS_CT_APPLICATION_DATA,
+                                        (const uint8_t *)body->data, body->len,
+                                        conn->wbuf);
             if (sn < 0) { *msg = "tls: encrypt failed"; return WO_T_IO; }
+            conn->wr_seq++;
             conn->wblen = (size_t)sn; conn->wboff = 0;
         }
         while (conn->wboff < conn->wblen) {
@@ -1937,6 +2082,47 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         }
         conn->wblen = 0; conn->wboff = 0;
         R[A] = 0;
+        return 0;
+    }
+    case WO_B_NET_ACCEPT_TLS: { /* (listener, certfile, keyfile) -> Int */
+        int lfd = (int)R[B];
+        char certf[512], keyf[512];
+        if (cstr_of(R[B + 1], certf, sizeof certf, msg)) return WO_T_BOUNDS;
+        if (cstr_of(R[B + 2], keyf, sizeof keyf, msg)) return WO_T_BOUNDS;
+        struct wo_tls_id *id = tls_id_load(vm, certf, keyf, msg);
+        if (!id) return WO_T_IO;
+
+        int fd;
+        for (;;) {
+            fd = accept(lfd, NULL, NULL);
+            if (fd >= 0) break;
+            if (errno == EINTR) { if (stop_pending()) return WO_SYS_STOPPED; continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {   /* park like net.accept */
+                if (stop_pending()) return WO_SYS_STOPPED;
+                vm->cur->park_fd = lfd; vm->cur->park_deadline = 0;
+                vm->cur->park_events = POLLIN; vm->cur->park_done = 0;
+                return WO_SYS_PARKED;
+            }
+            *msg = strerror(errno); return WO_T_IO;
+        }
+        /* accept()'s new fd is blocking; bound the handshake with SO_*TIMEO */
+        long dl_ms = 10000;
+        const char *denv = getenv("WO_TLS_HANDSHAKE_MS");
+        if (denv) { long v = atol(denv); if (v > 0) dl_ms = v; }
+        struct timeval tv = { dl_ms / 1000, (dl_ms % 1000) * 1000 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+        wo_tls_conn *conn = tls_claim(vm, fd);
+        if (!conn) { close(fd); *msg = "tls: too many connections"; return WO_T_IO; }
+        if (tls_server_handshake(conn, id, msg) != 0) {
+            tls_free(vm, fd); close(fd); return WO_T_IO;
+        }
+        struct timeval z = { 0, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &z, sizeof z);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &z, sizeof z);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        R[A] = (uint64_t)fd;
         return 0;
     }
     case WO_B_NET_SEND_FD: { /* (conn, fd) -> Bool: SCM_RIGHTS, one fd */

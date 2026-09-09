@@ -1,0 +1,40 @@
+-- tls-server — runtime-v2 9 phase G's acceptance workload. An inbound HTTPS
+-- server written end to end in .wo: it terminates TLS 1.3 itself with
+-- `net.accept_tls` (the hand-rolled server handshake — X25519 + AES-GCM /
+-- ChaCha20-Poly1305 + a server-signed CertificateVerify), then serves a fixed
+-- reply over `net.read_tls` / `net.write_tls`. No front proxy — the runtime is
+-- the TLS endpoint.
+--
+--   woc --emit main.wo -o tls-server.wob
+--   wovm tls-server.wob 18443 leaf.pem leaf.key
+--
+-- The gate (scripts/tls-server-accept.sh, `just tls-server`) points
+-- `openssl s_client` at it (RSA and EC identities) and checks the handshake
+-- validates and the reply arrives.
+use net
+use env
+
+fn main(args: multi Text) -> Int {
+  if len(args) < 3 {
+    print_err("usage: tls-server <port> <certfile> <keyfile>");
+    return 2;
+  }
+  let port = parse_int(args[0]);
+  if port == nil { print_err("tls-server: <port> must be a number"); return 2; }
+  let cert = args[1];
+  let key = args[2];
+
+  let srv = net.listen("127.0.0.1", port);
+  print("listening on 127.0.0.1:${port}");
+  while true {
+    if env.stopping() { net.close(srv); return 0; }
+    -- accept + terminate TLS; a failed handshake is caught and skipped, never
+    -- fatal to the server.
+    let c = try net.accept_tls(srv, cert, key) catch (e) -1;
+    if c < 0 { continue; }
+    let req = try net.read_tls(c, 2048) catch (e) "";
+    let body = "hello-wo-tls";
+    net.write_tls(c, "HTTP/1.0 200 OK\r\nContent-Length: ${len(body)}\r\nConnection: close\r\n\r\n${body}");
+    net.close(c);
+  }
+}

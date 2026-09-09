@@ -368,6 +368,7 @@ let stdlib_members : stdlib_member list =
     m "net" "connect_tls" 2 115 (Some (TScalar "Int")) None;
     m "net" "read_tls" 2 116 (Some (TScalar "Text")) None;
     m "net" "write_tls" 2 117 None None;
+    m "net" "accept_tls" 3 118 (Some (TScalar "Int")) None;
     (* runtime-v2 6: resize's read twin (nil = not a tty), and a
        codepoint's terminal cell width (libc wcwidth under C.UTF-8) *)
     m "term" "size" 1 108 (Some (TNullable (TScalar termsize_record_name))) (Some termsize_record_name);

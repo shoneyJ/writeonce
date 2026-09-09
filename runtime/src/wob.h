@@ -568,9 +568,10 @@ enum {
     WO_B_NET_CONNECT_TLS = 115, /* (host, port) -> Int: TLS client fd */
     WO_B_NET_READ_TLS = 116,    /* (fd, max) -> Text; empty = EOF */
     WO_B_NET_WRITE_TLS = 117,   /* (fd, text) -> 0 (all bytes sealed + sent) */
+    WO_B_NET_ACCEPT_TLS = 118,  /* (listener, certfile, keyfile) -> Int: TLS conn */
 };
 
-#define WO_B_MAX 117u
+#define WO_B_MAX 118u
 /* ids at or above this one live in sysio.c, not builtin.c */
 #define WO_B_SYS_FIRST WO_B_FS_EXISTS
 

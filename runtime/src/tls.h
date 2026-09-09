@@ -129,6 +129,9 @@ int wo_tls_verify_chain(const uint8_t *const *certs, const size_t *cert_lens,
 long wo_tls_pem_to_ders(const char *pem, size_t pemlen, uint8_t *arena,
                         size_t arena_cap, const uint8_t **certs,
                         size_t *cert_lens, size_t max_certs);
+/* Decode the first PEM block of any label (a private-key file) into out;
+ * returns the DER length or -1. */
+long wo_tls_pem_one(const char *pem, size_t pemlen, uint8_t *out, size_t outcap);
 
 /* ---- sans-io client handshake driver (phase F3c) -------------------------
  * A pure state machine: no sockets. The caller frames TLS records (read the

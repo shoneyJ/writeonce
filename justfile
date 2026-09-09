@@ -96,6 +96,13 @@ subprocess:
 tls:
     ./scripts/tls-accept.sh
 
+# tls-server: runtime-v2 9 phase G's gate (docs/examples/tls-server) —
+# net.accept_tls from .wo terminating TLS 1.3 itself, proven by openssl
+# s_client (EC + RSA server certs) validating the hand-rolled handshake and
+# getting the reply. No front proxy. Log: /tmp/tls-server.log.
+tls-server:
+    ./scripts/tls-server-accept.sh
+
 # db-bench: iteration 22's campaign (docs/examples/db-bench) — OFF the
 # fast path, minutes long: ram+durable x 1/N shards, durability legs,
 # gates vs bench/baseline.json. quick = seconds, floors only.

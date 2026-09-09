@@ -173,7 +173,7 @@ int wo_builtin(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
         return wo_builtin_json(vm, R, ins, msg);
     if ((C >= WO_B_SYS_FIRST && C <= WO_B_PROC_RUN) || C == WO_B_TIME_TICKS
         || (C >= WO_B_NET_READ_DL && C <= WO_B_NET_CONNECT)
-        || (C >= WO_B_NET_CONNECT_TLS && C <= WO_B_NET_WRITE_TLS))
+        || (C >= WO_B_NET_CONNECT_TLS && C <= WO_B_NET_ACCEPT_TLS))
         return wo_builtin_sys(vm, R, ins, msg);
     if ((C >= WO_B_SHA1 && C <= WO_B_HMAC_SHA256)
         || (C >= WO_B_CHACHA20POLY1305_SEAL && C <= WO_B_AES_GCM_OPEN))

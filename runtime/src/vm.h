@@ -318,6 +318,7 @@ typedef struct wo_vm {
     const uint8_t **ca_certs;
     size_t *ca_lens;
     size_t ca_count;
+    void *tls_id;                  /* server identity cache (sysio owns it) */
 } wo_vm;
 
 /* arc: the spawn/send builtins' runtime halves (vm.c owns the scheduler). */

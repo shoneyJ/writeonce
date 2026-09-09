@@ -713,6 +713,25 @@ static long b64_decode(const uint8_t *in, size_t inlen, uint8_t *out, size_t out
  * and record its span in certs[]/cert_lens[]. Returns the count (0..max_certs),
  * or -1 on arena overflow or a malformed block. Extra certs past max_certs are
  * silently ignored — the caller sizes max_certs to the bundle. */
+/* Decode the FIRST PEM block of any label (e.g. a "PRIVATE KEY" file) into out.
+ * Returns the DER length or -1. */
+long wo_tls_pem_one(const char *pem, size_t pemlen, uint8_t *out, size_t outcap) {
+    static const char B[] = "-----BEGIN ";
+    static const char E[] = "\n-----END ";
+    size_t i = 0; const char *b = NULL;
+    for (; i + sizeof B - 1 <= pemlen; i++)
+        if (memcmp(pem + i, B, sizeof B - 1) == 0) { b = pem + i; break; }
+    if (!b) return -1;
+    /* skip to the end of the BEGIN line */
+    while (i < pemlen && pem[i] != '\n') i++;
+    size_t body = i;
+    const char *e = NULL;
+    for (; i + sizeof E - 1 <= pemlen; i++)
+        if (memcmp(pem + i, E, sizeof E - 1) == 0) { e = pem + i; break; }
+    if (!e) return -1;
+    return b64_decode((const uint8_t *)pem + body, (size_t)(e - (pem + body)), out, outcap);
+}
+
 long wo_tls_pem_to_ders(const char *pem, size_t pemlen, uint8_t *arena,
                         size_t arena_cap, const uint8_t **certs,
                         size_t *cert_lens, size_t max_certs) {
