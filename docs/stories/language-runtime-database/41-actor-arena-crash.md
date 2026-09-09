@@ -372,9 +372,12 @@ fixed.
   header so a NULL freelist link can never forge a valid class-0 object,
   trapping any stale drop rather than misreading it. Needs a language-track
   number when picked up.
-- **A minimal deterministic corpus fixture** (decision 4) — a cross-shard `send`
-  of an object with an owned subtree, both sides dropping, under `WO_SHARDS>1` +
-  ASan. Worth pinning; its own follow-up.
+- ~~**A minimal deterministic corpus fixture** (decision 4)~~ ✅ **landed
+  2026-09-09** as `tests/regress/lang-41/cross-shard-marshal.wo` — a cross-shard
+  `send` + `call` of an object carrying a `multi<Text>` subtree, both sides
+  dropping, run 5× under `WO_SHARDS=4` + ASan by `scripts/db-actor-accept.sh`
+  (`just db-actor`). It lives in `tests/regress` rather than the corpus because
+  the corpus runner pins `WO_SHARDS=1`.
 - **The two smaller runtime defects found alongside** (above): the
   `try EXPR catch (e) nil` Int-0-vs-trap ambiguity and the `json.decode ... as T`
   cross-return-boundary corruption. Both worked around in the archived code;

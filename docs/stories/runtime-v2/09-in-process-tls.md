@@ -3,7 +3,7 @@ track: runtime-v2
 iteration: "9"
 status: done
 readiness: ready
-review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. COMPLETE BOTH DIRECTIONS, live-gated (just tls 5/0 outbound, just tls-server 4/0 inbound EC+RSA). Outbound: A–E crypto, F1–F3c client (net.connect_tls/read_tls/write_tls, ids 115-117). Inbound: G1 constant-time RSA-PSS + ECDSA-P256 signing (RFC 6979), G2 server FSM, G3 net.accept_tls (id 118) + private-key parse. Deferred (named follow-ups, not blockers): park-based handshake, TlsConn language object, connection pooling, TLS close_notify on shutdown, complete-formula EC ladder. Doctrine docs (34/38/porch) corrected as part of this landing"
+review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. COMPLETE BOTH DIRECTIONS, live-gated (just tls 5/0 outbound, just tls-server 4/0 inbound EC+RSA). Outbound: A–E crypto, F1–F3c client (net.connect_tls/read_tls/write_tls, ids 115-117). Inbound: G1 constant-time RSA-PSS + ECDSA-P256 signing (RFC 6979), G2 server FSM, G3 net.accept_tls (id 118) + private-key parse. Follow-ups landed 2026-09-09: TLS close_notify on shutdown (openssl clean EOF) and the complete-formula (RCB) constant-time EC ladder for signing (bit-length leak closed, RFC 6979 vectors unchanged). Still deferred (not blockers): park-based handshake, TlsConn language object, connection pooling. Doctrine docs (34/38/porch) corrected as part of this landing"
 ---
 
 # runtime-v2 9 — in-process TLS: retiring the proxy-termination doctrine

@@ -1515,23 +1515,92 @@ int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
  * Deterministic nonce (RFC 6979) — no RNG, no nonce-reuse/bias risk, and
  * KAT-able against the published vectors. The scalar multiply k*G and the
  * inversions touch the secret k/d, so they use the constant-time modexp and a
- * double-and-add-always ladder. Known residual: the ladder's point-at-infinity
- * handling leaks k's leading-zero count (a bit-length hint, not the key); a
- * complete-formula / Montgomery-ladder upgrade is a named follow-up. */
+ * branch-free double-and-add-always ladder over the Renes–Costello–Batina
+ * complete addition formula (pmul_ct): no point-at-infinity special case, so
+ * the op sequence is identical for every k. (The first cut used the Jacobian
+ * jadd/jdouble, whose infinity branches leaked k's leading-zero count; replaced
+ * 2026-09-09, RFC 6979 vectors unchanged.) */
 
-static void jpt_cmov(jpt *d, const jpt *s, uint64_t mask) {
+/* (The earlier Jacobian double-and-add-always ladder was replaced by pmul_ct
+ * below — its jadd/jdouble infinity branches leaked k's leading-zero count.) */
+
+/* ---- complete projective addition (Renes–Costello–Batina 2016, Alg. 4) ---
+ * For the SIGNING ladder. Standard projective coordinates (x = X/Z, y = Y/Z),
+ * a = -3. "Complete" = exception-free: one formula is correct for P+Q, P+P
+ * (doubling), P+O and P+(-P), so the ladder below has NO point-at-infinity
+ * branch — which is exactly the leak jmul_ct's Jacobian jadd/jdouble carried
+ * (their fp_zero checks exposed k's leading-zero count). Identity is (0:1:0).
+ * ~12M+2m per step; plenty for one CertificateVerify per handshake. `bm` is the
+ * curve constant b in Montgomery form. out must not alias the inputs (we copy). */
+typedef struct { fp X, Y, Z; } ppt;
+
+static void padd_complete(const modctx *P, const fp bm, ppt *o, const ppt *p, const ppt *q) {
+    const uint64_t *m = P->m;
+    fp t0, t1, t2, t3, t4, X3, Y3, Z3;
+    fpmul(P, t0, p->X, q->X);               /* 1  */
+    fpmul(P, t1, p->Y, q->Y);               /* 2  */
+    fpmul(P, t2, p->Z, q->Z);               /* 3  */
+    modadd(t3, p->X, p->Y, m, 4);           /* 4  */
+    modadd(t4, q->X, q->Y, m, 4);           /* 5  */
+    fpmul(P, t3, t3, t4);                   /* 6  */
+    modadd(t4, t0, t1, m, 4);               /* 7  */
+    modsub(t3, t3, t4, m, 4);               /* 8  */
+    modadd(t4, p->Y, p->Z, m, 4);           /* 9  */
+    modadd(X3, q->Y, q->Z, m, 4);           /* 10 */
+    fpmul(P, t4, t4, X3);                   /* 11 */
+    modadd(X3, t1, t2, m, 4);               /* 12 */
+    modsub(t4, t4, X3, m, 4);               /* 13 */
+    modadd(X3, p->X, p->Z, m, 4);           /* 14 */
+    modadd(Y3, q->X, q->Z, m, 4);           /* 15 */
+    fpmul(P, X3, X3, Y3);                   /* 16 */
+    modadd(Y3, t0, t2, m, 4);               /* 17 */
+    modsub(Y3, X3, Y3, m, 4);               /* 18 */
+    fpmul(P, Z3, bm, t2);                   /* 19 */
+    modsub(X3, Y3, Z3, m, 4);               /* 20 */
+    modadd(Z3, X3, X3, m, 4);               /* 21 */
+    modadd(X3, X3, Z3, m, 4);               /* 22 */
+    modsub(Z3, t1, X3, m, 4);               /* 23 */
+    modadd(X3, t1, X3, m, 4);               /* 24 */
+    fpmul(P, Y3, bm, Y3);                   /* 25 */
+    modadd(t1, t2, t2, m, 4);               /* 26 */
+    modadd(t2, t1, t2, m, 4);               /* 27 */
+    modsub(Y3, Y3, t2, m, 4);               /* 28 */
+    modsub(Y3, Y3, t0, m, 4);               /* 29 */
+    modadd(t1, Y3, Y3, m, 4);               /* 30 */
+    modadd(Y3, t1, Y3, m, 4);               /* 31 */
+    modadd(t1, t0, t0, m, 4);               /* 32 */
+    modadd(t0, t1, t0, m, 4);               /* 33 */
+    modsub(t0, t0, t2, m, 4);               /* 34 */
+    fpmul(P, t1, t4, Y3);                   /* 35 */
+    fpmul(P, t2, t0, Y3);                   /* 36 */
+    fpmul(P, Y3, X3, Z3);                   /* 37 */
+    modadd(Y3, Y3, t2, m, 4);               /* 38 */
+    fpmul(P, X3, t3, X3);                   /* 39 */
+    modsub(X3, X3, t1, m, 4);               /* 40 */
+    fpmul(P, Z3, t4, Z3);                   /* 41 */
+    fpmul(P, t1, t3, t0);                   /* 42 */
+    modadd(Z3, Z3, t1, m, 4);               /* 43 */
+    for (int i = 0; i < 4; i++) { o->X[i] = X3[i]; o->Y[i] = Y3[i]; o->Z[i] = Z3[i]; }
+}
+
+static void ppt_cmov(ppt *d, const ppt *s, uint64_t mask) {
     bn_cmov(d->X, s->X, mask, 4);
     bn_cmov(d->Y, s->Y, mask, 4);
     bn_cmov(d->Z, s->Z, mask, 4);
 }
-/* R = k*pt, constant-time in k (double-and-add-always). */
-static void jmul_ct(const modctx *P, jpt *o, const uint8_t k[32], const jpt *pt) {
-    jpt acc; for (int i = 0; i < 4; i++) { acc.X[i] = 0; acc.Y[i] = 0; acc.Z[i] = 0; }
+
+/* R = k*pt, branch-free: double-and-add-always over the complete formula, so
+ * the op sequence is identical for every k (no infinity special case). */
+static void pmul_ct(const modctx *P, const fp bm, ppt *o, const uint8_t k[32], const ppt *pt) {
+    ppt acc;                                          /* identity (0:1:0), mont */
+    for (int i = 0; i < 4; i++) { acc.X[i] = 0; acc.Y[i] = P->one_mont[i]; acc.Z[i] = 0; }
     for (int bit = 255; bit >= 0; bit--) {
-        jdouble(P, &acc, &acc);
-        jpt t; jadd(P, &t, &acc, pt);
-        uint64_t m = (uint64_t)0 - (uint64_t)((k[(255 - bit) / 8] >> (7 - ((255 - bit) & 7))) & 1);
-        jpt_cmov(&acc, &t, m);
+        ppt d, t;
+        padd_complete(P, bm, &d, &acc, &acc);         /* double (complete) */
+        padd_complete(P, bm, &t, &d, pt);             /* always compute d+pt */
+        uint64_t msk = (uint64_t)0 - (uint64_t)((k[(255 - bit) / 8] >> (7 - ((255 - bit) & 7))) & 1);
+        acc = d;
+        ppt_cmov(&acc, &t, msk);                      /* select on the bit */
     }
     *o = acc;
 }
@@ -1566,24 +1635,26 @@ int wo_ecdsa_p256_sha256_sign(const uint8_t d[32], const uint8_t hash[32],
     memcpy(buf, V, 32); buf[32] = 0x01; memcpy(buf + 33, d, 32); memcpy(buf + 65, h1o, 32);
     hmac32(K, buf, 97, K); hmac32(K, V, 32, V);
 
-    /* pre-mont G */
-    jpt G; fp gx, gy;
+    /* G and the curve b, projective + Montgomery, for the complete-formula ladder */
+    ppt G; fp gx, gy, br, bm;
     bn_from_be(gx, P256_GX, 32); bn_from_be(gy, P256_GY, 32);
     to_mont(&P, G.X, gx); to_mont(&P, G.Y, gy);
     for (int i = 0; i < 4; i++) G.Z[i] = P.one_mont[i];
+    bn_from_be(br, P256_B, 32); to_mont(&P, bm, br);
 
     for (int tries = 0; tries < 64; tries++) {
         hmac32(K, V, 32, V);                              /* T = V (qlen = 256) */
         fp kfp; bn_from_be(kfp, V, 32);
         if (!fp_zero(kfp) && !bn_ge(kfp, N.m, 4)) {
-            jpt R; jmul_ct(&P, &R, V, &G);
+            ppt R; pmul_ct(&P, bm, &R, V, &G);         /* branch-free k*G */
+            /* R.Z == 0 only if k*G = O, impossible for k in [1, n-1]; the check
+             * is a never-taken sanity guard, not a secret-dependent branch. */
             if (!fp_zero(R.Z)) {
-                /* affine x of R (Z^-2 * X, mod p, all constant-time) */
-                fp Xn, Zn, zinv, zinv2, tm, xaff, rr;
+                /* affine x of R: projective x = X / Z (mod p), constant-time */
+                fp Xn, Zn, zinv, tm, xaff, rr;
                 from_mont(&P, Xn, R.X); from_mont(&P, Zn, R.Z);
                 bn_modexp_ct(zinv, Zn, P.m, 4, P256_PM2, 32);
-                to_mont(&P, tm, zinv); fpmul(&P, zinv2, tm, zinv);
-                to_mont(&P, tm, Xn); fpmul(&P, xaff, tm, zinv2);
+                to_mont(&P, tm, zinv); fpmul(&P, xaff, tm, Xn);   /* Xn * Z^-1 */
                 for (int i = 0; i < 4; i++) rr[i] = xaff[i];
                 if (bn_ge(rr, N.m, 4)) bn_sub(rr, rr, N.m, 4);
                 if (!fp_zero(rr)) {
