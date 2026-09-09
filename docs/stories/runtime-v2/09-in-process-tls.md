@@ -284,11 +284,14 @@ when picked up.
   vs the RFC 6979 A.2.5 vectors) + sign→verify round-trip, ASan/UBSan clean.
   **Remaining G1c**: private-key PEM/DER parsing (PKCS#8, PKCS#1, SEC1) — lands
   with G3, which is what reads key files (the FSM takes raw key material).
-- **G2 — the server handshake FSM.** `wo_tls_server`: parse ClientHello, select
-  the suite, generate the ephemeral, send ServerHello + EncryptedExtensions +
-  Certificate + a signed CertificateVerify + Finished, then verify the client
-  Finished. KAT by **loopback** — our client driver against our server driver
-  in-process, reaching ESTABLISHED with matching keys and an app round-trip.
+- **G2 — the server handshake FSM.** ✅ **LANDED 2026-09-09** — `wo_tls_server`
+  (sans-io): parse ClientHello (pick suite, x25519 share, echo session id; reject
+  no-x25519/no-1.3), build ServerHello, derive the role-symmetric keys, emit the
+  encrypted flight (EncryptedExtensions + Certificate + a signed CertificateVerify
+  + Finished), verify the client Finished, switch to application keys. Signs with
+  the G1 primitives (RSA-PSS or ECDSA + a DER SEQ{r,s} encoder). **KAT by
+  loopback** — our client driver against our server driver, EC then RSA server
+  identity, ESTABLISHED with an app round-trip both ways. test_tls 123, ASan clean.
 - **G3 — `net.accept_tls` + the live gate.** The VM builtin (id 118,
   `WO_B_MAX`→118) + the shard identity cache, gated live by **`openssl s_client`**
   completing a handshake against our server and exchanging data — real-world
