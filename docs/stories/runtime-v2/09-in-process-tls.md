@@ -80,7 +80,7 @@ they may split into their own runtime-v2 iterations as they are picked up.
 | D — signatures | ✅ **LANDED 2026-09-08** — **RSA** `wo_rsa_pkcs1_sha256_verify` + `wo_rsa_pss_sha256_verify` (bignum Montgomery modexp) and **ECDSA-P256** `wo_ecdsa_p256_sha256_verify` (Jacobian point arithmetic, a=-3, on-curve check, Fermat inverses reusing the bignum). Verification is public data so **not** constant-time by design. Both match python vectors (RSA-2048 PKCS1+PSS; P-256), tamper/wrong-hash rejected, KAT-gated, ASan/UBSan clean |
 | E — X.509 | 🔄 **CORE LANDED 2026-09-08** — a defensive ASN.1/DER reader (every length/bound checked, malformation is rejection not over-read) + certificate parse (tbsCertificate span, sig-alg OID, signature, SubjectPublicKeyInfo→RSA n/e or EC P-256 x/y, validity) + `wo_x509_verify_one` (one chain link's signature, dispatching to D's RSA-PKCS1/PSS + ECDSA-P256) + `wo_x509_parse_spki` + `wo_x509_check_validity` (caller supplies the time). KAT-gated in `test_crypto.c` against **real python-generated chains** — RSA CA+leaf (SHA256withRSA) and EC P-256 CA+leaf (ecdsa-with-SHA256): leaf-vs-CA, self-signed CA, wrong-issuer/tampered/truncated rejected, validity window, SPKI extraction — ASan/UBSan clean. **Deferred to F**: SAN/hostname match (needs the target host) and the multi-cert chain walk to a system CA bundle | notoriously bug-prone; consumes D |
 | F — record + handshake (client) | ✅ **COMPLETE 2026-09-08/09** (client). F1–F3b LANDED 2026-09-08 — new `tls.c`/`tls.h`. **F1 record layer** (`wo_tls_record_seal`/`open`, RFC 8446 §5.2, per-record nonce = iv XOR seq, both suites) KAT'd byte-for-byte vs python. **F2 key schedule** (`wo_tls_derive_handshake`/`_application`/`_traffic_keys`/`_finished_verify`, §7.1) KAT'd byte-for-byte vs **RFC 8448 §3**. **F3a message layer** (`wo_tls_parse_server_hello` — attacker input, bounded, rejects HRR/bad suite/truncation; `wo_tls_build_client_hello` — SNI, x25519, sig-algs) KAT'd vs RFC 8448 SH + validated by an independent parser. **F3b offline handshake verification** (`wo_tls_verify_cert_verify` over phase E+D; server + client Finished) — the whole handshake **crypto** proven end-to-end offline vs RFC 8448. **F3c-core sans-io driver** (`wo_tls_client` — pure FSM, caller frames records: CH→SH→flight→Finished, message reassembly, per-message transcript timing, constant-time Finished, application encrypt/decrypt) KAT'd against the **full RFC 8448 record trace** — client Finished + first app record byte-for-byte, NewSessionTicket + server app data decrypt, tampered flight refused. **SAN/hostname** (`wo_x509_check_host`, RFC 6125) + driver enforcement landed. **F3c-net chain validation** (`wo_tls_verify_chain`) + **basicConstraints/EKU** hardening KAT'd offline. **F3c-net socket/VM ✅ LANDED 2026-09-09**: `getrandom` ephemeral, per-shard lazy CA-bundle loader (`WO_CA_BUNDLE`), and the `net.connect_tls` / `net.read_tls` / `net.write_tls` builtins (ids 115–117; blocking deadline-bounded connect+handshake then a parked data plane; per-shard fd-keyed slot table, no locks). **Live-gated** (`just tls`, 5/0) from `.wo` against a local TLS 1.3 stub incl. untrusted-chain + hostname-mismatch negatives. Client side complete | jarvis's path; the reason the story exists |
-| G — server (inbound) | the server handshake half, cert+key loading, signing CertificateVerify; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs |
+| G — server (inbound) | 📋 **READY 2026-09-09** (see §G below) — the server handshake FSM, constant-time RSA-PSS + ECDSA-P256 **signing** (the first private-key ops), private-key parsing, `net.accept_tls`; porch terminates TLS | retires the inbound proxy requirement, and the doctrine docs; may become its own iteration |
 
 ## F3c-net — the socket/VM slice (✅ **LANDED 2026-09-09**; decisions locked, forks auto-approved, `review_pending`)
 
@@ -221,6 +221,96 @@ consumer change beyond the id additions.
 - **The HTTP layer.** `net.connect_tls` is a TLS byte pipe; HTTP/1.1 framing
   over it is the caller's (jarvis 1's `.wo`), not this slice's.
 - **Inbound TLS (server).** Phase **G**, a separate slice for porch.
+
+## G — inbound TLS server (READY — decisions locked 2026-09-09; forks auto-approved, `review_pending`)
+
+The last rung: porch terminates TLS itself instead of mandating a front proxy,
+retiring the "TLS is the proxy's job" doctrine on the inbound side too. Much is
+reused — the record layer, the (role-symmetric) key schedule, X.509 and the
+per-shard slot table are all direction-agnostic — but the server introduces the
+one thing the client never needed: **private-key operations**, which unlike the
+verifiers touch secret data and so must be **constant-time**. That, plus a
+server-side handshake FSM and a cert/key loading surface, is the whole of G. It
+is large and security-critical; it may split into its own runtime-v2 iteration
+when picked up.
+
+### What is reused vs new
+
+- **Reused as-is:** the record layer (symmetric), `wo_tls_derive_handshake`/
+  `_application` (the server just reads with the *client* traffic keys and writes
+  with the *server* ones — the roles swap, the schedule does not), X.509 (only to
+  ship the cert; the server does not validate a chain unless mTLS, which is out of
+  scope), and the `wo_tls_conn` slot table + `net.read_tls`/`net.write_tls` data
+  plane.
+- **New:** a server handshake FSM, constant-time signing, private-key parsing,
+  and the accept surface — below.
+
+### The locked decisions
+
+1. **Constant-time private-key ops (non-negotiable).** The built RSA modexp and
+   EC scalar-mult are verify-only over public data and are *not* constant-time
+   (stated so in `crypto.c`). Signing touches the secret key, so G adds a
+   **constant-time fixed-window modexp** for the RSA private exponent and a
+   **constant-time Montgomery-ladder scalar multiply** for EC — verified, not
+   assumed. This is the load-bearing security requirement of the whole rung.
+2. **Both server key types.** RSA (**RSA-PSS** signing, TLS 1.3's scheme) and
+   **ECDSA-P256**, because real server certs (porch's, Let's Encrypt) are either.
+   RSA-PSS reuses the bignum; ECDSA reuses the P-256 point arithmetic — each with
+   the new constant-time cores.
+3. **Deterministic ECDSA nonce (RFC 6979).** The signing nonce is derived by
+   HMAC-DRBG from the key and message, not drawn from an RNG — no catastrophic
+   nonce-reuse or bias risk, and it is KAT-able against RFC 6979 vectors. (The
+   ephemeral X25519 key is still random via `getrandom`.)
+4. **The accept surface.** `net.accept_tls(listener, certfile, keyfile) -> Int`:
+   accept a TCP connection on the listener, run the server handshake presenting
+   the loaded identity, and return a TLS conn fd that `net.read_tls`/`write_tls`/
+   `net.close` already handle. The parsed cert chain + private key are cached per
+   path in the shard (lazy, read-only), like the CA bundle. `net.listen` is
+   unchanged. Handshake blocking + deadline-bounded, data plane parked — exactly
+   the client's model (decisions 1/5 of §F3c-net).
+5. **Full 1-RTT, server-auth only.** A client offering x25519 + a supported suite
+   gets a complete handshake. No client certificates (mTLS), no session
+   resumption / PSK / 0-RTT, no HelloRetryRequest (a ClientHello without an
+   x25519 key_share is refused, not renegotiated).
+6. **Sans-io server FSM.** `wo_tls_server`, symmetric to the client driver, so
+   the security-critical state machine is testable without sockets.
+
+### The sub-phases
+
+- **G1 — signing + key parsing.** Constant-time RSA-PSS sign + ECDSA-P256 sign
+  (RFC 6979), and private-key PEM/DER parsing (PKCS#8, PKCS#1, SEC1). Offline
+  KATs: sign→verify round-trip, RFC 6979 vectors, and a python cross-check.
+- **G2 — the server handshake FSM.** `wo_tls_server`: parse ClientHello, select
+  the suite, generate the ephemeral, send ServerHello + EncryptedExtensions +
+  Certificate + a signed CertificateVerify + Finished, then verify the client
+  Finished. KAT by **loopback** — our client driver against our server driver
+  in-process, reaching ESTABLISHED with matching keys and an app round-trip.
+- **G3 — `net.accept_tls` + the live gate.** The VM builtin (id 118,
+  `WO_B_MAX`→118) + the shard identity cache, gated live by **`openssl s_client`**
+  completing a handshake against our server and exchanging data — real-world
+  interop, the mirror of §F3c-net's `openssl s_server` gate.
+
+### Acceptance criteria
+
+- **Given** a loaded RSA (or ECDSA-P256) identity, **when** a TLS 1.3 client
+  connects, **then** the handshake completes and application data flows both ways.
+- **Given** the loopback gate, **when** our client and server drivers run against
+  each other, **then** they agree on the traffic keys and round-trip app data.
+- **Given** `openssl s_client` against `net.accept_tls`, **when** it connects,
+  **then** it validates our certificate and completes the handshake (both key
+  types).
+- **Given** a signing path, **when** exercised, **then** it is constant-time
+  (no secret-dependent branch or index — reviewed and tested), and RFC 6979
+  nonces match the published vectors.
+- **Given** a ClientHello without an x25519 key_share, **when** received, **then**
+  the connection is refused (no HRR).
+
+### Out of scope
+
+- **mTLS / client certificates**, **session resumption / PSK / 0-RTT**, and
+  **HelloRetryRequest** — each a later slice if a consumer asks.
+- **Correcting the doctrine docs** (language 34/38, porch) — the bookkeeping pass
+  when G lands, named so it is not forgotten.
 
 ## Consumers
 
