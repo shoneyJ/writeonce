@@ -1029,7 +1029,17 @@ int wo_builtin_sys(wo_vm *vm, uint64_t *R, uint32_t ins, const char **msg) {
     }
     case WO_B_NET_CLOSE: {
         int cfd = (int)R[B];
-        if (tls_find(vm, cfd)) {
+        wo_tls_conn *tc = tls_find(vm, cfd);
+        if (tc) {
+            /* Graceful TLS shutdown (RFC 8446 §6.1): send a close_notify alert
+             * — level warning(1), description close_notify(0) — sealed with the
+             * application write keys, best-effort and non-blocking. A peer that
+             * gets it treats the end of stream as clean rather than truncated
+             * (openssl's "unexpected eof", browsers' aborted-response heuristics). */
+            uint8_t alert[2] = { 0x01, 0x00 }, arec[64];
+            int an = wo_tls_record_seal(tc->suite, tc->wr_key, tc->keylen, tc->wr_iv,
+                                        tc->wr_seq, WO_TLS_CT_ALERT, alert, 2, arec);
+            if (an > 0) { tc->wr_seq++; (void)send(cfd, arec, (size_t)an, MSG_NOSIGNAL | MSG_DONTWAIT); }
             /* Drain any unread inbound (typically the peer's close_notify) so
              * close() sends FIN, not RST — otherwise the RST discards the
              * response we just wrote (openssl and browsers send close_notify). */
