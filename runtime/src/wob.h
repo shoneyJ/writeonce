@@ -163,6 +163,9 @@ _Static_assert(sizeof(wo_hdr) == 16, "object header must be exactly 16 bytes");
 #define WO_CLS_STR 0xFFFFFFFCu
 #define WO_CLS_MAP 0xFFFFFFFDu
 #define WO_CLS_MULTI 0xFFFFFFFEu
+/* language 44: stamped into a block's class_id by wo_arena_free so a dead block
+ * can never pass for a live object (wo_drop_obj aborts on it). Never allocated. */
+#define WO_CLS_FREED 0xFFFFFFFFu
 /* iteration 19: Bytes reuses the wo_str object layout byte for byte (header,
  * len, bytes) and differs ONLY in this header class_id. That is deliberate:
  * every allocation, drop, and copy path already handles the shape, while the

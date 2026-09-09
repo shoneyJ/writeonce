@@ -74,6 +74,15 @@ static void class_free(wo_rt *rt, wo_hdr *o) {
 void wo_route_free(wo_hdr *h);
 
 void wo_drop_obj(wo_rt *rt, wo_hdr *o) {
+    /* language 44: a poisoned header is a block already on a freelist — this
+     * drop is a double free. Continuing is undefined behaviour (language 41's
+     * hang), so abort with the facts rather than free, route or spin. */
+    if (o && o->class_id == WO_CLS_FREED) {
+        fprintf(stderr, "wovm: FATAL double free — dropping an already-freed "
+                "object (header poisoned: class_id=0x%x shard_id=%u)\n",
+                (unsigned)o->class_id, (unsigned)o->shard_id);
+        abort();
+    }
     if (o && o->shard_id != rt->shard_id && !(o->flags & WO_F_CONST)) {
         wo_route_free(o);
         return;

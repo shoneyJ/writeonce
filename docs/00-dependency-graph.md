@@ -304,6 +304,8 @@ flowchart TD
     P8["porch 8 static files + lifecycle"]:::ready
     P9["porch 9 idempotent replay (ready — unblocked 2026-09-09)"]:::ready
     L41["language 41 actor-arena double free ✅ fixed 63065ff (cross-shard marshal)"]:::done
+    L44["language 44 poison-on-free ✅ (41's decision 3: a freed header can never pass for live; double free aborts)"]:::done
+    L41 -.follow-up.-> L44
 
     RB --> P2
     P2 --> P3

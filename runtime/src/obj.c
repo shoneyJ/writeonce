@@ -27,7 +27,10 @@ void *wo_arena_alloc(wo_arena *a, size_t size) {
     size_t cls = size / 16u - 1u;
     if (a->freelist[cls]) {
         void *p = a->freelist[cls];
-        memcpy(&a->freelist[cls], p, sizeof(void *));
+        /* language 44: the link lives at offset 8 (the dead block's
+         * borrow/gclink slot); bytes 0..7 carry the WO_CLS_FREED poison, which
+         * the caller's fresh header write erases. */
+        memcpy(&a->freelist[cls], (char *)p + 8, sizeof(void *));
         return p;
     }
     if (a->used + size > a->cap) return NULL; /* region OOM -> trap upstream */
@@ -44,7 +47,16 @@ void wo_arena_free(wo_arena *a, void *p, size_t size) {
         return;
     }
     size_t cls = size / 16u - 1u;
-    memcpy(p, &a->freelist[cls], sizeof(void *));
+    /* language 44: poison the header so a dead block can never read as a live
+     * object (a NULL freelist link over class_id/shard_id forged a valid class-0
+     * header in language 41's double free). class_id = WO_CLS_FREED, shard_id =
+     * 0xFFFF (no shard); the freelist link goes at offset 8 instead. */
+    wo_hdr *h = (wo_hdr *)p;
+    h->class_id = WO_CLS_FREED;
+    h->shard_id = 0xFFFFu;
+    h->flags = 0;
+    h->pad = 0;
+    memcpy((char *)p + 8, &a->freelist[cls], sizeof(void *));
     a->freelist[cls] = p;
 }
 
