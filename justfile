@@ -89,6 +89,13 @@ residency:
 subprocess:
     ./scripts/subprocess-accept.sh
 
+# tls: runtime-v2 9 F3c-net's gate (docs/examples/tls-client) — net.connect_tls
+# from .wo end to end against a local TLS 1.3 stub with a test CA: the
+# hand-rolled handshake + chain/hostname validation + an app round-trip, plus
+# the untrusted-chain and hostname-mismatch negatives refused. Log: /tmp/tls.log.
+tls:
+    ./scripts/tls-accept.sh
+
 # db-bench: iteration 22's campaign (docs/examples/db-bench) — OFF the
 # fast path, minutes long: ram+durable x 1/N shards, durability legs,
 # gates vs bench/baseline.json. quick = seconds, floors only.
