@@ -3,7 +3,7 @@ track: runtime-v2
 iteration: "9"
 status: in-progress
 readiness: ready
-review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. Landed + KAT'd (RFC 8448 / real certs): A–E crypto, F1 record, F2 key schedule, F3a messages, F3b offline verify, F3c-core sans-io driver, SAN/hostname, F3c-net chain validation. §F3c-net (socket/VM slice) brainstormed to READY 2026-09-09 with the four integration forks locked (blocking connect+handshake then park data I/O; per-shard fd-keyed slot table no-locks; failures trap WO_T_IO; per-shard lazy read-only CA bundle). Remaining to BUILD: F3c-net (net.connect_tls/read_tls/write_tls, ids 115-117, live-gated), then G inbound server"
+review_pending: "forks auto-approved 2026-09-08/09 for autonomous execution — developer second review before this ships. Landed + KAT'd (RFC 8448 / real certs): A–E crypto, F1 record, F2 key schedule, F3a messages, F3b offline verify, F3c-core sans-io driver, SAN/hostname, F3c-net chain validation. §F3c-net (socket/VM slice) brainstormed to READY 2026-09-09 with six integration forks locked (blocking connect+handshake then park data I/O; per-shard fd-keyed slot table no-locks; failures trap WO_T_IO; per-shard lazy read-only CA bundle; a bounded handshake deadline WO_TLS_HANDSHAKE_MS; chain hardening = basicConstraints CA:TRUE + EKU serverAuth — the last two added from the gofiber/Go crypto/x509 comparison). Remaining to BUILD: F3c-net (net.connect_tls/read_tls/write_tls, ids 115-117, live-gated), then G inbound server"
 ---
 
 # runtime-v2 9 — in-process TLS: retiring the proxy-termination doctrine
@@ -86,13 +86,16 @@ they may split into their own runtime-v2 iterations as they are picked up.
 
 Everything security-critical is landed and offline-KAT'd. What is left is I/O
 integration that can only be gated **live** (a local `openssl s_server` / python
-TLS server), so it is one cohesive slice, not further split. The four
-integration forks are settled below, each grounded in the existing runtime, not
-assumed. This section is `ready`: the decisions are locked, the acceptance
+TLS server), so it is one cohesive slice, not further split. The integration
+forks are settled below — the first four grounded in the existing runtime, the
+last two added 2026-09-09 from a comparison against **gofiber v3's client**
+(fasthttp + Go `crypto/tls`/`crypto/x509`, in `.dev/reference/fiber`), which
+bounds every request with a timeout and delegates full chain checks to
+`crypto/x509`. This section is `ready`: the decisions are locked, the acceptance
 criteria are stated, and code may start once a developer signs off the
 `review_pending` marker.
 
-### The four decisions, locked
+### The locked decisions
 
 1. **Blocking connect + blocking handshake, then park the data plane.** This
    mirrors `net.connect` exactly (`sysio.c` `WO_B_NET_CONNECT`): the socket is
@@ -128,6 +131,24 @@ criteria are stated, and code may start once a developer signs off the
    with (2). Path: `/etc/ssl/certs/ca-certificates.crt` (confirmed present on the
    dev box), overridable by the `WO_CA_BUNDLE` environment variable — which is
    also how the live gate points the client at its self-signed test CA.
+5. **A bounded handshake deadline (no unbounded shard stall).** The blocking
+   model of decision (1) would otherwise let a slow or hostile server stall the
+   shard's one thread indefinitely during connect + handshake — the DoS that
+   gofiber closes with `DoTimeout`. So `net.connect_tls` bounds the whole
+   connect+handshake by a deadline: **non-blocking `connect()` + `poll` for the
+   TCP step, and `SO_RCVTIMEO`/`SO_SNDTIMEO` on the blocking socket across the
+   handshake**, capping the stall without needing the full park refit. Default
+   from `WO_TLS_HANDSHAKE_MS` (10 000 ms if unset); expiry aborts and traps
+   `WO_T_IO` ("tls: handshake timeout"). A per-call `_dl` variant and the
+   park-based handshake remain the named follow-ups.
+6. **Chain hardening: basicConstraints + EKU (not just signatures).** Signature
+   + validity + SAN is not enough — Go's `crypto/x509` also enforces the
+   constraints that stop a leaf from masquerading as a CA. So the phase-E
+   extension walk and `wo_tls_verify_chain` gain: every **non-leaf** cert must
+   assert `basicConstraints` CA:TRUE and satisfy `pathLenConstraint`, and the
+   **leaf** must carry Extended Key Usage `id-kp-serverAuth` (or omit EKU
+   entirely). A `keyUsage` `keyCertSign` check on issuers is included where
+   present. Failure is a rejection like any other chain fault (no partial trust).
 
 ### The builtin surface
 
@@ -139,8 +160,10 @@ Three new builtins on the `net` module (one numeric id space; `WO_B_MAX` moves
   X25519 key + ClientHello random/session-id, run the sans-io driver over the
   blocking socket (frame each record: read the 5-byte header, then the body;
   flush `take_output`) to ESTABLISHED, set the host on the driver so the leaf
-  SAN is enforced, then `wo_tls_verify_chain` against the lazily-loaded anchors.
-  Returns the fd (a slot is claimed for it); traps on any failure.
+  SAN is enforced, then `wo_tls_verify_chain` against the lazily-loaded anchors
+  (with the decision-6 basicConstraints/EKU checks). The whole connect+handshake
+  is bounded by the decision-5 deadline. Returns the fd (a slot is claimed for
+  it); traps on any failure.
 - `net.read_tls(fd, max) -> Bytes` — id **116**, arity 2. Reads/decrypts one
   application record via the slot, returning up to `max` plaintext bytes (EOF is
   the empty Bytes), buffering a partial record and parking on POLLIN, and
@@ -165,6 +188,14 @@ consumer change beyond the id additions.
 - **Given** a server whose certificate does not chain to a trusted anchor, whose
   SAN does not match the host, or is expired, **when** `net.connect_tls` runs,
   **then** it traps `WO_T_IO` — no connection is returned.
+- **Given** a server that accepts the TCP connection but then stalls (never
+  finishing the handshake), **when** the decision-5 deadline elapses,
+  **then** `net.connect_tls` aborts and traps `WO_T_IO` rather than stalling the
+  shard indefinitely — proven with a stub that connects then sleeps.
+- **Given** a chain whose issuer lacks `basicConstraints` CA:TRUE (a leaf used
+  to sign another cert), or a leaf lacking EKU `serverAuth`, **when**
+  `net.connect_tls` validates it, **then** it is rejected — with negative KATs
+  in `test_tls` alongside the existing chain cases.
 - **Given** two shards each dialing TLS, **when** they run concurrently, **then**
   neither reads the other's slot or bundle (per-shard, no locks), proven under
   ASan/TSan.

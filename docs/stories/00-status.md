@@ -95,12 +95,16 @@ developer second review before this drives a live connection.
 
 **Next step — BUILD F3c-net (the only remaining rung before jarvis unblocks).**
 Its spec is now `ready`: [rv2 9 §F3c-net](runtime-v2/09-in-process-tls.md)
-brainstormed 2026-09-09 with the four integration forks **locked** (grounded in
-the runtime, not assumed): (1) blocking connect+handshake then park the data
-plane, mirroring `net.connect` — park-based handshake a named follow-up; (2) a
-per-shard fd-keyed `wo_tls_conn` slot table, no locks (the `wo_child` pattern);
-(3) failures trap `WO_T_IO` loudly incl. chain/hostname; (4) per-shard lazy
-read-only CA bundle (`/etc/ssl/certs/…`, `WO_CA_BUNDLE` override). Builtins:
+brainstormed 2026-09-09 with **six** integration forks **locked** (four grounded
+in the runtime, two from a gofiber/Go `crypto/x509` comparison): (1) blocking
+connect+handshake then park the data plane, mirroring `net.connect` — park-based
+handshake a named follow-up; (2) a per-shard fd-keyed `wo_tls_conn` slot table,
+no locks (the `wo_child` pattern); (3) failures trap `WO_T_IO` loudly incl.
+chain/hostname; (4) per-shard lazy read-only CA bundle (`/etc/ssl/certs/…`,
+`WO_CA_BUNDLE` override); (5) a **bounded handshake deadline**
+(`WO_TLS_HANDSHAKE_MS`, non-blocking connect+poll + `SO_RCVTIMEO/SNDTIMEO`) so a
+stalled server can't hang the shard; (6) **chain hardening** — basicConstraints
+CA:TRUE + pathLen + leaf EKU `serverAuth`, not just signatures. Builtins:
 `net.connect_tls`/`read_tls`/`write_tls` (ids 115–117, `WO_B_MAX`→117), wiring
 across `wob.h`/`emit.ml`/`types.ml`/`loader.c`/`builtin.c`/`sysio.c`, live-gated
 against a local TLS server. Then **G** (inbound server) for porch; after that
