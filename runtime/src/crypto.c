@@ -1511,6 +1511,103 @@ int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
     return fp_eq(xr, rv) ? 1 : 0;
 }
 
+/* ---- ECDSA-P256 signing (rv2 9 phase G1b) --------------------------------
+ * Deterministic nonce (RFC 6979) — no RNG, no nonce-reuse/bias risk, and
+ * KAT-able against the published vectors. The scalar multiply k*G and the
+ * inversions touch the secret k/d, so they use the constant-time modexp and a
+ * double-and-add-always ladder. Known residual: the ladder's point-at-infinity
+ * handling leaks k's leading-zero count (a bit-length hint, not the key); a
+ * complete-formula / Montgomery-ladder upgrade is a named follow-up. */
+
+static void jpt_cmov(jpt *d, const jpt *s, uint64_t mask) {
+    bn_cmov(d->X, s->X, mask, 4);
+    bn_cmov(d->Y, s->Y, mask, 4);
+    bn_cmov(d->Z, s->Z, mask, 4);
+}
+/* R = k*pt, constant-time in k (double-and-add-always). */
+static void jmul_ct(const modctx *P, jpt *o, const uint8_t k[32], const jpt *pt) {
+    jpt acc; for (int i = 0; i < 4; i++) { acc.X[i] = 0; acc.Y[i] = 0; acc.Z[i] = 0; }
+    for (int bit = 255; bit >= 0; bit--) {
+        jdouble(P, &acc, &acc);
+        jpt t; jadd(P, &t, &acc, pt);
+        uint64_t m = (uint64_t)0 - (uint64_t)((k[(255 - bit) / 8] >> (7 - ((255 - bit) & 7))) & 1);
+        jpt_cmov(&acc, &t, m);
+    }
+    *o = acc;
+}
+
+/* HMAC-SHA256 with a 32-byte key (RFC 6979's DRBG uses fixed-size keys). */
+static void hmac32(const uint8_t key[32], const uint8_t *msg, size_t mlen,
+                   uint8_t out[32]) {
+    wo_hmac_sha256(key, 32, msg, mlen, out);
+}
+
+/* ECDSA-P256 sign over SHA-256 with an RFC 6979 deterministic nonce. Private
+ * scalar d and 32-byte message hash in; (r,s) out, big-endian. 0 ok, -1 on
+ * failure (astronomically unlikely nonce exhaustion, or d out of range). */
+int wo_ecdsa_p256_sha256_sign(const uint8_t d[32], const uint8_t hash[32],
+                              uint8_t r_out[32], uint8_t s_out[32]) {
+    modctx P, N;
+    modctx_init(&P, P256_P);
+    modctx_init(&N, P256_N);
+    fp dfp; bn_from_be(dfp, d, 32);
+    if (fp_zero(dfp) || bn_ge(dfp, N.m, 4)) return -1;   /* d in [1, n-1] */
+
+    /* z = hash mod n, and bits2octets(hash) = z as 32 bytes */
+    fp z; bn_from_be(z, hash, 32);
+    if (bn_ge(z, N.m, 4)) bn_sub(z, z, N.m, 4);
+    uint8_t h1o[32]; bn_to_be(h1o, 32, z, 4);
+
+    /* RFC 6979 §3.2 seeding */
+    uint8_t V[32], K[32], buf[32 + 1 + 32 + 32];
+    memset(V, 0x01, 32); memset(K, 0x00, 32);
+    memcpy(buf, V, 32); buf[32] = 0x00; memcpy(buf + 33, d, 32); memcpy(buf + 65, h1o, 32);
+    hmac32(K, buf, 97, K); hmac32(K, V, 32, V);
+    memcpy(buf, V, 32); buf[32] = 0x01; memcpy(buf + 33, d, 32); memcpy(buf + 65, h1o, 32);
+    hmac32(K, buf, 97, K); hmac32(K, V, 32, V);
+
+    /* pre-mont G */
+    jpt G; fp gx, gy;
+    bn_from_be(gx, P256_GX, 32); bn_from_be(gy, P256_GY, 32);
+    to_mont(&P, G.X, gx); to_mont(&P, G.Y, gy);
+    for (int i = 0; i < 4; i++) G.Z[i] = P.one_mont[i];
+
+    for (int tries = 0; tries < 64; tries++) {
+        hmac32(K, V, 32, V);                              /* T = V (qlen = 256) */
+        fp kfp; bn_from_be(kfp, V, 32);
+        if (!fp_zero(kfp) && !bn_ge(kfp, N.m, 4)) {
+            jpt R; jmul_ct(&P, &R, V, &G);
+            if (!fp_zero(R.Z)) {
+                /* affine x of R (Z^-2 * X, mod p, all constant-time) */
+                fp Xn, Zn, zinv, zinv2, tm, xaff, rr;
+                from_mont(&P, Xn, R.X); from_mont(&P, Zn, R.Z);
+                bn_modexp_ct(zinv, Zn, P.m, 4, P256_PM2, 32);
+                to_mont(&P, tm, zinv); fpmul(&P, zinv2, tm, zinv);
+                to_mont(&P, tm, Xn); fpmul(&P, xaff, tm, zinv2);
+                for (int i = 0; i < 4; i++) rr[i] = xaff[i];
+                if (bn_ge(rr, N.m, 4)) bn_sub(rr, rr, N.m, 4);
+                if (!fp_zero(rr)) {
+                    /* s = k^-1 (z + r*d) mod n */
+                    fp kinv, rd, zrd, ss;
+                    bn_modexp_ct(kinv, kfp, N.m, 4, P256_NM2, 32);
+                    to_mont(&N, tm, rr); fpmul(&N, rd, tm, dfp);      /* r*d */
+                    modadd(zrd, z, rd, N.m, 4);                        /* z + r*d */
+                    to_mont(&N, tm, kinv); fpmul(&N, ss, tm, zrd);     /* k^-1*(z+rd) */
+                    if (!fp_zero(ss)) {
+                        bn_to_be(r_out, 32, rr, 4);
+                        bn_to_be(s_out, 32, ss, 4);
+                        return 0;
+                    }
+                }
+            }
+        }
+        /* reject: K = HMAC(K, V||0x00); V = HMAC(K, V) */
+        memcpy(buf, V, 32); buf[32] = 0x00;
+        hmac32(K, buf, 33, K); hmac32(K, V, 32, V);
+    }
+    return -1;
+}
+
 /* ---- X.509 / ASN.1 DER (rv2 9 phase E, core) ----------------------------
  * A defensive DER reader and the certificate-field extraction TLS needs:
  * tbsCertificate (raw, for signature verification), the signature algorithm,

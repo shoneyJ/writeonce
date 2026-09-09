@@ -9,6 +9,7 @@
 #include "t.h"
 #include "x509_vectors.h"
 #include "rsa_sign_vectors.h"
+#include "ecdsa_sign_vectors.h"
 
 static void hex(const uint8_t *d, size_t n, char *out) {
     static const char *h = "0123456789abcdef";
@@ -470,6 +471,25 @@ int main(void) {
         sig[100] ^= 1;                                         /* tamper */
         T_CHECK(wo_rsa_pss_sha256_verify(rsasig_n, sizeof rsasig_n, rsasig_e,
                     sizeof rsasig_e, sig, 256, rsasig_mhash, 32) == 0);
+    }
+
+    /* ECDSA-P256 SIGN with RFC 6979 nonce (rv2 9 phase G1b) — byte-for-byte vs
+     * the RFC 6979 A.2.5 vectors, and our sign verifies with our verify. */
+    {
+        uint8_t r[32], s[32];
+        /* "sample" */
+        T_CHECK(wo_ecdsa_p256_sha256_sign(ecs_d, ecs_sample_mhash, r, s) == 0);
+        T_CHECK(memcmp(r, ecs_sample_r, 32) == 0 && memcmp(s, ecs_sample_s, 32) == 0);
+        T_CHECK(wo_ecdsa_p256_sha256_verify(ecs_qx, ecs_qy, r, s, ecs_sample_mhash) == 1);
+        /* "test" */
+        T_CHECK(wo_ecdsa_p256_sha256_sign(ecs_d, ecs_test_mhash, r, s) == 0);
+        T_CHECK(memcmp(r, ecs_test_r, 32) == 0 && memcmp(s, ecs_test_s, 32) == 0);
+        T_CHECK(wo_ecdsa_p256_sha256_verify(ecs_qx, ecs_qy, r, s, ecs_test_mhash) == 1);
+        /* determinism: same input, same signature */
+        uint8_t r2[32], s2[32];
+        wo_ecdsa_p256_sha256_sign(ecs_d, ecs_sample_mhash, r2, s2);
+        wo_ecdsa_p256_sha256_sign(ecs_d, ecs_sample_mhash, r, s);
+        T_CHECK(memcmp(r, r2, 32) == 0 && memcmp(s, s2, 32) == 0);
     }
 
     return t_report("test_crypto");

@@ -77,6 +77,12 @@ int wo_ecdsa_p256_sha256_verify(const uint8_t qx[32], const uint8_t qy[32],
                                 const uint8_t r[32], const uint8_t s[32],
                                 const uint8_t hash[32]);
 
+/* ECDSA-P256 SIGN over SHA-256 with an RFC 6979 deterministic nonce (rv2 9
+ * phase G1b). Private scalar d + 32-byte hash in; (r,s) big-endian out. The
+ * secret-dependent scalar mult and inversions are constant-time. 0 ok, -1. */
+int wo_ecdsa_p256_sha256_sign(const uint8_t d[32], const uint8_t hash[32],
+                              uint8_t r_out[32], uint8_t s_out[32]);
+
 /* X.509 / ASN.1 DER (rv2 9 phase E, core). Internal C consumed by the TLS
  * handshake. key_alg / return values use the WO_X509_* enums in crypto.c
  * (RSA = 1, EC_P256 = 2). */
