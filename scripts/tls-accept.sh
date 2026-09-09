@@ -91,6 +91,7 @@ def serve():
         except OSError: return
         try:
             s = ctx.wrap_socket(c, server_side=True)
+            print("SUITE", s.cipher()[0], flush=True)   # which AEAD ran over the wire
             s.recv(4096); s.sendall(b"wo-tls-ok\n"); s.close()
         except Exception as e:
             print("stub-err", e, flush=True)
@@ -124,7 +125,7 @@ fi
 start_stub "$WORK/leaf.pem" "$WORK/leaf.key" || { bad "stub server did not start"; echo "tls-accept: $fail failures"; exit 1; }
 out="$(run_client "$WORK/ca.pem")"; rc=$?
 if [[ $rc -eq 0 && "$out" == *"wo-tls-ok"* ]]; then
-  ok "handshake + trusted chain + host match + app round-trip"
+  ok "handshake + trusted chain + host match + app round-trip [$(grep -m1 '^SUITE' "$WORK/stub.log" | cut -d' ' -f2)]"
 else
   bad "happy path (exit $rc): $out"
 fi

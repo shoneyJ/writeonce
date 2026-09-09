@@ -217,10 +217,14 @@ randomness and cookies maps onto primitives writeonce already has.
 
 ## Out Of Scope
 
-- **Encrypted cookies.** Fiber's `encryptcookie` needs a symmetric cipher
-  (AES-GCM), and the runtime has digests only. Signed-and-readable is honest and
-  sufficient for a session id; encrypting a payload is a separate ask with a
-  separate primitive behind it.
+- **Encrypted cookies.** Fiber's `encryptcookie` needs a symmetric cipher.
+  Signed-and-readable is honest and sufficient for a session id, so this
+  iteration ships without it — but the primitive now exists
+  ([runtime-v2 8](../runtime-v2/08-symmetric-cipher.md): `chacha20poly1305_seal`/
+  `open`, `aes_gcm_seal`/`open`, done 2026-09-09). The wrapper — random nonce
+  from `random_bytes` prepended to the ciphertext, default ChaCha — is rv2 8's
+  **phase D, re-homed here as porch's follow-on** to this iteration: pure `.wo`
+  on the `SetCookie` machinery and `random_bytes` this iteration builds.
 - **UUID-formatted ids.** fiber's `UUIDv4` is a format over the same entropy
   `random_bytes` provides; a base64'd 32-byte token is stronger and needs no new
   builtin. A UUID *format* helper, if ever wanted, is pure `.wo`.

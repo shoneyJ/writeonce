@@ -3,7 +3,10 @@
 # The runtime suite proves the server FSM offline (loopback against the client
 # driver); this proves interop with a real client — `openssl s_client`
 # validating our hand-rolled server handshake and exchanging application data,
-# for both an ECDSA-P256 and an RSA server certificate. Log: /tmp/tls-server.log.
+# for both an ECDSA-P256 and an RSA server certificate. Each probe pins the
+# client's cipher suite, so both AEADs run against the reference peer over the
+# wire (rv2 8 phase E's cross-check), plus one probe with openssl's default
+# list, whose first entry we do not implement. Log: /tmp/tls-server.log.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,7 +72,7 @@ else
 fi
 
 # ---- 3. openssl s_client interop, per key type ---------------------------
-probe() {  # $1 = tag (ec|rsa) ; $2 = port (distinct per probe — avoids a bind race)
+probe() {  # $1 = tag (ec|rsa) ; $2 = port (distinct per probe — avoids a bind race) ; $3 = openssl -ciphersuites list
   local p="$2"
   kill -KILL "$SRV_PID" 2>/dev/null
   WO_DATA="$WORK/data" "$WOVM" "$WORK/srv.wob" "$p" "$WORK/$1.pem" "$WORK/$1.key" >>"$LOG" 2>&1 &
@@ -81,15 +84,18 @@ probe() {  # $1 = tag (ec|rsa) ; $2 = port (distinct per probe — avoids a bind
   local out
   out="$({ printf 'GET / HTTP/1.0\r\n\r\n'; sleep 1; } | \
     timeout 12 openssl s_client -connect "127.0.0.1:$p" -CAfile "$WORK/ca.pem" \
-      -servername localhost -tls1_3 -verify_return_error -quiet 2>/dev/null)"
+      -servername localhost -tls1_3 -ciphersuites "$3" -verify_return_error -quiet 2>/dev/null)"
   if [[ "$out" == *"hello-wo-tls"* ]]; then
-    ok "$1: openssl s_client validated the cert + got the reply"
+    ok "$1 [$3]: openssl s_client validated the cert + got the reply"
   else
-    bad "$1: no reply (out: ${out:0:80})"
+    bad "$1 [$3]: no reply (out: ${out:0:80})"
   fi
 }
-probe ec "$PORT"
-probe rsa "$((PORT + 1))"
+probe ec  "$PORT"           TLS_CHACHA20_POLY1305_SHA256
+probe rsa "$((PORT + 1))"   TLS_AES_128_GCM_SHA256
+# openssl's default order: the server must skip the AES-256 suite it does not
+# implement and pick from the rest
+probe ec  "$((PORT + 2))"   TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
 
 echo "tls-server: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]]

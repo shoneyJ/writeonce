@@ -1,8 +1,9 @@
 ---
 track: runtime-v2
 iteration: "8"
-status: in-progress
+status: done
 readiness: ready
+review_pending: "fork auto-approved 2026-09-09 for autonomous execution — developer second review: phase D (the encrypted-cookie wrapper) re-homed to the porch track as the consumer's phase (pure .wo on porch 2's cookie machinery + random_bytes, which do not exist yet), the same split rv2 7 makes for its /metrics phase; the runtime primitive closes here with phase E"
 ---
 
 # runtime-v2 8 — AEAD ciphers: authenticated encryption for cookies, data at rest, and TLS
@@ -81,8 +82,8 @@ work; TLS's ChaCha suite and the cookie consumer unblock at phase A.
 | A — ChaCha20-Poly1305 | ✅ **LANDED 2026-09-08** — `chacha20poly1305_seal`/`open` (ids 111/112, bare-name crypto family). Hand-rolled ChaCha20 + poly1305-donna-32 + the RFC 8439 §2.8 AEAD, caller-supplied 12-byte nonce, 32-byte key, constant-time tag compare, `open` returns nil on auth failure. Matches the RFC 8439 §2.8.2 vector byte-for-byte; gated in `test/test_crypto.c` (§2.5.2 Poly1305 + §2.8.2 seal/open/tamper), ASan/UBSan clean |
 | B — AES-GCM via hardware | ✅ **LANDED 2026-09-08** (x86-64) — `aes_gcm_seal`/`open` (ids 113/114), AES-128/256 (by key length) on AES-NI + PCLMULQDQ, constant-time by hardware, CPUID-gated with target-attributed functions so the binary stays portable (no-AES-NI traps until phase C). Matches NIST SP 800-38D cases 4 & 16 byte-for-byte; KAT-gated in `test_crypto.c`, ASan/UBSan clean. **ARMv8 crypto-ext path deferred** (untestable on the x86-64 dev host) — folds into phase C |
 | C — AES-GCM portability | ✅ **software fallback LANDED 2026-09-08** — portable constant-time AES (S-box via the GF(2⁸)-inverse power ladder, no tables) + bit-by-bit constant-time GHASH; same `aes_gcm_seal`/`open`, dispatched to AES-NI when present else this path. Matches NIST cases 4 & 16 byte-for-byte (test forces the software path via `wo_aes_force_software`), ASan/UBSan clean. AES-GCM is now available on any CPU (the phase-B no-AES-NI trap is retired). **ARMv8 crypto-ext hardware path still deferred** (untestable on the x86-64 dev host) — a follow-up when an ARM host exists |
-| D — the cookie wrapper | an `encryptcookie`-equivalent on porch [2](../porch/02-randomness-and-cookies.md)'s cookie machinery: random nonce (from `random_bytes`) prepended to the ciphertext, default ChaCha |
-| E — the gate | RFC 8439 + NIST GCM known-answer vectors, ASan/UBSan on both paths, and a reference cross-check (`openssl enc`/a scripted peer) |
+| D — the cookie wrapper | **re-homed to porch 2026-09-09** (`review_pending`) — an `encryptcookie`-equivalent is pure `.wo` on porch [2](../porch/02-randomness-and-cookies.md)'s cookie machinery: random nonce (from `random_bytes`) prepended to the ciphertext, default ChaCha. It is the **consumer's** phase (as rv2 7's `/metrics` is porch's) and cannot land before porch 2 ships `random_bytes` + `SetCookie`; porch 2 names it as its follow-on. The primitives it wraps are complete here |
+| E — the gate | ✅ **LANDED 2026-09-09** — RFC 8439 + NIST GCM known-answer vectors on both AES paths (`test_crypto`), ASan/UBSan clean, and the reference cross-check is **real-protocol interop, not `openssl enc`** (which cannot do AEAD modes): `just tls-server` pins `openssl s_client` to `TLS_CHACHA20_POLY1305_SHA256`, to `TLS_AES_128_GCM_SHA256`, and to openssl's default list (server must skip the unimplemented AES-256 suite) — 5/0; `just tls` reports the suite the Python/OpenSSL peer negotiated (ChaCha under its server-preference default) — 5/0 |
 
 ## Consumers
 
@@ -139,5 +140,6 @@ Two named consumers now — TLS (rv2 9 phase A, the reason AES-GCM is in) and po
 encrypted cookies — with database-field-at-rest a plausible third. Pure compute,
 no actors, not exposed to the lang-41 hang. It is the **first rung of the TLS
 ladder**, so it gates rv2 9: nothing above TLS phase A can be built until this
-lands. Implementation order is A (ChaCha, unblocks the most for the least risk) →
-B (hardware AES-GCM) → C (software AES fallback) → D (cookie wrapper) → E (gate).
+lands. Implementation order was A (ChaCha, unblocks the most for the least risk) →
+B (hardware AES-GCM) → C (software AES fallback) → E (gate); D (cookie wrapper)
+is porch's, after porch 2. **Done 2026-09-09** as a runtime primitive.
