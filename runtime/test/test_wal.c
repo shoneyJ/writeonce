@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -295,6 +296,71 @@ static void test_stale_compact_temp_is_removed(void) {
     wo_db_destroy(&db2);
     wo_db_destroy(&db);
     wo_rt_destroy(&rt);
+}
+
+/* databasev2 7: WO_DATA names EITHER a directory (today's form, <dir>/shard-0.wal
+ * byte for byte) or THE log file. Resolution is a pure function so main.c's
+ * only branch is "print the refusal, exit 2" — and so every arm of the rule is
+ * checkable here rather than by booting wovm against the filesystem. */
+static void test_resolve_data_path(void) {
+    char in[192], out[256], want[256];
+
+    /* an existing directory: exactly the bytes main.c always produced */
+    T_EQ(wo_wal_resolve_data_path(g_dir, out, sizeof out), 0);
+    snprintf(want, sizeof want, "%s/shard-0.wal", g_dir);
+    T_STREQ(out, want);
+
+    /* a trailing slash keeps the directory form even when nothing exists
+       there — including the doubled slash today's snprintf produced */
+    snprintf(in, sizeof in, "%s/nodir/", g_dir);
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), 0);
+    snprintf(want, sizeof want, "%s/nodir//shard-0.wal", g_dir);
+    T_STREQ(out, want);
+
+    /* absent file under an existing parent: the path IS the log; resolution
+       itself creates nothing (wo_wal_open's O_CREAT does, later) */
+    snprintf(in, sizeof in, "%s/app.db", g_dir);
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), 0);
+    T_STREQ(out, in);
+    T_CHECK(access(in, F_OK) != 0);
+
+    /* an existing regular file: opened as the log */
+    {
+        int fd = open(in, O_WRONLY | O_CREAT, 0644);
+        T_CHECK(fd >= 0);
+        close(fd);
+    }
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), 0);
+    T_STREQ(out, in);
+
+    /* a bare relative name: its parent is ".", which always exists */
+    T_EQ(wo_wal_resolve_data_path("app.db", out, sizeof out), 0);
+    T_STREQ(out, "app.db");
+
+    /* missing parent: refused, the PARENT is handed back for the message,
+       and nothing was mkdir'd on the way */
+    snprintf(in, sizeof in, "%s/nodir/app.db", g_dir);
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), WO_WAL_PATH_NO_PARENT);
+    snprintf(want, sizeof want, "%s/nodir", g_dir);
+    T_STREQ(out, want);
+    T_CHECK(access(want, F_OK) != 0);
+
+    /* the parent exists but is a FILE (ENOTDIR): same refusal, same subject */
+    snprintf(in, sizeof in, "%s/app.db/x.db", g_dir);
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), WO_WAL_PATH_NO_PARENT);
+    snprintf(want, sizeof want, "%s/app.db", g_dir);
+    T_STREQ(out, want);
+
+    /* exists, but neither a regular file nor a directory */
+    snprintf(in, sizeof in, "%s/fifo.db", g_dir);
+    T_EQ(mkfifo(in, 0600), 0);
+    T_EQ(wo_wal_resolve_data_path(in, out, sizeof out), WO_WAL_PATH_NOT_A_FILE);
+
+    /* a result that would not fit is refused, never truncated (today's
+       snprintf into main.c's 512-byte buffer truncated silently) */
+    T_EQ(wo_wal_resolve_data_path(g_dir, out, 8), WO_WAL_PATH_TOO_LONG);
+    snprintf(in, sizeof in, "%s/app.db", g_dir);
+    T_EQ(wo_wal_resolve_data_path(in, out, strlen(in)), WO_WAL_PATH_TOO_LONG);
 }
 
 /* databasev2 3 Task 3: the trigger, tested as a pure decision. Kept pure
@@ -3445,6 +3511,7 @@ int main(void) {
     test_keys_resident_delete();
     test_keys_resident_delete_then_replay();
     test_stale_compact_temp_is_removed();
+    test_resolve_data_path();
     test_should_compact_policy();
     test_compact_refuses_with_staged_records();
     test_torn_tail();

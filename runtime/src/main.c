@@ -291,7 +291,29 @@ int main(int argc, char **argv) {
     int have_schema = 0;
     if (data_dir && data_dir[0]) {
         char wal_path[512];
-        snprintf(wal_path, sizeof wal_path, "%s/shard-0.wal", data_dir);
+        /* databasev2 7: WO_DATA is a directory (→ <dir>/shard-0.wal, as it
+         * always was) or THE log file, created if absent. Refuse rather than
+         * guess: a missing parent is never created, and a path that is
+         * neither a regular file nor a directory is not a store. */
+        int prc = wo_wal_resolve_data_path(data_dir, wal_path, sizeof wal_path);
+        if (prc != 0) {
+            if (prc == WO_WAL_PATH_NO_PARENT)
+                fprintf(stderr,
+                        "wovm: WO_DATA=%s — its parent %s is not an existing "
+                        "directory; create it first (wovm never runs mkdir -p).\n",
+                        data_dir, wal_path);
+            else if (prc == WO_WAL_PATH_NOT_A_FILE)
+                fprintf(stderr,
+                        "wovm: WO_DATA=%s exists but is neither a regular file "
+                        "nor a directory.\n",
+                        data_dir);
+            else
+                fprintf(stderr, "wovm: WO_DATA=%s is too long for a path.\n", data_dir);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
         /* databasev2 12: the log's head record states the shape that wrote
          * it. Diff it against the compiled classes BEFORE replay: a matching
          * shape replays as-is, add/delete migrates the log in place through

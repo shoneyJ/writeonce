@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* ---- crc32 (poly 0xEDB88320) — ported from runtime/wo-rt.c ------------- */
@@ -363,6 +364,45 @@ int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc) {
     uint32_t len;
     while (scan_record(w->fd, off, &len, NULL) == 0) off += 8u + len + 4u;
     w->off = off;
+    return 0;
+}
+
+/* dirname(3) without its allocation and locale baggage: "a/b" → "a", "/b" →
+ * "/", "b" → ".". The boot-time parent check (wo_wal_resolve_data_path) and
+ * the post-rename fsync (sync_parent_dir) MUST agree on what the parent is;
+ * this is the one place that decides. 0 ok, -1 when [path] does not fit. */
+static int parent_dir_of(const char *path, char *dir, size_t cap) {
+    size_t n = strlen(path);
+    if (n >= cap) return -1;
+    memcpy(dir, path, n + 1);
+    char *slash = strrchr(dir, '/');
+    if (slash == dir) dir[1] = '\0';
+    else if (slash) *slash = '\0';
+    else memcpy(dir, ".", 2);
+    return 0;
+}
+
+int wo_wal_resolve_data_path(const char *wo_data, char *out, size_t cap) {
+    size_t n = strlen(wo_data);
+    struct stat st;
+    int have = stat(wo_data, &st) == 0;
+    if ((n && wo_data[n - 1] == '/') || (have && S_ISDIR(st.st_mode))) {
+        /* the directory form: byte for byte what main.c produced before this
+         * function existed, doubled slash after a trailing '/' included */
+        if ((size_t)snprintf(out, cap, "%s/shard-0.wal", wo_data) >= cap)
+            return WO_WAL_PATH_TOO_LONG;
+        return 0;
+    }
+    if (have && !S_ISREG(st.st_mode)) return WO_WAL_PATH_NOT_A_FILE;
+    if (!have) {
+        /* absent: wo_wal_open creates it, but only where a directory already
+         * is — the parent is handed back so the refusal can name it */
+        if (parent_dir_of(wo_data, out, cap) != 0) return WO_WAL_PATH_TOO_LONG;
+        struct stat pst;
+        if (stat(out, &pst) != 0 || !S_ISDIR(pst.st_mode)) return WO_WAL_PATH_NO_PARENT;
+    }
+    if (n >= cap) return WO_WAL_PATH_TOO_LONG;
+    memcpy(out, wo_data, n + 1);
     return 0;
 }
 
@@ -1015,13 +1055,7 @@ int wo_wal_should_compact(uint64_t used, uint64_t last, uint64_t floor, uint32_t
  * cut. */
 static void sync_parent_dir(const char *path) {
     char dir[4096];
-    size_t n = strlen(path);
-    if (n >= sizeof dir) return;
-    memcpy(dir, path, n + 1);
-    char *slash = strrchr(dir, '/');
-    if (slash == dir) dir[1] = '\0';
-    else if (slash) *slash = '\0';
-    else memcpy(dir, ".", 2);
+    if (parent_dir_of(path, dir, sizeof dir) != 0) return;
     int fd = open(dir, O_RDONLY);
     if (fd < 0) return;
     (void)fsync(fd);

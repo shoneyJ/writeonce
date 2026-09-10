@@ -247,6 +247,22 @@ static inline uint64_t wo_wal_next_offset(const wo_wal *w) { return w->off + w->
 int wo_wal_open(wo_wal *w, const char *path, uint64_t prealloc);
 void wo_wal_close(wo_wal *w);
 
+/* databasev2 7: WO_DATA names the store as EITHER a directory or the log file.
+ * An existing directory or a trailing '/' resolves to "<dir>/shard-0.wal" —
+ * the bytes every deployment before this iteration used, unchanged. Anything
+ * else IS the log: an existing regular file is opened, an absent path is
+ * created by wo_wal_open — but only under a parent directory that exists NOW.
+ * The resolver never mkdirs: a typo must not plant a store somewhere
+ * unexpected. Pure — stats, creates nothing. 0 ok, [out] = the log path;
+ * WO_WAL_PATH_NO_PARENT, [out] = the parent that is not an existing directory
+ * (for the refusal line); WO_WAL_PATH_NOT_A_FILE: exists, neither a regular
+ * file nor a directory (fifo, socket, device); WO_WAL_PATH_TOO_LONG: the
+ * result would not fit [cap] — refused, never truncated. */
+#define WO_WAL_PATH_NO_PARENT  -1
+#define WO_WAL_PATH_NOT_A_FILE -2
+#define WO_WAL_PATH_TOO_LONG   -3
+int wo_wal_resolve_data_path(const char *wo_data, char *out, size_t cap);
+
 /* Stage a record for the row that MUST already be applied to RAM (the
  * commit-order doctrine). Insert/update read the row via wo_row_ptr.
  * 0 ok, -1 OOM / no such row. */
