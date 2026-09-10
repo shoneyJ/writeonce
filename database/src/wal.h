@@ -496,7 +496,9 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
  * cannot revisit one.
  *
  * 0 ok, -1 no intact/malformed/corrupt record anywhere in the chain (or a
- * REMOVE tombstone reached mid-chain), -2 out of memory (*msg set). */
+ * REMOVE tombstone reached mid-chain), -2 out of memory. [msg] may be NULL
+ * (wo_idx_probe borrows without one: a candidate that does not fold is not a
+ * hit); when given it names every refusal. */
 /* databasev2 11: `hops_out` (may be NULL) reports how many DELTA records the
  * walk crossed before reaching the full-row record that terminates the chain —
  * 0 for a row that has never been updated. The walk already visits each hop, so

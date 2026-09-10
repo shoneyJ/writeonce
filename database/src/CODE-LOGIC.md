@@ -373,7 +373,10 @@ A `@table` class is the schema; the log is the database; boot compares them.
   `wo_wal_stage_fatal`. Compaction and migration stage the head explicitly
   on a schema-less replacement log and were never exposed. Pinned by
   `test_keys_resident_fresh_log_first_row` (test_wal.c): the db.c:78
-  sequence call for call, then read-by-id, `wo_idx_probe`, and replay.
+  sequence call for call, then read-by-id, `wo_idx_probe`, and replay. The
+  fold's `msg` is optional since the same fix (`test_fold_row_at_tolerates_null_msg`):
+  a malformed record under an index probe refuses the candidate by name
+  instead of writing the zero page.
 - **The diff is name-keyed** (`wo_schema_diff`). Classes match by name,
   fields by name + kind, owned references (`fclass`) by the NAME the number
   resolves to — so pure declaration reordering costs only a cid remap, which

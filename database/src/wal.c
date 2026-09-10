@@ -1851,6 +1851,8 @@ int wo_wal_read_row_at(wo_wal *w, wo_db *db, wo_rt *rt, uint64_t off,
 int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
                        uint64_t *id_out, uint64_t *out_vals, uint32_t *hops_out,
                        const char **msg) {
+    const char *sink;              /* [msg] is optional: wo_idx_probe borrows without one */
+    if (!msg) msg = &sink;
     uint32_t hops = 0;             /* databasev2 11: DELTA records crossed */
     if (hops_out) *hops_out = 0;
     uint32_t cid = 0;

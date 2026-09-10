@@ -1957,6 +1957,36 @@ static void test_schema_fresh_log(void) {
     wo_db_destroy(&db2);
 }
 
+/* 2026-09-10 defect, second half: every `*msg = …` in the fold was
+ * unguarded, and wo_idx_probe borrows with msg == NULL (a candidate that does
+ * not fold is simply not a hit), so a malformed record under an index probe
+ * was a zero-page write instead of a refused row. [msg] is optional; a
+ * caller that asks still gets the name. */
+static void test_fold_row_at_tolerates_null_msg(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/foldnull.wal", g_dir);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    wo_schema sc = mig_schema_sample();
+    T_EQ(wo_wal_set_schema(&w, &sc), 0);
+    T_EQ(wo_wal_ensure_schema(&w), 0); /* offset 0 holds the head, not a row */
+    uint32_t cid = 99, hops = 0;
+    uint64_t id = 0, vals[2] = {0, 0};
+    /* the two refusals a probe can meet: a non-row record, and no record */
+    T_EQ(wo_wal_fold_row_at(&w, &db, 0, &cid, &id, vals, &hops, NULL), -1);
+    T_EQ(wo_wal_fold_row_at(&w, &db, 1u << 20, &cid, &id, vals, &hops, NULL), -1);
+    const char *msg = NULL;
+    T_EQ(wo_wal_fold_row_at(&w, &db, 0, &cid, &id, vals, &hops, &msg), -1);
+    T_STREQ(msg, "record header is malformed");
+    msg = NULL;
+    T_EQ(wo_wal_fold_row_at(&w, &db, 1u << 20, &cid, &id, vals, &hops, &msg), -1);
+    T_STREQ(msg, "no intact record at that offset");
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+}
+
 /* a LEGACY log (rows, no schema record) reports 1 from read_schema, and its
  * first compaction with a schema set writes the record at the head */
 static void test_schema_compaction_adopts_legacy(void) {
@@ -3680,6 +3710,7 @@ int main(void) {
     test_schema_diff_verdicts();
     test_schema_roundtrip();
     test_schema_fresh_log();
+    test_fold_row_at_tolerates_null_msg();
     test_schema_compaction_adopts_legacy();
     test_schema_read_absent();
     test_should_compact_absolute_and_ceiling();
