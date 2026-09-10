@@ -107,6 +107,37 @@ intact record count and prefix end — the crash battery's verifier
 (`runtime/test/test_wal.c`: five rounds of insert/commit/ack-over-pipe with
 SIGKILL mid-stream; every acked row present and exact after replay).
 
+**Where the log lives (databasev2 7, 2026-09-10).** `WO_DATA` is always a
+path, never a sentinel (ephemerality is `WO_EPHEMERAL=1`, databasev2 2 task
+6a), and it names the store in one of two forms, resolved by
+`wo_wal_resolve_data_path` (`wal.{c,h}`) before anything is opened:
+
+- **Directory form** — an existing directory, or any path ending in `/`: the
+  log is `<dir>/shard-0.wal`, byte for byte what every deployment and gate
+  before this iteration used (a trailing slash still yields the `//` the
+  pre-7 driver produced, and a trailing slash on a missing directory still
+  fails at open: `wovm: cannot open <dir>//shard-0.wal`, exit 2).
+- **File form** — anything else: the path IS the log (`app.db`, `store.wo.db`
+  — the name is the operator's). An existing regular file is opened; an
+  absent path is created by `wo_wal_open`, but only when its parent directory
+  already exists. Two refusals, each exit 2 and ONE stderr line: a parent
+  that is not an existing directory — `wovm: WO_DATA=<path> — its parent
+  <parent> is not an existing directory; create it first (wovm never runs
+  mkdir -p).` — because a typo must not plant a store somewhere unexpected;
+  and a path that exists but is neither a regular file nor a directory
+  (fifo, socket, device). A result longer than the driver's path buffer is
+  refused as well, never truncated.
+
+One file is the whole store at any core count (shard 0 is the only WAL
+writer since arc stage 3). Compaction (databasev2 3) and schema migration
+(databasev2 12) rewrite through `<log path>.compact` beside the log and
+fsync the log's parent after the `rename` — both derive that from the log
+path, never from `WO_DATA`, so the file form inherits their crash safety
+unchanged; the boot-time parent check and the post-rename fsync share one
+derivation (`parent_dir_of`). `WO_EPHEMERAL` set together with either form
+refuses exactly as 6a says. Pinned by `runtime/test/test_wal.c`
+`test_resolve_data_path` and `test_file_form_temps_beside_log`.
+
 ## Insert (Task 3) — builtin 61, `database/src/db.c`
 
 `insert Class { field: expr, … }` is a typed expression (statement position

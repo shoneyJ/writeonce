@@ -58,6 +58,28 @@ tear). The crash battery in `runtime/test/test_wal.c` is the module's
 meaning proven: acked-over-a-pipe after commit, SIGKILL mid-stream, replay,
 zero acked-but-missing.
 
+**Where the log lives (databasev2 7, 2026-09-10).** `wo_wal_resolve_data_path`
+turns `WO_DATA` into the log path before main.c opens anything: an existing
+directory or a trailing `/` → `<dir>/shard-0.wal` byte for byte (the pre-7
+form, `//` after a trailing slash included); anything else IS the log —
+opened if a regular file, created by `wo_wal_open` if absent. Two refusals,
+exit 2, one stderr line each, worded in main.c from the resolver's codes:
+`WO_WAL_PATH_NO_PARENT` (the parent comes back in `out`, so the line names
+the path AND the parent; no `mkdir -p` — a typo must not plant a store
+somewhere unexpected, the operator creates directories, the runtime never
+does) and `WO_WAL_PATH_NOT_A_FILE` (fifo, socket, device).
+`WO_WAL_PATH_TOO_LONG` refuses what the old 512-byte `snprintf` silently
+truncated. A trailing slash on a MISSING directory is still the directory
+form and still fails at `wo_wal_open` (`cannot open`), unchanged on purpose.
+Nothing below main.c knows which form was used: compaction and migration
+build `<log path>.compact` and fsync `parent_dir_of(log path)` — the same
+static helper the resolver's parent check uses, so the directory checked at
+boot is the directory synced after every rename. Tests:
+`test_resolve_data_path` (every arm of the rule, fifo via `mkfifo`) and
+`test_file_form_temps_beside_log` (a directory planted at `<file>.compact`
+makes compaction and migration refuse with the log untouched; removed, both
+succeed and the file is the only artifact beside a decoy sibling directory).
+
 ## db.c — statement executors (iteration 9, Task 3)
 
 One dispatcher, the builtin contract (0 ok, else WO_T_* + msg). The engine
