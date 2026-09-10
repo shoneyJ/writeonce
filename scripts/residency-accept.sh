@@ -152,9 +152,14 @@ if "$WOC" --emit "$EX/main.wo" -o "$WORK/residency.wob" >>"$LOG" 2>&1; then
   mkdir -p "$WORK/exdata"
   {
     echo "--------------------- run 1: seed ---------------------"
-    WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" seed 2>&1
+    WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" seed 2>&1; rc=$?
     echo "--------------------- run 2: restart + order ----------"
   } >> "$LOG"
+  # seed's rows commit before anything can crash it, so the restart legs
+  # below pass on the log a dead seed leaves behind — its rc is its own check
+  [[ $rc -eq 0 ]] \
+    && ok "example: seed exits 0" \
+    || bad "example seed" "rc=$rc (139 = SIGSEGV; see $LOG)"
   ex2="$(WO_DATA="$WORK/exdata" "$WOVM" "$WORK/residency.wob" order 2>&1)"
   printf '%s\n' "$ex2" >> "$LOG"
   grep -q 'products=2 carts=0' <<<"$ex2" \
