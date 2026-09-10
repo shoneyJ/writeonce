@@ -236,8 +236,15 @@ int wo_wal_read_schema(const char *path, uint8_t **payload_out, uint32_t *len_ou
  *
  * Call it BEFORE the append whose offset you want, and only trust the value
  * after the matching wo_wal_commit returns 0 — a record whose commit failed
- * was never durable and its offset must not be recorded anywhere. */
-static inline uint64_t wo_wal_next_offset(const wo_wal *w) { return w->off + w->len; }
+ * was never durable and its offset must not be recorded anywhere.
+ *
+ * Not pure: on a fresh log with a schema set, the first call stages the
+ * lazy schema head (databasev2 12) so the answer names the CALLER's record.
+ * Staged inside the append instead, the head displaced the first
+ * keys-resident row: db.c's koff pointed at the schema record and the row
+ * read back as "record header is malformed" (2026-09-10). A head-stage OOM
+ * is wo_wal_stage_fatal — the death the append would have taken. */
+uint64_t wo_wal_next_offset(wo_wal *w);
 
 /* Open (create if missing) and preallocate [prealloc] bytes (best-effort;
  * a filesystem without fallocate still works). Positions the write offset

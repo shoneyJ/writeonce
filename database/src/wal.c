@@ -473,25 +473,45 @@ void wo_wal_close(wo_wal *w) {
     w->fd = -1;
 }
 
+static int stage(wo_wal *w, const wbuf *payload);
+
+/* databasev2 12: the schema head is written LAZILY, ahead of the first real
+ * record — never for a log that stays empty. A program whose only tables are
+ * `durable: false` opens a WAL and appends nothing, and the documented
+ * contract is that such a run writes ZERO bytes; an eager head record broke
+ * that by 75 bytes and the residency gate caught it.
+ *
+ * Two callers, and the ORDER between them is the invariant: stage() (the
+ * first append) and wo_wal_next_offset (a caller capturing that first
+ * record's offset BEFORE appending it — db.c's koff/roff pattern). The head
+ * must be staged before either observes off + len; staged only inside the
+ * append, the captured offset named the head instead of the row, and the
+ * first keys-resident row of a fresh log read back as "record header is
+ * malformed" (2026-09-10). The flag, not the emptiness check, breaks the
+ * recursion through stage(). */
+static int stage_schema_head(wo_wal *w) {
+    if (!w->schema || w->schema_written) return 0;
+    w->schema_written = 1;
+    if (w->off != 0 || w->len != 0) return 0; /* records exist: legacy until compaction */
+    wbuf sp = {0};
+    wput(&sp, w->schema, w->schema_len);
+    int rc = stage(w, &sp);
+    free(sp.b);
+    return rc;
+}
+
+uint64_t wo_wal_next_offset(wo_wal *w) {
+    /* a head-stage failure here is the death the following append would
+     * have taken for the same OOM — never answer with an offset the head
+     * would then displace */
+    if (stage_schema_head(w) != 0) wo_wal_stage_fatal(w);
+    return w->off + w->len;
+}
+
 /* frame one payload into the staged batch */
 static int stage(wo_wal *w, const wbuf *payload) {
     if (payload->oom) return -1;
-    /* databasev2 12: the schema head is written LAZILY, ahead of the first
-     * real record — never for a log that stays empty. A program whose only
-     * tables are `durable: false` opens a WAL and appends nothing, and the
-     * documented contract is that such a run writes ZERO bytes; an eager
-     * head record broke that by 75 bytes and the residency gate caught it.
-     * The flag, not the emptiness check, breaks the recursion. */
-    if (w->schema && !w->schema_written) {
-        w->schema_written = 1;
-        if (w->off == 0 && w->len == 0) {
-            wbuf sp = {0};
-            wput(&sp, w->schema, w->schema_len);
-            int rc = stage(w, &sp);
-            free(sp.b);
-            if (rc != 0) return -1;
-        }
-    }
+    if (stage_schema_head(w) != 0) return -1;
     wbuf rec = {0};
     wput_u32(&rec, (uint32_t)payload->len);
     wput_u32(&rec, crc32(payload->b, payload->len));
@@ -821,14 +841,9 @@ int wo_wal_ensure_schema(wo_wal *w) {
     if (!w->schema) return 0;             /* never set: legacy behaviour */
     if (w->off != 0 || w->len != 0) return 0; /* records exist or staged */
     if (w->schema_written) return 0;
-    /* go through stage() so the lazy-head flag and this path can never
-     * double-write; stage() itself emits the head when it sees the flag */
-    w->schema_written = 1;
-    wbuf p = {0};
-    wput(&p, w->schema, w->schema_len);
-    int rc = stage(w, &p);
-    free(p.b);
-    if (rc != 0) return -1;
+    /* the same helper stage() and wo_wal_next_offset use, so no path can
+     * double-write the head */
+    if (stage_schema_head(w) != 0) return -1;
     return wo_wal_commit(w);
 }
 

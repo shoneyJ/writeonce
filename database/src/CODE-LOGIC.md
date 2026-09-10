@@ -355,10 +355,25 @@ A `@table` class is the schema; the log is the database; boot compares them.
 - **The log describes itself.** `WO_WAL_SCHEMA` (kind 5) is the head record
   of every fresh and every compacted log: per class its NAME, storage flags,
   and per field name + kind + the two encoding-relevant metadata words.
-  Written lazily by `stage()` ahead of the FIRST real record — never for a
-  log that stays empty, because `durable: false` programs have a documented
+  Written lazily ahead of the FIRST real record — never for a log that
+  stays empty, because `durable: false` programs have a documented
   zero-bytes contract. `apply_record` skips it before reading cid/id (its
   class count would be misread as a cid); replay does not count it.
+- **Head before any offset capture (defect fix 2026-09-10).** One helper,
+  `stage_schema_head`, stages the pending head; `stage()` calls it on the
+  first append and `wo_wal_next_offset()` calls it BEFORE answering, so the
+  offset a caller records for a keys-resident row (`db.c`'s `koff`/`roff`,
+  taken before the append) can never name the head. It used to: boot sets
+  the schema (`main.c`, `wo_wal_set_schema`) and never forces the head, so
+  the first `resident: keys` row of a fresh log was re-pointed at the schema
+  record — its first read folded "record header is malformed", and through
+  `wo_idx_probe` (a borrow with `msg == NULL`) that was a zero-page write:
+  the residency example's `seed` died rc 139 in both `WO_DATA` forms.
+  `wo_wal_next_offset` is therefore no longer pure; a head-stage OOM there is
+  `wo_wal_stage_fatal`. Compaction and migration stage the head explicitly
+  on a schema-less replacement log and were never exposed. Pinned by
+  `test_keys_resident_fresh_log_first_row` (test_wal.c): the db.c:78
+  sequence call for call, then read-by-id, `wo_idx_probe`, and replay.
 - **The diff is name-keyed** (`wo_schema_diff`). Classes match by name,
   fields by name + kind, owned references (`fclass`) by the NAME the number
   resolves to — so pure declaration reordering costs only a cid remap, which

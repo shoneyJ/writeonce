@@ -993,6 +993,93 @@ static const wo_classdesc KEYS_IDX_CLASSES[] = {
      .idx_cnt = 1, .idx_meta = keys_idx_meta},
 };
 
+/* 2026-09-10 defect: the FIRST keys-resident row of a FRESH log. Boot adopts
+ * the compiled schema (main.c: wo_wal_set_schema, never wo_wal_ensure_schema)
+ * and the head record is staged lazily ahead of the first real record.
+ * db.c's insert arm captures the row's offset with wo_wal_next_offset BEFORE
+ * the append, so the head must already be staged by then — otherwise `koff`
+ * names the schema record and the row's first read folds "record header is
+ * malformed"; through wo_idx_probe (borrow with msg == NULL) that was a
+ * zero-page write — the residency example's `seed` died rc 139. Call for
+ * call the db.c:78 sequence, then the two reads `seed` performs. */
+static void test_keys_resident_fresh_log_first_row(void) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/keysfresh.wal", g_dir);
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, KEYS_IDX_CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, KEYS_IDX_CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    db.rt = &rt; rt.wal = &w; rt.db = &db;
+    const char *msg = "";
+
+    static wo_schema_field f[] = {
+        {(const uint8_t *)"n", 1, WO_K_SCALAR, WO_SCHEMA_NONE, WO_SCHEMA_NONE},
+        {(const uint8_t *)"label", 5, WO_K_TEXT, WO_SCHEMA_NONE, WO_SCHEMA_NONE},
+    };
+    static wo_schema_class cls[] = {{(const uint8_t *)"row", 3, WO_CLASSF_RESIDENT_KEYS, 2, f}};
+    wo_schema sc = {1, cls, NULL};
+    T_EQ(wo_wal_set_schema(&w, &sc), 0);
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 1); /* still zero bytes: lazy */
+
+    /* db.c's insert arm, call for call */
+    wo_str *s = wo_str_new(&rt, "sku", 3);
+    uint64_t vals[2] = {10, (uint64_t)(uintptr_t)s};
+    uint64_t id = wo_row_insert(&db, 0, vals, &msg, NULL);
+    T_CHECK(id != 0);
+    uint64_t koff = wo_wal_next_offset(&w);
+    T_EQ(wo_wal_append_insert(&w, &db, 0, id), 0);
+    T_EQ(wo_wal_pend_drop(&w, 0, id, koff), 0);
+    T_EQ(wo_wal_commit(&w), 0);
+    wo_db_flush_drops(&db, &w);
+    wo_str_free(&rt, s);
+
+    /* the log describes itself AND koff names the row, not the head */
+    T_EQ(wo_wal_read_schema(path, NULL, NULL), 0);
+    T_CHECK(koff != 0);
+    uint32_t at_cid = 99;
+    uint64_t at_id = 0, at[2];
+    T_EQ(wo_wal_read_row_at(&w, &db, &rt, koff, &at_cid, &at_id, at, &msg), 0);
+    T_CHECK(at_cid == 0 && at_id == id);
+    if (at_cid == 0 && at_id == id) wo_str_free(&rt, (wo_str *)(uintptr_t)at[1]);
+
+    /* seed's first read: through the id map */
+    uint64_t out[2];
+    msg = "";
+    int rrc = wo_row_read(&db, &rt, 0, id, out, &msg);
+    T_EQ(rrc, 0);
+    if (rrc != 0) fprintf(stderr, "  wo_row_read: %s\n", msg);
+    else {
+        T_EQ(out[0], 10);
+        wo_str_free(&rt, (wo_str *)(uintptr_t)out[1]);
+    }
+
+    /* seed's second read: the index probe borrows with msg == NULL */
+    uint64_t *ids;
+    uint32_t cnt;
+    T_EQ(wo_idx_probe(&db, 0, 0, 10, NULL, 0, &ids, &cnt), 1);
+    T_CHECK(cnt == 1 && ids[0] == id);
+    free(ids);
+
+    /* and a restart sees one row behind the head, readable by offset again */
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_db db2;
+    T_EQ(wo_db_init(&db2, KEYS_IDX_CLASSES, 1, 0, 1), 0);
+    db2.rt = &rt; rt.wal = NULL; rt.db = &db2;
+    T_EQ(wo_wal_replay(path, &db2), 1);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2;
+    db_row *r = wo_row_borrow(&db2, 0, id, &msg);
+    T_CHECK(r != NULL && r->slots[0] == 10);
+    wo_row_release(&db2, 0, r);
+    wo_wal_close(&w2);
+    wo_db_destroy(&db2);
+    wo_rt_destroy(&rt);
+}
+
 /* Task 3, the test that matters: updating an INDEXED column on a
  * keys-resident row must move the row in the index too, not just in the
  * log — queried through wo_idx_probe, the row is found by its NEW value and
@@ -3581,6 +3668,7 @@ int main(void) {
     test_fold_refuses_forward_pointing_delta();
     test_keys_resident_update_field();
     test_keys_resident_update_indexed();
+    test_keys_resident_fresh_log_first_row();
     test_keys_resident_indexed_across_flatten();
     test_migrate_reorder_owned();
     test_migrate_delta_splice();
