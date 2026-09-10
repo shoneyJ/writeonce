@@ -6,6 +6,7 @@
  * present with the right contents. */
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -1428,6 +1429,104 @@ static void test_migrate_crash_before_rename(void) {
     db_text *t = (db_text *)(uintptr_t)r->slots[1];
     T_CHECK(t != NULL && t->len == 4 && memcmp(t->bytes, "keep", 4) == 0);
     wo_db_destroy(&db2);
+}
+
+/* databasev2 7 Task 2: with WO_DATA naming a FILE, compaction (databasev2 3)
+ * and migration (databasev2 12) must build their temp as `<file>.compact`
+ * beside it and take the parent they fsync from the FILE's path — both derive
+ * everything from the log path today, and this pins that against a future
+ * "derive it from WO_DATA". The proof is a blocker, not a listing: a
+ * DIRECTORY planted at exactly `<file>.compact` makes each rewrite refuse (-1)
+ * with the log untouched, which a temp anywhere else could not produce; with
+ * the blocker gone both succeed and the operator's file is the only artifact
+ * in its directory (a sibling directory stands in as the decoy nothing may
+ * land in). The parent derivation is one helper shared with the resolver
+ * (parent_dir_of), so test_resolve_data_path's missing-parent arm already
+ * pins what "the parent" of such a path is; fsync itself is not observable. */
+static int dir_entries(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL)
+        if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) n++;
+    closedir(d);
+    return n;
+}
+
+static void test_file_form_temps_beside_log(void) {
+    char dir[160], decoy[192], path[192], tmp[224], out[256];
+    snprintf(dir, sizeof dir, "%s/fileform", g_dir);
+    snprintf(decoy, sizeof decoy, "%s/app.db.d", dir); /* sibling directory */
+    snprintf(path, sizeof path, "%s/app.db", dir);      /* the operator's name */
+    snprintf(tmp, sizeof tmp, "%s%s", path, WO_WAL_TMP_SUFFIX);
+    T_EQ(mkdir(dir, 0700), 0);
+    T_EQ(mkdir(decoy, 0700), 0);
+    T_EQ(wo_wal_resolve_data_path(path, out, sizeof out), 0);
+    T_STREQ(out, path); /* the file form hands the path straight to the engine */
+
+    /* ---- compaction ---- */
+    wo_rt rt;
+    T_EQ(wo_rt_init(&rt, 1 << 20, CLASSES, 1), 0);
+    wo_db db;
+    T_EQ(wo_db_init(&db, CLASSES, 1, 0, 1), 0);
+    wo_wal w;
+    T_EQ(wo_wal_open(&w, path, 1 << 16), 0);
+    const char *msg = "";
+    uint64_t ids[2];
+    for (int i = 0; i < 2; i++) {
+        wo_str *s = wo_str_new(&rt, "abc", 3);
+        uint64_t vals[2] = {(uint64_t)(i + 1), (uint64_t)(uintptr_t)s};
+        ids[i] = wo_row_insert(&db, 0, vals, &msg, NULL);
+        T_EQ(wo_wal_append_insert(&w, &db, 0, ids[i]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    for (int k = 0; k < 8; k++) {
+        int ek = 0;
+        T_EQ(wo_row_update_field(&db, 0, ids[0], 0, (uint64_t)(100 + k), &msg, &ek), 0);
+        T_EQ(wo_wal_append_update(&w, &db, 0, ids[0]), 0);
+        T_EQ(wo_wal_commit(&w), 0);
+    }
+    T_CHECK(wo_wal_check(path, NULL) == 10);
+
+    T_EQ(mkdir(tmp, 0700), 0);               /* the blocker */
+    T_EQ(wo_wal_compact(&w, &db), -1);       /* the temp has exactly one home */
+    T_CHECK(wo_wal_check(path, NULL) == 10); /* refused = untouched */
+    T_EQ(rmdir(tmp), 0);                     /* still an empty dir: nothing went in */
+    T_EQ(wo_wal_compact(&w, &db), 0);
+    T_CHECK(wo_wal_check(path, NULL) == 2);
+    T_CHECK(access(tmp, F_OK) != 0);
+    T_EQ(dir_entries(dir), 2);   /* app.db + the decoy, nothing else */
+    T_EQ(dir_entries(decoy), 0); /* and the decoy saw nothing */
+    wo_wal_close(&w);
+    wo_db_destroy(&db);
+    wo_rt_destroy(&rt);
+
+    /* ---- migration: same temp, same parent. The compacted log is two legacy
+       INSERT records of (scalar, text) — MIG_NT's shape — so it migrates
+       n,t → n,t,extra in place. ---- */
+    wo_schema_class oc[] = {SC("row", 0, mig_sf_nt)};
+    wo_schema oldsc = {1, oc, NULL};
+    wo_schema_class nc[] = {SC("row", 0, mig_sf_nte)};
+    wo_schema newsc = {1, nc, NULL};
+    wo_mig_plan pl;
+    T_EQ(wo_schema_diff(&oldsc, &newsc, &pl), 0);
+    wo_db dbn;
+    T_EQ(wo_db_init(&dbn, MIG_NTE, 1, 0, 1), 0);
+    T_EQ(mkdir(tmp, 0700), 0);
+    T_EQ(wo_wal_migrate(path, &dbn, &oldsc, &pl, &newsc, 0, NULL), -1);
+    T_CHECK(wo_wal_check(path, NULL) == 2); /* refused = untouched */
+    T_EQ(rmdir(tmp), 0);
+    T_EQ(wo_wal_migrate(path, &dbn, &oldsc, &pl, &newsc, 0, NULL), 0);
+    wo_mig_plan_free(&pl);
+    T_CHECK(access(tmp, F_OK) != 0);
+    T_EQ(dir_entries(dir), 2);
+    T_EQ(dir_entries(decoy), 0);
+    /* and the file, under the operator's name, replays into the new shape */
+    T_EQ(wo_wal_replay(path, &dbn), 2);
+    db_row *r = wo_row_ptr(&dbn, 0, ids[0]);
+    T_CHECK(r != NULL && r->slots[0] == 107 && r->slots[2] == 0);
+    wo_db_destroy(&dbn);
 }
 
 /* POISON BITES ONLY WITH RECORDS: a retyped class with no stored rows never
@@ -3512,6 +3611,7 @@ int main(void) {
     test_keys_resident_delete_then_replay();
     test_stale_compact_temp_is_removed();
     test_resolve_data_path();
+    test_file_form_temps_beside_log();
     test_should_compact_policy();
     test_compact_refuses_with_staged_records();
     test_torn_tail();
