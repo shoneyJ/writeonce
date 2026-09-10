@@ -24,7 +24,7 @@ one data directory:
 
 ```
 compiler/_build/default/bin/woc --emit docs/examples/residency/main.wo -o /tmp/residency.wob
-mkdir -p /tmp/residency-data          # WO_DATA must exist; wovm will not create it
+mkdir -p /tmp/residency-data          # WO_DATA=<dir> must exist; wovm will not create it (or WO_DATA=<path>.db: one file, parent must exist)
 WO_DATA=/tmp/residency-data runtime/wovm /tmp/residency.wob seed
 WO_DATA=/tmp/residency-data runtime/wovm /tmp/residency.wob order
 ```

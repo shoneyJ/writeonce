@@ -7,7 +7,7 @@ into one results JSON, runs the durability legs (restart proof + kill -9
 battery), samples RSS/fd during the mix phase (LW_SOAK discipline), and
 evaluates every metric against bench/baseline.json.
 
-    scripts/db-bench.py [--quick] [--write-baseline]
+    scripts/db-bench.py [--quick] [--write-baseline] [--wo-data-file]
 
 Exit 0 = campaign green; 1 = gate breach or a durability leg failed.
 Plan deviation, disclosed: one python driver instead of bash+python —
@@ -30,6 +30,16 @@ RESULTS_DIR = os.path.join(ROOT, "bench/results")
 
 QUICK = "--quick" in sys.argv
 WRITE_BASELINE = "--write-baseline" in sys.argv
+# databasev2 7: WO_DATA may name THE log file instead of a directory. The flag
+# points the durability legs (restart proof, kill -9 battery) at <tmp>/app.db.
+# Same wo_wal_* path underneath — a guard on main.c's resolution under the
+# honest crash, not a new measurement: no metric, baseline untouched.
+FILE_FORM = "--wo-data-file" in sys.argv
+FORM = ".file" if FILE_FORM else ""
+def store(d):
+    """a durability leg's WO_DATA: the directory, or with --wo-data-file the
+    one file <d>/app.db (its parent must exist; wovm never runs mkdir -p)"""
+    return os.path.join(d, "app.db") if FILE_FORM else d
 
 N = 2000 if QUICK else 20000
 # databasev2 4: the write-concurrent leg. `mix` writes on one op in ten with
@@ -227,19 +237,22 @@ def durability(metrics):
         # restart proof
         data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.restart.{s}")
         os.makedirs(data, exist_ok=True)
-        env["WO_DATA"] = data
+        env["WO_DATA"] = store(data)
         rc1, _, _, _ = run(["seed", "3000"], env, 300)
         rc2, lines, _, _ = run(["verify"], env, 300)
-        if rc1 == 0 and rc2 == 0:
-            ok(f"restart.{s}: seeded store replays byte-true")
+        # file form: app.db must be the ONLY artifact (no shard-0.wal, no
+        # .compact temp); the directory form has nothing to assert here
+        arts = sorted(os.listdir(data))
+        if rc1 == 0 and rc2 == 0 and (not FILE_FORM or arts == ["app.db"]):
+            ok(f"restart.{s}{FORM}: seeded store replays byte-true")
         else:
-            bad(f"restart.{s}", f"seed rc={rc1} verify rc={rc2} {lines[-1:]}")
+            bad(f"restart.{s}{FORM}", f"seed rc={rc1} verify rc={rc2} {lines[-1:]} artifacts={arts}")
         shutil.rmtree(data, ignore_errors=True)
         # crash battery: kill -9 mid-wal, verify every acked row
         for rep in range(CRASH_REPS):
             data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.crash.{s}.{rep}")
             os.makedirs(data, exist_ok=True)
-            env["WO_DATA"] = data
+            env["WO_DATA"] = store(data)
             e = dict(os.environ); e.update(env)
             p = subprocess.Popen([BIN, "wal", str(WAL_N)], stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, text=True, env=e)
@@ -252,11 +265,11 @@ def durability(metrics):
                     acked = int(l.split()[1])
             rc, lines, _, _ = run(["verify-acked", str(max(acked, 1))], env, 300)
             if acked > 0 and rc == 0:
-                ok(f"crash.{s}.{rep}: {acked} acked rows all present after kill -9")
+                ok(f"crash.{s}.{rep}{FORM}: {acked} acked rows all present after kill -9")
             elif acked == 0:
-                ok(f"crash.{s}.{rep}: killed before first ack (nothing owed)")
+                ok(f"crash.{s}.{rep}{FORM}: killed before first ack (nothing owed)")
             else:
-                bad(f"crash.{s}.{rep}", f"acked={acked} verify rc={rc} {lines[-1:]}")
+                bad(f"crash.{s}.{rep}{FORM}", f"acked={acked} verify rc={rc} {lines[-1:]}")
             shutil.rmtree(data, ignore_errors=True)
 
 def gate(metrics):

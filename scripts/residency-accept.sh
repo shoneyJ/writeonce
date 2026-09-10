@@ -199,6 +199,119 @@ else
   bad "resident:keys refusal fixture compiles" "$(head -1 "$WORK/e")"
 fi
 
+# ---- 8. WO_DATA=<file>: the store as one file ------------------------------
+# databasev2 7: WO_DATA names either a directory (-> <dir>/shard-0.wal, as it
+# always did) or THE log file. Underneath it is the same wo_wal_* path, so
+# these legs are a regression guard on main.c's resolution and its two new
+# refusals, plus proof that compaction's temp (<file>.compact) never leaves a
+# second artifact beside the file. Refusal legs run under `timeout`: a wrong
+# resolution that opened the fifo would block, not fail.
+F8="$WORK/f8"
+mkdir -p "$F8/a" "$F8/d" "$F8/c" "$F8/k"
+if [[ -f "$WORK/mix.wob" ]]; then
+  # (i) seed -> restart prints exactly what the directory form printed in 1
+  WO_DATA="$F8/a/app.db" "$WOVM" "$WORK/mix.wob" seed >"$F8/seed.out" 2>&1; rc=$?
+  got="$(WO_DATA="$F8/a/app.db" "$WOVM" "$WORK/mix.wob" 2>&1)"
+  [[ $rc -eq 0 && "$got" == "kept=1 scratch=0" ]] \
+    && ok "file form: seed rc 0, restart replays the durable row, volatile gone" \
+    || bad "file form restart" "seed rc=$rc got: $got $(head -1 "$F8/seed.out")"
+  arts="$(find "$F8/a" -mindepth 1 -printf '%P\n' | sort | tr '\n' ' ')"
+  [[ "$arts" == "app.db " ]] \
+    && ok "file form: app.db is the only artifact (no shard-0.wal, no .compact)" \
+    || bad "file form single artifact" "found: '$arts'"
+  # (ii) missing parent: exit 2, name the path AND the parent, create nothing
+  out="$(WO_DATA="$F8/nope/app.db" timeout 10 "$WOVM" "$WORK/mix.wob" seed 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -Eq 'its parent .*/nope is not an existing directory' <<<"$out" \
+    && grep -q 'nope/app.db' <<<"$out" && [[ ! -e "$F8/nope" ]] \
+    && ok "file form: missing parent exits 2, names path + parent, runs no mkdir -p" \
+    || bad "file form missing parent" "exit=$rc nope-exists=$([[ -e "$F8/nope" ]] && echo yes || echo no) got: $out"
+  # (iii) exists but is neither a regular file nor a directory
+  mkfifo "$F8/pipe.db"
+  out="$(WO_DATA="$F8/pipe.db" timeout 10 "$WOVM" "$WORK/mix.wob" seed 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'neither a regular file nor a directory' <<<"$out" \
+    && ok "file form: a fifo at WO_DATA exits 2 and says why" \
+    || bad "file form fifo" "exit=$rc got: $out"
+  # (iv) a trailing slash keeps the directory form, present or missing
+  WO_DATA="$F8/d/" "$WOVM" "$WORK/mix.wob" seed >/dev/null 2>&1; rc=$?
+  [[ $rc -eq 0 && -f "$F8/d/shard-0.wal" ]] \
+    && ok "trailing slash: WO_DATA=<dir>/ still writes <dir>/shard-0.wal" \
+    || bad "trailing slash dir form" "exit=$rc in d: $(ls "$F8/d" 2>&1 | tr '\n' ' ')"
+  out="$(WO_DATA="$F8/nodir/" timeout 10 "$WOVM" "$WORK/mix.wob" seed 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -Eq 'cannot open .*/nodir//shard-0.wal' <<<"$out" \
+    && ok "trailing slash on a missing dir: pre-7 'cannot open .../nodir//shard-0.wal' kept byte for byte" \
+    || bad "trailing slash missing dir" "exit=$rc got: $out"
+  # (v) WO_EPHEMERAL=1 conflicts with the file form exactly as with a directory
+  out="$(WO_EPHEMERAL=1 WO_DATA="$F8/a/app.db" timeout 10 "$WOVM" "$WORK/mix.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'incompatible with WO_DATA' <<<"$out" \
+    && ok "file form: WO_EPHEMERAL=1 with WO_DATA=<file> exits 2, names the conflict" \
+    || bad "file form ephemeral conflict" "exit=$rc got: $out"
+else
+  bad "file form legs" "mix.wob missing (section 1 did not compile)"
+fi
+# `wal N` prints `acked i` AFTER each insert returns (the return is the ack);
+# `verify M` wants rows 1..M present exactly once, rows past M allowed.
+cat > "$WORK/onefile.wo" <<'EOF'
+@table(name: "rows", index: [k])
+class Row { k: Int }
+fn main(args: multi Text) -> Int {
+  if len(args) < 2 { return 2; }
+  let n = parse_int(args[1]);
+  if n == nil or n < 1 { return 2; }
+  if args[0] == "wal" {
+    let i = 1;
+    while i <= n { insert Row { k: i }; print("acked ${i}"); i = i + 1; }
+    return 0;
+  }
+  let i = 1;
+  while i <= n {
+    let hits = 0;
+    for r in from r in Row where r.k == i select r { hits = hits + 1; }
+    if hits != 1 { print("row ${i}: ${hits} hits"); return 3; }
+    i = i + 1;
+  }
+  print("verified ${n}");
+  return 0;
+}
+EOF
+if "$WOC" --emit "$WORK/onefile.wo" -o "$WORK/onefile.wob" 2>"$WORK/e"; then
+  # (vi) kill -9 mid-write against the file: every acked row replays. stdout
+  # is line-buffered (stdbuf) so the ack count is exact, not a flush boundary;
+  # N is far more than 0.5 s of inserts so the kill lands mid-run — a run that
+  # exited on its own (rc != 137) proves nothing and is reported as such.
+  WO_DATA="$F8/k/app.db" stdbuf -oL "$WOVM" "$WORK/onefile.wob" wal 1000000 >"$F8/k.out" 2>/dev/null &
+  kp=$!
+  sleep "0.$((RANDOM % 30 + 20))"
+  kill -KILL "$kp" 2>/dev/null; wait "$kp" 2>/dev/null; krc=$?
+  acked="$(grep -E '^acked [0-9]+$' "$F8/k.out" | tail -1 | cut -d' ' -f2)"
+  if [[ $krc -eq 137 && -n "$acked" && "$acked" -gt 0 ]]; then
+    out="$(WO_DATA="$F8/k/app.db" "$WOVM" "$WORK/onefile.wob" verify "$acked" 2>&1)"; rc=$?
+    [[ $rc -eq 0 ]] \
+      && ok "file form: kill -9 after $acked acks, all $acked rows replay from app.db" \
+      || bad "file form kill -9 replay" "acked=$acked verify rc=$rc got: $(tail -1 <<<"$out")"
+  else
+    bad "file form kill -9" "run rc=$krc acked=${acked:-0} -- the kill did not land mid-write, the leg proves nothing"
+  fi
+  # (vii) a forced compaction in the file form: the temp is <file>.compact
+  #       beside the log; after the rename app.db must still be the only
+  #       artifact and every row must replay. WO_WAL_STATS proves the
+  #       compaction RAN — a trigger that never fired would prove nothing.
+  out="$(WO_DATA="$F8/c/app.db" WO_CHECKPOINT_BYTES=1 WO_WAL_STATS=1 "$WOVM" "$WORK/onefile.wob" wal 300 2>&1)"; rc=$?
+  comps="$(grep -o 'compactions=[0-9]*' <<<"$out" | cut -d= -f2)"
+  [[ $rc -eq 0 && "${comps:-0}" -ge 1 ]] \
+    && ok "file form: WO_CHECKPOINT_BYTES=1 forced $comps compaction(s) over 300 inserts" \
+    || bad "file form compaction binds" "exit=$rc compactions=${comps:-none} got: $(tail -1 <<<"$out")"
+  arts="$(find "$F8/c" -mindepth 1 -printf '%P\n' | sort | tr '\n' ' ')"
+  [[ "$arts" == "app.db " ]] \
+    && ok "file form: app.db is still the only artifact after compaction (no .compact left)" \
+    || bad "file form compaction artifacts" "found: '$arts'"
+  out="$(WO_DATA="$F8/c/app.db" "$WOVM" "$WORK/onefile.wob" verify 300 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] \
+    && ok "file form: all 300 rows replay from the compacted app.db" \
+    || bad "file form compacted replay" "exit=$rc got: $(tail -1 <<<"$out")"
+else
+  bad "file form battery fixture compiles" "$(head -1 "$WORK/e")"
+fi
+
 echo
 echo "residency-accept: $((pass + fail)) checks, $fail failures"
 [[ $fail -eq 0 ]] || exit 1
