@@ -46,7 +46,16 @@ features cannot collide.
 | `query-corpus` | databasev2 query-grammar corpus #1 | on `dev` (`4c82461`). Conclusion was "no new grammar needed" |
 | `lang42` | iteration 42 — bounded subprocess: `proc.run` bounded + parked (pidfd, caps, ceiling, owner-bound reaping), `proc.run_dl`; carries the alacritty/tmux/zen parity studies and the porch dependency-graph section from the same sweep | ✅ on `master` 2026-09-01 |
 | `wmux` | the wmux track (`docs/stories/wmux/`, iteration 1 was language 43) — the terminal multiplexer, first of the softwares built with writeonce; story + gap-chain remap first, code follows gap by gap | on `dev` 2026-09-01 |
-| `rt2` | the runtime-v2 track (`docs/stories/runtime-v2/`) — the runtime beyond sockets: streaming subprocess, PTY, signals-as-events, termios, fd passing; all five `readiness: ready` (track-wide spec 2026-09-01), wmux is the driving workload | on `dev` 2026-09-01 |
+| `rt2` | the runtime-v2 track (`docs/stories/runtime-v2/`) — the runtime beyond sockets: streaming subprocess, PTY, signals-as-events, termios, fd passing, term.size/width; six iterations, all landed 2026-09-02 | on `dev` 2026-09-01 |
+| `wmux` (code) | wmux rung 1 — the multiplexer example (`docs/examples/wmux`) + `just wmux` gate; sessions, attach by fd-handover, durable scrollback, restart replay | on `dev` 2026-09-02 (extends the `wmux` docs prefix) |
+| `db2-7` | databasev2 7 — single-file store `WO_DATA=<path>.db` (registered after its first commit, `b31bd40`) | on `dev`, closed 2026-09-10 |
+| `lang-18` | language 18 — `transaction { }` over the WAL's staged batch (registered after its first commit, `6b4b960`) | on `dev`, in progress since 2026-09-11 |
+| `db2-ephemeral` | databasev2 2 task 6a — refuse `durable: true` without `WO_DATA`, `WO_EPHEMERAL=1` escape hatch, `.wob` v8 table bit (`WO_CLASSF_TABLE`); closes iteration 2 | on `dev` 2026-09-15 |
+| `db2-4b` | databasev2 4 part B — the async barrier, re-brainstormed 2026-09-10 (docs only until the fold lands) | on `dev` 2026-09-15 |
+| `db2-5` | databasev2 5 — bounded tables and eviction, the resident byte budget as Phase A; brainstormed to `ready` 2026-09-10 | on `dev` 2026-09-15 (docs) |
+| `db2-14` | databasev2 14 — the shop workload story (`refine`) | on `dev` 2026-09-15 (docs) |
+| `agents` | `.claude/agents` persona roster — codd/fielding/ada families, `lintor`, the README | on `dev` 2026-09-15 |
+| `status` | cross-track reconciliation sweeps of the board, dependency graph and story tables (in use since `732c221`) | on `dev` |
 
 ## Cherry-picks onto master
 
