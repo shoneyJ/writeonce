@@ -512,7 +512,9 @@ fn main() -> Int {
 WOEOF
 if kp_out="$("$WOC" --emit "$KP" -o "$KP/kptest.wob" 2>&1)"; then
   kp_before_ms="$(date +%s%3N)"
-  kp_vm="$("$WOVM" "$KP/kptest.wob" 2>&1)"
+  # databasev2 2 (6a): the copied porch package declares RateLimitCounter
+  # default-durable, so this RAM-only run must opt in or it refuses at boot
+  kp_vm="$(WO_EPHEMERAL=1 "$WOVM" "$KP/kptest.wob" 2>&1 | grep -v '^wovm: WO_EPHEMERAL=1')"
   kp_after_ms="$(date +%s%3N)"
   read -r kp_c1 kp_c2 kp_reset <<<"$kp_vm"
   # v1 is the FIRST-ever hit for this key — the "fresh window" path
