@@ -49,7 +49,7 @@ risky work starts.
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [Store-backed middleware](01-store-backed-middleware.md) | rate limiting + idempotency over a `@table` store, serialized through a sharded actor pool | 🔄 in progress; needs no new primitive (`call`/`send`/`monitor`/`time.after` all landed) |
+| 1 | [Store-backed middleware](01-store-backed-middleware.md) | rate limiting over a sharded actor pool — exact counting, restart-durable | ✅ **done** 2026-08-30; re-scoped to the limiter alone |
 | 2 | [Randomness and cookies](02-randomness-and-cookies.md) | a `random_bytes` runtime builtin, repeated response headers, `Cookie:` parsing, signed cookies | a language-track builtin (phase A) |
 | 3 | [Sessions](03-sessions.md) | server-side sessions, idle + absolute timeout, revocation | 2 |
 | 4 | [CSRF](04-csrf.md) | token mint/verify, trusted origins, single-use tokens | 2, 3 |
@@ -57,6 +57,8 @@ risky work starts.
 | 6 | [Streaming core](06-streaming-core.md) | incremental response writes and chunked framing — the seam three iterations wait on | nothing new, but it changes `Resp` |
 | 7 | [SSE and compression](07-sse-and-compression.md) | server-sent events, gzip/deflate | 6 |
 | 8 | [Static files and lifecycle](08-static-and-lifecycle.md) | byte ranges, cache headers, directory listing, lifecycle hooks, the small middleware everyone ships | 6 |
+| 9 | [Idempotent replay](09-idempotent-replay.md) | idempotent replay of unsafe requests, the actor running the route handler | ⏸ built and reverted; blocked on [language 41](../language-runtime-database/41-actor-arena-crash.md) |
+| 10 | [Memory features over `@table`](10-memory-features-over-table.md) | TTL cache, `@table` feature flags, durable job queue — the three `.wo` pieces split out of language 18 on 2026-09-11 | stub, `readiness: refine`; needs [language 18](../language-runtime-database/18-memory-db-features.md)'s `transaction { }` for the jobs demo, and 1–3 |
 
 ```
 1 ─ independent, start here
@@ -71,7 +73,7 @@ risky work starts.
 | Not porch's | Owner |
 | --- | --- |
 | typed binding of query/params/form into a class | language: [`@derive`](../language-runtime-database/29-compile-time-metaprogramming.md) — reflection is forbidden by principle 13 |
-| TTL cache, `transaction { }`, durable job queue | language: [iteration 18](../language-runtime-database/18-memory-db-features.md) |
+| `transaction { }` | language: [iteration 18](../language-runtime-database/18-memory-db-features.md) — the engine + language half; TTL cache, `@table` feature flags and the durable job queue **moved into this track** as [iteration 10](10-memory-features-over-table.md) on 2026-09-11 |
 | a `proxy` middleware | language: [iteration 38](../language-runtime-database/38-content-platform-capabilities.md) — needs `net.connect`, ✅ landed 2026-09-07 (id 110; plus `net.connect_tls` for an HTTPS upstream, runtime-v2 9). Buildable now |
 | metrics, profiling, per-change CI, fuzzing | [runtime-v2 7](../runtime-v2/07-observability.md) — observability (was language iteration 30; metrics/profiling/trace-on-trap; CI + fuzz are tooling, split out) |
 | TLS | ✅ [runtime-v2 9](../runtime-v2/09-in-process-tls.md) — in-process TLS 1.3 both directions (2026-09-09); porch can terminate inbound TLS with `net.accept_tls`, no front proxy required. The proxy-termination doctrine is retired |

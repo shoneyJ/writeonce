@@ -150,25 +150,32 @@ before its mechanism existed; the history is in
 
 | # | Iteration | Delivers | Needs |
 | --- | --- | --- | --- |
-| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | 🔄 **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Also measured: the **273× random-read collapse** over an oversized table, and replay at **≈5.5 µs/record with a 1.9× history penalty** — iteration 3's "before" | nothing; extends iteration 22's harness |
-| 2 | [per-table storage](02-table-storage-modes.md) | the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. **In progress — the `durable` half is done** | 1 for the budget default |
+| 1 | [RAM ceiling: measure the breaking point](01-ram-ceiling-measurement.md) | ✅ **measured 2026-08-27**: footprint per shape (3.3× apart), the two silent exits (SIGKILL vs swap-serving-from-disk at ~uncapped speed), and ack-after-fsync surviving an OOM kill. Also measured: the **273× random-read collapse** over an oversized table, and replay at **≈5.5 µs/record with a 1.9× history penalty** — iteration 3's "before" | nothing; extends iteration 22's harness |
+| 2 | [per-table storage](02-table-storage-modes.md) | ✅ **closed 2026-09-10.** the grammar: `durable: true\|false` and `resident: all\|keys`, per table, replacing the global `WO_DATA` all-or-nothing. Grammar, the `durable` half, keys-resident CRUD and task 7's measurement landed by 2026-08-30; task 6a — refuse `durable: true` without `WO_DATA`, `WO_EPHEMERAL=1` as the whole-program escape, the `.wob` v8 table bit so the rule binds `@table` classes only — landed 2026-09-10; the byte budget (6b) moved to 5 | 3 (the offset map survives compaction — landed); no longer 1, since the budget moved to 5 on 2026-09-09 |
 | 3 | [WAL checkpoint](03-wal-checkpoint.md) *(was language 32)* | snapshot + truncate: disk reclaimed, replay bounded | 4 composes |
-| 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | close the 66× durable/RAM write gap (4.5k vs 297k inserts/s) | the arc (landed) |
-| 5 | [Bounded tables and eviction](05-bounded-tables-eviction.md) | a capacity a `ram` table may not exceed, and what happens when it does | 2 |
+| 4 | [io_uring group commit](04-io-uring-commit.md) *(was language 23)* | one barrier per DB-actor drain instead of one per statement — part A landed 2026-08-28 (≈2.9× concurrent durable writes); the "66× gap" this row used to name is a serial writer's latency, which part B must re-brainstorm. **Part B re-brainstormed 2026-09-10**: forks 1–5/8–10 settled (`review_pending`); forks 6/7 settled in substance (GO — tmpfs `mixread.p99` on the RAM figure, ext4 3902–4307 µs) but **fold pending** — see `.dev/zack/databasev2-4b.md`. `status: in-progress`, `readiness: refine` until folded | the arc (landed) |
+| 5 | [Bounded tables and eviction](05-bounded-tables-eviction.md) | a capacity a `ram` table may not exceed, and what happens when it does; **since 2026-09-09 also the resident byte budget** (iteration 2's former task 6b) as its Phase A. **Brainstormed to `readiness: ready` 2026-09-10** (codd-shoney): twelve forks settled, `review_pending`; Phase A is engine-only and startable, a prebuild brief is recommended before Phase B. `status: pending` — not started | 1 (the budget default follows a measurement) and 2 (the mode a bound attaches to) |
 | 6 | [Cold tiering](06-cold-tiering.md) | ⚠ **largely superseded by 2** — `resident: keys` is the ceiling-raiser. Its premise (a user-space resident working set) was rejected in favour of the kernel page cache. Revisit only with a measurement showing the page cache insufficient | — |
-| 7 | [Single-file store](07-single-file-db.md) *(was language 33)* | `WO_DATA=<path>.db` — a file path IS the store | independent |
-| 8 | [Query grammar from corpora](08-query-grammar-corpus.md) *(was language 27)* | whole-query `count`, `exists` | independent |
+| 7 | [Single-file store](07-single-file-db.md) *(was language 33)* | ✅ **closed 2026-09-10.** `WO_DATA=<path>.db` — a file path IS the store: directory or trailing `/` stays byte-identical to today; otherwise the path IS the log, created if absent behind an existing parent, refused (exit 2, naming path + parent) on a missing parent or a non-regular/non-directory path. Compaction and migration temps land beside the file-form log, pinned by a test + a mutation control. Gate leg (task 4, codd-cyril): `just residency` **32 checks, 0 failures**; `db-bench --quick --wo-data-file` **181 checks, 5 failures**, the same 5 as the directory form (`residency.keys.fit` rc 74, databasev2 13's sibling bug, not this defect) | independent |
+| 8 | [Query grammar from corpora](08-query-grammar-corpus.md) *(was language 27)* | whole-query `count` (landed 2026-08-16 from the skill-catalog corpus); `exists` waits for a corpus that forces it | independent |
 | 9 | [Cross-program tables](09-cross-program-tables.md) *(was language 20)* | attach to a running program's database over local IPC | independent |
 | 10 | [Keypair attach auth](10-keypair-attach-auth.md) *(was language 21)* | program identity as a keypair; mutual challenge–response | 9 |
-| 11 | [Bounded delta chains](11-bounded-delta-chains.md) | cap a keys-resident row's delta chain in the update path, and give the compaction policy an absolute term + ceiling | 2 (fixes a limitation it shipped) |
+| 11 | [Bounded delta chains](11-bounded-delta-chains.md) | cap a keys-resident row's delta chain in the update path, and give the compaction policy an absolute garbage term (`WO_CKPT_ABS_BYTES`; a separate ceiling was tried and removed) | 2 (fixes a limitation it shipped) |
+| 12 | [Schema migrations](12-schema-migrations.md) | ✅ **landed 2026-08-31**: the log describes itself (`WO_WAL_SCHEMA` head record, kind 5); boot diffs by name, transcodes add/delete record by record, refuses everything else by name | 2 (the v7 descriptor, and the delta record it rewrites) |
+| 13 | [Fresh-log keys-resident seed SEGV](13-fresh-log-keys-seed-segv.md) | ✅ **fixed 2026-09-10.** A `resident: keys` table's first insert on a fresh log SEGV'd (`wo_wal_fold_row_at` wrote an unguarded `*msg`; the schema head was staged after the first row's offset was captured). Fixed: `wo_wal_next_offset` stages the pending head before returning an offset (`6310078`), plus a NULL-`msg` guard in the fold (`1b6750d`); `test_wal` 6660/0, `make -C runtime test` 21 suites 8462/0, `just residency` 32/0. **Not** the same defect as `residency.keys.fit` rc 74 (compaction/replay of keys-resident offsets), which stays open under codd.md's "Next bugs" | 2 (the offset map), 12 (the schema head record) |
+| 14 | [The shop workload](14-shop-workload.md) | what an order-taking web app needs from the store: ordered index + range probe, `skip`, composite unique + check rules, on-delete policy, export/import; group-by carried as a criterion (language track) | 2 (keys-resident index shape), 9 (attach), language 18 (implicit block for cascade) |
 
 ```
 An arrow points AT the iteration that NEEDS the other.
 
-1 ──▶ 2 ◀── 3      2 needs 1 (budget from a measurement) and 3 (the
-      │            offset map survives compaction). Since 5d, 3 also
-      ▼            calls 2's row API — the coupling runs both ways.
-      5            5 needs 2. Nothing needs 5.
+      2 ◀── 3      2 needs 3 (the offset map survives compaction). Since
+      │            5d, 3 also calls 2's row API — the coupling runs both
+      ▼            ways. 2 no longer needs 1: its budget moved to 5
+1 ──▶ 5            (2026-09-09). 5 needs 1 (the budget default follows a
+                   measurement) and 2 (the mode a bound attaches to).
+                   Nothing needs 5.
+2 ──▶ 11, 12       both need 2: 11 bounds a chain 2 shipped, 12 transcodes
+                   the descriptor and the records 2 defined.
 
 4                  composes with 3 on the WAL commit path; NEITHER
                    needs the other. Executed 4 then 3 (chain 5, then 6).
@@ -177,7 +184,8 @@ An arrow points AT the iteration that NEEDS the other.
 9 ──▶ 10
 ```
 
-Order rationale: **1 before 2** because the budget default should follow from a
+Order rationale: **1 before 5** — it read "1 before 2" until 2026-09-09, when
+the budget moved to 5 — because the budget default should follow from a
 measurement, not a guess. **3 and 4 matter to 2** for the same reason tiering
 onto a never-truncating log would have: `resident: keys` rebuilds its offset map
 by scanning the whole log at boot until 3's snapshot persists it.

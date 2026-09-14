@@ -78,7 +78,11 @@ readiness: refine
     - **Given** the employee sample running as A with its departments and
       employees tables,
     - **when** a second sample program (a thin reporting client) attaches
-      read-only and runs the GroupBy report over `a.Employee`,
+      read-only and runs the sample's department report over `a.Employee`
+      (as written in `docs/examples/employee-list/main.wo` it is a
+      `group … by … into` query, which the compiler still refuses —
+      `types.ml` "group-by aggregation is not supported yet" — so group-by
+      aggregation lands first or the report is rephrased),
     - **then** it prints the same report the owner prints — the
       demonstration that attach + query compose.
 
@@ -133,6 +137,15 @@ A's checkout); A **exports a schema file** (a `.wob`-adjacent digest of its
 class table) that B's manifest points at (decoupled, but a new artifact
 with a staleness story); or shared type definitions in a common module both
 import (cleanest language story, needs the module system to span projects).
+**Annotation, 2026-09-10:** that module system is language-track work, not
+this iteration's. The closest existing story is [language-runtime-database
+15](../language-runtime-database/15-deps-package-manager.md) (`wo.toml
+[deps]`, git fetch — done, 2026-08-18), which lets `use <name>` resolve
+into a fetched dependency's module tree; two separately-run programs naming
+the same dependency already share its types at build time, but no story
+addresses schema-sharing between two independently *running* programs
+specifically — no dedicated language story yet for that; this option
+remains a fork for the language track.
 A runtime schema handshake must exist regardless — B's compiled expectation
 of `a.Employee`'s shape is verified against A's live class table at attach,
 and a mismatch refuses the attachment with both sides' shapes named.

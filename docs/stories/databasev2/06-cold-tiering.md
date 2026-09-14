@@ -12,6 +12,12 @@ readiness: refine
 > [3](03-wal-checkpoint.md) so the log this builds on does not grow forever,
 > and [5](05-bounded-tables-eviction.md) for the policy machinery.
 >
+> **Correction, 2026-09-10:** the Needs line above is superseded prose, kept
+> for the iteration's original reasoning, not a live dependency — the
+> story's own sequence table lists this iteration's Needs as "—"
+> ([00-story.md:158](00-story.md)) and its ASCII graph says "superseded by
+> 2 — not sequenced" ([00-story.md:180](00-story.md)).
+>
 > **⚠ LARGELY SUPERSEDED 2026-08-27 by [iteration 2](02-table-storage-modes.md).**
 > This iteration was written to implement a `cold` mode. That mode no longer
 > exists: the brainstorm replaced it with `resident: all | keys`, and
@@ -28,7 +34,7 @@ readiness: refine
 > the reason the engine avoids `O_DIRECT`.
 >
 > **What may still be left:** if measurement after 5c/5d (landed 2026-08-29,
-> still unmeasured — that is iteration 2's task 7) shows the page cache
+> measured by iteration 2's task 7 on 2026-08-30 — see below) shows the page cache
 > insufficient for some workload, a user-space working set becomes arguable
 > again — but only with that number in hand, which is the opposite of how this
 > file was written.
@@ -40,8 +46,11 @@ readiness: refine
 > the number `resident: keys` must **beat**, since it `pread`s through the page
 > cache, which gets readahead and a shared cache. So this file revives if and
 > only if 5c/5d measures the page-cache path landing near 273× rather than well
-> below it. Until that measurement exists, neither outcome is assumed. Until then treat the design questions below as answered
-> elsewhere and the phases as void. Its genuinely durable contribution is its
+> below it. **Measured 2026-08-30 (iteration 2, task 7):** under the same memory
+> cap `resident: all` collapsed **105×** from its uncapped throughput and
+> `resident: keys` only **16×**, 1.53× faster than swapping — well below 273×,
+> so by this file's own criterion it stays superseded. Treat the design
+> questions below as answered elsewhere and the phases as void. Its genuinely durable contribution is its
 > fork list, especially "does the language surface the fault cost at the *use*
 > site" — still open, and still the largest question about what writeonce is.
 >

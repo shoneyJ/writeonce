@@ -243,7 +243,11 @@ Outstanding:
   **Iteration 2 must pick its budget on other grounds** (host RAM fraction, or
   an explicit developer-declared figure) rather than waiting on a number this
   iteration cannot produce. This is the most important thing this slice learned
-  and it removes a dependency rather than satisfying it.
+  and it removes a dependency rather than satisfying it. **Redirected
+  2026-09-09:** the budget itself moved from iteration 2 to
+  [5](05-bounded-tables-eviction.md) Phase A, so this finding — pick the
+  default on other grounds — is 5's input now, and iteration 2 no longer needs
+  this iteration at all.
 - **Given** rising fractions of the cap, **when** latency is sampled, **then**
   the p99 departure point is recorded. Partially, and now with a real answer
   elsewhere: `p99_departure_decile` stays 0 because the footprint legs never
@@ -293,9 +297,10 @@ Outstanding:
    runs that differ only in their cap belongs to the engine. Both legs read the
    same Weyl key order (`i*2654435761 mod n` — no RNG in the language, and none
    needed) so residency is the only variable.
-7. **The ceiling leg asserts `rc`, never records it.** When iteration 2's byte
-   budget lands, death should become a checked refusal — the gate must not fail
-   on that improvement.
+7. **The ceiling leg asserts `rc`, never records it.** When the byte budget
+   lands (iteration 2's until 2026-09-09; now
+   [5](05-bounded-tables-eviction.md) Phase A), death should become a checked
+   refusal — the gate must not fail on that improvement.
 
 ## History — four corrections worth keeping
 

@@ -114,6 +114,13 @@ component with its provenance pinned in the tree — the doctrine's spirit is
 "no dependency sprawl", not "write your own constant-time field
 arithmetic".
 
+**Annotation, 2026-09-10:** an in-tree answer now exists: runtime-v2 9
+landed constant-time RSA-PSS and ECDSA-P256 signing plus X.509 parsing
+(`runtime/src/crypto.c`, `tls.c`), runtime-v2 8 the AEADs; libsodium would
+violate the zero-dependency doctrine ([docs/00-principles.md principle
+2](../../00-principles.md)). Not a decision — Ed25519-vs-reuse is still this
+fork's open question.
+
 **2. Key generation and storage.** Options: a `woc keygen` subcommand
 (keys are a toolchain concern), or first-boot generation by the runtime
 into the data directory (keys are a runtime concern, zero setup). Leaning:
