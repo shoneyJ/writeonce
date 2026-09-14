@@ -1,7 +1,7 @@
 # skill-catalog — the query grammar corpus (iteration 9g)
 
 > Corpus #1 for the query-grammar method (story
-> [09g](../../stories/language-runtime-database/09g-query-grammar-corpus.md)):
+> [databasev2 8](../../stories/databasev2/08-query-grammar-corpus.md)):
 > take a real application backed by an embedded SQL database, translate its
 > every statement to the writeonce query surface, and add only the grammar it
 > forces. The application is `~/projects/skillhost` (a C++ MCP host whose
