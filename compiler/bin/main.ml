@@ -878,6 +878,16 @@ let build_mode ?(deps : (string * string) list = []) ~(runtime : string option)
         Printf.eprintf "woc: %s\n" msg;
         exit 2
     in
+    (* a fresh checkout has no target/ directories: create the output's
+       parent, so `-o <dir>/<name>` works the way every gate and README
+       invokes it instead of failing on the temp file below *)
+    let rec mkdir_p d =
+      if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then begin
+        mkdir_p (Filename.dirname d);
+        (try Sys.mkdir d 0o755 with Sys_error _ -> ())
+      end
+    in
+    mkdir_p (Filename.dirname out);
     let tmp = out ^ ".woc-build.tmp" in
     (* stale tmp from an interrupted earlier build must not survive: its
        permission bits would leak through, since Open_creat on an

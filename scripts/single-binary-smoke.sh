@@ -62,6 +62,21 @@ else
   ok "single-binary/build"
 fi
 
+# ---- -o into a directory that does not exist yet ---------------------------
+# A fresh checkout has no target/ anywhere (gitignored), and every example
+# gate builds with `-o <example>/target/<name>`: `woc build` must create the
+# output's parent rather than fail on its own temp file there.
+FRESH="$WORK/fresh/target/app"
+if ! timeout "$TIMEOUT" "$WOC" build "$SRC" -o "$FRESH" --runtime "$WOVM" \
+    >"$WORK/fresh.out" 2>"$WORK/fresh.err"; then
+  rc=$?
+  bad "single-binary/build-into-missing-dir" "woc build exited $rc: $(head -1 "$WORK/fresh.err")"
+elif [[ ! -x "$FRESH" ]]; then
+  bad "single-binary/build-into-missing-dir" "output missing or not executable: $FRESH"
+else
+  ok "single-binary/build-into-missing-dir"
+fi
+
 # ---- relocate outside the repo, run with no args, diff --------------------
 if [[ -x "$APP" ]]; then
   cp "$APP" "$ELSEWHERE/app"
