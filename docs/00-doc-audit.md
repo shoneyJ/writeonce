@@ -18,7 +18,7 @@ Scope: every `*.md` that documents THIS repo — root `README.md`, the numbered
 `docs/0*.md`, `docs/guides/`, `docs/stories/`, `docs/plan/`, `docs/examples/`,
 `docs/superpowers/`, the code-directory READMEs and `CODE-LOGIC.md` files,
 `tests/corpus/README.md`, `bench/compare/go-sqlite/README.md`,
-`scripts/install-readme.tmpl.md`, `.claude/agents/database-developer.md`.
+`scripts/install-readme.tmpl.md`, `.claude/agents/codd.md`.
 
 Excluded, and why: `.dev/skills/` (vendored copies of plugin skills, not ours),
 `.dev/reference/` (other people's codebases), `.superpowers/sdd/` (dated task

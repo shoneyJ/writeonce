@@ -25,7 +25,7 @@ writeonce-all/
 ├── docs/         ALL documentation: numbered docs, stories/, plan/, examples/, guides/, superpowers/
 ├── dist/         `just dist` output: writeonce-<ver>-linux-amd64.tar.gz + .sha256
 ├── .github/      workflows/release.yml — builds, verifies and publishes on a `v*` tag push
-├── .claude/      agents/ — project subagent definitions (see docs/guides/database-developer-subagent.md)
+├── .claude/      agents/ — project subagent definitions (see docs/guides/codd-subagent.md)
 ├── .dev/         gitignored per-developer links + reference study trees (v1 crates, colibri, llama-cpp)
 ├── justfile      task runner: woc-/wovm-build, the *-test gates, oop-accept, dist, install-accept
 ├── VERSION       single-sourced toolchain version (stamped into woc/wovm; asserted by `just dist`)

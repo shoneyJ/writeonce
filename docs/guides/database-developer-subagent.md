@@ -1,14 +1,14 @@
-# Guide — creating the `database-developer` subagent
+# Guide — creating the `codd` subagent
 
 A project subagent is one markdown file in `.claude/agents/` (this
 repo) or `~/.claude/agents/` (every repo). Claude Code loads it at
 session start; the main conversation can then delegate matching work to
 it via the Agent tool, and you can name it directly ("use the
-database-developer agent").
+codd agent").
 
 ## 1. The file format
 
-`.claude/agents/database-developer.md` — YAML frontmatter + a system
+`.claude/agents/codd.md` — YAML frontmatter + a system
 prompt body:
 
 - `name` — kebab-case; becomes the agent type.
@@ -24,11 +24,11 @@ prompt body:
 
 ## 2. Ready-to-paste definition
 
-Save as `.claude/agents/database-developer.md`:
+Save as `.claude/agents/codd.md`:
 
 ```markdown
 ---
-name: database-developer
+name: codd
 description: Engine work under database/src (tables, WAL, indexes, slot
   encode/decode) and the DB seams in runtime/src (db builtins, the DB
   actor RPC). Use for index/lookup changes, WAL format or replay work,
@@ -83,7 +83,7 @@ gate results verbatim (counts), and any baseline delta.
 
 ## 3. Verify it loads
 
-New session (agents load at start), then: "use the database-developer
+New session (agents load at start), then: "use the codd
 agent to explain the probe path in database/src/db.c". The reply must
 come labeled as the subagent. `claude agents` (or the agents listing in
 `/help`) shows registered agents.
