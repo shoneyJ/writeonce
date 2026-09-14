@@ -111,11 +111,14 @@ All verified but one, which is narrowed rather than dropped. Tests live in
 - ✅ **Given** the same row, **when** the process restarts, **then** replay is
   correct and its cost does not grow with the total updates ever applied.
   *`test_delta_chain_flatten_replays`.*
-- ⚠️ **Given** a flattening update, **when** replayed, **then** the row matches
+- ✅ **Given** a flattening update, **when** replayed, **then** the row matches
   the same row in a `resident: all` table under the same update sequence.
-  *Asserted against an expected value, not against a `resident: all` oracle
-  table. Weaker than written: it catches a wrong value, but it would not catch
-  the two modes disagreeing in a way that also fooled the expectation.*
+  *`test_oracle_all_vs_keys_same_update_sequence` (closed 2026-09-09): the
+  same sequence runs 3×K further updates, alternating scalar and Text, against
+  a `resident: all` and a `resident: keys` table, asserting equal rows after
+  every step; the fold's hop count proves the chain was terminated at least
+  twice and never exceeded K; then the keys log is replayed into a fresh store
+  and compared against the oracle once more.*
 - ✅ **Given** a flattening update to an indexed column, **when** queried through
   that index, **then** the row is found by its new value and not its old, before
   and after a restart. *`test_keys_resident_indexed_across_flatten`, checked at
@@ -143,8 +146,8 @@ compose, and it now pins that.
   before.
 - **A time-based compaction trigger.** Records are durable at commit, so an idle
   log does not grow.
-- **Whether `resident: keys` earns its place at all.** That is iteration 2's
-  task 7, and it should arguably run *before* this work — see below.
+- **Whether `resident: keys` earns its place at all.** That was iteration 2's
+  task 7, measured 2026-08-30 after this landed — see below.
 
 ## Info — the forks, settled
 
@@ -165,8 +168,10 @@ compose, and it now pins that.
 
 ## Sequencing note
 
-This iteration is **ready but arguably should not be next**. Iteration 2's
-task 7 has still never measured whether `resident: keys` beats the kernel's own
-paging, and everything built on it — including this — assumes it does. If that
-measurement comes back poorly, this work is optimising something that should be
-deleted. Recommended order: measure first, then this.
+This iteration was written as **ready but arguably not next**: iteration 2's
+task 7 had not yet measured whether `resident: keys` beats the kernel's own
+paging, and everything built on it — including this — assumes it does. The
+recommended order (measure first) was not followed; task 7 measured on
+2026-08-30 and the answer is qualified but positive — under a memory cap
+`resident: keys` collapses 16× where `resident: all` collapses 105×, 1.53×
+faster than swapping, with a 2.55× smaller resident set — so this work stands.

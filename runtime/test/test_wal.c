@@ -3678,9 +3678,62 @@ static void test_oracle_all_vs_keys_same_update_sequence(void) {
         assert_rows_equal(&db_all, id_all, &db_keys, id_keys, &rt, label);
     }
 
+    /* databasev2 11 closure: the same sequence continued 3×K steps past the
+       six above, alternating scalar and Text, so the keys chain is TERMINATED
+       by a full-row image more than once while the oracle keeps mutating its
+       slab. Equality is re-asserted after every step; the fold's hop count
+       proves the boundary was crossed, not merely approached. */
+    uint32_t peak = 0, resets = 0;
+    for (uint32_t n = 1; n <= WO_DELTA_MAX_HOPS * 3u; n++) {
+        uint32_t field = n & 1u;
+        uint64_t val_all, val_keys;
+        if (field == 0) {
+            val_all = val_keys = 100u + n;
+        } else {
+            char text[16];
+            snprintf(text, sizeof text, "t%u", n);
+            uint32_t tl = (uint32_t)strlen(text);
+            val_all = (uint64_t)(uintptr_t)wo_str_new(&rt, text, tl);
+            val_keys = (uint64_t)(uintptr_t)wo_str_new(&rt, text, tl);
+        }
+        int ek = 0;
+        T_EQ(wo_row_update_field(&db_all, 0, id_all, field, val_all, &msg, &ek), 0);
+        T_EQ(ek, DB_ERR_NONE);
+        chain_update(&db_keys, &w, 0, id_keys, field, val_keys);
+
+        uint32_t hops = 0;
+        uint64_t out[2] = {0, 0};
+        const char *fm = "";
+        uint64_t o1 = wo_row_offset1(&db_keys, 0, id_keys);
+        T_CHECK(o1 != 0);
+        T_EQ(wo_wal_fold_row_at(&w, &db_keys, o1 - 1, NULL, NULL, out, &hops, &fm), 0);
+        for (uint32_t i = 0; i < 2; i++) wo_db_val_free(&db_keys, KEYS_CLASSES[0].kinds[i], out[i]);
+        if (hops > peak) peak = hops;
+        if (hops == 0) resets++;
+
+        char label[32];
+        snprintf(label, sizeof label, "flatten step %u", n);
+        assert_rows_equal(&db_all, id_all, &db_keys, id_keys, &rt, label);
+    }
+    T_CHECK(peak <= WO_DELTA_MAX_HOPS);   /* the bound held throughout */
+    T_CHECK(resets >= 2);                 /* and was actually crossed, twice */
+
+    /* and across a restart: replay the keys log into a fresh store and compare
+       it against the oracle, which never left RAM — the criterion as written */
     wo_wal_close(&w);
-    wo_db_destroy(&db_all);
     wo_db_destroy(&db_keys);
+    wo_db db_keys2;
+    T_EQ(wo_db_init(&db_keys2, KEYS_CLASSES, 1, 0, 1), 0);
+    db_keys2.rt = &rt; rt.wal = NULL; rt.db = &db_keys2;
+    T_CHECK(wo_wal_replay(path, &db_keys2) >= 0);
+    wo_wal w2;
+    T_EQ(wo_wal_open(&w2, path, 1 << 16), 0);
+    rt.wal = &w2;
+    assert_rows_equal(&db_all, id_all, &db_keys2, id_keys, &rt, "after replay");
+
+    wo_wal_close(&w2);
+    wo_db_destroy(&db_all);
+    wo_db_destroy(&db_keys2);
     wo_rt_destroy(&rt);
 }
 

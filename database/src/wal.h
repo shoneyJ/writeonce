@@ -513,9 +513,11 @@ int wo_wal_fold_row_at(wo_wal *w, wo_db *db, uint64_t off, uint32_t *class_out,
  * rather than one looked up by id. wo_wal_append_insert sources its values via
  * wo_row_ptr, which is NULL for a keys-resident row whose payload has been
  * dropped; the update path holds a materialised row and needs to log it as a
- * chain-terminating record. Written as WO_WAL_INSERT because that is what a
- * chain's base must be: it has to replay into a database where nothing
- * precedes it. */
+ * chain-terminating record. Written as WO_WAL_UPDATE, not WO_WAL_INSERT: the
+ * live log already carries the row's insert, so an INSERT here would replay as
+ * a duplicate id (corruption). UPDATE replays as remove-then-recreate and the
+ * fold terminates on either full-row kind. (Compaction's own flattening writes
+ * INSERT because it builds a FRESH log — see wal.c.) */
 int wo_wal_append_row_image(wo_wal *w, wo_db *db, uint32_t class_id, uint64_t id,
                             const db_row *r);
 
