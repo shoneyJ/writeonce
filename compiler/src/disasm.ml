@@ -184,7 +184,7 @@ let dump (img : string) : string =
      opcodes 34-41). The disassembler tracks the emitter, not a range: an old
      image is a different format and reading it as this one would misrender. *)
   (* tracks emit.ml's wob_version and wob.h's WOB_VERSION *)
-  if ver <> 7 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
+  if ver <> 8 then raise (Bad (Printf.sprintf "unsupported version %d" ver));
   let coff = u32 img 8 and ccnt = u32 img 12 in
   let koff = u32 img 16 and kcnt = u32 img 20 in
   let ioff = u32 img 24 and icnt = u32 img 28 in
@@ -264,6 +264,7 @@ let dump (img : string) : string =
             (if flags land 1 <> 0 then [ "gc" ] else [])
             @ (if flags land 2 <> 0 then [ "volatile" ] else [])
             @ (if flags land 4 <> 0 then [ "resident=keys" ] else [])
+            @ (if flags land 8 <> 0 then [ "table" ] else [])
           in
           if parts = [] then "-" else String.concat "+" parts)
          (String.concat ", " fields))

@@ -11,11 +11,11 @@
 
 All integers little-endian; offsets are absolute file offsets.
 
-**Header (44 bytes):** magic `"WOB1"`, version 7 (databasev2 2; see "v7: table storage flags" below — v6 was iteration 36's "v6: the Int bitwise set", v5 iteration 19's "v5: Float and Bytes"), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
+**Header (44 bytes):** magic `"WOB1"`, version 8 (databasev2 2 task 6a; see "v8: the table bit" below — v7 was databasev2 2's "v7: table storage flags", v6 was iteration 36's "v6: the Int bitwise set", v5 iteration 19's "v5: Float and Bytes"), then offset/count u32 pairs for the constant pool, class table, interface section, and method table, then a u32 entry-method index (all-ones = none).
 
 **Constant pool** — sequential entries: one tag byte; tag 0 = i64 follows; tag 1 = text (u32 length + bytes, no NUL); tag 2 = f64 as its IEEE 754 bit pattern in an LE u64 (v5). There is no Bytes tag: Bytes has no literal form.
 
-**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`; **bit1 = `@table(durable: false)`, bit2 = `@table(resident: keys)`** — v7, and 0 in both means the pre-v7 behaviour of durable-and-fully-resident), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
+**Class table** — per class: name constant index, flags u32 (bit0 = instances are `@gc`; **bit1 = `@table(durable: false)`, bit2 = `@table(resident: keys)`** — v7, and 0 in both means the pre-v7 behaviour of durable-and-fully-resident; **bit3 = the class has `@table`** — v8, required by bit1/bit2, clear on every class that is not a table), field count, then one kind byte per field padded to a 4-byte boundary, then **three u32 arrays of per-field metadata** (v2), one entry per field each, in declaration order:
 
 1. `field_names[i]` — constant index of the field's name, or all-ones for "not recorded" (what a hand-built test image writes).
 2. `field_class[i]` — the class id the field refers to: its own class for an OWNED/GCREF field, its *element's* class for a container of records; `0xFFFFFFFE` marks a `json.Value` field, whose Text holds a raw JSON slice; `0xFFFFFFFD` a nullable scalar (`WO_NIL_SCALAR` nil); `0xFFFFFFFC` a plain `Bool` (json encodes `true`/`false`); `0xFFFFFFFB` a `?Bool` (both); `0xFFFFFFFA` a `?Float` (v5 — nil is `WO_NIL_FLOAT`, not `WO_NIL_SCALAR`); all-ones for none.
@@ -338,3 +338,29 @@ refuses this at compile time (WO-E102), and the loader refuses it again on the
 standing principle that what the loader accepts, the interpreter trusts. Both
 paths are gate-verified — the loader's by forging the flags word in an
 otherwise valid image, since `woc` will not emit one.
+
+## v8: the table bit (databasev2 2 task 6a)
+
+Again no layout change: one more spare bit of the class descriptor's `flags`
+u32.
+
+**What v8 adds**
+
+- `flags` bit3 — `WO_CLASSF_TABLE`: the class has `@table`; its instances are
+  row ids and the runtime's durability rules apply to it. `woc` sets it from
+  the class record's `cr_is_table`.
+- bit1 and bit2 now **require** bit3. A plain class, a variant class and a
+  predeclared record (`Error`, `Stat`, …) have all three clear.
+
+**Why.** `durable: true` is the default for a `@table`, and v7 spelled it as
+the *absence* of bit1 — which every non-table class also has. When the runtime
+started refusing a durable table without `WO_DATA` (task 6a) it had no way to
+tell `@table class Notes` from `class Tick`, and every class-bearing program
+refused. The bit is the missing fact, recorded where the other two are.
+
+**Refused by the loader, independently of the compiler:** bit1 or bit2 set
+with bit3 clear ("storage flags on a class that is not a @table"). A v7 image
+is refused by the exact-match version check rather than read with bit3 clear —
+read that way it would contain no tables at all and silently skip every
+durability rule, the mirror image of the failure the v7 bump guarded against.
+Gate-verified by forging the flags word (`runtime/test/test_loader.c`).

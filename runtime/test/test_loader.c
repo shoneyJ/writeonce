@@ -109,8 +109,44 @@ static void test_rejects(void) {
     free(img);
 }
 
+/* a valid one-class image whose class descriptor carries `flags` */
+static uint8_t *image_with_class_flags(uint32_t flags, size_t *len) {
+    wb_t *b = wb_new();
+    wb_const_int(b, 42);
+    uint32_t kname = wb_const_text(b, "main");
+    uint8_t kinds[] = {WO_K_SCALAR, WO_K_SCALAR};
+    wb_class(b, kname, flags, kinds, 2);
+    uint32_t code[] = {wo_ins_abc(WOP_RET, 0, 0, 0)};
+    wb_method(b, kname, WOB_NONE, 0, 1, code, 1, NULL, 0, NULL, 0);
+    return wb_finish(b, len);
+}
+
+/* databasev2 2 (6a, .wob v8): the storage bits describe a @table's rows, so
+ * they are meaningless — and refused — on a class without WO_CLASSF_TABLE.
+ * woc never emits the combination; the loader refuses it independently. */
+static void test_storage_flags_need_table(void) {
+    size_t len;
+    uint8_t *img = image_with_class_flags(WO_CLASSF_VOLATILE, &len);
+    expect_reject(img, len, "volatile without table");
+    free(img);
+
+    img = image_with_class_flags(WO_CLASSF_RESIDENT_KEYS, &len);
+    expect_reject(img, len, "resident:keys without table");
+    free(img);
+
+    /* the same bits WITH the table bit load */
+    img = image_with_class_flags(WO_CLASSF_TABLE | WO_CLASSF_VOLATILE, &len);
+    wo_module m;
+    char err[256] = "";
+    T_EQ(wo_load_buf(&m, img, len, err, sizeof err), 0);
+    T_EQ(m.classes[0].flags, WO_CLASSF_TABLE | WO_CLASSF_VOLATILE);
+    wo_module_free(&m);
+    free(img);
+}
+
 int main(void) {
     test_happy_path();
     test_rejects();
+    test_storage_flags_need_table();
     return t_report("test_loader");
 }

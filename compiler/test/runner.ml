@@ -2402,7 +2402,7 @@ let validate_image (img : string) : string list =
   let u64 o = if ok 8 o then String.get_int64_le img o else 0L in
   let none = 0xFFFFFFFF in
   if u32 0 <> 0x31424F57 then fail "bad magic";
-  if u32 4 <> 7 then fail "unsupported version"; (* v7: databasev2 2 *)
+  if u32 4 <> 8 then fail "unsupported version"; (* v8: databasev2 2 task 6a *)
   let coff = u32 8 and ccnt = u32 12 in
   let koff = u32 16 and kcnt = u32 20 in
   let ioff = u32 24 and icnt = u32 28 in
@@ -2439,13 +2439,16 @@ let validate_image (img : string) : string list =
     let nm = u32 !o and flags = u32 (!o + 4) and fcnt = u32 (!o + 8) in
     o := !o + 12;
     if not (text_const nm) then fail (Printf.sprintf "class %d: bad name constant" i);
-    (* v7 (databasev2 2): bit1 VOLATILE, bit2 RESIDENT_KEYS. This battery is a
-       deliberately independent reimplementation of runtime/src/loader.c's
-       validation, so it tracks the same contract — including refusing the pair
-       that would leave rows neither logged nor resident. *)
-    if flags land lnot 0x07 <> 0 then fail (Printf.sprintf "class %d: unknown flags" i);
+    (* v7 (databasev2 2): bit1 VOLATILE, bit2 RESIDENT_KEYS; v8 (task 6a): bit3
+       TABLE. This battery is a deliberately independent reimplementation of
+       runtime/src/loader.c's validation, so it tracks the same contract —
+       including refusing the pair that would leave rows neither logged nor
+       resident, and storage bits on a class that is not a @table. *)
+    if flags land lnot 0x0f <> 0 then fail (Printf.sprintf "class %d: unknown flags" i);
     if flags land 0x02 <> 0 && flags land 0x04 <> 0 then
       fail (Printf.sprintf "class %d: durable:false with resident:keys" i);
+    if flags land 0x06 <> 0 && flags land 0x08 = 0 then
+      fail (Printf.sprintf "class %d: storage flags on a class that is not a @table" i);
     if fcnt > 65535 then fail (Printf.sprintf "class %d: too many fields" i);
     class_fields.(i) <- fcnt;
     let kco = !o in (* the kind bytes' offset: the v3 index walk re-reads them *)

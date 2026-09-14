@@ -13,7 +13,14 @@
 
 /* ---- file header (44 bytes, absolute offsets) ---- */
 #define WOB_MAGIC 0x31424F57u /* "WOB1" read as LE u32 */
-#define WOB_VERSION 7u /* v7 (databasev2 2): two class flag bits —
+#define WOB_VERSION 8u /* v8 (databasev2 2 task 6a): one class flag bit —
+ * WO_CLASSF_TABLE (the class has @table: a row-bearing class). No layout
+ * change. Needed because `durable: true` is a property of @table classes
+ * only, and v7 gave the runtime no way to tell a table from a plain class:
+ * the no-WO_DATA refusal fired on every class-bearing program. A v7 image is
+ * refused by the exact-match check, as v6 was by v7 (task 3): read with the
+ * bit clear it would have no tables at all and silently skip every refusal.
+ * v7 (databasev2 2): two class flag bits —
  * WO_CLASSF_VOLATILE (@table durable: false) and WO_CLASSF_RESIDENT_KEYS
  * (@table resident: keys). No layout change: both ride spare bits of the
  * class descriptor's existing `flags` u32, so the serialized shape is
@@ -655,7 +662,11 @@ typedef struct wo_classdesc {
    flags word means today's behaviour: durable, every row resident. */
 #define WO_CLASSF_VOLATILE 0x02u       /* @table(durable: false) — never logged */
 #define WO_CLASSF_RESIDENT_KEYS 0x04u  /* @table(resident: keys) — rows read from the log */
-#define WO_CLASSF_ALL 0x07u
+/* v8 (databasev2 2 task 6a): has @table — a row-bearing class. The two storage
+   bits above require it; a plain class, variant or predeclared record has all
+   three clear and is never a durable table. */
+#define WO_CLASSF_TABLE 0x08u
+#define WO_CLASSF_ALL 0x0fu
 
 /* runtime object layout: 16-byte header then one 8-byte slot per field */
 static inline size_t wo_obj_size(const wo_classdesc *c) {

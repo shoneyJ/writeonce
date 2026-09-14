@@ -156,8 +156,9 @@ let wob_magic = 0x31424F57 (* "WOB1" read as an LE u32 *)
    builtins 70-83. v4 (iteration 7b): RC opcodes retired; gc mask = GC roots *)
 (* MUST track runtime/src/wob.h's WOB_VERSION — the loader is an exact-match
    check, so a drift here is not a warning, it is every image refused.
-   v7 (databasev2 2): two class flag bits, no layout change. *)
-let wob_version = 7
+   v7 (databasev2 2): two class flag bits, no layout change.
+   v8 (databasev2 2 task 6a): the table bit, no layout change. *)
+let wob_version = 8
 
 let wob_hdr_size = 44
 let wob_none = 0xFFFFFFFF
@@ -173,6 +174,9 @@ let classf_gc = 0x01
 (* databasev2 2: spare bits of the same flags word — see runtime/src/wob.h *)
 let classf_volatile = 0x02
 let classf_resident_keys = 0x04
+(* v8: has @table. The runtime's durability rules apply to these classes only;
+   the two bits above are meaningful — and loader-accepted — only with it. *)
+let classf_table = 0x08
 
 let op_nop = 0
 let op_loadk = 1
@@ -5093,7 +5097,8 @@ let emit ?(entry_ok : string -> bool = fun _ -> true) ~(syms : Types.symbols)
       Buf.u32 cls
         ((if c.cr_gc then classf_gc else 0)
         lor (if c.cr_durable then 0 else classf_volatile)
-        lor (if c.cr_resident_keys then classf_resident_keys else 0));
+        lor (if c.cr_resident_keys then classf_resident_keys else 0)
+        lor (if c.cr_is_table then classf_table else 0));
       Buf.u32 cls (Array.length c.cr_fields);
       Array.iter (fun (_, ty) -> Buf.u8 cls (field_kind p ty)) c.cr_fields;
       let pad = (4 - (Array.length c.cr_fields mod 4)) mod 4 in

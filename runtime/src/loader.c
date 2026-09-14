@@ -205,6 +205,16 @@ int wo_load_buf(wo_module *m, const uint8_t *buf, size_t len, char *err,
         if ((flags & WO_CLASSF_VOLATILE) && (flags & WO_CLASSF_RESIDENT_KEYS))
             BAIL("class %u: durable:false with resident:keys — rows would have "
                  "nowhere to be read from", (unsigned)i);
+        /* v8 (databasev2 2 task 6a): the storage bits describe a @table's
+         * rows, so on a class without WO_CLASSF_TABLE they describe nothing —
+         * refuse rather than let main.c's refusal loops see a table that is
+         * not one. A v7 image (no table bit) is refused by the version check
+         * above, the same way task 3's v7 refused v6: read with the bit clear
+         * it would have no tables and silently skip every durability rule. */
+        if ((flags & (WO_CLASSF_VOLATILE | WO_CLASSF_RESIDENT_KEYS)) &&
+            !(flags & WO_CLASSF_TABLE))
+            BAIL("class %u: storage flags on a class that is not a @table",
+                 (unsigned)i);
         if (fcnt > 65535) BAIL("class %u: too many fields", (unsigned)i);
         if (fcnt > k.len - k.off) BAIL("class %u: truncated kinds", (unsigned)i);
         for (uint32_t j = 0; j < fcnt; j++)

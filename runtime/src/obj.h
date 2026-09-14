@@ -63,7 +63,9 @@ typedef struct wo_rt {
     void *out; /* FILE*; kept void* so obj.h needn't pull in stdio */
     /* the database engine's handles (database/src), opaque here so the VM
        core needn't include engine headers: db = wo_db*, wal = wo_wal*.
-       NULL = engine absent (test binaries) / durability off (no WO_DATA).
+       NULL = engine absent (test binaries) / RAM-only under WO_EPHEMERAL=1
+       (a program with any durable table — the default — refuses to start
+       without WO_DATA; @table(durable: false) opts a table out).
        Set by main.c at boot; db.c casts. */
     void *db;
     void *wal;

@@ -243,10 +243,13 @@ int main(int argc, char **argv) {
      * serving program writes to sockets whose peers vanish. */
     signal(SIGPIPE, SIG_IGN);
     /* The database engine boots with the VM: every class IS a table.
-     * Durability is opt-in — WO_DATA=<dir> opens <dir>/shard-0.wal,
+     * Durability is the default — WO_DATA=<dir> opens <dir>/shard-0.wal,
      * replays it before the entry runs (boot-before-listeners doctrine),
-     * and every insert commits before it acknowledges. Without WO_DATA
-     * the engine runs RAM-only, which is what the corpus expects.
+     * and every insert commits before it acknowledges. A program with any
+     * durable @table (the default) refuses to start without WO_DATA;
+     * WO_EPHEMERAL=1 opts into a RAM-only run (the corpus's mode), and
+     * @table(durable: false) opts a table out. A class without @table is
+     * storage for the engine but never a durable table (v8 WO_CLASSF_TABLE).
      * Arc stage 3 obligation: this whole block runs BEFORE the worker
      * shards spawn — replay completes before anything can serve, and the
      * engine's immutable class-table pointer is published to the worker
@@ -262,6 +265,16 @@ int main(int argc, char **argv) {
     VM.rt.db = &DB;
     DB.rt = &VM.rt; /* databasev2 2 (5c): the loop a borrow reads the WAL through */
     const char *data_dir = getenv("WO_DATA");
+    const char *ephemeral = getenv("WO_EPHEMERAL");
+    if (data_dir && data_dir[0] && ephemeral) {
+        /* databasev2 2 (6a): the two knobs answer the same question with
+         * opposite answers — refuse rather than pick one silently. */
+        fprintf(stderr, "wovm: WO_EPHEMERAL=1 is incompatible with WO_DATA\n");
+        wo_db_destroy(&DB);
+        wo_vm_destroy(&VM);
+        wo_module_free(&mod);
+        return 2;
+    }
     if (!data_dir || !data_dir[0]) {
         /* databasev2 3: the loader used to refuse `resident: keys` outright;
          * now it is accepted because UPDATE landed, but every row still
@@ -269,6 +282,9 @@ int main(int argc, char **argv) {
          * durable:false+resident:keys refusal does, rather than let reads
          * silently misbehave with no WAL to fold from. */
         for (uint32_t i = 0; i < mod.class_cnt; i++) {
+            /* v8: the storage bits are a @table's; the loader refuses them
+             * on anything else, so the table check here is belt and braces */
+            if (!(mod.classes[i].flags & WO_CLASSF_TABLE)) continue;
             if (!(mod.classes[i].flags & WO_CLASSF_RESIDENT_KEYS)) continue;
             const char *cname = "?";
             int cnlen = 1;
@@ -280,6 +296,58 @@ int main(int argc, char **argv) {
             fprintf(stderr,
                     "wovm: `%.*s` is declared `resident: keys` — its rows live only "
                     "in the write-ahead log, so it cannot run without WO_DATA.\n",
+                    cnlen, cname);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        /* databasev2 2 (6a): a durable table (the default) without WO_DATA
+         * used to run RAM-only and drop every write at exit — the one
+         * outcome `durable: true` promises against. Refuse by name unless
+         * the developer opted into RAM-only explicitly. Startup-only:
+         * db.c's `w && table_is_durable` guards are untouched, so the RAM
+         * path under WO_EPHEMERAL=1 is byte-for-byte the old one. After the
+         * keys loop on purpose: a keys-resident table has nowhere to read
+         * from at all, which is the more specific refusal and is not
+         * rescued by WO_EPHEMERAL. `durable: true` is a @table property (v8
+         * WO_CLASSF_TABLE): a plain class, variant or predeclared record is
+         * not a table, so a program with no durable table starts as it
+         * always did and WO_EPHEMERAL is not consulted at all. */
+        uint32_t first_durable = mod.class_cnt;
+        for (uint32_t i = 0; i < mod.class_cnt; i++) {
+            if (!(mod.classes[i].flags & WO_CLASSF_TABLE)) continue;
+            if (mod.classes[i].flags & WO_CLASSF_VOLATILE) continue;
+            first_durable = i;
+            break;
+        }
+        if (first_durable < mod.class_cnt && ephemeral && strcmp(ephemeral, "1") != 0) {
+            fprintf(stderr,
+                    "wovm: WO_EPHEMERAL=%s is not accepted — the only accepted "
+                    "value is WO_EPHEMERAL=1.\n",
+                    ephemeral);
+            wo_db_destroy(&DB);
+            wo_vm_destroy(&VM);
+            wo_module_free(&mod);
+            return 2;
+        }
+        if (first_durable < mod.class_cnt && ephemeral) {
+            fprintf(stderr,
+                    "wovm: WO_EPHEMERAL=1 — durable tables served from RAM, "
+                    "nothing is written.\n");
+        } else if (first_durable < mod.class_cnt) {
+            const char *cname = "?";
+            int cnlen = 1;
+            uint32_t k = mod.classes[first_durable].name;
+            if (k < mod.const_cnt && mod.consts[k].s) {
+                cname = mod.consts[k].s->data;
+                cnlen = (int)mod.consts[k].s->len;
+            }
+            fprintf(stderr,
+                    "wovm: `%.*s` is a durable table (the default) and WO_DATA "
+                    "is not set — set WO_DATA=<dir or file> to keep its rows, "
+                    "WO_EPHEMERAL=1 to run RAM-only, or declare it "
+                    "@table(durable: false).\n",
                     cnlen, cname);
             wo_db_destroy(&DB);
             wo_vm_destroy(&VM);
