@@ -1,8 +1,9 @@
 ---
 track: databasev2
 iteration: "2"
-status: in-progress
+status: done
 readiness: ready
+review_pending: "forks 1–7 auto-approved 2026-09-09/10 for autonomous execution — developer second review before close"
 ---
 
 # databasev2 2 — per-table storage: `durable` and `resident`
@@ -63,22 +64,27 @@ declared per-table policy. Durability is untouched and unconditional.
 | 4 | `durable: false` skips the WAL append and replay | ✅ `dd67e31` |
 | 5a | `wo_wal_next_offset` — exact record offsets | ✅ `ac7d8af` |
 | 5b | `wo_wal_read_row_at` — a row from a log offset | ✅ `d0c370c` |
-| 5c | shared borrow/release accessor, then id→offset storage | ✅ `2e347de` (accessor, pure refactor, `db-bench --quick` 85/0), `18ce4d5` (offset storage), `f9c36ef` (insert + boot wiring) |
-| 5d | rewire the readers: remaining `wo_row_ptr` sites, slab scans, FK restrict, `@unique` across the boundary | ✅ `11a92df` (db.c), + this commit (table.c, wal.c, compaction). Updates **refused**, not rewired — see below |
-| 6 | the two runtime refusals (no-`WO_DATA`, the byte budget) | ⬜ |
-| 7 | measure, gate, document, close out | ✅ measured, gated and documented 2026-08-30 |
+| 5c | shared borrow/release accessor, then id→offset storage | ✅ `2e347de` (accessor, pure refactor, `db-bench --quick` 85/0), `125bd09` (offset storage), `08abd09` (insert + boot wiring) — hashes as on `dev`; the pre-merge `18ce4d5`/`f9c36ef` this row used to name are unreachable there |
+| 5d | rewire the readers: remaining `wo_row_ptr` sites, slab scans, FK restrict, `@unique` across the boundary | ✅ `0c97fa4` (db.c), `f606fc9` (table.c, wal.c, compaction) — the pre-merge `11a92df` is unreachable on `dev`. Updates were **refused** here, then lifted 2026-08-30 — see below |
+| 6a | refuse `durable: true` (the default) with no `WO_DATA`; `WO_EPHEMERAL=1` is the escape hatch | ✅ 2026-09-10 — with the **v8 table bit** (`WO_CLASSF_TABLE`), so the rule applies to `@table` classes only; forks 1–7, see Info |
+| 6b | the resident byte budget | ➡ moved to [5](05-bounded-tables-eviction.md) Phase A, 2026-09-09 |
+| 7 | measure, gate, document | ✅ `a310496`, 2026-08-30 |
 
 **The `durable` half is complete and usable.** A volatile table is a full table
 in-process — same indexes, same `@unique`, same FK restrict, same query surface
 — and is simply empty after a restart. That is what
-[porch 1–3](../porch/01-store-backed-middleware.md) need for sessions,
-rate-limit counters and idempotency keys.
+[porch 1–3](../porch/01-store-backed-middleware.md) were written to use for
+sessions, rate-limit counters and idempotency keys — though `store.wo` in fact
+declares both tables default-durable, which is why fork 6 (below) bites and
+the porch gates set `WO_DATA`.
 
 **The `resident: keys` half is fully wired for CRUD.** Storage, reads, scans,
 `@unique`, deletes and updates (a WAL delta record, folded back to a value on
-every read) all work, and survive both a restart and a WAL checkpoint. Task
-6's two runtime refusals and task 7's measurement are what remain — see
-Outstanding below.
+every read) all work, and survive both a restart and a WAL checkpoint. Task 7
+measured and gated it on 2026-08-30 (`a310496`). Task 6a — the no-`WO_DATA`
+refusal and its `WO_EPHEMERAL=1` escape hatch — landed 2026-09-10, and with it
+the iteration closes; the byte budget (6b) moved to
+[5](05-bounded-tables-eviction.md) on 2026-09-09.
 
 ## Acceptance Criteria
 
@@ -208,6 +214,61 @@ Met:
      cost becomes at most K+1 reads and replay O(K²) per row, independent of
      when a checkpoint fires. Limitations 2 and 3 above both fall to it.
 
+- **Given** the `resident: all` read baseline, **when** re-measured, **then**
+  inside tolerance — no cost for a feature not used. ✅ Verified as a
+  by-product of the residency leg: `resident: all` is unchanged at 1 354 554
+  reads/sec uncapped, and every other db-bench leg still runs, which the
+  keys-resident classes had briefly broken by forcing `WO_DATA` module-wide.
+- **Given** a `resident: keys` table larger than RAM, **when** read randomly,
+  **then** its read cost is measured against the resident baseline on its own
+  read path. ✅ Measured 2026-08-30 and the answer is qualified: **1.53×**
+  faster than letting the kernel swap under a cap that binds one and not the
+  other — real, but nowhere near iteration 1's 273× swap figure would suggest,
+  because cgroup limits charge the page cache, so moving rows to a file does
+  not escape a container memory limit. The unambiguous win is footprint:
+  **2.55×** smaller resident set. Full method, numbers and the failed first
+  attempt below; gated by `residency.*`.
+
+Task 6a — met 2026-09-10 (`scripts/residency-accept.sh` section 7, six checks;
+`runtime/test/test_loader.c` `test_storage_flags_need_table`):
+
+- **Given** a `@table` that is `durable: true` (the default) and no `WO_DATA`,
+  **when** the program starts, **then** it refuses: exit 2 and ONE stderr line
+  naming the first default-durable table and all three ways forward —
+  `WO_DATA=<dir>`, `WO_EPHEMERAL=1`, or `@table(durable: false)` on that
+  class. No "+N more". *(Before, this combination silently discarded every
+  write.)*
+- **Given** a program whose classes carry no `@table` at all, **when** it
+  starts with no `WO_DATA` and no `WO_EPHEMERAL`, **then** rc 0 and nothing on
+  stderr — `durable:` is a table property, told apart by the `.wob` v8 table
+  bit; the loader refuses storage bits on a class without it.
+- **Given** `WO_EPHEMERAL=1` and no `WO_DATA`, **when** a program with
+  default-durable tables starts, **then** it runs (rc 0), prints one boot
+  notice on stderr saying the sentinel is in force, and every write takes
+  today's RAM path byte for byte — `db.c`'s guards are untouched.
+- **Given** `WO_EPHEMERAL` set together with a non-empty `WO_DATA`, **when**
+  the program starts, **then** exit 2 with one stderr line naming the
+  conflict. Any `WO_EPHEMERAL` value other than `1` is the same refusal.
+- **Given** `WO_EPHEMERAL=1` and a `resident: keys` class, **when** the program
+  starts, **then** exit 2 with the EXISTING keys-need-a-log message — the
+  sentinel does not bypass that loop.
+- **Given** the harness after 6a lands, **when** the gates run, **then** the
+  goldens move at most once, for the `.wob` v8 version byte and the `table`
+  flag (measured: none moved — the bytecode dump prints flags by name, no
+  `bc/` golden declares a table, and the header version is not printed);
+  `just oop-e2e` is green with exactly one harness line changed (the corpus's
+  `export WO_EPHEMERAL=1`); `db-bench --quick`'s wired RAM legs (`ram`,
+  `msgrate`, `growth`, `randread` under `WO_EPHEMERAL=1`) sit inside their
+  floors; every gate that sets `WO_DATA` is unchanged; gates whose programs
+  declare no `@table` (fibers, subprocess, log-watcher) run untouched; and the
+  two that turned out to carry durable tables after all opt in by measurement
+  — chat through porch's store (`RateLimitCounter`, fork 6) and wmux's client
+  legs, which run the default-durable server image with no `WO_DATA`.
+
+The resident byte budget (task 6b until 2026-09-09) is no longer this
+iteration's: it is [5](05-bounded-tables-eviction.md)'s Phase A, with the
+brief's design inputs recorded there as notes for 5's own brainstorm.
+
 ### Task 7 — measured 2026-08-30, and the answer is qualified
 
 **The question**, in the words this file has carried since the iteration was
@@ -303,28 +364,7 @@ leg did.
 
 Verified by feeding the gate a breaching run: `rss_ratio` 1.4,
 `overcap_vs_swap_x` 0.6 and `in_ram_cost_x` 12.0 are all rejected.
-- **Given** the `resident: all` read baseline, **when** re-measured, **then**
-  inside tolerance — no cost for a feature not used. ✅ Verified as a
-  by-product of the residency leg: `resident: all` is unchanged at 1 354 554
-  reads/sec uncapped, and every other db-bench leg still runs, which the
-  keys-resident classes had briefly broken by forcing `WO_DATA` module-wide.
-- **Given** a `resident: keys` table larger than RAM, **when** read randomly,
-  **then** its read cost is measured against the resident baseline on its own
-  read path. ✅ Measured 2026-08-30 and the answer is qualified: **1.53×**
-  faster than letting the kernel swap under a cap that binds one and not the
-  other — real, but nowhere near iteration 1's 273× swap figure would suggest,
-  because cgroup limits charge the page cache, so moving rows to a file does
-  not escape a container memory limit. The unambiguous win is footprint:
-  **2.55×** smaller resident set. Full method, numbers and the failed first
-  attempt above; gated by `residency.*`.
 
-Outstanding:
-
-- **Given** `durable: true` and no `WO_DATA`, **when** the program starts,
-  **then** it refuses. *(task 6 — today this combination silently discards
-  every write)*
-- **Given** the resident footprint crossing the budget, **when** it does,
-  **then** a refusal naming the table and the annotation. *(task 6)*
 ## Out Of Scope
 
 - **Checkpoint and compaction** — [3](03-wal-checkpoint.md). Boot rebuilds the
@@ -362,7 +402,67 @@ Outstanding:
 5. **The budget is bytes, not rows** — a text-heavy row and an Int-only row
    differ by 3.3× (measured, databasev2 1), so a row count cannot bound RAM.
 
-## History — two corrections worth keeping
+**Task 6a — forks 1–6 locked 2026-09-09, fork 7 added 2026-09-10** (auto-approved
+for autonomous execution; the frontmatter's `review_pending` asks for the
+developer's second review before close):
+
+1. **The escape hatch is the environment sentinel `WO_EPHEMERAL=1`, exact
+   value.** Not `WO_DATA=:memory:` — `WO_DATA` stays a path and only a path,
+   which also keeps [7](07-single-file-db.md)'s file-vs-directory parse free
+   of sentinels — and no fixture edits. `@table(durable: false)` remains the
+   per-table declaration; the sentinel is the whole-program one.
+2. **Sentinel rules.** Honoured only when `WO_DATA` is unset or empty.
+   `WO_EPHEMERAL` set together with `WO_DATA` is a startup refusal, exit 2,
+   naming the conflict. Any value other than `1` is the same refusal. A
+   `resident: keys` class still refuses through the existing loop — the
+   sentinel does not bypass it. One stderr boot notice when the sentinel is
+   in force.
+3. **The refusal contract** for `durable: true` (the default) with no
+   `WO_DATA`: exit 2, one stderr line naming the first default-durable class
+   and all three ways forward — `WO_DATA=<dir>`, `WO_EPHEMERAL=1`,
+   `@table(durable: false)`. A second loop in `runtime/src/main.c`'s existing
+   startup-refusal block, beside the `resident: keys` one. No "+N more".
+4. **Startup-only.** `db.c`'s guards are untouched, so the ephemeral path is
+   byte for byte today's RAM path; nothing on the data path learns a flag.
+5. **The byte budget (6b) leaves this iteration** for
+   [5](05-bounded-tables-eviction.md), as a new Phase A — a per-table
+   resident byte counter feeding its pressure signal. 5 stays
+   `readiness: refine`; the design inputs go there as notes for its own
+   brainstorm, and the spec's three budget obligations become 5's acceptance
+   criteria.
+6. **Library-owned durable tables bind every consumer.**
+   [porch's store](../../examples/porch/middleware/store.wo) declares its
+   tables with the default, so any program that `use`s it needs `WO_DATA` or
+   `WO_EPHEMERAL=1` as a whole-program requirement. No consumer-side
+   override: the library author's declaration is the declaration. Settled.
+7. **The table bit in the `.wob` (v8), so durability rules apply to `@table`
+   classes only** — added 2026-09-10 after the first cut refused every
+   class-bearing program (fibers' `Tick`, subprocess's `ConnMsg`, log-watcher's
+   `CronEntry` are plain classes, and v7 spelled `durable: true` as the mere
+   absence of the volatile bit). `WO_CLASSF_TABLE` 0x08 is set from the
+   emitter's `cr_is_table`; the loader refuses the two storage bits without
+   it; `main.c`'s two refusal loops skip classes without it; a program with
+   no durable table does not consult `WO_EPHEMERAL` at all (the
+   `WO_DATA`+`WO_EPHEMERAL` conflict still refuses regardless). A v7 image is
+   refused by the version check, as v6 was by v7. The alternative — teaching
+   the runtime to infer "table" from the presence of indexes or an `insert`
+   site — was rejected: a fact the compiler already holds belongs in the
+   image, not re-derived.
+
+## History — three corrections worth keeping
+
+**Task 6a's first cut refused every class-bearing program (2026-09-09→10).**
+The refusal keyed on "flags lack `WO_CLASSF_VOLATILE`", and the v7 image had
+no bit saying "this class is a `@table`" — so `class Tick` in fibers looked
+exactly like a default-durable table, and gates that never touch a table
+(fibers, subprocess, log-watcher) had to export `WO_EPHEMERAL=1` to start.
+Corrected the next day by recording the missing fact in the image (`.wob` v8,
+`WO_CLASSF_TABLE`, fork 7), then re-measuring every gate without its export
+and keeping the sentinel only where the program really refused: the corpus,
+db-bench and db-actor (their own tables), chat (porch's store, fork 6) and
+wmux's client legs (the server image, no `WO_DATA`). The lesson: "does this
+gate run a table program" is answered by running it, not by reading the
+example's own source — a `use`d library's declaration counts.
 
 **The three-mode design was replaced.** Earlier drafts had
 `mode: ram | durable | cold`. `cold` conflated two independent properties and
@@ -381,7 +481,11 @@ fine, the plan's storage steps still read as plumbing. Measured instead:
 `wo_row_ptr` returns a `db_row *` into a slab and has 11 call sites, `table.c`
 has 37 slab references, `db.c:105-181` walks slabs for scans, `enc_val`
 serialises *from* the slab, and **no operation exists that drops a row's payload
-while keeping its index entries**. Hence the 5a–5d split. 5c and 5d need their
-own write-ups, and the two open design questions for 5c are whether the id hash
-stores offsets in place of slot indices or gains a parallel map, and what the
-new operation does about the unique shadows, which currently point at slots.
+while keeping its index entries**. Hence the 5a–5d split. Both 5c questions
+are settled by what landed (2026-08-29): the id hash stores the LOG OFFSET in
+place of the slot index — one map, no parallel one — which is also why the
+`delete` corruption above was possible, since a reader that trusts that value
+as a slot indexes a slab with a byte offset; and the unique shadows keep their
+bucket candidates and resolve them through the same borrow, one `pread` per
+candidate, never a slot dereference. The write-ups are the 5c/5d acceptance
+bullets above and the 2026-08-29/30 board entries.

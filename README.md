@@ -302,6 +302,8 @@ WO_DATA=./data ./target/myproject seed
 WO_DATA=./data ./target/myproject report     # a fresh process still sees the data
 ```
 
+A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out.
+
 ---
 
 ## Worked examples

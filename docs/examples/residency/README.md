@@ -8,7 +8,7 @@ Before it, `WO_DATA` was the only switch. Set, and every table is WAL-logged;
 unset, and none are. Applications are not uniform — a session table is
 disposable, a product's stock level is not, and a catalogue large enough to
 matter does not fit in RAM at all. One global switch forces "everything is precious" or "nothing
-is", and you pay for whichever is wrong.
+is", and you pay for whichever is wrong. Since task 6a the default is enforced: a program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out.
 
 ## Run it
 

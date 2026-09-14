@@ -24,6 +24,8 @@ the token comes from the `WA_TOKEN` env var.
     woc .                       # fetches deps, builds target/web-app
     WA_TOKEN=secret WO_DATA=./data ./target/web-app 8080
 
+A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out.
+
 ## TLS / HTTP2
 
 This sample runs plaintext behind nginx/caddy — the proxy terminates TLS+ALPN

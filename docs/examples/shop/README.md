@@ -10,8 +10,10 @@ has one concern, and the module system (one directory = one module,
 ```
 cd docs/examples/shop
 woc . && WO_DATA=./data ./target/shop 8080     # durable store
-./target/shop 8080                             # RAM-only (dev)
+WO_EPHEMERAL=1 ./target/shop 8080              # RAM-only (dev)
 ```
+
+A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out.
 
 Browse http://127.0.0.1:8080/ — products → product page → buy (stock
 checked and decremented) → confirmation → /orders. With `WO_DATA`, kill

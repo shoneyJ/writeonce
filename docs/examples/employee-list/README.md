@@ -30,6 +30,11 @@ and pasted — the `PASTE-…-HERE` placeholders mark exactly where. The
 connect-section name is the code's namespace: `[connect.employee]` is why
 the source says `employee.Employee`.
 
+B declares the shapes but stores nothing, so it runs under `WO_EPHEMERAL=1`: a
+program with any durable table (the default) refuses to start without
+`WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)`
+opts a table out.
+
 | Mode | What it proves |
 | --- | --- |
 | `employee-list list` | typed reads over the wire, `e.dept.name` ref navigation executing inside A |

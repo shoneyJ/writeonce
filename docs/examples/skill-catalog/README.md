@@ -27,4 +27,4 @@ subquery construct is needed; the general `exists`/`not exists` is deferred
 until a corpus uses a correlation a backlink cannot express.
 
 `skill-catalog seed | list | roots | count | get <name>`, WAL-durable under
-`WO_DATA`. Acceptance: `scripts/skill-catalog-accept.sh`.
+`WO_DATA`. A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out. Acceptance: `scripts/skill-catalog-accept.sh`.

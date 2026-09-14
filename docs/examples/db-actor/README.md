@@ -43,7 +43,7 @@ WO_SHARDS=1 ./docs/examples/db-actor/target/db-actor   # force the local path
 | multi-shard, three rounds | The writer lines are asserted as a **set**, not a sequence — scheduling decides their order, and pinning it would be testing the scheduler, not the RPC. The `main` line is exact. |
 | both `WO_IO` backends forced | The reply park has to be plane-independent: io_uring and epoll must give the same answer, or the parking is leaking into semantics. |
 | single shard, byte-exact | The local path is untouched by stage 3. Any drift here means the RPC changed the non-RPC case. |
-| `WO_DATA` restart pair | A worker's insert must commit on the **owner's** WAL before its ack, so a restart replays it: 2 rows, then 2+2 after a second run. This is the durability claim the RPC could most easily break. |
+| `WO_DATA` restart pair | A worker's insert must commit on the **owner's** WAL before its ack, so a restart replays it: 2 rows, then 2+2 after a second run. This is the durability claim the RPC could most easily break. A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out. |
 
 Run under `wovm_asan` and `wovm_tsan` as well — cross-shard message passing is
 exactly where a data race would hide, and TSan covering this demo is the one

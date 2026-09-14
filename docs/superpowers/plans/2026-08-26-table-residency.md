@@ -385,25 +385,36 @@ plus wherever per-table accounting lands from Task 6.
   so a program that declares durability and is given nowhere to put it silently
   loses everything. Refuse at startup, naming the first durable class found.
   This is the single most valuable line in the plan and is independent of
-  residency.
+  residency. *Decided 2026-09-09: exit 2, one stderr line, the first
+  default-durable class and all three ways forward; a second loop in `main.c`'s
+  existing startup-refusal block.*
 - [ ] Provide the escape hatch the refusal implies: a program that genuinely
   wants an ephemeral run must be able to say so, either by declaring its tables
   volatile or by an explicit opt-out flag. Decide which and document it — a
   refusal with no stated way forward is a worse bug than the silent loss.
+  *Decided 2026-09-09: `WO_EPHEMERAL=1`, exact value, honoured only when
+  `WO_DATA` is unset or empty; set together is a refusal; any other value is a
+  refusal; `@table(durable: false)` stays the per-table form.*
 - [ ] Implement the byte budget: estimated resident footprint across all
   tables, breached loudly with a message naming the largest offending table and
-  the exact annotation to add.
+  the exact annotation to add. *Moved to databasev2 5 Phase A (2026-09-09).*
 - [ ] Default the budget to a fraction of host-detected available memory, **not
   to "none"** — a budget nobody sets cannot produce the diagnostic that is this
   design's main deliverable, and the 120 GB developer would still meet the OOM
   killer. Use a conservative placeholder fraction and mark the value explicitly
   unset-pending in both the code comment and the iteration: the real number
-  comes from databasev2 1's swap-onset measurement.
+  comes from databasev2 1's swap-onset measurement. *Moved to databasev2 5
+  (2026-09-09) as a note for its brainstorm: bytes XOR fraction,
+  `MemAvailable` and the cgroup v2 limits as the denominator, an itemised
+  measured reserve with a floor. Databasev2 1 found there is no swap onset to
+  derive from.*
 - [ ] Make the accounting's error bound explicit where it is documented. It
   estimates RSS; it is not RSS, and pretending otherwise would make the budget
-  untrustworthy the first time someone checked it.
+  untrustworthy the first time someone checked it. *Moved to databasev2 5
+  (2026-09-09) — an acceptance criterion there.*
 - [ ] Add CLI-smoke coverage for both refusals, including the exit code and the
-  first line of stderr — the shape scripts depend on.
+  first line of stderr — the shape scripts depend on. *2026-09-09: one refusal
+  here now (6a); the budget's is 5's.*
 - [ ] Verify: `bash runtime/test/cli_smoke.sh`, `just wovm-test`,
   `just employee`, `just db-actor` green; every sample that sets `WO_DATA`
   still runs, and one that does not is now refused or explicitly opted out.

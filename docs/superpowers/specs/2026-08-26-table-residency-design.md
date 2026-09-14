@@ -215,8 +215,14 @@ as the code — not afterwards:
   combination silently loses everything, which is the worst failure mode in the
   current engine. A program that declares durability and is given nowhere to put
   it must not start. This is independent of residency and is arguably the most
-  valuable single line in the spec.
-- **A byte budget that exists by default, breached loudly.** The budget bounds
+  valuable single line in the spec. *Decided 2026-09-09 (databasev2 2 task 6a):
+  exit 2, one stderr line naming the first default-durable class and the three
+  ways forward — `WO_DATA=<dir>`, `WO_EPHEMERAL=1`, `@table(durable: false)`;
+  the whole-program escape hatch is `WO_EPHEMERAL=1`, exact value, honoured
+  only when `WO_DATA` is unset.*
+- **A byte budget that exists by default, breached loudly.** *Moved to
+  [databasev2 5](../../stories/databasev2/05-bounded-tables-eviction.md) Phase A
+  on 2026-09-09; the text below stands as the original obligation.* The budget bounds
   estimated resident footprint across all tables. On breach the program refuses
   with a message naming the largest offending table and the exact annotation to
   add, so the 120 GB developer meets a diagnostic at 32 GB rather than the OOM
@@ -298,7 +304,9 @@ Acceptance is the story's Given/When/Then list; this is how each is exercised.
 - **Compiler refusals** — a `compile-fail` fixture per diagnostic, each pinning
   the exact code.
 - **Runtime refusals** — `durable: true` with no `WO_DATA` fails at startup;
-  a budget breach names the table and the annotation.
+  a budget breach names the table and the annotation. *(2026-09-09: the first
+  is task 6a, escape hatch `WO_EPHEMERAL=1`; the budget breach moved to
+  databasev2 5.)*
 - **Crash safety** — `kill -9` mid-append and mid-checkpoint on a
   `resident: keys` table; replay loses no acked write and no row appears twice.
 - **Performance** — new baseline rows for the `resident: keys` read path with
@@ -337,10 +345,13 @@ unchanged.
 loud one, and both listed here so neither arrives as a surprise:
 
 1. `durable: true` (the default) with no `WO_DATA` becomes a startup refusal.
-   Today it silently discards every write.
+   Today it silently discards every write. *(Decided 2026-09-09:
+   `WO_EPHEMERAL=1` opts the whole program out.)*
 2. Total estimated resident footprint crossing the default budget fraction
    becomes a startup or insert refusal. Today the program slides into swap with
-   no signal and is eventually killed.
+   no signal and is eventually killed. *(Moved to databasev2 5 on 2026-09-09 —
+   no longer part of iteration 2's behaviour change.)*
 
-Both are opt-out-able by explicit declaration. Neither is a data-format change,
+Both are opt-out-able by explicit declaration *(for the first: per table by
+`@table(durable: false)`, or for the program by `WO_EPHEMERAL=1`)*. Neither is a data-format change,
 so a rollback is a binary swap with no migration.

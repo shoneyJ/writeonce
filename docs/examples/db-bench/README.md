@@ -33,7 +33,8 @@ strictly better. Recorded as a plan deviation.)
 
 | var | effect |
 | --- | --- |
-| `WO_DATA=<dir>` | durability on: replay `<dir>/shard-0.wal` at boot, log every write. Without it the store is RAM-only |
+| `WO_DATA=<dir>` (or `WO_DATA=<path>.db`, below) | durability on: replay `<dir>/shard-0.wal` at boot, log every write. A program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out. |
+| `WO_EPHEMERAL=1` | **databasev2 2 task 6a:** the RAM-only opt-in the driver sets on its ram/msgrate/growth/randread legs. A `WO_DATA` exported in your shell no longer silently turns those legs durable — the two are incompatible and the run refuses loudly |
 | `WO_SHARDS=<n>` | shard count. **`1` means every statement runs inline on shard 0 and group commit cannot engage** — batches form only where writes queue from other shards |
 | `WO_CHECKPOINT_BYTES` / `WO_CHECKPOINT_RATIO` | **databasev2 3:** the checkpoint trigger — the log must exceed the floor AND exceed the ratio times the last compaction's own size. A tiny floor forces compaction in a few writes, which is how the gate tests the policy at all; an enormous one disables it, which is how the checkpoint leg measures the same workload with and without |
 | `WO_WAL_STATS=1` | **databasev2 4:** print one line at exit — `walstats batches=… records=… peak_batch=… peak_staged=… compactions=… compact_us_max=… compact_us_total=… compacted_bytes=…`. Opt-in so it does not pollute every durable program's output. Mean batch is `records/batches`; **mean 1.0 means group commit is not engaging**, which is expected for a serial writer or `WO_SHARDS=1` and a bug anywhere else |

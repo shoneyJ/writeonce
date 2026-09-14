@@ -121,7 +121,7 @@ inside the dependency) is pre-existing and not a build failure.
 ## Refreshing content — trap 1, in practice
 
 Chapter bodies live in `content.wo`, in git. That is their source of truth;
-`WO_DATA` is a *replica* seeded on first boot. The site's only table is
+`WO_DATA` is a *replica* seeded on first boot (a program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out). The site's only table is
 `Chapter`, so the WAL holds nothing else — which is what makes the fix safe:
 
 ```

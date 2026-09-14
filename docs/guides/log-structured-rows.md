@@ -44,7 +44,8 @@ Three consequences worth internalising:
 A `resident: keys` table has no rows in RAM at all, so without a log there is
 nothing to reconstruct from. That is why the runtime refuses at startup when
 such a table is declared and `WO_DATA` is unset, rather than letting every read
-return "no such row".
+return "no such row". Since databasev2 2 task 6a the default table is held to
+the same rule: a program with any durable table (the default) refuses to start without `WO_DATA`; `WO_EPHEMERAL=1` opts into a RAM-only run, `@table(durable: false)` opts a table out.
 
 ---
 

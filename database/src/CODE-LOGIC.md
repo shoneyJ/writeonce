@@ -84,11 +84,15 @@ succeed and the file is the only artifact beside a decoy sibling directory).
 
 One dispatcher, the builtin contract (0 ok, else WO_T_* + msg). The engine
 handles ride `wo_rt.db` / `wo_rt.wal` as opaque pointers set by main.c —
-NULL db traps WO_T_DB, NULL wal means RAM-only (the corpus's mode; WO_DATA
-opts into durability). Insert's contract: RAM apply through the row API,
-then stage + commit BEFORE returning — the builtin's return is the
-acknowledgment, so a failed commit un-applies the row and traps WO_T_IO
-rather than acknowledging what disk never got.
+NULL db traps WO_T_DB, NULL wal means RAM-only — reachable only under
+WO_EPHEMERAL=1 (or with no durable `@table` in the module) since databasev2 2
+task 6a: a program with any durable `@table` (the default) refuses to start
+without WO_DATA; WO_EPHEMERAL=1 opts into a RAM-only run (the corpus's mode),
+@table(durable: false) opts a table out. Insert's contract: RAM apply through
+the row API, then stage + commit BEFORE returning — the builtin's return is
+the acknowledgment. Once RAM has mutated the outcomes are durable or process
+death (`wo_wal_commit_fatal`, `wo_wal_stage_fatal`): a failed commit is
+fatal, there is no un-apply, and WO_T_IO is unreachable from a write path.
 
 ## Verifying a change
 
@@ -400,3 +404,65 @@ A `@table` class is the schema; the log is the database; boot compares them.
 - **Legacy logs** (no head record) replay exactly as before and adopt the
   head at their next compaction. v1 verbs are add and delete only; rename
   wants `@renamed_from` (v2), data/seed migrations are v2.
+
+## Startup refusal + WO_EPHEMERAL (databasev2 2 task 6a, 2026-09-09/10)
+
+`main.c`, startup only. The engine, `db.c` and `wal.c` are untouched.
+
+- **Contract.** With `WO_DATA` unset or empty and no `WO_EPHEMERAL`, the first
+  class whose flags carry `WO_CLASSF_TABLE` and lack `WO_CLASSF_VOLATILE`
+  (a `@table` with `durable: true`, the default) is a startup refusal: exit 2,
+  ONE stderr line naming the class and all three ways forward literally
+  (`WO_DATA=<dir or file>`, `WO_EPHEMERAL=1`, `@table(durable: false)`). The loop sits
+  inside the existing `!data_dir` block AFTER the `resident: keys` loop — the
+  keys refusal wins, and `WO_EPHEMERAL` does not rescue it (a keys table has
+  nowhere to read from). Both loops skip classes without the table bit.
+- **Escape hatch.** `WO_EPHEMERAL` with the exact value `1`, honoured only
+  while `WO_DATA` is unset/empty: one boot notice line on stderr, rc 0, and the
+  RAM path is byte-for-byte the old one — `db.c`'s `w && table_is_durable`
+  guards are the only gate, no new flag in `wo_db`. Set alongside `WO_DATA`
+  (any value) → exit 2 `WO_EPHEMERAL=1 is incompatible with WO_DATA` — that
+  check runs regardless of tables. Any value but `1` → exit 2 naming the
+  accepted value. A module with no durable `@table` consults `WO_EPHEMERAL`
+  for nothing else: no notice, no value check, rc 0 as before.
+- **The table bit (`.wob` v8, 2026-09-10).** The first cut keyed the refusal
+  on `!VOLATILE` alone, and the v7 image carried no "is a `@table`" bit: plain
+  classes, variant classes and the predeclared records (`Error`, `Stat`, …)
+  all looked durable, so EVERY class-bearing program refused without
+  `WO_DATA` — fibers (`Tick`), subprocess (`ConnMsg`), log-watcher
+  (`CronEntry`), chat. Wrong by construction: `durable:` is a `@table`
+  property. Fixed by `WO_CLASSF_TABLE` 0x08 (`wob.h`, `WO_CLASSF_ALL` 0x0f,
+  `WOB_VERSION` 8; `emit.ml` sets it from `cr_is_table`); the loader refuses
+  `VOLATILE`/`RESIDENT_KEYS` without it ("storage flags on a class that is
+  not a @table", `test_loader`), and a v7 image is refused by the version
+  check exactly as v7 refused v6. Blast radius after the fix, measured gate
+  by gate (each run without the export first; kept only where it refused):
+  only programs that DECLARE a durable table opt in — `oop-e2e.sh` (corpus
+  fixtures declare tables); `db-bench.py`'s ram/msgrate/growth/randread legs
+  (db-bench's tables); db-actor per-run (`notes` is default-durable; per-run
+  because its restart pair sets `WO_DATA` and the two are incompatible),
+  whose single-shard byte-exact compare drops the one notice line
+  (`grep -v '^wovm: WO_EPHEMERAL=1'`); chat, whose program declares no table
+  itself but `use`s porch, and porch's store middleware declares
+  `RateLimitCounter` default-durable — fork 6, a library-owned table binds
+  the consumer; and wmux, whose CLIENT legs (ls/new/attach/kill) run the
+  same default-durable image with no `WO_DATA` — the gate exports the
+  sentinel, every server start and the `WO_DATA`-carrying `r11cli` drop it
+  with `env -u`, and `client()` filters the notice because its answers are
+  compared byte-exactly (a wmux-track consequence worth its own look: a CLI
+  client of a durable server now needs the sentinel or a `WO_DATA`). fibers
+  (`Tick`), subprocess (`ConnMsg`) and log-watcher (`CronEntry`) need
+  nothing — their exports were reverted and their byte-exact compares are
+  as they were. Goldens: none moved — the bytecode dump prints flags by name
+  and no `bc/` golden declares a table; the header version is not printed.
+- **Deferred, each its own later commit:** an assert in `db.c` that
+  `durable && !w` is unreachable outside `WO_EPHEMERAL`; an ENOENT hint when
+  the `WO_DATA` directory is missing (the FILE form already refuses with a
+  named parent since databasev2 7; the directory form still fails at the WAL
+  open, on purpose — byte-identical to before); SIGKILL /
+  rc 137 classification in the gates; `wal.c` fallocate/dir-fsync logging.
+- **Proof:** `scripts/residency-accept.sh` section 7 — refusal text, RAM
+  round-trip under the hatch, the `WO_DATA` conflict, keys still refusing
+  under the hatch, a non-`1` value, and (vi) a plain class without `@table`
+  running with no `WO_DATA` and nothing on stderr (the corpus `methods`
+  fixture); `runtime/test/test_loader.c` `test_storage_flags_need_table`.

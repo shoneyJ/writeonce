@@ -75,7 +75,7 @@ ignored by this workflow.
     Shipping that change to writeonce.de is its own runbook:
     docs/guides/deploying-site.md. Note especially that a new or
     renumbered CHAPTER does not appear on a host that already has a
-    WO_DATA directory — the seed only fills an empty table.
+    WO_DATA directory — the seed only fills an empty table. A program with any durable table (the default) refuses to start without WO_DATA; WO_EPHEMERAL=1 opts into a RAM-only run, @table(durable: false) opts a table out.
 
     docs/examples/site is a SUBMODULE (github.com/shoneyJ/writeonce-site),
     so this edit is a commit in THAT repo, pushed there, and then a
