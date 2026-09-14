@@ -31,6 +31,9 @@ set -uo pipefail
 # narrows determinism to output SETS there); the multi-shard/TSan proofs
 # live in the fibers gate, not here.
 export WO_SHARDS=1  # no -e: a failing fixture is handled explicitly, one at a time
+# databasev2 2 (6a): a program with any durable table (the default) refuses to
+# start without WO_DATA; the corpus is RAM-only by contract, so opt in here.
+export WO_EPHEMERAL=1
 shopt -s nullglob
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

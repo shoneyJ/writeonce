@@ -25,10 +25,13 @@ else
   bad "build" "woc failed"; echo "db-actor-accept: 1 checks, 1 failures"; exit 1
 fi
 
+# databasev2 2 (6a): these RAM-only runs opt in with WO_EPHEMERAL=1 (a durable
+# table refuses to start without WO_DATA); the restart pair below sets WO_DATA
+# instead, and the two are incompatible, so the hatch is per-run, not exported.
 check_set() { # name [env pairs...]
   local name="$1"; shift
   local out
-  out="$(env "$@" timeout 30 "$DIR/target/db-actor" 2>&1)"
+  out="$(env WO_EPHEMERAL=1 "$@" timeout 30 "$DIR/target/db-actor" 2>&1)"
   if printf '%s' "$out" | grep -q "writer 1 sees sum" \
      && printf '%s' "$out" | grep -q "writer 2 sees sum" \
      && printf '%s' "$out" | grep -q "^main sees 2 rows, sum 3$" ; then
@@ -47,7 +50,8 @@ check_set "multi uring" WO_IO=uring
 check_set "multi epoll" WO_IO=epoll
 
 # single-shard: byte-exact — the local path is untouched
-sout="$(WO_SHARDS=1 timeout 30 "$DIR/target/db-actor" 2>&1)"
+# byte-exact on merged stdout+stderr, so the hatch's one boot notice is dropped
+sout="$(WO_EPHEMERAL=1 WO_SHARDS=1 timeout 30 "$DIR/target/db-actor" 2>&1 | grep -v '^wovm: WO_EPHEMERAL=1')"
 want=$'writer 1 sees sum 1\nwriter 2 sees sum 3\nmain sees 2 rows, sum 3'
 if [[ "$sout" == "$want" ]]; then
   ok "single-shard byte-exact"

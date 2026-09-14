@@ -19,9 +19,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "docs/examples/db-bench/target/db-bench")
 # databasev2 2 task 7. Its own program, not a mode in db-bench: declaring a
 # `resident: keys` table is a WHOLE-PROGRAM constraint — the runtime refuses to
-# start without WO_DATA, for every mode in the module. Putting those classes in
-# db-bench's shared types made growth/ceiling/randread, which deliberately run
-# WITHOUT WO_DATA, refuse to start.
+# start without WO_DATA, for every mode in the module, and WO_EPHEMERAL=1 does
+# not rescue it. Putting those classes in db-bench's shared types made the ram,
+# msgrate, growth and randread legs, which deliberately run WITHOUT WO_DATA
+# (ceiling sets one — it measures what survives the kill), refuse to start.
+# databasev2 2 task 6a: those RAM legs now opt in with WO_EPHEMERAL=1; a
+# WO_DATA exported in the caller's shell no longer silently turns them durable,
+# it refuses loudly (WO_EPHEMERAL is incompatible with WO_DATA).
 RESID_BIN = os.path.join(ROOT, "docs/examples/residency-bench/target/residency-bench")
 WOC = os.path.join(ROOT, "compiler/_build/default/bin/woc")
 WOVM = os.path.join(ROOT, "runtime/wovm")
@@ -188,12 +192,13 @@ def campaign():
     for flavor in ("ram", "durable"):
         for shards in (1, ncores):
             tag = f"{flavor}.s{'1' if shards == 1 else 'N'}"
-            env = {"WO_SHARDS": str(shards)}
+            env = {"WO_SHARDS": str(shards), "WO_EPHEMERAL": "1"}
             data = None
             if flavor == "durable":
                 data = os.path.join(ROOT, "bench", f"tmp.{os.getpid()}.{tag}")
                 os.makedirs(data, exist_ok=True)
                 env["WO_DATA"] = data
+                del env["WO_EPHEMERAL"]
             rc, lines, rssg, fdg = run(["all", str(N)], env, 1800, sample_after="write ")
             if rc != 0:
                 bad(f"{tag}.all", f"rc={rc} tail={lines[-2:]}")
@@ -221,7 +226,8 @@ def campaign():
         # raises the cap to the flood size — the measured number keeps
         # iteration 22's semantics exactly.
         rc, lines, _, _ = run(["msgrate", str(MSG_N)],
-                              {"WO_SHARDS": str(shards), "WO_MAILBOX": str(MSG_N)}, 300)
+                              {"WO_SHARDS": str(shards), "WO_MAILBOX": str(MSG_N),
+                               "WO_EPHEMERAL": "1"}, 300)
         if rc != 0:
             bad(tag, f"rc={rc}")
         else:
@@ -505,7 +511,7 @@ def growth(metrics):
     for shape in GROWTH_SHAPES:
         for legname, swap_mb in (("noswap", 0), ("swap", 256)):
             w = cap_wrapper(512, swap_mb)
-            env = dict(os.environ)
+            env = dict(os.environ); env["WO_EPHEMERAL"] = "1"
             argv = w + [BIN, "growth", str(GROWTH_N), shape]
             pr = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, env=env, timeout=900)
@@ -554,9 +560,9 @@ def ceiling(metrics):
          malloc succeeds and the process dies TOUCHING the pages, so it never
          gets the chance to report failure. (The VM object arena is the
          opposite: WO_HEAP_MB is checked and traps.) rc is asserted, not
-         recorded as a metric -- when databasev2 2's byte budget lands this
-         should become a checked refusal, and the gate must not fail on that
-         improvement.
+         recorded as a metric -- when databasev2 5's byte budget (bounded
+         tables) lands this should become a checked refusal, and the gate must
+         not fail on that improvement.
 
       2. WHAT SURVIVES. With WO_DATA set, replay must yield a contiguous
          intact prefix: rows 1..M present with the right v, no holes, and not
@@ -772,7 +778,8 @@ def randread(metrics):
         w = cap_wrapper(cap_mb, swap_mb)
         pr = subprocess.run(w + [BIN, "randread", str(RAND_N), str(RAND_R)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, env=dict(os.environ), timeout=900)
+                            text=True, env=dict(os.environ, WO_EPHEMERAL="1"),
+                            timeout=900)
         lines = pr.stdout.splitlines()
         ops, p50, p99, hits, filled = parse_randread(lines)
         key = f"randread.{legname}"

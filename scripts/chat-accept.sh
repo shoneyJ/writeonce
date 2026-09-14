@@ -7,6 +7,10 @@
 # drain (close frames, exit 0) — functional legs on BOTH WO_IO backends
 # plus an ASan run.
 set -uo pipefail
+# databasev2 2 (6a): chat `use`s porch, whose store middleware declares its
+# tables default-durable (`RateLimitCounter`, ...) — a library-owned durable
+# table binds every consumer, so this RAM-only gate opts in.
+export WO_EPHEMERAL=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WOC="$ROOT/compiler/_build/default/bin/woc"

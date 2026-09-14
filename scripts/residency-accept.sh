@@ -199,6 +199,58 @@ else
   bad "resident:keys refusal fixture compiles" "$(head -1 "$WORK/e")"
 fi
 
+# ---- 7. a durable table (the default) refuses to run without WO_DATA -------
+# databasev2 2 task 6a: before this, a durable class with no WO_DATA ran
+# RAM-only and every write was silently discarded — the exact outcome
+# `durable: true` promises against. WO_EPHEMERAL=1 is the explicit opt-in to
+# that RAM-only run; anything else refuses at startup, exit 2, naming the
+# class and all three ways forward.
+printf '@table(name: "notes", index: [k])\nclass Notes { k: Text }\nfn main() -> Int { insert Notes { k: "a" }; let n = 0; for x in from r in Notes select r { n = n + 1; } print("notes=${n}"); return 0; }\n' > "$WORK/dur.wo"
+if "$WOC" --emit "$WORK/dur.wo" -o "$WORK/dur.wob" 2>"$WORK/e"; then
+  # (i) default-durable, no WO_DATA, no WO_EPHEMERAL -> refuse
+  out="$(env -u WO_DATA -u WO_EPHEMERAL "$WOVM" "$WORK/dur.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'Notes' <<<"$out" && grep -q 'WO_DATA=' <<<"$out" \
+    && grep -q 'WO_EPHEMERAL=1' <<<"$out" && grep -q 'durable: false' <<<"$out" \
+    && ok "durable table without WO_DATA exits 2, names the class and all three ways forward" \
+    || bad "durable table without WO_DATA refuses" "exit=$rc got: $out"
+  # (ii) WO_EPHEMERAL=1 -> runs from RAM: boot notice on stderr, a write round-trips
+  out="$(env -u WO_DATA WO_EPHEMERAL=1 "$WOVM" "$WORK/dur.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && grep -q 'WO_EPHEMERAL=1' <<<"$out" && grep -q 'notes=1' <<<"$out" \
+    && ok "WO_EPHEMERAL=1 runs the durable table from RAM (boot notice, write round-trips)" \
+    || bad "WO_EPHEMERAL=1 runs from RAM" "exit=$rc got: $out"
+  # (iii) WO_EPHEMERAL together with WO_DATA -> conflict, refuse
+  mkdir -p "$WORK/d7"
+  out="$(WO_DATA="$WORK/d7" WO_EPHEMERAL=1 "$WOVM" "$WORK/dur.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'incompatible with WO_DATA' <<<"$out" \
+    && ok "WO_EPHEMERAL=1 with WO_DATA set exits 2 and names the conflict" \
+    || bad "WO_EPHEMERAL + WO_DATA conflict" "exit=$rc got: $out"
+  # (v) the only accepted value is 1
+  out="$(env -u WO_DATA WO_EPHEMERAL=2 "$WOVM" "$WORK/dur.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'WO_EPHEMERAL=1' <<<"$out" \
+    && ok "WO_EPHEMERAL=2 exits 2 and names the accepted value" \
+    || bad "WO_EPHEMERAL=2 refused" "exit=$rc got: $out"
+else
+  bad "durable refusal fixture compiles" "$(head -1 "$WORK/e")"
+fi
+# (iv) resident:keys still refuses under WO_EPHEMERAL=1 — the keys loop wins
+if [[ -f "$WORK/reskeys.wob" ]]; then
+  out="$(env -u WO_DATA WO_EPHEMERAL=1 "$WOVM" "$WORK/reskeys.wob" 2>&1)"; rc=$?
+  [[ $rc -eq 2 ]] && grep -q 'resident: keys' <<<"$out" \
+    && ok "WO_EPHEMERAL=1 does not rescue resident:keys (exit 2, keys message)" \
+    || bad "WO_EPHEMERAL=1 vs resident:keys" "exit=$rc got: $out"
+fi
+# (vi) a class that is NOT a @table is not a durable table: no WO_DATA, no
+# WO_EPHEMERAL, rc 0 and nothing on stderr. `durable: true` is a @table
+# property; the .wob carries the table bit (v8) so the refusal loops can tell.
+if "$WOC" --emit tests/corpus/run/methods/fixture.wo -o "$WORK/plain.wob" 2>"$WORK/e"; then
+  out="$(env -u WO_DATA -u WO_EPHEMERAL "$WOVM" "$WORK/plain.wob" 2>"$WORK/plain.err")"; rc=$?
+  [[ $rc -eq 0 && "$out" == $'15\n42' ]] && ! grep -q '^wovm:' "$WORK/plain.err" \
+    && ok "a plain class (no @table) runs without WO_DATA: rc 0, no wovm: line" \
+    || bad "plain class without WO_DATA" "exit=$rc out: $out err: $(cat "$WORK/plain.err")"
+else
+  bad "plain-class fixture compiles" "$(head -1 "$WORK/e")"
+fi
+
 # ---- 8. WO_DATA=<file>: the store as one file ------------------------------
 # databasev2 7: WO_DATA names either a directory (-> <dir>/shard-0.wal, as it
 # always did) or THE log file. Underneath it is the same wo_wal_* path, so
