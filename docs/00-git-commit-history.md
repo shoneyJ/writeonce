@@ -56,6 +56,10 @@ features cannot collide.
 | `db2-14` | databasev2 14 — the shop workload story (`refine`) | on `dev` 2026-09-15 (docs) |
 | `agents` | `.claude/agents` persona roster — codd/fielding/ada families, `lintor`, the README | on `dev` 2026-09-15 |
 | `status` | cross-track reconciliation sweeps of the board, dependency graph and story tables (in use since `732c221`) | on `dev` |
+| `tls` / `crypto` / `rv2-tls` / `rv2-aead` / `net` | runtime-v2 8 (the AEADs) and 9 (in-process TLS 1.3, both directions): `net.connect` (id 110), `net.connect_tls`/`read_tls`/`write_tls`, `net.accept_tls`, RSA-PSS + ECDSA-P256 signing, PEM/DER parsing; `just tls`, `just tls-server` | ✅ on `master` 2026-09-15 (registered after the fact) |
+| `porch2-rng` | porch 2 phase A — `random_bytes` builtin (id 119) | on `dev` — not picked 2026-09-15: porch 2 is `in-progress` |
+| `jarvis`, `rv2-obs`, `porch-cookies`/`-csrf`/`-routing`/`-streaming`/`-sse`/`-static`, `audit`, `workflow`, `runtime` (docs) | docs-only prefixes: the jarvis stories, rv2 7 brainstorm, the porch 2–8 brainstorms, the doc audit, the prebuild-feature workflow, the TLS CODE-LOGIC | ✅ on `master` 2026-09-15 |
+| `gate`, `vm`, `arena`, `compiler`, `runtime` (fix) | one-off fixes: `e274f4a` + `ec797d9` (gates), `63065ff` (lang 41 double free), `78ae3be` (lang 44 poison-on-free), `2d54710` (lang-41 side defects), `35efa21` (poisoned class NULL fmap) | ✅ on `master` 2026-09-15 |
 
 ## Cherry-picks onto master
 
@@ -64,10 +68,86 @@ produced.
 
 | Date | Prefix | Feature | `dev` → `master` |
 | --- | --- | --- | --- |
+| 2026-09-15 | `porch-store`, `rt2`, `tls`+`crypto`+`rv2-*`+`net`, `lang41` + one-off fixes, `db2-7`, `db2-keys` (13), `db2-ephemeral`, `db2-chains`, `query-corpus`, `agents`, the docs prefixes | **the 2026-09-01 → 09-15 `dev` catch-up, minus three unfinished features**: 129 commits picked in `dev` order (127 in the sweep, plus `e9213bb` and `1ce195d` — two fixes the verification on `master` forced: `woc build -o` failing on a fresh checkout, and the web-app keypool leg refused since 6a — committed on `dev` first, then picked) with `-x` (each `master` commit names its `dev` source), mapped per prefix below. **Left on `dev` on purpose:** the **wmux** track (59 commits — rungs 10/12/13/15/16/18 are `in-progress` and share the prefix with the done rungs), **language 18** `transaction { }` (10 commits — T7's durability legs open, criterion 1 outstanding), **porch 2** phase A `random_bytes` (2 commits — the iteration is `in-progress`). Conflicts: two `justfile` hunks (kept `tls`/`tls-server`, dropped the `wmux` recipe), `scripts/wmux-accept.sh` dropped from `4553ca1`, seven markdown files taken from the picked commit; three master-only follow-ups in `69114ab`. Verified on `master` after a fresh build in its own worktree: woc-test clean; `make -C runtime test` 21 suites 0 fail (test_wal 6660/0, test_tls 123/0, test_crypto 130/0, test_loader 36/0), `test-iso` 21 suites 0 fail, cli_smoke OK; `just oop-e2e` **127/0** (single-binary smoke 4/0 — the new `build-into-missing-dir` check), `just residency` **32/0**, `just db-actor` **10/0** (from a deleted target/), `just web-app` **56/0**, `just chat` **11/0**, `just subprocess` **12/0**, `just tls` **5/0**, `just tls-server` **5/0**, `just deps-accept` **8/0**, `just db-bench-quick` **185 checks, 0 failures**. `just fibers` 10 checks / **1 failure — the KNOWN TSan race in `wo_engine_stop` (vm.c:719)**, red on `dev` the same way (codd.md "Next bugs"), not a pick regression. Not run: `just site` (submodule not initialised in the worktree), `just wmux` (track not picked). | see the sub-table below; `69114ab` is master-only |
 | 2026-09-01 | `lang42` | **iteration 42 — bounded subprocess**: `proc.run` parked (pidfd + epoll bundle, `_dl` retry mould) with deadline/output-cap/ceiling refusals by name and owner-bound reaping; `proc.run_dl` (id 96) states bounds per call; the pre-42 sequential-drain deadlock proven then dissolved. Includes the alacritty/tmux/zen-browser parity studies and the porch graph section. Zero conflicts. Verified on `master` after rebuild: 38 runtime suites 0 fail both dispatch flavors (`test_proc` 128/0, `test_wal` 5966/0), woc-test 557/0 (forced, not cached), subprocess-accept 12/0, site-accept 23/0 | `5b92e20` → `2f6d39d`, `75fbd30` → `b287bf7`, `821899b` → `afa16e5`, `c30507b` → `81c28d8`, `975959a` → `64542e5`, `a3b5dc3` → `ce98fa1`, `b147dd4` → `346f885`, `5dfbeda` → `49b0193` |
 | 2026-08-31 | `db2-migrate` + `site-deploy` | **databasev2 12 — schema migrations v1**: WO_WAL_SCHEMA head record, name-keyed boot diff, record-level transcode for add/delete, poisons that bite only with records; plus the redeploy runbook the close-out edits (dev-only until now). Zero conflicts. Verified on `master`: 36 suites 0 fail (`test_wal` 5966/0), woc-test clean, residency-accept 14/0, site-accept 23/0 | `930a715` → `b594717`, `072e007` → `8d9207d`, `ba8519f` → `570e0d6`, `63a063b` → `b1b7984`, `b69092a` → `4a70fc7`, `b21943a` → `ace5699`, `4bb6ece` → `4f1fda1` |
 | 2026-08-30 | `site-submodule` | **`docs/examples/site` becomes a submodule** — extracted to github.com/shoneyJ/writeonce-site with `git subtree split` (its own 9 commits of history, not a snapshot) | `4b56348` → `a5497a3`, `4eead89` → `565b894` |
 | 2026-08-30 | `db2-keys` + `db2-delta` + `db2-chains` + `site` | **databasev2 `resident: keys`, end to end** — storage, readers, deletes, updates as delta records, bounded delta chains, and the tutorial chapter documenting them | 37 commits, mapped one-to-one below |
+
+### 2026-09-15 — the `dev` catch-up
+
+Picked in `dev` order onto `master` in a separate worktree (`git worktree add`), each with `cherry-pick -x`, so this table can be regenerated from `git log master` (`cherry picked from commit …` trailers). One row per prefix, pairs in `dev` order.
+
+| Prefix | n | `dev` → `master` |
+| --- | --- | --- |
+| `porch-store` | 26 | `519d411` → `ddc8b99`, `5b1e82a` → `8eb36a9`, `aee7926` → `3e6eab7`, `fc09e94` → `3828c76`, `5c3544d` → `7061646`, `f079455` → `06b7722`, `a96ebe2` → `4a22da6`, `3a9bddc` → `0d98a52`, `676e651` → `9fb0cff`, `77e06c1` → `9190507`, `153fd29` → `eb8e019`, `a653dd0` → `bf69f82`, `831e9d8` → `569abef`, `eae1b06` → `75965b5`, `e61015f` → `0542cda`, `464147a` → `2d47671`, `9ad5947` → `f27fe3b`, `21934b1` → `e4d7922`, `2ac1b8b` → `360ca47`, `91099cf` → `b641c37`, `b738269` → `d4e5cce`, `c53ad58` → `f991f48`, `86e7244` → `47e5acf`, `6d48dbc` → `8904be8`, `a919ab1` → `23e5b0f`, `79e6da4` → `6d1288b` |
+| `query-corpus` | 1 | `4c82461` → `2b70306` |
+| `commit-history` | 5 | `bc8fec0` → `a95f58d`, `aa8abfb` → `bb7e1a1`, `22b5675` → `aa5f3da`, `ab7df69` → `d9d9632`, `d0e658f` → `c3c5d67` |
+| `lang41` | 1 | `9dca0b4` → `6360088` |
+| `site-update` | 1 | `a21a02f` → `d5da3ac` |
+| `rt2` | 9 | `e0451cb` → `6ae251f`, `d313cde` → `0be01b7`, `9be87f1` → `b79597e`, `9836c9c` → `7485c66`, `14e03a6` → `055cb70`, `b439387` → `5340ef2`, `1d68902` → `3605e11`, `bc1b4f0` → `5eef0fc`, `1514fb4` → `1e5d81f` |
+| `runtime` | 2 | `35efa21` → `784cd25`, `5670304` → `6c22cd3` |
+| `porch-cookies` | 1 | `4d31d53` → `602daa6` |
+| `porch-csrf` | 1 | `3a4fb42` → `c103df7` |
+| `porch-routing` | 1 | `0589a13` → `5a04513` |
+| `porch-streaming` | 1 | `1520540` → `d37c583` |
+| `porch-sse` | 1 | `07f5357` → `699f811` |
+| `porch-static` | 1 | `9801fce` → `a509656` |
+| `net` | 1 | `13c6f12` → `92ac803` |
+| `(no scope)` | 1 | `203470c` → `83335cf` |
+| `rv2-tls` | 13 | `f1881cc` → `69c6822`, `e24b8ec` → `4f8a0ae`, `b929a20` → `8f4fbd2`, `ae42943` → `0f0cc60`, `3eab98c` → `7f0b189`, `796ed88` → `7eb0708`, `d49bc38` → `836c09f`, `8b6e721` → `8649d59`, `9662cd8` → `5b70ac1`, `9fcb4a9` → `3787a14`, `f02518c` → `a3f3dbd`, `57613bd` → `1f3358c`, `f3a3c96` → `f1f11c3` |
+| `rv2-aead` | 4 | `c8a5a31` → `cb92908`, `db5bdf3` → `a15dfa0`, `249b1db` → `b83832c`, `138de17` → `be35434` |
+| `crypto` | 12 | `961854a` → `74f3370`, `f12a745` → `74db22b`, `dccf650` → `411e8cc`, `c8d27b6` → `3fa0445`, `f41b1c5` → `579130a`, `9118177` → `781589d`, `92c996b` → `d502866`, `4ec1c75` → `4da6ab7`, `cf8fdfc` → `2181d6d`, `1bc6d04` → `e17986c`, `819d672` → `f7aebb2`, `fba3035` → `fb34da7` |
+| `jarvis` | 2 | `a615ee8` → `f862dc2`, `8e160c3` → `a81135e` |
+| `tls` | 15 | `5021a99` → `74d66ec`, `417fcc1` → `c2eb996`, `541c71b` → `2617bf4`, `afd9f23` → `de3984c`, `74c332d` → `ba34017`, `319ce8b` → `f9ed841`, `9d40055` → `2c0dd55`, `3811418` → `ab07609`, `6445d55` → `07c6dee`, `9a922b3` → `7ab9e3d`, `3d8bb14` → `398fbcc`, `34d2b8f` → `05d4d08`, `2d4c300` → `989fcdd`, `54020a4` → `a804ad4`, `ac3bf74` → `db6e414` |
+| `rv2-tls,jarvis` | 1 | `4fdf071` → `2b33589` |
+| `rv2-tls,status` | 1 | `ad87974` → `104e805` |
+| `workflow` | 1 | `2bfbb0c` → `fff86d3` |
+| `rv2-tls,jarvis,status` | 1 | `732c221` → `a4d4b34` |
+| `vm` | 1 | `63065ff` → `6948cd2` |
+| `audit` | 1 | `f1049dd` → `ba23483` |
+| `arena` | 1 | `78ae3be` → `cddda8c` |
+| `rv2-obs` | 1 | `feb11c3` → `3b97569` |
+| `compiler` | 2 | `2d54710` → `35331ac`, `e9213bb` → `23504ee` |
+| `db2-7` | 5 | `b31bd40` → `92bf6de`, `ccee2d0` → `5739a6c`, `f1985ba` → `39da4b4`, `aaea6b2` → `7200406`, `38f4f1e` → `8d48cac` |
+| `gate` | 3 | `e274f4a` → `65745e6`, `ec797d9` → `3c1161a`, `1ce195d` → `896516c` |
+| `db2-keys` | 3 | `6310078` → `30ea9eb`, `1b6750d` → `2019364`, `b5b1da7` → `5a6c702` |
+| `db2-ephemeral` | 3 | `863692a` → `0e2eee6`, `4553ca1` → `719f7f3`, `2c35319` → `561bb2a` |
+| `db2-chains` | 1 | `d841390` → `47ae475` |
+| `agents` | 1 | `830bbb1` → `a12a0ec` |
+| `db2-4b` | 1 | `7ceb7b8` → `07e368c` |
+| `db2-5` | 1 | `579199a` → `6eddd8c` |
+| `db2-14` | 1 | `f33ae98` → `2ed50f2` |
+| `status` | 1 | `423b3c1` → `c41ed17` |
+
+**What the pick taught.**
+
+- **"Already on master" is the mapping table, never a prose mention.** `79e6da4`
+  (porch 1 re-scoped to the limiter, idempotency reverted to porch 9) was named
+  in the 2026-08-30 prose and had never been picked, so `master` still carried
+  the reverted middleware and 638 lines of gate legs for it. Filtering the pick
+  list on "hash appears anywhere in this file" skipped it; the trailing
+  `git diff --name-only dev` minus the excluded commits' footprint caught it.
+  `git cherry master dev` answers patch-equivalence; this table answers
+  "picked with conflicts".
+- **Earlier conflict-resolved picks had dropped hunks**: `89a7456` lost
+  `b3d8c40`'s skill-catalog README link fix, the porch-store pick lost the
+  porch 9 story file. Both restored by `69114ab`.
+- **`ec797d9` (executable bit) was a no-op until `79e6da4` reset the mode**, so
+  it is picked after it (`3c1161a`), out of `dev` order.
+- **Excluding a track leaves its documentation dangling.** The board and graph
+  on `master` describe wmux and language 18 as the project's state (they are),
+  so `just linkcheck` on `master` reports the wmux story and spec links as
+  broken until that track is picked; `.dev/reference` links break in any
+  checkout without the developer-local symlinks and are not defects.
+- **Proof of equality:** re-applying the 70 excluded commits onto `master` in a
+  scratch branch reproduces `dev` in every code path except the two files
+  below — so `master` is exactly `dev` minus wmux, language 18 and porch 2.
+
+**Obligations when wmux is picked:** re-add the `wmux:` recipe to the
+`justfile` (dropped in both `justfile` conflicts), and re-apply the
+`WO_EPHEMERAL=1` edits to `scripts/wmux-accept.sh` from `dev`'s `4553ca1`
+(the client legs refuse without them since databasev2 2 task 6a).
 
 ### 2026-08-30 — the databasev2 residency stack
 

@@ -76,6 +76,45 @@ behind this board; live Obsidian Dataview views:
 
 ## ▶ NEXT PLAN
 
+### Landed 2026-09-15 — `dev` → `master` cherry-pick: 129 commits, three unfinished features left behind
+
+**What landed (on `master`, `cherry-pick -x` in `dev` order, own worktree):**
+everything `dev` accumulated since the 2026-09-01 lang42 pick whose story is
+`done` — porch 1 (`porch-store`, re-scoped to the limiter by `79e6da4`, which
+the 2026-08-30 pick had missed), runtime-v2 1–6 (`rt2`), runtime-v2 8 + 9
+(`tls`/`crypto`/`rv2-*`/`net`: in-process TLS 1.3 both directions), the
+language 41/44 fixes, databasev2 7 (`WO_DATA=<file>`), databasev2 13's fix,
+databasev2 2's close (`db2-ephemeral`: the no-`WO_DATA` refusal, `WO_EPHEMERAL=1`,
+`.wob` v8), databasev2 11's oracle, the agent roster, and every story/board/
+graph reconciliation — plus two fixes the verification forced (`woc build -o` on a fresh checkout, the web-app keypool leg under 6a), committed on `dev` first. Mapping per prefix in
+[00-git-commit-history.md](../00-git-commit-history.md).
+
+**Left on `dev` on purpose (the rule: no unfinished feature reaches master):**
+the **wmux** track — 59 commits, rungs 10/12/13/15/16/18 `in-progress` under the
+same prefix as the done rungs, so it moves as one unit; **language 18**
+`transaction { }` — T7's durability legs open, criterion 1 outstanding;
+**porch 2** phase A `random_bytes` — the iteration is `in-progress`. Proven:
+re-applying those 70 commits onto `master` reproduces `dev` in every code path
+except the `justfile` wmux recipe and `wmux-accept.sh`'s `WO_EPHEMERAL` edits,
+which the wmux pick must carry.
+
+**What was proven on `master` (fresh build):** woc-test clean; `make -C runtime test` 21 suites 0 fail (test_wal 6660/0, test_tls 123/0, test_crypto 130/0, test_loader 36/0), `test-iso` 21 suites 0 fail, cli_smoke OK; `just oop-e2e` **127/0** (single-binary smoke 4/0 — the new `build-into-missing-dir` check), `just residency` **32/0**, `just db-actor` **10/0** (from a deleted target/), `just web-app` **56/0**, `just chat` **11/0**, `just subprocess` **12/0**, `just tls` **5/0**, `just tls-server` **5/0**, `just deps-accept` **8/0**, `just db-bench-quick` **185 checks, 0 failures**. `just fibers` 10 checks / **1 failure — the KNOWN TSan race in `wo_engine_stop` (vm.c:719)**, red on `dev` the same way (codd.md "Next bugs"), not a pick regression. Not run: `just site` (submodule not initialised in the worktree), `just wmux` (track not picked).
+
+**Found, not fixed:** `just linkcheck` on `master` reports the wmux story and
+spec links as broken until that track lands (the board and graph describe the
+project, not the branch); `.dev/reference` links need the developer-local
+symlinks. Two earlier picks had dropped hunks (skill-catalog README link, porch 9
+story) — restored in `69114ab`.
+
+**Unblocked:** `master` now carries the runtime-v2 and TLS surface jarvis and
+porch 2–9 build on; the wmux pick is one command away once the six in-progress
+rungs close or the developer lifts the track as-is.
+
+**Next:** language 18 T7 legs (codd-cyril) → pick `lang-18`; porch 2 phases B–E
+→ pick `porch2-rng` + `porch2`; developer decision on wmux.
+
+**`.dev/reference` used:** none.
+
 ### Landed 2026-09-09 — language 41 fixed (cross-shard message marshal); porch 9 unblocked
 
 The actor-arena double-free/hang is fixed. Cross-shard `send`/`call`/monitor now
